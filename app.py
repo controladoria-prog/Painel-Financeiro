@@ -154,6 +154,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Configuração global de travamento para o Streamlit/Plotly
+CONFIG_PLOTLY_TRAVADO = {
+    'staticPlot': False,
+    'displayModeBar': False,
+    'scrollZoom': False,
+    'doubleClick': False
+}
+
 
 # 1. CARREGAMENTO DOS DADOS COM CACHE SEGURO (NUVEM COM FALLBACK LOCAL)
 @st.cache_resource
@@ -557,10 +565,10 @@ with tab1:
         fig_waterfall.update_layout(
             **LAYOUT_NEUTRO,
             height=400,
-            xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)"),
-            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)"),
+            xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
         )
-        st.plotly_chart(fig_waterfall, use_container_width=True)
+        st.plotly_chart(fig_waterfall, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     with cg2:
         st.markdown("##### **Real vs. Orçado (YTD)**")
@@ -615,11 +623,11 @@ with tab1:
             barmode="group",
             **LAYOUT_NEUTRO,
             height=400,
-            xaxis=dict(gridcolor="#21262D", zerolinecolor="#21262D"),
-            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)"),
+            xaxis=dict(gridcolor="#21262D", zerolinecolor="#21262D", fixedrange=True),
+            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
             legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -681,12 +689,14 @@ with tab1:
                 showgrid=False,
                 zeroline=False,
                 tickangle=-45,
-                tickfont=dict(size=11, color="#8B949E")
+                tickfont=dict(size=11, color="#8B949E"),
+                fixedrange=True
             ),
             yaxis=dict(
                 showgrid=False,
                 showticklabels=False,
-                zeroline=False
+                zeroline=False,
+                fixedrange=True
             ),
             legend=dict(
                 orientation="h",
@@ -698,7 +708,7 @@ with tab1:
             )
         )
 
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.plotly_chart(fig_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     with cg4:
         st.markdown("##### **Composição dos Custos & Saídas**")
@@ -731,7 +741,7 @@ with tab1:
             height=380,
             legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5)
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        st.plotly_chart(fig_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
 
 # ABA 2: DRE COMPLETA & DESVIOS
@@ -1112,17 +1122,18 @@ with tab4:
         **LAYOUT_NEUTRO,
         title=f"Evolução Mensal & Projeção Run-Rate: {metrica_sel}",
         height=500,
-        xaxis=dict(gridcolor="#21262D", zerolinecolor="#21262D"),
+        xaxis=dict(gridcolor="#21262D", zerolinecolor="#21262D", fixedrange=True),
         yaxis=dict(
             showticklabels=False,
             gridcolor="rgba(0,0,0,0)",
-            range=[0, max_val * 1.35] if max_val > 0 else None
+            range=[0, max_val * 1.35] if max_val > 0 else None,
+            fixedrange=True
         ),
         legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
         barmode="group"
     )
 
-    st.plotly_chart(fig_comb, use_container_width=True)
+    st.plotly_chart(fig_comb, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     # Tabela Resumo da Projeção Mensal
     st.markdown("##### 📋 **Detalhamento da Projeção Mensal (R$)**")
