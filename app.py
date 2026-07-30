@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Estilização CSS Customizada (Clean & Muted / Dark Graphite Continuous)
+# Estilização CSS Customizada (Clean & Muted / Dark Graphite Continuous + RESPONSIVIDADE MOBILE)
 st.markdown(
     """
     <style>
@@ -85,6 +85,7 @@ st.markdown(
             padding: 14px 16px;
             border-radius: 6px;
             border: 1px solid #21262D;
+            margin-bottom: 10px;
         }
         .kpi-label {
             font-size: 11px !important;
@@ -149,6 +150,54 @@ st.markdown(
             z-index: 3;
             border-right: 1px solid #21262D;
         }
+
+        /* ========================================================= */
+        /* REGRAS CSS EXCLUSIVAS PARA DISPOSITIVOS MÓVEIS (MOBILE)   */
+        /* ========================================================= */
+        @media only screen and (max-width: 768px) {
+            /* Empilha colunas nativas do Streamlit no mobile */
+            div[data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }
+
+            /* Ajuste de fontes e padding do Header */
+            .main-header {
+                padding: 10px 14px !important;
+            }
+            .main-header h3 {
+                font-size: 15px !important;
+            }
+            .main-header p {
+                font-size: 11px !important;
+            }
+
+            /* Ajustes nos Cards de KPI */
+            .kpi-card {
+                padding: 12px !important;
+            }
+            .kpi-value {
+                font-size: 18px !important;
+            }
+
+            /* Ajuste nas abas (tabs) para rolar horizontalmente no celular */
+            div[data-baseweb="tab-list"] {
+                display: flex !important;
+                overflow-x: auto !important;
+                white-space: nowrap !important;
+                padding-bottom: 5px !important;
+            }
+            button[data-baseweb="tab"] {
+                font-size: 11px !important;
+                padding: 5px 10px !important;
+            }
+
+            /* Habilita scroll horizontal suave nas tabelas em telas pequenas */
+            div[data-testid="stDataFrame"] {
+                overflow-x: auto !important;
+            }
+        }
     </style>
 """,
     unsafe_allow_html=True,
@@ -159,29 +208,26 @@ CONFIG_PLOTLY_TRAVADO = {
     'staticPlot': False,
     'displayModeBar': False,
     'scrollZoom': False,
-    'doubleClick': False
+    'doubleClick': False,
+    'responsive': True # Habilita responsividade no Plotly
 }
 
 
 # 1. CARREGAMENTO DOS DADOS COM CACHE SEGURO (NUVEM COM FALLBACK LOCAL)
 @st.cache_resource
 def obter_caminhos_excel():
-    # Links de exportação direta do Google Sheets
     url_orc = "https://docs.google.com/spreadsheets/d/1x68Eg_6LlSKeFJEGmfhyBfcGgheSrVsl/export?format=xlsx"
     url_real = "https://docs.google.com/spreadsheets/d/12I0vGpYU_KNhGxAHOMHWAQu3Xkz_EsUZ/export?format=xlsx"
 
-    # Caminho local alternativo (Fallback)
     caminho_base = r"G:\Meu Drive\Grupo B&A\Escritorio\Financeiro\COORDENAÇÃO FINANCEIRA\ORÇAMENTO\ORÇAMENTO 2026\CONTROLADORIA"
     path_orc_local = os.path.join(caminho_base, "ORCAMENTO 2026 - REV.1.xlsx")
     path_real_local = os.path.join(caminho_base, "REALIZADO 2026.xlsx")
 
-    # Tenta carregar primeiro da nuvem
     try:
         xls_orc = pd.ExcelFile(url_orc)
         path_orc = url_orc
         path_real = url_real
     except Exception:
-        # Se falhar a conexão com o Google Sheets, utiliza os arquivos locais
         path_orc = path_orc_local if os.path.exists(path_orc_local) else "ORCAMENTO 2026 - REV.1.xlsx"
         path_real = path_real_local if os.path.exists(path_real_local) else "REALIZADO 2026.xlsx"
         xls_orc = pd.ExcelFile(path_orc)
@@ -306,9 +352,7 @@ elif tipo_periodo == "Mês Selecionado":
     )
     idx = list(m_map.keys()).index(mes_ref)
     
-    # YTD: De Janeiro até o mês selecionado
     cols_kpi = list(m_map.values())[: idx + 1]
-    # Mês isolado para a Aba 2
     cols_graficos = [m_map[mes_ref]]
     
     label_periodo_kpi = f"Acumulado YTD até {mes_ref}"
@@ -324,7 +368,6 @@ else:
     label_periodo_kpi = "Meses Selecionados"
     label_periodo_graf = "Meses Selecionados"
 
-# Botão para atualizar a base de dados (reposicionado ao final dos filtros)
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
     st.cache_data.clear()
@@ -375,7 +418,6 @@ def eh_grupo_sintetico(nome_linha):
 
 
 def cor_valor(val):
-    """Retorna cor verde suave (neutra) para positivo/zero e vermelho suave para negativo."""
     if pd.isna(val):
         return ""
     color = "#3FB950" if val >= 0 else "#F85149"
@@ -400,7 +442,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# KPIs Superiores - Grid Executivo Enxuto com Barras de Meta Minimalistas
+# KPIs Superiores
 rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
 rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
 
@@ -412,11 +454,9 @@ margem_ebitda_kpi = (ebitda_real_kpi / rec_liq_real_kpi * 100) if rec_liq_real_k
 diff_ebitda_kpi = ebitda_real_kpi - ebitda_orc_kpi
 pct_ebitda_kpi = (diff_ebitda_kpi / abs(ebitda_orc_kpi)) * 100 if ebitda_orc_kpi != 0 else 0
 
-# Cálculos de atingimento para as barras de progresso integradas
 pct_vendas_prog = min(100.0, max(0.0, (rec_liq_real_kpi / rec_liq_orc_kpi * 100))) if rec_liq_orc_kpi > 0 else 0
 pct_lucro_prog = min(100.0, max(0.0, (ebitda_real_kpi / ebitda_orc_kpi * 100))) if ebitda_orc_kpi > 0 else 0
 
-# Definição de cores neutras/suaves para os valores dos KPIs
 cor_rec = "#3FB950" if rec_liq_real_kpi >= 0 else "#F85149"
 cor_ebitda = "#3FB950" if ebitda_real_kpi >= 0 else "#F85149"
 cor_diff_eb = "#3FB950" if diff_ebitda_kpi >= 0 else "#F85149"
@@ -494,7 +534,6 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 
-    # GRÁFICOS DA ABA 1
     cg1, cg2 = st.columns(2)
 
     with cg1:
@@ -631,7 +670,6 @@ with tab1:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- BLOCO 2: EVOLUÇÃO E ANÁLISE DE COMPOSIÇÃO DE CUSTOS ---
     cg3, cg4 = st.columns([1.3, 0.7])
 
     with cg3:
@@ -895,11 +933,10 @@ with tab3:
     )
 
 
-# ABA 4: PREVISÕES & TRENDS (MODELO DINÂMICO E AVANÇADO)
+# ABA 4: PREVISÕES & TRENDS
 with tab4:
     st.markdown("##### 🔮 **Painel Avançado de Previsões e Tendências 2026**")
 
-    # Controles Dinâmicos de Projeção
     c_f1, c_f2, c_f3 = st.columns([1.2, 1.2, 1.6])
 
     with c_f1:
@@ -928,10 +965,8 @@ with tab4:
             help="Aplica uma variação percentual sobre os meses projetados."
         )
 
-    # Identificação dos meses realizados e futuros
     meses_todos = list(m_map.keys())
     
-    # Identifica o número de meses realizados com base nas colunas selecionadas no filtro YTD ou pelos meses com dado real
     meses_realizados_cols = cols_kpi if tipo_periodo == "Mês Selecionado" else [m_map[m] for m in meses_todos if get_valor_consolidado_multi(list_df_real, termo_metrica, [m_map[m]]) != 0]
     
     if not meses_realizados_cols:
@@ -939,7 +974,6 @@ with tab4:
         
     num_meses_realizados = len(meses_realizados_cols)
 
-    # Cálculos das bases históricas e orçadas
     val_real_acumulado = get_valor_consolidado_multi(list_df_real, termo_metrica, meses_realizados_cols)
     val_orc_acumulado = get_valor_consolidado_multi(list_df_orc, termo_metrica, meses_realizados_cols)
     
@@ -950,7 +984,6 @@ with tab4:
 
     fator_sensibilidade = 1.0 + (sensibilidade / 100.0)
 
-    # Construção das Séries Mensais
     valores_finais_mes = []
     valores_orcado_mes = []
     valores_real_mes = []
@@ -987,7 +1020,6 @@ with tab4:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # KPI Cards Dinâmicos
     kp1, kp2, kp3, kp4 = st.columns(4)
 
     with kp1:
@@ -1040,7 +1072,6 @@ with tab4:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- ATUALIZAÇÃO NO GRÁFICO COMBINADO (SEM SOBREPOSIÇÃO DE RÓTULOS) ---
     df_trend = pd.DataFrame({
         "Mês": [m.capitalize() for m in meses_todos],
         "Valor Projetado/Real": valores_finais_mes,
@@ -1048,23 +1079,18 @@ with tab4:
         "Tipo": tipos_serie
     })
 
-    # Regras dinâmicas de posicionamento do rótulo da Meta (Linha) e das Barras
     posicoes_meta = []
     posicoes_barras = []
     for val_p, val_o in zip(valores_finais_mes, valores_orcado_mes):
         if val_p >= val_o:
-            # Se a coluna é MAIOR que a meta, o rótulo da meta vai para BAIXO da linha
             posicoes_meta.append("bottom center")
             posicoes_barras.append("outside")
         else:
-            # Se a meta é MAIOR que a coluna, o rótulo da meta vai para CIMA da linha
             posicoes_meta.append("top center")
-            # E a barra coloca o texto ligeiramente mais discreto para não colar na meta
             posicoes_barras.append("inside")
 
     fig_comb = go.Figure()
 
-    # 1. Barras do Realizado
     df_real_bar = df_trend[df_trend["Tipo"] == "Realizado"]
     pos_bar_real = [posicoes_barras[i] for i in df_real_bar.index]
     fig_comb.add_trace(
@@ -1080,7 +1106,6 @@ with tab4:
         )
     )
 
-    # 2. Barras do Projetado
     df_proj_bar = df_trend[df_trend["Tipo"] == "Projetado"]
     pos_bar_proj = [posicoes_barras[i] for i in df_proj_bar.index]
     fig_comb.add_trace(
@@ -1096,7 +1121,6 @@ with tab4:
         )
     )
 
-    # 3. Linha de Meta Orçada
     fig_comb.add_trace(
         go.Scatter(
             x=df_trend["Mês"],
@@ -1112,7 +1136,6 @@ with tab4:
         )
     )
 
-    # Expandindo a área útil vertical (35% de folga) para evitar colisão no topo do gráfico
     max_val = max(
         max(df_trend["Valor Projetado/Real"].dropna(), default=0),
         max(df_trend["Orçado"].dropna(), default=0)
@@ -1135,7 +1158,6 @@ with tab4:
 
     st.plotly_chart(fig_comb, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
-    # Tabela Resumo da Projeção Mensal
     st.markdown("##### 📋 **Detalhamento da Projeção Mensal (R$)**")
     
     df_resumo_proj = pd.DataFrame({
