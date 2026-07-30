@@ -583,7 +583,8 @@ with tab3:
 # TAB 4: PROJEÇÕES & TREND ANALYTICS (SIMULADOR WHAT-IF)
 # ------------------------------------------------------------------------------
 with tab4:
-    st.markdown("##### 🔮 **Modelo Preditivo & Simulador de Cenários ("What-If")**")
+    # Correção do erro de sintaxe nas aspas do título
+    st.markdown("##### 🔮 **Modelo Preditivo & Simulador de Cenários ('What-If')**")
 
     c_f1, c_f2, c_f3 = st.columns([1.2, 1.2, 1.6])
     with c_f1:
