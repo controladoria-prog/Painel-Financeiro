@@ -1,3 +1,12 @@
+"""
+Painel Analítico de Performance Estratégica — Controladoria B&A
+=================================================================
+Dashboard financeiro em Streamlit: consolida Orçado vs. Realizado,
+DRE detalhada, histórico mensal e projeções de tendência.
+
+Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
+"""
+
 import os
 import re
 from datetime import datetime
