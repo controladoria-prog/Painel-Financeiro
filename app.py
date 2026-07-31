@@ -92,25 +92,23 @@ def render_kpi_card(col, label, value, value_color, subtext="", subtext_color=No
     progress_html = ""
     if progress_pct is not None:
         pct = max(0.0, min(100.0, progress_pct))
-        progress_html = f"""
-            <div class="progress-container">
-                <div class="progress-bar" style="width:{pct:.1f}%;"></div>
-            </div>
-        """
-    col.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-top">
-                <span class="kpi-label">{label}</span>
-                <span class="kpi-icon">{icon}</span>
-            </div>
-            <div class="kpi-value" style="color:{value_color};">{value}</div>
-            <div class="kpi-subtext" style="color:{subtext_color};">{subtext}</div>
-            {progress_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
+        progress_html = (
+            f'<div class="progress-container">'
+            f'<div class="progress-bar" style="width:{pct:.1f}%;"></div>'
+            f"</div>"
+        )
+    card_html = (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-top">'
+        f'<span class="kpi-label">{label}</span>'
+        f'<span class="kpi-icon">{icon}</span>'
+        f"</div>"
+        f'<div class="kpi-value" style="color:{value_color};">{value}</div>'
+        f'<div class="kpi-subtext" style="color:{subtext_color};">{subtext}</div>'
+        f"{progress_html}"
+        f"</div>"
     )
+    col.markdown(card_html, unsafe_allow_html=True)
 
 
 # ============================================================================
@@ -139,6 +137,12 @@ st.markdown(
         }}
         div[data-baseweb="popover"] {{
             z-index: 999999 !important;
+        }}
+        /* Garante que listas suspensas (ex: seletor de mês) sempre caibam na tela,
+           com rolagem interna, em vez de serem cortadas pela barra de tarefas */
+        div[data-baseweb="popover"] ul[data-baseweb="menu"] {{
+            max-height: 45vh !important;
+            overflow-y: auto !important;
         }}
 
         /* Header nativo do Streamlit — transparente */
