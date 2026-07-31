@@ -139,9 +139,15 @@ st.markdown(
             z-index: 999999 !important;
         }}
         /* Garante que listas suspensas (ex: seletor de mês) sempre caibam na tela,
-           com rolagem interna, em vez de serem cortadas pela barra de tarefas */
-        div[data-baseweb="popover"] ul[data-baseweb="menu"] {{
-            max-height: 45vh !important;
+           com rolagem interna, em vez de serem cortadas pela barra de tarefas.
+           Vários seletores cobrem diferentes versões do Streamlit/BaseWeb. */
+        ul[data-baseweb="menu"],
+        div[data-baseweb="menu"],
+        div[data-testid="stSelectboxVirtualDropdown"],
+        div[data-testid="stSelectboxVirtualDropdown"] ul,
+        div[data-baseweb="popover"] div[role="listbox"],
+        div[data-baseweb="popover"] ul[role="listbox"] {{
+            max-height: 260px !important;
             overflow-y: auto !important;
         }}
 
