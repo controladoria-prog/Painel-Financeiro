@@ -85,9 +85,9 @@ def estilo_grafico(fig, height=400, **overrides):
     return fig
 
 
-def render_kpi_card(col, label, value, value_color, subtext="", subtext_color=None,
-                     progress_pct=None, icon="📌"):
-    """Renderiza um cartão de KPI padronizado (usado no header e na aba de previsões)."""
+def kpi_card_html(label, value, value_color, subtext="", subtext_color=None,
+                   progress_pct=None, icon="📌"):
+    """Gera o HTML (string) de um cartão de KPI, sem renderizar."""
     subtext_color = subtext_color or COLORS["text_muted"]
     progress_html = ""
     if progress_pct is not None:
@@ -97,18 +97,23 @@ def render_kpi_card(col, label, value, value_color, subtext="", subtext_color=No
             f'<div class="progress-bar" style="width:{pct:.1f}%;"></div>'
             f"</div>"
         )
-    card_html = (
-        f'<div class="kpi-card">'
+    return (
+        f'<div class="kpi-card" style="border-top-color:{value_color};">'
         f'<div class="kpi-top">'
         f'<span class="kpi-label">{label}</span>'
-        f'<span class="kpi-icon">{icon}</span>'
+        f'<span class="kpi-icon" style="background:{value_color}22;">{icon}</span>'
         f"</div>"
         f'<div class="kpi-value" style="color:{value_color};">{value}</div>'
         f'<div class="kpi-subtext" style="color:{subtext_color};">{subtext}</div>'
         f"{progress_html}"
         f"</div>"
     )
-    col.markdown(card_html, unsafe_allow_html=True)
+
+
+def render_kpi_row(cards):
+    """Renderiza uma linha de cartões de KPI em flexbox — usada no cabeçalho fixo (sticky)."""
+    html = "".join(kpi_card_html(**c) for c in cards)
+    return f'<div class="kpi-row">{html}</div>'
 
 
 # ============================================================================
@@ -205,7 +210,7 @@ st.markdown(
             border-radius: 10px;
             border: 1px solid {COLORS["border"]};
             border-left: 3px solid {COLORS["primary"]};
-            margin-bottom: 18px;
+            margin-bottom: 14px;
             box-shadow: 0 4px 18px rgba(0,0,0,0.25);
         }}
         .main-header h3 {{
@@ -229,6 +234,18 @@ st.markdown(
             padding: 1px 10px;
             font-weight: 600;
             font-size: 11.5px;
+        }}
+
+        /* Linha de cartões de KPI em flexbox (usada no cabeçalho fixo) */
+        .kpi-row {{
+            display: flex;
+            gap: 14px;
+            align-items: stretch;
+        }}
+        .kpi-row .kpi-card {{
+            flex: 1 1 0;
+            min-width: 0;
+            margin-bottom: 0;
         }}
 
         /* Cartões de KPI */
@@ -258,8 +275,14 @@ st.markdown(
             letter-spacing: 0.5px;
         }}
         .kpi-icon {{
-            font-size: 14px;
-            opacity: 0.8;
+            font-size: 13px;
+            opacity: 0.95;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
         }}
         .kpi-value {{
             font-size: 22px !important;
@@ -611,44 +634,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---- KPIs superiores ----
-rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
-rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
-
-ebitda_real_kpi = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
-ebitda_orc_kpi = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
-
-margem_ebitda_kpi = (ebitda_real_kpi / rec_liq_real_kpi * 100) if rec_liq_real_kpi != 0 else 0
-
-diff_ebitda_kpi = ebitda_real_kpi - ebitda_orc_kpi
-pct_ebitda_kpi = (diff_ebitda_kpi / abs(ebitda_orc_kpi)) * 100 if ebitda_orc_kpi != 0 else 0
-
-pct_vendas_prog = min(100.0, max(0.0, (rec_liq_real_kpi / rec_liq_orc_kpi * 100))) if rec_liq_orc_kpi > 0 else 0
-pct_lucro_prog = min(100.0, max(0.0, (ebitda_real_kpi / ebitda_orc_kpi * 100))) if ebitda_orc_kpi > 0 else 0
-
-cor_rec = cor_variacao(rec_liq_real_kpi)
-cor_ebitda = cor_variacao(ebitda_real_kpi)
-cor_diff_eb = cor_variacao(diff_ebitda_kpi)
-cor_mg_eb = cor_variacao(margem_ebitda_kpi)
-
-k1, k2, k3, k4 = st.columns(4)
-render_kpi_card(
-    k1, "RECEITA LÍQUIDA (YTD)", formata_brl(rec_liq_real_kpi), cor_rec,
-    subtext=f"Orçado: {formata_brl(rec_liq_orc_kpi)}", progress_pct=pct_vendas_prog, icon="💰",
-)
-render_kpi_card(
-    k2, "EBITDA (YTD)", formata_brl(ebitda_real_kpi), cor_ebitda,
-    subtext=f"Orçado: {formata_brl(ebitda_orc_kpi)}", progress_pct=pct_lucro_prog, icon="📈",
-)
-render_kpi_card(
-    k3, "VARIAÇÃO EBITDA", formata_brl(diff_ebitda_kpi), cor_diff_eb,
-    subtext=f"{pct_ebitda_kpi:+.1f}% vs Orçamento", subtext_color=cor_diff_eb, icon="⚖️",
-)
-render_kpi_card(
-    k4, "MARGEM EBITDA %", f"{margem_ebitda_kpi:.1f}%", cor_mg_eb,
-    subtext="Realizada no Período", icon="🎯",
-)
-
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
@@ -667,6 +652,41 @@ tab1, tab2, tab3, tab4 = st.tabs(
 # ABA 1: VISÃO GERAL & CHARTS
 # ---------------------------------------------------------------------------
 with tab1:
+    # ---- KPIs executivos da visão geral ----
+    rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
+    rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
+
+    ebitda_real_kpi = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+    ebitda_orc_kpi = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
+
+    margem_ebitda_kpi = (ebitda_real_kpi / rec_liq_real_kpi * 100) if rec_liq_real_kpi != 0 else 0
+
+    diff_ebitda_kpi = ebitda_real_kpi - ebitda_orc_kpi
+    pct_ebitda_kpi = (diff_ebitda_kpi / abs(ebitda_orc_kpi)) * 100 if ebitda_orc_kpi != 0 else 0
+
+    pct_vendas_prog = min(100.0, max(0.0, (rec_liq_real_kpi / rec_liq_orc_kpi * 100))) if rec_liq_orc_kpi > 0 else 0
+    pct_lucro_prog = min(100.0, max(0.0, (ebitda_real_kpi / ebitda_orc_kpi * 100))) if ebitda_orc_kpi > 0 else 0
+
+    cor_rec = cor_variacao(rec_liq_real_kpi)
+    cor_ebitda = cor_variacao(ebitda_real_kpi)
+    cor_diff_eb = cor_variacao(diff_ebitda_kpi)
+    cor_mg_eb = cor_variacao(margem_ebitda_kpi)
+
+    st.markdown(
+        render_kpi_row([
+            dict(label="RECEITA LÍQUIDA (YTD)", value=formata_brl(rec_liq_real_kpi), value_color=cor_rec,
+                 subtext=f"Orçado: {formata_brl(rec_liq_orc_kpi)}", progress_pct=pct_vendas_prog, icon="💰"),
+            dict(label="EBITDA (YTD)", value=formata_brl(ebitda_real_kpi), value_color=cor_ebitda,
+                 subtext=f"Orçado: {formata_brl(ebitda_orc_kpi)}", progress_pct=pct_lucro_prog, icon="📈"),
+            dict(label="VARIAÇÃO EBITDA", value=formata_brl(diff_ebitda_kpi), value_color=cor_diff_eb,
+                 subtext=f"{pct_ebitda_kpi:+.1f}% vs Orçamento", subtext_color=cor_diff_eb, icon="⚖️"),
+            dict(label="MARGEM EBITDA %", value=f"{margem_ebitda_kpi:.1f}%", value_color=cor_mg_eb,
+                 subtext="Realizada no Período", icon="🎯"),
+        ]),
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
     st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 
     cg1, cg2 = st.columns(2)
@@ -952,6 +972,31 @@ with tab2:
 
     df_dre_final = pd.DataFrame(dados_dre)
 
+    # ---- KPIs contextuais de desvio ----
+    if not df_dre_final.empty:
+        n_favoravel = int((df_dre_final["Desvio (R$)"] > 0).sum())
+        n_desfavoravel = int((df_dre_final["Desvio (R$)"] < 0).sum())
+        idx_maior_desvio = df_dre_final["Desvio (R$)"].abs().idxmax()
+        linha_maior_desvio = df_dre_final.loc[idx_maior_desvio, "Conta / Linha DRE"]
+        valor_maior_desvio = df_dre_final.loc[idx_maior_desvio, "Desvio (R$)"]
+        desvio_ebitda_dre = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_graficos) - \
+            get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_graficos)
+
+        st.markdown(
+            render_kpi_row([
+                dict(label="DESVIO EBITDA NO PERÍODO", value=formata_brl(desvio_ebitda_dre),
+                     value_color=cor_variacao(desvio_ebitda_dre), subtext=label_periodo_graf, icon="📐"),
+                dict(label="CONTAS COM DESVIO FAVORÁVEL", value=str(n_favoravel), value_color=COLORS["positive"],
+                     subtext=f"de {len(df_dre_final)} linhas analisadas", icon="✅"),
+                dict(label="CONTAS COM DESVIO DESFAVORÁVEL", value=str(n_desfavoravel), value_color=COLORS["negative"],
+                     subtext=f"de {len(df_dre_final)} linhas analisadas", icon="⚠️"),
+                dict(label="MAIOR DESVIO INDIVIDUAL", value=formata_brl(valor_maior_desvio),
+                     value_color=cor_variacao(valor_maior_desvio), subtext=linha_maior_desvio[:38], icon="🔎"),
+            ]),
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
     column_config_dre = {
         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
     }
@@ -1008,6 +1053,33 @@ with tab3:
             linhas_hist = contas_filtradas_hist
 
     target_dfs = list_df_real if tipo_hist == "Realizado" else list_df_orc
+
+    # ---- KPIs contextuais do histórico (referência: Receita Operacional Líquida) ----
+    valores_ref_mensal = {
+        m_nome: get_valor_consolidado_multi(target_dfs, "3 - Receita Operacional Liquida", [m_col])
+        for m_nome, m_col in m_map.items()
+    }
+    meses_com_dado = {m: v for m, v in valores_ref_mensal.items() if v != 0}
+
+    if meses_com_dado:
+        mes_melhor = max(meses_com_dado, key=meses_com_dado.get)
+        mes_pior = min(meses_com_dado, key=meses_com_dado.get)
+        media_mensal_hist = sum(meses_com_dado.values()) / len(meses_com_dado)
+
+        st.markdown(
+            render_kpi_row([
+                dict(label=f"MELHOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_melhor]),
+                     value_color=COLORS["positive"], subtext=mes_melhor.capitalize(), icon="🏆"),
+                dict(label=f"PIOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_pior]),
+                     value_color=COLORS["negative"], subtext=mes_pior.capitalize(), icon="📉"),
+                dict(label="MÉDIA MENSAL (RECEITA)", value=formata_brl(media_mensal_hist),
+                     value_color=COLORS["text"], subtext=f"{len(meses_com_dado)} meses com dados", icon="📊"),
+                dict(label="AMPLITUDE (MELHOR - PIOR)", value=formata_brl(meses_com_dado[mes_melhor] - meses_com_dado[mes_pior]),
+                     value_color=COLORS["muted_line"], subtext="Variação entre extremos", icon="↕️"),
+            ]),
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
     hist_data = []
     for linha in linhas_hist:
@@ -1128,23 +1200,20 @@ with tab4:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    kp1, kp2, kp3, kp4 = st.columns(4)
-    render_kpi_card(
-        kp1, f"PROJEÇÃO ANUAL ({metrica_sel.upper()})", formata_brl(projecao_total_anual), c_proj,
-        subtext=f"Cenário: {modelo_proj.split(' ')[0]}", icon="🔮",
-    )
-    render_kpi_card(
-        kp2, "META ANUAL (ORÇADO)", formata_brl(val_orc_anual_total), COLORS["text"],
-        subtext="Orçamento Fechado 2026", icon="🎯",
-    )
-    render_kpi_card(
-        kp3, "GAP / DESVIO ANUAL", formata_brl(diff_anual), c_diff,
-        subtext=f"{diff_anual / abs(val_orc_anual_total) * 100:+.1f}% vs Meta" if val_orc_anual_total != 0 else "—",
-        subtext_color=c_diff, icon="📐",
-    )
-    render_kpi_card(
-        kp4, "ATINGIMENTO ESTIMADO", f"{pct_atingimento_anual:.1f}%", c_diff,
-        subtext=f"Média Mensal Real: {formata_m(media_mensal_real)}", icon="📊",
+    subtext_gap = f"{diff_anual / abs(val_orc_anual_total) * 100:+.1f}% vs Meta" if val_orc_anual_total != 0 else "—"
+
+    st.markdown(
+        render_kpi_row([
+            dict(label=f"PROJEÇÃO ANUAL ({metrica_sel.upper()})", value=formata_brl(projecao_total_anual),
+                 value_color=c_proj, subtext=f"Cenário: {modelo_proj.split(' ')[0]}", icon="🔮"),
+            dict(label="META ANUAL (ORÇADO)", value=formata_brl(val_orc_anual_total), value_color=COLORS["text"],
+                 subtext="Orçamento Fechado 2026", icon="🎯"),
+            dict(label="GAP / DESVIO ANUAL", value=formata_brl(diff_anual), value_color=c_diff,
+                 subtext=subtext_gap, subtext_color=c_diff, icon="📐"),
+            dict(label="ATINGIMENTO ESTIMADO", value=f"{pct_atingimento_anual:.1f}%", value_color=c_diff,
+                 subtext=f"Média Mensal Real: {formata_m(media_mensal_real)}", icon="📊"),
+        ]),
+        unsafe_allow_html=True,
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
