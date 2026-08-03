@@ -7,6 +7,7 @@ DRE detalhada, histórico mensal e projeções de tendência.
 Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
+import io
 import os
 import re
 from datetime import datetime
@@ -16,6 +17,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ============================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -714,6 +718,188 @@ def cor_valor(val):
 
 
 # ============================================================================
+# 6.1 GERAÇÃO DE RELATÓRIO EXCEL (formatado, para a aba de Emissão)
+# ============================================================================
+_THIN = Side(style="thin", color="FFD9DDE3")
+
+EXCEL_STYLE = {
+    "fill_title": PatternFill(fill_type="solid", start_color="FF0B0E14", end_color="FF0B0E14"),
+    "fill_header": PatternFill(fill_type="solid", start_color="FF1A1F2E", end_color="FF1A1F2E"),
+    "fill_zebra": PatternFill(fill_type="solid", start_color="FFF3F5F9", end_color="FFF3F5F9"),
+    "fill_total": PatternFill(fill_type="solid", start_color="FFDCE8FF", end_color="FFDCE8FF"),
+    "font_title": Font(color="FFFFFFFF", bold=True, size=13, name="Calibri"),
+    "font_header": Font(color="FFFFFFFF", bold=True, size=11, name="Calibri"),
+    "font_normal": Font(color="FF1F2937", size=10.5, name="Calibri"),
+    "font_bold": Font(color="FF1F2937", bold=True, size=10.5, name="Calibri"),
+    "font_pos": Font(color="FF1B8A5A", size=10.5, name="Calibri"),
+    "font_neg": Font(color="FFC0392B", size=10.5, name="Calibri"),
+    "font_caption": Font(color="FF6B7280", italic=True, size=9.5, name="Calibri"),
+    "border": Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN),
+}
+
+
+def _fonte_por_valor(valor):
+    return EXCEL_STYLE["font_pos"] if valor >= 0 else EXCEL_STYLE["font_neg"]
+
+
+def _escrever_titulo(ws, texto, linha, n_colunas):
+    ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_colunas)
+    cell = ws.cell(row=linha, column=1, value=texto)
+    cell.font = EXCEL_STYLE["font_title"]
+    cell.fill = EXCEL_STYLE["fill_title"]
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[linha].height = 26
+
+
+def _escrever_legenda(ws, texto, linha, n_colunas):
+    ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_colunas)
+    cell = ws.cell(row=linha, column=1, value=texto)
+    cell.font = EXCEL_STYLE["font_caption"]
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[linha].height = 16
+
+
+def montar_relatorio_excel(contas_sel, dfs_real, dfs_orc, mapa_meses, colunas_ano, escopo_label):
+    """Gera um relatório Excel formatado (Resumo + Detalhe Mensal) comparando
+    Orçado x Realizado para as contas da DRE selecionadas pelo usuário."""
+    wb = Workbook()
+    gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
+
+    # ---------------- ABA "RESUMO" ----------------
+    ws1 = wb.active
+    ws1.title = "Resumo"
+
+    _escrever_titulo(ws1, "Relatório de DRE — Orçado vs. Realizado (Resumo Anual)", 1, 5)
+    _escrever_legenda(ws1, gerado_em, 2, 5)
+
+    linha_header = 4
+    headers = ["Conta / Linha DRE", "Realizado (R$)", "Orçado (R$)", "Desvio (R$)", "Desvio (%)"]
+    for col, texto in enumerate(headers, start=1):
+        cell = ws1.cell(row=linha_header, column=col, value=texto)
+        cell.font = EXCEL_STYLE["font_header"]
+        cell.fill = EXCEL_STYLE["fill_header"]
+        cell.border = EXCEL_STYLE["border"]
+        cell.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="center")
+    ws1.row_dimensions[linha_header].height = 20
+    ws1.freeze_panes = f"A{linha_header + 1}"
+
+    linha = linha_header + 1
+    for i, conta in enumerate(contas_sel):
+        v_real = get_valor_consolidado_multi(dfs_real, conta, colunas_ano)
+        v_orc = get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
+        desvio = v_real - v_orc
+        desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
+
+        fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+        valores = [conta, v_real, v_orc, desvio, desvio_pct]
+        for col, val in enumerate(valores, start=1):
+            cell = ws1.cell(row=linha, column=col, value=val)
+            cell.border = EXCEL_STYLE["border"]
+            if fill:
+                cell.fill = fill
+            if col == 1:
+                cell.font = EXCEL_STYLE["font_normal"]
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif col in (2, 3):
+                cell.font = EXCEL_STYLE["font_normal"]
+                cell.number_format = '"R$" #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 4:
+                cell.font = _fonte_por_valor(desvio)
+                cell.number_format = '"R$" #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.font = _fonte_por_valor(desvio)
+                cell.number_format = '0.0"%"'
+                cell.alignment = Alignment(horizontal="right")
+        linha += 1
+
+    for col, largura in zip(range(1, 6), [46, 18, 18, 18, 14]):
+        ws1.column_dimensions[get_column_letter(col)].width = largura
+
+    # ---------------- ABA "DETALHE MENSAL" ----------------
+    ws2 = wb.create_sheet("Detalhe Mensal")
+    _escrever_titulo(ws2, "Comparativo Mensal — Orçado vs. Realizado", 1, 5)
+    _escrever_legenda(ws2, gerado_em, 2, 5)
+
+    linha = 4
+    for conta in contas_sel:
+        ws2.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=5)
+        cell_titulo = ws2.cell(row=linha, column=1, value=f"Conta: {conta}")
+        cell_titulo.font = EXCEL_STYLE["font_header"]
+        cell_titulo.fill = EXCEL_STYLE["fill_header"]
+        cell_titulo.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws2.row_dimensions[linha].height = 20
+        linha += 1
+
+        headers_mes = ["Mês", "Realizado (R$)", "Orçado (R$)", "Desvio (R$)", "Desvio (%)"]
+        for col, texto in enumerate(headers_mes, start=1):
+            cell = ws2.cell(row=linha, column=col, value=texto)
+            cell.font = EXCEL_STYLE["font_bold"]
+            cell.fill = EXCEL_STYLE["fill_zebra"]
+            cell.border = EXCEL_STYLE["border"]
+            cell.alignment = Alignment(horizontal="left" if col == 1 else "center")
+        linha += 1
+
+        soma_real, soma_orc = 0.0, 0.0
+        for i, (m_nome, m_col) in enumerate(mapa_meses.items()):
+            v_real = get_valor_consolidado_multi(dfs_real, conta, [m_col])
+            v_orc = get_valor_consolidado_multi(dfs_orc, conta, [m_col])
+            desvio = v_real - v_orc
+            desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
+            soma_real += v_real
+            soma_orc += v_orc
+
+            fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+            valores = [m_nome.capitalize(), v_real, v_orc, desvio, desvio_pct]
+            for col, val in enumerate(valores, start=1):
+                cell = ws2.cell(row=linha, column=col, value=val)
+                cell.border = EXCEL_STYLE["border"]
+                if fill:
+                    cell.fill = fill
+                if col == 1:
+                    cell.font = EXCEL_STYLE["font_normal"]
+                elif col in (2, 3):
+                    cell.font = EXCEL_STYLE["font_normal"]
+                    cell.number_format = '"R$" #,##0.00'
+                    cell.alignment = Alignment(horizontal="right")
+                elif col == 4:
+                    cell.font = _fonte_por_valor(desvio)
+                    cell.number_format = '"R$" #,##0.00'
+                    cell.alignment = Alignment(horizontal="right")
+                else:
+                    cell.font = _fonte_por_valor(desvio)
+                    cell.number_format = '0.0"%"'
+                    cell.alignment = Alignment(horizontal="right")
+            linha += 1
+
+        desvio_total = soma_real - soma_orc
+        desvio_total_pct = (desvio_total / abs(soma_orc) * 100) if soma_orc != 0 else 0.0
+        valores_totais = ["TOTAL DO ANO", soma_real, soma_orc, desvio_total, desvio_total_pct]
+        for col, val in enumerate(valores_totais, start=1):
+            cell = ws2.cell(row=linha, column=col, value=val)
+            cell.fill = EXCEL_STYLE["fill_total"]
+            cell.border = EXCEL_STYLE["border"]
+            cell.font = EXCEL_STYLE["font_bold"]
+            if col in (2, 3, 4):
+                cell.number_format = '"R$" #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 5:
+                cell.number_format = '0.0"%"'
+                cell.alignment = Alignment(horizontal="right")
+        linha += 2  # espaço entre contas
+
+    for col, largura in zip(range(1, 6), [32, 18, 18, 18, 14]):
+        ws2.column_dimensions[get_column_letter(col)].width = largura
+    ws2.freeze_panes = "A4"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ============================================================================
 # 7. CABEÇALHO PRINCIPAL
 # ============================================================================
 st.markdown(
@@ -734,12 +920,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ============================================================================
 # 8. ABAS
 # ============================================================================
-tab1, tab2, tab3, tab4 = st.tabs(
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
     [
         "📊 Visão Geral & Charts",
         "📋 DRE Completa & Desvios",
         "📅 Histórico Mensal",
         "🔮 Previsões & Trends",
+        "📤 Emitir Relatório",
     ]
 )
 
@@ -1410,6 +1597,55 @@ with tab4:
         hide_index=True,
         height=ALTURA_12_LINHAS,
     )
+
+# ---------------------------------------------------------------------------
+# ABA 5: EMISSÃO DE RELATÓRIOS
+# ---------------------------------------------------------------------------
+with tab5:
+    st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
+    st.caption("Selecione as linhas da DRE desejadas e gere um relatório formatado, comparando Orçado x Realizado mês a mês (ano completo).")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
+
+    contas_relatorio = st.multiselect(
+        "🔍 Selecione as linhas da DRE para o relatório:",
+        options=linhas_relatorio,
+        default=[],
+        key="contas_relatorio",
+    )
+
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        gerar_clicado = st.button(
+            "📊 Gerar Relatório Excel",
+            use_container_width=True,
+            disabled=not contas_relatorio,
+        )
+
+    if gerar_clicado and contas_relatorio:
+        with st.spinner("Montando o relatório em Excel..."):
+            excel_bytes = montar_relatorio_excel(
+                contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
+            )
+        st.session_state["relatorio_excel_bytes"] = excel_bytes
+        st.session_state["relatorio_excel_nome"] = (
+            f"Relatorio_DRE_{datetime.now(FUSO_BR).strftime('%Y%m%d_%H%M')}.xlsx"
+        )
+        st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
+
+    if not contas_relatorio:
+        st.info("Selecione ao menos uma linha da DRE acima para habilitar a geração do relatório.")
+
+    if st.session_state.get("relatorio_excel_bytes"):
+        st.download_button(
+            label="⬇️ Baixar Relatório (.xlsx)",
+            data=st.session_state["relatorio_excel_bytes"],
+            file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption("O relatório contém duas planilhas: **Resumo** (total do ano por conta) e **Detalhe Mensal** (mês a mês, com total anual).")
+
 
 # ============================================================================
 # 9. RODAPÉ
