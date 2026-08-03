@@ -10,6 +10,7 @@ Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 import os
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+FUSO_BR = ZoneInfo("America/Sao_Paulo")
 
 # ============================================================================
 # 2. DESIGN SYSTEM — paleta única, usada tanto no CSS quanto nos gráficos
@@ -651,7 +654,7 @@ if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
     st.cache_resource.clear()
     st.rerun()
 
-st.sidebar.caption(f"Última atualização: {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+st.sidebar.caption(f"Última atualização: {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}")
 
 if st.secrets.get("app_password", None):
     if st.sidebar.button("🚪 Sair", use_container_width=True):
