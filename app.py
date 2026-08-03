@@ -389,10 +389,97 @@ st.markdown(
             }}
             div[data-testid="stDataFrame"] {{ overflow-x: auto !important; }}
         }}
+
+        /* Tela de login (acesso restrito) */
+        .login-wrapper {{
+            display: flex;
+            justify-content: center;
+            margin-top: 8vh;
+        }}
+        .login-card {{
+            background: linear-gradient(135deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
+            border: 1px solid {COLORS["border"]};
+            border-top: 3px solid {COLORS["primary"]};
+            border-radius: 14px;
+            padding: 34px 40px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+            max-width: 380px;
+        }}
+        .login-card .login-icon {{
+            font-size: 30px;
+            margin-bottom: 6px;
+        }}
+        .login-card h2 {{
+            margin: 4px 0 2px 0 !important;
+            font-size: 19px !important;
+            color: {COLORS["text"]} !important;
+            font-weight: 700;
+        }}
+        .login-card p {{
+            margin: 0 !important;
+            font-size: 12.5px !important;
+            color: {COLORS["text_muted"]} !important;
+        }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+# ============================================================================
+# 3.1 CONTROLE DE ACESSO (senha)
+# ============================================================================
+def checar_senha():
+    """Exibe uma tela de login e retorna True somente após senha correta.
+    A senha esperada vem de st.secrets['app_password']. Se não houver senha
+    configurada nos Secrets, o painel fica aberto (sem bloqueio)."""
+
+    senha_configurada = st.secrets.get("app_password", None)
+    if not senha_configurada:
+        return True
+
+    if st.session_state.get("acesso_liberado", False):
+        return True
+
+    def validar_senha():
+        if st.session_state.get("campo_senha", "") == senha_configurada:
+            st.session_state["acesso_liberado"] = True
+            st.session_state["senha_invalida"] = False
+        else:
+            st.session_state["acesso_liberado"] = False
+            st.session_state["senha_invalida"] = True
+
+    _, col_centro, _ = st.columns([1, 1.1, 1])
+    with col_centro:
+        st.markdown(
+            """
+            <div class="login-wrapper">
+                <div class="login-card">
+                    <div class="login-icon">🔒</div>
+                    <h2>Controladoria B&amp;A</h2>
+                    <p>Acesso restrito — Painel Financeiro 2026</p>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.text_input(
+            "Senha de acesso",
+            type="password",
+            key="campo_senha",
+            on_change=validar_senha,
+            label_visibility="collapsed",
+            placeholder="Digite a senha de acesso",
+        )
+        if st.session_state.get("senha_invalida", False):
+            st.error("Senha incorreta. Tente novamente.")
+
+    return False
+
+
+if not checar_senha():
+    st.stop()
 
 # ============================================================================
 # 4. CARREGAMENTO DE DADOS (Google Sheets com fallback local em rede)
@@ -565,6 +652,11 @@ if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
     st.rerun()
 
 st.sidebar.caption(f"Última atualização: {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
+
+if st.secrets.get("app_password", None):
+    if st.sidebar.button("🚪 Sair", use_container_width=True):
+        st.session_state["acesso_liberado"] = False
+        st.rerun()
 
 
 # ============================================================================
