@@ -7,6 +7,7 @@ DRE detalhada, histórico mensal e projeções de tendência.
 Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
+import base64
 import io
 import os
 import re
@@ -17,6 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -417,6 +419,17 @@ st.markdown(
             font-size: 30px;
             margin-bottom: 6px;
         }}
+        .login-card .login-logo {{
+            width: 84px;
+            height: 84px;
+            object-fit: contain;
+            background: #FFFFFF;
+            border-radius: 16px;
+            padding: 10px;
+            margin: 0 auto 14px auto;
+            display: block;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        }}
         .login-card h2 {{
             margin: 4px 0 2px 0 !important;
             font-size: 19px !important;
@@ -437,6 +450,11 @@ st.markdown(
 # ============================================================================
 # 3.1 CONTROLE DE ACESSO (login com e-mail / senha + perfis)
 # ============================================================================
+LOGO_BEEA_B64 = "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"
+
+CHAVE_LOCALSTORAGE_LOGIN = "beea_login_v1"
+
+
 def obter_usuarios_cadastrados():
     """Le a lista de usuarios dos Secrets, aceitando tres formas de configuracao
     (todas podem coexistir e sao somadas):
@@ -494,11 +512,101 @@ def obter_usuarios_cadastrados():
     return usuarios
 
 
+def _salvar_credenciais_no_navegador(email, senha):
+    """Grava e-mail/senha (ofuscados em base64 -- isso NAO e criptografia)
+    no localStorage do navegador, para preencher o login sozinho da
+    proxima vez que a pessoa abrir o painel neste mesmo navegador."""
+    email_b64 = base64.b64encode(email.encode("utf-8")).decode("ascii")
+    senha_b64 = base64.b64encode(senha.encode("utf-8")).decode("ascii")
+    components.html(
+        f"""
+        <script>
+        try {{
+            const dados = {{ e: "{email_b64}", s: "{senha_b64}" }};
+            window.top.localStorage.setItem('{CHAVE_LOCALSTORAGE_LOGIN}', JSON.stringify(dados));
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _esquecer_credenciais_no_navegador():
+    """Apaga o e-mail/senha salvos no navegador (usado ao clicar em Sair,
+    ou quando as credenciais salvas nao sao mais validas)."""
+    components.html(
+        f"""
+        <script>
+        try {{ window.top.localStorage.removeItem('{CHAVE_LOCALSTORAGE_LOGIN}'); }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _tentar_autologin_via_url():
+    """Se a URL trouxer credenciais (?le=&ls=) vindas do localStorage, tenta
+    logar automaticamente com elas. Retorna True se conseguiu logar."""
+    le = st.query_params.get("le")
+    ls = st.query_params.get("ls")
+    st.query_params.clear()
+    if not le or not ls:
+        return False
+
+    try:
+        email_salvo = base64.b64decode(str(le)).decode("utf-8").strip().lower()
+        senha_salva = base64.b64decode(str(ls)).decode("utf-8")
+    except Exception:
+        return False
+
+    usuarios = obter_usuarios_cadastrados()
+    usuario = usuarios.get(email_salvo)
+    if usuario and senha_salva == usuario["senha"]:
+        st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
+        return True
+
+    # Credenciais salvas nao sao mais validas (ex.: senha trocada) -- apaga.
+    _esquecer_credenciais_no_navegador()
+    return False
+
+
+def _pedir_autofill_via_localstorage():
+    """Roda no maximo uma vez por sessao: verifica (via JS) se ha
+    credenciais salvas no navegador e, se houver, recarrega a pagina com
+    elas na URL para tentarmos o autologin."""
+    components.html(
+        f"""
+        <script>
+        try {{
+            const salvo = window.top.localStorage.getItem('{CHAVE_LOCALSTORAGE_LOGIN}');
+            if (salvo) {{
+                const dados = JSON.parse(salvo);
+                if (dados.e && dados.s) {{
+                    const url = new URL(window.top.location.href);
+                    if (!url.searchParams.get('le')) {{
+                        url.searchParams.set('le', dados.e);
+                        url.searchParams.set('ls', dados.s);
+                        window.top.location.replace(url.toString());
+                    }}
+                }}
+            }}
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def checar_login():
     """Exibe uma tela de login (e-mail + senha) e retorna True somente apos
-    autenticacao valida. Guarda o usuario logado (e-mail e perfil) em
-    st.session_state['usuario_logado']. Se nao houver usuarios configurados
-    nos Secrets, o painel fica aberto (sem bloqueio)."""
+    autenticacao valida. Guarda o usuario logado em
+    st.session_state['usuario_logado']. Se a pessoa marcar "Lembrar de
+    mim", salva e-mail/senha no navegador para nao precisar digitar de
+    novo da proxima vez. Se nao houver usuarios configurados nos Secrets,
+    o painel fica aberto (sem bloqueio)."""
 
     usuarios = obter_usuarios_cadastrados()
     if not usuarios:
@@ -507,9 +615,17 @@ def checar_login():
     if st.session_state.get("usuario_logado"):
         return True
 
+    if _tentar_autologin_via_url():
+        st.rerun()
+
+    if not st.session_state.get("_autofill_login_tentado"):
+        st.session_state["_autofill_login_tentado"] = True
+        _pedir_autofill_via_localstorage()
+
     def validar_login():
         email_digitado = st.session_state.get("campo_email", "").strip().lower()
         senha_digitada = st.session_state.get("campo_senha", "")
+        lembrar = st.session_state.get("campo_lembrar", True)
         usuario = usuarios.get(email_digitado)
         if usuario and str(senha_digitada) == usuario["senha"]:
             st.session_state["usuario_logado"] = {
@@ -517,6 +633,10 @@ def checar_login():
                 "perfil": usuario["perfil"],
             }
             st.session_state["login_invalido"] = False
+            if lembrar:
+                st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
+            else:
+                st.session_state["_esquecer_credenciais"] = True
         else:
             st.session_state["usuario_logado"] = None
             st.session_state["login_invalido"] = True
@@ -524,10 +644,10 @@ def checar_login():
     _, col_centro, _ = st.columns([1, 1.1, 1])
     with col_centro:
         st.markdown(
-            """
+            f"""
             <div class="login-wrapper">
                 <div class="login-card">
-                    <div class="login-icon">🔒</div>
+                    <img class="login-logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <h2>Controladoria B&amp;A</h2>
                     <p>Acesso restrito — Painel Financeiro 2026</p>
                 </div>
@@ -543,6 +663,7 @@ def checar_login():
             on_change=validar_login,
             placeholder="Digite sua senha",
         )
+        st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
         if st.button("Entrar", use_container_width=True):
             validar_login()
             st.rerun()
@@ -554,6 +675,14 @@ def checar_login():
 
 if not checar_login():
     st.stop()
+
+# Apos um login bem-sucedido nesta mesma execucao: salva ou apaga as
+# credenciais no navegador, conforme a caixa "Lembrar de mim".
+_creds_pendentes = st.session_state.pop("_credenciais_para_salvar", None)
+if _creds_pendentes:
+    _salvar_credenciais_no_navegador(*_creds_pendentes)
+if st.session_state.pop("_esquecer_credenciais", False):
+    _esquecer_credenciais_no_navegador()
 
 usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil": "admin"}
 eh_admin = usuario_atual["perfil"] == "admin"
@@ -777,7 +906,7 @@ perfil_label = "Administrador" if eh_admin else "Visualização"
 st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{perfil_label}**")
 if st.sidebar.button("🚪 Sair", use_container_width=True):
     st.session_state["usuario_logado"] = None
-    _limpar_credenciais_salvas()
+    _esquecer_credenciais_no_navegador()
     st.rerun()
 
 
