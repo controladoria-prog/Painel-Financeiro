@@ -7,7 +7,6 @@ DRE detalhada, histórico mensal e projeções de tendência.
 Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
-import base64
 import io
 import os
 import re
@@ -18,7 +17,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -439,166 +437,86 @@ st.markdown(
 # ============================================================================
 # 3.1 CONTROLE DE ACESSO (login com e-mail / senha + perfis)
 # ============================================================================
-# Administrador fixo (sempre funciona, mesmo sem nada configurado em Secrets).
-# Para cadastrar mais usuários administradores, adicione-os em st.secrets também
-# com perfil = "admin".
-ADMIN_PADRAO = {
-    "email": "controladoria@grupobeea.com.br",
-    "senha": "Richards23*",
-    "perfil": "admin",
-}
-
-
 def obter_usuarios_cadastrados():
-    """Monta o dicionário de usuários válidos: o admin padrão (fixo no código)
-    + qualquer usuário cadastrado em st.secrets['usuarios'] (TOML), no formato:
+    """Le a lista de usuarios dos Secrets, aceitando tres formas de configuracao
+    (todas podem coexistir e sao somadas):
 
-        [usuarios.fulano]
-        email = "fulano@grupobeea.com.br"
-        senha = "SenhaForte123"
+    1) Usuario "de topo" (campos soltos no inicio do arquivo de Secrets):
+        email = "controladoria@grupobeea.com.br"
+        senha = "Richards23*"
+        papel = "admin"
+
+    2) Lista de tabelas:
+        [[users]]
+        email = "..."
+        senha = "..."
+        papel = "admin"
+
+    3) Sub-tabelas [usuarios.<qualquer_nome>], aceitando tanto a chave
+       'papel' quanto 'perfil':
+        [usuarios.coordenador_financeiro]
+        email = "coordenador.financeiro@grupobeea.com.br"
+        senha = "Montoia6037"
         perfil = "visualizacao"
 
-    A chave do dicionário retornado é sempre o e-mail em minúsculas.
-    """
-    usuarios = {ADMIN_PADRAO["email"].lower(): ADMIN_PADRAO}
+    A chave do dicionario retornado e sempre o e-mail em minusculas. Se
+    nenhum usuario for encontrado em nenhum desses formatos, retorna
+    dicionario vazio (painel fica aberto, sem bloqueio de login -- util
+    apenas para testes locais sem Secrets configurados)."""
+    usuarios = {}
 
-    usuarios_secrets = st.secrets.get("usuarios", {})
-    for _chave, dados in dict(usuarios_secrets).items():
-        try:
-            email = str(dados["email"]).strip().lower()
-            usuarios[email] = {
-                "email": email,
-                "senha": str(dados["senha"]),
-                "perfil": str(dados.get("perfil", "visualizacao")).strip().lower(),
-            }
-        except Exception:
-            continue
+    def _add(email, senha, perfil):
+        email = str(email or "").strip().lower()
+        senha = str(senha or "")
+        if not email or not senha:
+            return
+        usuarios[email] = {
+            "email": email,
+            "senha": senha,
+            "perfil": str(perfil or "visualizacao").strip().lower(),
+        }
+
+    email_topo = st.secrets.get("email", None)
+    senha_topo = st.secrets.get("senha", None)
+    if email_topo and senha_topo:
+        _add(email_topo, senha_topo, st.secrets.get("papel", st.secrets.get("perfil", "admin")))
+
+    for u in st.secrets.get("users", []):
+        _add(u.get("email", ""), u.get("senha", ""), u.get("papel", u.get("perfil", "visualizacao")))
+
+    for _chave, dados in dict(st.secrets.get("usuarios", {})).items():
+        _add(
+            dados.get("email", ""),
+            dados.get("senha", ""),
+            dados.get("papel", dados.get("perfil", "visualizacao")),
+        )
+
     return usuarios
 
 
-CHAVE_LOCALSTORAGE_LOGIN = "beea_login_v1"
-
-
-def _limpar_credenciais_salvas():
-    """Injeta um script que apaga o e-mail/senha salvos no navegador."""
-    components.html(
-        f"""
-        <script>
-        try {{ window.top.localStorage.removeItem('{CHAVE_LOCALSTORAGE_LOGIN}'); }} catch (e) {{}}
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def _salvar_credenciais_no_navegador(email, senha):
-    """Injeta um script que salva e-mail/senha no localStorage do navegador,
-    para o usuário não precisar digitar de novo da próxima vez."""
-    email_b64 = base64.b64encode(email.encode("utf-8")).decode("ascii")
-    senha_b64 = base64.b64encode(senha.encode("utf-8")).decode("ascii")
-    components.html(
-        f"""
-        <script>
-        try {{
-            const dados = {{ e: "{email_b64}", s: "{senha_b64}" }};
-            window.top.localStorage.setItem('{CHAVE_LOCALSTORAGE_LOGIN}', JSON.stringify(dados));
-        }} catch (e) {{}}
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def _tentar_autologin_salvo():
-    """Se a URL trouxer credenciais (?le=&ls=) vindas do localStorage, tenta
-    logar automaticamente com elas. Retorna True se conseguiu logar."""
-    le = st.query_params.get("le")
-    ls = st.query_params.get("ls")
-    if not le or not ls:
-        return False
-
-    try:
-        email_salvo = base64.b64decode(str(le)).decode("utf-8").strip().lower()
-        senha_salva = base64.b64decode(str(ls)).decode("utf-8")
-    except Exception:
-        st.query_params.clear()
-        return False
+def checar_login():
+    """Exibe uma tela de login (e-mail + senha) e retorna True somente apos
+    autenticacao valida. Guarda o usuario logado (e-mail e perfil) em
+    st.session_state['usuario_logado']. Se nao houver usuarios configurados
+    nos Secrets, o painel fica aberto (sem bloqueio)."""
 
     usuarios = obter_usuarios_cadastrados()
-    usuario = usuarios.get(email_salvo)
-    st.query_params.clear()
-
-    if usuario and senha_salva == usuario["senha"]:
-        st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
+    if not usuarios:
         return True
-
-    # Credenciais salvas não são mais válidas (ex.: senha trocada) — apaga do navegador.
-    _limpar_credenciais_salvas()
-    return False
-
-
-def _pedir_autofill_via_localstorage():
-    """Se não há usuário logado nem parâmetros de login na URL, verifica (via
-    JS) se há credenciais salvas no navegador e, se houver, recarrega a
-    página com elas na URL para tentarmos o autologin."""
-    components.html(
-        f"""
-        <script>
-        try {{
-            const salvo = window.top.localStorage.getItem('{CHAVE_LOCALSTORAGE_LOGIN}');
-            if (salvo) {{
-                const dados = JSON.parse(salvo);
-                if (dados.e && dados.s) {{
-                    const url = new URL(window.top.location.href);
-                    if (!url.searchParams.get('le')) {{
-                        url.searchParams.set('le', dados.e);
-                        url.searchParams.set('ls', dados.s);
-                        window.top.location.href = url.toString();
-                    }}
-                }}
-            }}
-        }} catch (e) {{}}
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def checar_login():
-    """Exibe uma tela de login (e-mail + senha) e retorna True somente após
-    autenticação bem-sucedida. Guarda o usuário logado (e-mail e perfil) em
-    st.session_state['usuario_logado']. Se a pessoa marcar "Lembrar de mim",
-    salva as credenciais no navegador para não precisar digitar de novo."""
 
     if st.session_state.get("usuario_logado"):
         return True
 
-    if _tentar_autologin_salvo():
-        st.rerun()
-
-    if not st.session_state.get("_autofill_login_tentado"):
-        st.session_state["_autofill_login_tentado"] = True
-        _pedir_autofill_via_localstorage()
-
     def validar_login():
         email_digitado = st.session_state.get("campo_email", "").strip().lower()
         senha_digitada = st.session_state.get("campo_senha", "")
-        lembrar = st.session_state.get("campo_lembrar", False)
-        usuarios = obter_usuarios_cadastrados()
         usuario = usuarios.get(email_digitado)
-        if usuario and senha_digitada == usuario["senha"]:
+        if usuario and str(senha_digitada) == usuario["senha"]:
             st.session_state["usuario_logado"] = {
                 "email": usuario["email"],
                 "perfil": usuario["perfil"],
             }
             st.session_state["login_invalido"] = False
-            if lembrar:
-                st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
-            else:
-                st.session_state["_esquecer_credenciais"] = True
         else:
             st.session_state["usuario_logado"] = None
             st.session_state["login_invalido"] = True
@@ -617,19 +535,17 @@ def checar_login():
             """,
             unsafe_allow_html=True,
         )
-        st.text_input(
-            "E-mail",
-            key="campo_email",
-            placeholder="seu.email@grupobeea.com.br",
-        )
+        st.text_input("E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br")
         st.text_input(
             "Senha",
             type="password",
             key="campo_senha",
+            on_change=validar_login,
             placeholder="Digite sua senha",
         )
-        st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
-        st.button("Entrar", use_container_width=True, on_click=validar_login)
+        if st.button("Entrar", use_container_width=True):
+            validar_login()
+            st.rerun()
         if st.session_state.get("login_invalido", False):
             st.error("E-mail ou senha incorretos. Tente novamente.")
 
@@ -639,15 +555,7 @@ def checar_login():
 if not checar_login():
     st.stop()
 
-# Após um login bem-sucedido nesta mesma execução: salva ou apaga as
-# credenciais no navegador, conforme a caixa "Lembrar de mim".
-_creds_pendentes = st.session_state.pop("_credenciais_para_salvar", None)
-if _creds_pendentes:
-    _salvar_credenciais_no_navegador(*_creds_pendentes)
-if st.session_state.pop("_esquecer_credenciais", False):
-    _limpar_credenciais_salvas()
-
-usuario_atual = st.session_state["usuario_logado"]
+usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil": "admin"}
 eh_admin = usuario_atual["perfil"] == "admin"
 
 # ============================================================================
