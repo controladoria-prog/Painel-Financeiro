@@ -7,6 +7,7 @@ DRE detalhada, histórico mensal e projeções de tendência.
 Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
+import base64
 import io
 import os
 import re
@@ -17,6 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -474,17 +476,117 @@ def obter_usuarios_cadastrados():
     return usuarios
 
 
+CHAVE_LOCALSTORAGE_LOGIN = "beea_login_v1"
+
+
+def _limpar_credenciais_salvas():
+    """Injeta um script que apaga o e-mail/senha salvos no navegador."""
+    components.html(
+        f"""
+        <script>
+        try {{ window.top.localStorage.removeItem('{CHAVE_LOCALSTORAGE_LOGIN}'); }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _salvar_credenciais_no_navegador(email, senha):
+    """Injeta um script que salva e-mail/senha no localStorage do navegador,
+    para o usuário não precisar digitar de novo da próxima vez."""
+    email_b64 = base64.b64encode(email.encode("utf-8")).decode("ascii")
+    senha_b64 = base64.b64encode(senha.encode("utf-8")).decode("ascii")
+    components.html(
+        f"""
+        <script>
+        try {{
+            const dados = {{ e: "{email_b64}", s: "{senha_b64}" }};
+            window.top.localStorage.setItem('{CHAVE_LOCALSTORAGE_LOGIN}', JSON.stringify(dados));
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _tentar_autologin_salvo():
+    """Se a URL trouxer credenciais (?le=&ls=) vindas do localStorage, tenta
+    logar automaticamente com elas. Retorna True se conseguiu logar."""
+    le = st.query_params.get("le")
+    ls = st.query_params.get("ls")
+    if not le or not ls:
+        return False
+
+    try:
+        email_salvo = base64.b64decode(str(le)).decode("utf-8").strip().lower()
+        senha_salva = base64.b64decode(str(ls)).decode("utf-8")
+    except Exception:
+        st.query_params.clear()
+        return False
+
+    usuarios = obter_usuarios_cadastrados()
+    usuario = usuarios.get(email_salvo)
+    st.query_params.clear()
+
+    if usuario and senha_salva == usuario["senha"]:
+        st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
+        return True
+
+    # Credenciais salvas não são mais válidas (ex.: senha trocada) — apaga do navegador.
+    _limpar_credenciais_salvas()
+    return False
+
+
+def _pedir_autofill_via_localstorage():
+    """Se não há usuário logado nem parâmetros de login na URL, verifica (via
+    JS) se há credenciais salvas no navegador e, se houver, recarrega a
+    página com elas na URL para tentarmos o autologin."""
+    components.html(
+        f"""
+        <script>
+        try {{
+            const salvo = window.top.localStorage.getItem('{CHAVE_LOCALSTORAGE_LOGIN}');
+            if (salvo) {{
+                const dados = JSON.parse(salvo);
+                if (dados.e && dados.s) {{
+                    const url = new URL(window.top.location.href);
+                    if (!url.searchParams.get('le')) {{
+                        url.searchParams.set('le', dados.e);
+                        url.searchParams.set('ls', dados.s);
+                        window.top.location.href = url.toString();
+                    }}
+                }}
+            }}
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def checar_login():
     """Exibe uma tela de login (e-mail + senha) e retorna True somente após
     autenticação bem-sucedida. Guarda o usuário logado (e-mail e perfil) em
-    st.session_state['usuario_logado']."""
+    st.session_state['usuario_logado']. Se a pessoa marcar "Lembrar de mim",
+    salva as credenciais no navegador para não precisar digitar de novo."""
 
     if st.session_state.get("usuario_logado"):
         return True
 
+    if _tentar_autologin_salvo():
+        st.rerun()
+
+    if not st.session_state.get("_autofill_login_tentado"):
+        st.session_state["_autofill_login_tentado"] = True
+        _pedir_autofill_via_localstorage()
+
     def validar_login():
         email_digitado = st.session_state.get("campo_email", "").strip().lower()
         senha_digitada = st.session_state.get("campo_senha", "")
+        lembrar = st.session_state.get("campo_lembrar", False)
         usuarios = obter_usuarios_cadastrados()
         usuario = usuarios.get(email_digitado)
         if usuario and senha_digitada == usuario["senha"]:
@@ -493,6 +595,10 @@ def checar_login():
                 "perfil": usuario["perfil"],
             }
             st.session_state["login_invalido"] = False
+            if lembrar:
+                st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
+            else:
+                st.session_state["_esquecer_credenciais"] = True
         else:
             st.session_state["usuario_logado"] = None
             st.session_state["login_invalido"] = True
@@ -522,6 +628,7 @@ def checar_login():
             key="campo_senha",
             placeholder="Digite sua senha",
         )
+        st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
         st.button("Entrar", use_container_width=True, on_click=validar_login)
         if st.session_state.get("login_invalido", False):
             st.error("E-mail ou senha incorretos. Tente novamente.")
@@ -531,6 +638,14 @@ def checar_login():
 
 if not checar_login():
     st.stop()
+
+# Após um login bem-sucedido nesta mesma execução: salva ou apaga as
+# credenciais no navegador, conforme a caixa "Lembrar de mim".
+_creds_pendentes = st.session_state.pop("_credenciais_para_salvar", None)
+if _creds_pendentes:
+    _salvar_credenciais_no_navegador(*_creds_pendentes)
+if st.session_state.pop("_esquecer_credenciais", False):
+    _limpar_credenciais_salvas()
 
 usuario_atual = st.session_state["usuario_logado"]
 eh_admin = usuario_atual["perfil"] == "admin"
@@ -602,15 +717,8 @@ def carregar_dados_por_loja(path_o, path_r, lista_lojas):
 
 
 # ---------------------------------------------------------------------------
-# 4.1 PLANO DE CONTAS x DIÁRIO (Contas a Pagar) — fontes auxiliares para a
-# aba "Plano de Contas" do relatório Excel.
+# 4.1 PLANO DE CONTAS — fonte auxiliar para a aba "Plano de Contas" do relatório
 # ---------------------------------------------------------------------------
-URL_DIARIO_CONTAS_PAGAR = (
-    "https://docs.google.com/spreadsheets/d/1D5W69Mxf5WFDeI-0hDguYiwqwyyUnjon/export?format=xlsx"
-)
-ABA_DIARIO_CONTAS_PAGAR = "Parcelas de Títulos"
-
-
 @st.cache_data(ttl=300)
 def carregar_tabela_contas(path_r):
     """Lê a aba Tabela_Contas da planilha Realizado 2026: relação entre
@@ -623,57 +731,6 @@ def carregar_tabela_contas(path_r):
     return df
 
 
-@st.cache_data(ttl=300)
-def carregar_tabela_lojas(path_r):
-    """Lê a aba Tabela_Lojas da planilha Realizado 2026: de-para entre o nome
-    do Centro de Custo (como aparece na planilha DIÁRIO) e o nome da aba da
-    loja correspondente na planilha Realizado 2026."""
-    try:
-        df = pd.read_excel(path_r, sheet_name="Tabela_Lojas")
-    except Exception:
-        return pd.DataFrame(columns=["Centro de Custo", "Nome Aba"])
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
-
-
-@st.cache_data(ttl=300)
-def carregar_diario_contas_pagar(url_diario):
-    """Lê a planilha DIÁRIO (Contas a Pagar), aba 'Parcelas de Títulos', com
-    cabeçalho na linha 10. Colunas relevantes: I=Valor Bruto, J=Competência,
-    K=Plano de contas, L=Centro de Custos."""
-    try:
-        df = pd.read_excel(url_diario, sheet_name=ABA_DIARIO_CONTAS_PAGAR, header=9)
-    except Exception:
-        return pd.DataFrame(columns=["Valor Bruto", "Competência", "Plano de contas", "Centro de Custos"])
-
-    df.columns = [str(c).strip() for c in df.columns]
-
-    def _achar_coluna(nomes_possiveis, letra_fallback):
-        for nome in nomes_possiveis:
-            if nome in df.columns:
-                return nome
-        idx_fallback = ord(letra_fallback) - ord("A")
-        if idx_fallback < len(df.columns):
-            return df.columns[idx_fallback]
-        return None
-
-    col_valor = _achar_coluna(["Valor Bruto"], "I")
-    col_comp = _achar_coluna(["Competência", "Competencia"], "J")
-    col_plano = _achar_coluna(["Plano de contas", "Plano de Contas"], "K")
-    col_cc = _achar_coluna(["Centro de Custos", "Centro de Custo"], "L")
-
-    if not all([col_valor, col_comp, col_plano, col_cc]):
-        return pd.DataFrame(columns=["Valor Bruto", "Competência", "Plano de contas", "Centro de Custos"])
-
-    df_limpo = df[[col_valor, col_comp, col_plano, col_cc]].copy()
-    df_limpo.columns = ["Valor Bruto", "Competência", "Plano de contas", "Centro de Custos"]
-    df_limpo["Valor Bruto"] = pd.to_numeric(df_limpo["Valor Bruto"], errors="coerce").fillna(0)
-    df_limpo["Competência"] = pd.to_datetime(df_limpo["Competência"], errors="coerce")
-    df_limpo = df_limpo.dropna(subset=["Competência"])
-    df_limpo["Mês/Ano"] = df_limpo["Competência"].dt.strftime("%m/%Y")
-    return df_limpo
-
-
 def montar_mapa_planos_por_dre(df_tabela_contas):
     """A partir da Tabela_Contas, retorna {linha_dre: [planos_de_conta...]}."""
     mapa = {}
@@ -682,19 +739,6 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
     for linha_dre, grupo in df_tabela_contas.groupby("Linha DRE"):
         planos = grupo["Natureza Financeira"].dropna().astype(str).str.strip().unique().tolist()
         mapa[str(linha_dre).strip()] = planos
-    return mapa
-
-
-def montar_mapa_lojas_diario(df_tabela_lojas):
-    """A partir da Tabela_Lojas, retorna {centro_de_custo: nome_aba_loja}."""
-    mapa = {}
-    if df_tabela_lojas.empty or "Centro de Custo" not in df_tabela_lojas.columns or "Nome Aba" not in df_tabela_lojas.columns:
-        return mapa
-    for _, linha in df_tabela_lojas.iterrows():
-        cc = str(linha["Centro de Custo"]).strip()
-        aba = str(linha["Nome Aba"]).strip()
-        if cc and aba and cc.lower() != "nan" and aba.lower() != "nan":
-            mapa[cc] = aba
     return mapa
 
 
@@ -825,6 +869,7 @@ perfil_label = "Administrador" if eh_admin else "Visualização"
 st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{perfil_label}**")
 if st.sidebar.button("🚪 Sair", use_container_width=True):
     st.session_state["usuario_logado"] = None
+    _limpar_credenciais_salvas()
     st.rerun()
 
 
@@ -964,23 +1009,15 @@ def montar_relatorio_excel(
     escopo_label,
     dados_por_loja=None,
     mapa_planos_dre=None,
-    mapa_lojas_diario=None,
-    df_diario=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
     - Detalhe Mensal: contas da DRE nas linhas, meses nas colunas, dividido por loja.
-    - Plano de Contas: composição (planos de contas) de cada linha da DRE, por loja.
+    - Plano de Contas: composição (planos de contas) de cada linha da DRE, por loja
+      (valores puxados diretamente da planilha Realizado 2026 de cada loja).
     """
     dados_por_loja = dados_por_loja or {}
     mapa_planos_dre = mapa_planos_dre or {}
-    mapa_lojas_diario = mapa_lojas_diario or {}
-    df_diario = df_diario if df_diario is not None else pd.DataFrame(columns=["Valor Bruto", "Plano de contas", "Centro de Custos", "Mês/Ano"])
-
-    # Loja -> lista de Centros de Custo (inverso do de-para da Tabela_Lojas)
-    ccs_por_loja = {}
-    for cc, loja in mapa_lojas_diario.items():
-        ccs_por_loja.setdefault(loja, []).append(cc)
     wb = Workbook()
     gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
 
@@ -1086,8 +1123,7 @@ def montar_relatorio_excel(
     _escrever_titulo(ws3, "Plano de Contas — Composição das Linhas da DRE, por Loja", 1, n_col_matriz)
     _escrever_legenda(
         ws3,
-        f"{gerado_em}  ·  Linhas iguais ao plano de contas = valor lançado manualmente (mesma fonte da DRE). "
-        f"Demais planos = somados a partir da planilha DIÁRIO (Contas a Pagar).",
+        f"{gerado_em}  ·  Valores de cada plano de contas puxados diretamente da planilha Realizado 2026 de cada loja.",
         2, n_col_matriz,
     )
 
@@ -1097,7 +1133,6 @@ def montar_relatorio_excel(
 
     for loja in lojas_ordenadas:
         df_o_loja, df_r_loja = dados_por_loja[loja]
-        ccs_loja = ccs_por_loja.get(loja, [])
 
         ws3.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_col_matriz)
         cell_loja = ws3.cell(row=linha, column=1, value=f"🏬 Loja: {loja}")
@@ -1120,34 +1155,15 @@ def montar_relatorio_excel(
             linha += 1
 
             planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
-            conta_norm = str(conta).strip().lower()
 
             soma_planos_mes = [0.0] * len(mapa_meses)
             for i_plano, plano in enumerate(planos):
-                plano_norm = str(plano).strip().lower()
-
-                if plano_norm == conta_norm:
-                    valores_plano = [
-                        get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()
-                    ]
-                    origem = f"{plano}  (valor lançado manualmente)"
-                else:
-                    valores_plano = []
-                    for m_col in mapa_meses.values():
-                        if ccs_loja and not df_diario.empty:
-                            mask = (
-                                df_diario["Plano de contas"].astype(str).str.strip().str.lower().eq(plano_norm)
-                                & df_diario["Centro de Custos"].astype(str).str.strip().isin(ccs_loja)
-                                & df_diario["Mês/Ano"].eq(m_col)
-                            )
-                            valores_plano.append(float(df_diario.loc[mask, "Valor Bruto"].sum()))
-                        else:
-                            valores_plano.append(0.0)
-                    origem = plano
-
+                valores_plano = [
+                    get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()
+                ]
                 soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
                 fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
-                _escrever_linha_matriz(ws3, linha, origem, valores_plano, sum(valores_plano), fill=fill_plano)
+                _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
                 linha += 1
 
             _escrever_linha_matriz(
@@ -1901,21 +1917,16 @@ with tab5:
         )
 
     if gerar_clicado and contas_relatorio:
-        with st.spinner("Carregando dados por loja, plano de contas e planilha DIÁRIO..."):
+        with st.spinner("Carregando dados por loja e plano de contas..."):
             dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, opcoes_unidades)
             df_tabela_contas = carregar_tabela_contas(path_real)
-            df_tabela_lojas = carregar_tabela_lojas(path_real)
-            df_diario_rel = carregar_diario_contas_pagar(URL_DIARIO_CONTAS_PAGAR)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
-            mapa_lojas_diario_rel = montar_mapa_lojas_diario(df_tabela_lojas)
 
         with st.spinner("Montando o relatório em Excel..."):
             excel_bytes = montar_relatorio_excel(
                 contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
                 dados_por_loja=dados_por_loja_rel,
                 mapa_planos_dre=mapa_planos_dre_rel,
-                mapa_lojas_diario=mapa_lojas_diario_rel,
-                df_diario=df_diario_rel,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
         st.session_state["relatorio_excel_nome"] = (
