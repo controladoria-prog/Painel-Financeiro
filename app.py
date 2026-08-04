@@ -779,6 +779,109 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
     return mapa
 
 
+# ---------------------------------------------------------------------------
+# 4.2 DIÁRIO — lançamentos detalhados, fonte principal da aba "Plano de Contas"
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=300)
+def carregar_diario(path_r):
+    """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
+    com Valor Bruto, Competência (data do lançamento), Plano de Contas,
+    Centro de Custos (loja/unidade) e Linha DRE (a linha da DRE a que
+    aquele plano de contas pertence). É a fonte usada para montar a aba
+    "Plano de Contas" do relatório em Excel, mês a mês, por loja."""
+    colunas_saida = ["Valor Bruto", "Competência", "Plano de Contas", "Centro de Custos", "Linha DRE", "Mês"]
+
+    apelidos_coluna = {
+        "valor bruto": "Valor Bruto",
+        "competência": "Competência",
+        "competencia": "Competência",
+        "plano de contas": "Plano de Contas",
+        "centro de custos": "Centro de Custos",
+        "centro de custo": "Centro de Custos",
+        "linha dre": "Linha DRE",
+    }
+
+    df = None
+    for nome_aba in ("DIÁRIO", "DIARIO", "Diário", "Diario"):
+        try:
+            df = pd.read_excel(path_r, sheet_name=nome_aba)
+            break
+        except Exception:
+            continue
+    if df is None:
+        return pd.DataFrame(columns=colunas_saida)
+
+    df.columns = [str(c).strip() for c in df.columns]
+    renomeio = {c: apelidos_coluna[c.strip().lower()] for c in df.columns if c.strip().lower() in apelidos_coluna}
+    df = df.rename(columns=renomeio)
+
+    colunas_necessarias = ["Valor Bruto", "Competência", "Plano de Contas", "Centro de Custos", "Linha DRE"]
+    if any(c not in df.columns for c in colunas_necessarias):
+        return pd.DataFrame(columns=colunas_saida)
+
+    df = df[colunas_necessarias].copy()
+    df["Valor Bruto"] = pd.to_numeric(df["Valor Bruto"], errors="coerce").fillna(0)
+    df["Plano de Contas"] = df["Plano de Contas"].astype(str).str.strip()
+    df["Centro de Custos"] = df["Centro de Custos"].astype(str).str.strip()
+    df["Linha DRE"] = df["Linha DRE"].astype(str).str.strip()
+
+    # Competência normalmente vem como data (dd/mm/aaaa) -> convertemos para "mm/aaaa"
+    # para casar com as colunas de mês (ex.: "01/2026") usadas no resto do painel.
+    competencia_dt = pd.to_datetime(df["Competência"], errors="coerce", dayfirst=True)
+    mes_formatado = competencia_dt.dt.strftime("%m/%Y")
+    mask_sem_data = mes_formatado.isna()
+    if mask_sem_data.any():
+        # Se não deu para converter em data, usa o próprio texto da célula
+        # (cobre o caso de a Competência já vir como "mm/aaaa" digitada).
+        mes_formatado = mes_formatado.copy()
+        mes_formatado[mask_sem_data] = df.loc[mask_sem_data, "Competência"].astype(str).str.strip()
+    df["Mês"] = mes_formatado
+
+    df = df[(df["Plano de Contas"] != "") & (df["Linha DRE"] != "")]
+    return df.reset_index(drop=True)
+
+
+def _normalizar_texto(txt):
+    """Normaliza texto para comparação tolerante (maiúsculas, sem espaços duplicados)."""
+    return re.sub(r"\s+", " ", str(txt or "").strip().upper())
+
+
+def _filtrar_diario_por_loja_e_conta(df_diario, loja, conta):
+    """Filtra o DIÁRIO pelo Centro de Custos (loja) e pela Linha DRE (conta),
+    com correspondência tolerante (exata primeiro, depois por contém)."""
+    if df_diario is None or df_diario.empty:
+        return df_diario
+
+    loja_norm = _normalizar_texto(loja)
+    conta_norm = _normalizar_texto(conta)
+
+    centros_norm = df_diario["Centro de Custos"].map(_normalizar_texto)
+    mask_loja = centros_norm == loja_norm
+    if not mask_loja.any():
+        mask_loja = centros_norm.apply(lambda x: (loja_norm in x) or (x in loja_norm) if x else False)
+
+    linhas_norm = df_diario["Linha DRE"].map(_normalizar_texto)
+    mask_conta = linhas_norm == conta_norm
+    if not mask_conta.any():
+        mask_conta = linhas_norm.apply(lambda x: (conta_norm in x) or (x in conta_norm) if x else False)
+
+    return df_diario[mask_loja & mask_conta]
+
+
+def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
+    """A partir do DIÁRIO, retorna {plano_de_contas: [valores_por_mes...]}
+    para uma loja (Centro de Custos) e uma linha da DRE (conta) específicas,
+    já na ordem de mapa_meses."""
+    df_filtrado = _filtrar_diario_por_loja_e_conta(df_diario, loja, conta)
+    if df_filtrado is None or df_filtrado.empty:
+        return {}
+
+    composicao = {}
+    for plano, grupo in df_filtrado.groupby("Plano de Contas"):
+        composicao[plano] = [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
+    return composicao
+
+
 # ============================================================================
 # 5. BARRA LATERAL — FILTROS
 # ============================================================================
@@ -1046,15 +1149,19 @@ def montar_relatorio_excel(
     escopo_label,
     dados_por_loja=None,
     mapa_planos_dre=None,
+    df_diario=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
     - Detalhe Mensal: contas da DRE nas linhas, meses nas colunas, dividido por loja.
-    - Plano de Contas: composição (planos de contas) de cada linha da DRE, por loja
-      (valores puxados diretamente da planilha Realizado 2026 de cada loja).
+    - Plano de Contas: composição (planos de contas) de cada linha da DRE, por loja,
+      mês a mês. Fonte principal: aba DIÁRIO da planilha Realizado 2026 (df_diario).
+      Se o DIÁRIO não estiver disponível para uma loja/conta, cai para o método
+      antigo (Tabela_Contas + soma nas abas por loja).
     """
     dados_por_loja = dados_por_loja or {}
     mapa_planos_dre = mapa_planos_dre or {}
+    diario_disponivel = df_diario is not None and not df_diario.empty
     wb = Workbook()
     gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
 
@@ -1160,7 +1267,7 @@ def montar_relatorio_excel(
     _escrever_titulo(ws3, "Plano de Contas — Composição das Linhas da DRE, por Loja", 1, n_col_matriz)
     _escrever_legenda(
         ws3,
-        f"{gerado_em}  ·  Valores de cada plano de contas puxados diretamente da planilha Realizado 2026 de cada loja.",
+        f"{gerado_em}  ·  Valores de cada plano de contas puxados da aba DIÁRIO (Realizado 2026), por Centro de Custos.",
         2, n_col_matriz,
     )
 
@@ -1191,17 +1298,28 @@ def montar_relatorio_excel(
             _escrever_cabecalho_matriz(ws3, linha, "Plano de Contas", mapa_meses)
             linha += 1
 
-            planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
+            composicao_diario = montar_composicao_diario(df_diario, loja, conta, mapa_meses) if diario_disponivel else {}
 
             soma_planos_mes = [0.0] * len(mapa_meses)
-            for i_plano, plano in enumerate(planos):
-                valores_plano = [
-                    get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()
-                ]
-                soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
-                fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
-                _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
-                linha += 1
+            if composicao_diario:
+                # Fonte principal: aba DIÁRIO (Valor Bruto por Plano de Contas x Mês).
+                for i_plano, plano in enumerate(sorted(composicao_diario.keys())):
+                    valores_plano = composicao_diario[plano]
+                    soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
+                    fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
+                    _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
+                    linha += 1
+            else:
+                # Fallback: Tabela_Contas + soma nas abas por loja (método antigo).
+                planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
+                for i_plano, plano in enumerate(planos):
+                    valores_plano = [
+                        get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()
+                    ]
+                    soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
+                    fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
+                    _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
+                    linha += 1
 
             _escrever_linha_matriz(
                 ws3, linha, f"TOTAL — {conta}", soma_planos_mes, sum(soma_planos_mes),
@@ -1927,22 +2045,52 @@ with tab4:
 # ---------------------------------------------------------------------------
 # ABA 5: EMISSÃO DE RELATÓRIOS
 # ---------------------------------------------------------------------------
+MODELOS_RELATORIO = {
+    "🛒 Compras — Embalagens, Catálogos, Amostras e Flaconetes": [
+        "6.6 - Material de Embalagem",
+        "6.11 - Catálogos e Revistas",
+        "6.13 - Amostras",
+        "6.14 - Flaconetes",
+    ],
+}
+
 with tab5:
     st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
     st.caption(
-        "Selecione as linhas da DRE desejadas e gere um relatório formatado com 3 planilhas: "
-        "Resumo (consolidado), Detalhe Mensal (contas x meses, por loja) e Plano de Contas "
-        "(composição de cada linha, por loja)."
+        "Escolha um modelo padrão ou selecione manualmente as linhas da DRE, e gere um relatório "
+        "formatado com 3 planilhas: Resumo (consolidado), Detalhe Mensal (contas x meses, por loja) "
+        "e Plano de Contas (composição de cada linha, por loja, a partir do DIÁRIO)."
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
     linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
 
+    opcoes_modelo = ["Seleção manual"] + list(MODELOS_RELATORIO.keys())
+    modelo_sel = st.selectbox("📁 Modelo de Relatório:", opcoes_modelo)
+
+    default_contas = []
+    termos_nao_encontrados = []
+    if modelo_sel != "Seleção manual":
+        for termo in MODELOS_RELATORIO[modelo_sel]:
+            termo_norm = termo.strip().lower()
+            encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
+            if encontrados:
+                default_contas.extend(encontrados)
+            else:
+                termos_nao_encontrados.append(termo)
+        default_contas = list(dict.fromkeys(default_contas))
+        if termos_nao_encontrados:
+            st.warning(
+                "Não encontrei estas linhas do modelo na DRE atual (o texto pode estar um pouco diferente): "
+                + "; ".join(termos_nao_encontrados)
+                + ". Adicione-as manualmente no campo abaixo, se existirem."
+            )
+
     contas_relatorio = st.multiselect(
-        "🔍 Selecione as linhas da DRE para o relatório:",
+        "🔍 Linhas da DRE incluídas no relatório:",
         options=linhas_relatorio,
-        default=[],
-        key="contas_relatorio",
+        default=default_contas,
+        key=f"contas_relatorio__{modelo_sel}",
     )
 
     col_btn, col_info = st.columns([1, 2])
@@ -1954,16 +2102,18 @@ with tab5:
         )
 
     if gerar_clicado and contas_relatorio:
-        with st.spinner("Carregando dados por loja e plano de contas..."):
+        with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
             dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, opcoes_unidades)
             df_tabela_contas = carregar_tabela_contas(path_real)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
+            df_diario_rel = carregar_diario(path_real)
 
         with st.spinner("Montando o relatório em Excel..."):
             excel_bytes = montar_relatorio_excel(
                 contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
                 dados_por_loja=dados_por_loja_rel,
                 mapa_planos_dre=mapa_planos_dre_rel,
+                df_diario=df_diario_rel,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
         st.session_state["relatorio_excel_nome"] = (
@@ -1971,8 +2121,16 @@ with tab5:
         )
         st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
 
+        if df_diario_rel is None or df_diario_rel.empty:
+            st.warning(
+                "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado 2026 — "
+                "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
+            )
+        else:
+            st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado 2026.")
+
     if not contas_relatorio:
-        st.info("Selecione ao menos uma linha da DRE acima para habilitar a geração do relatório.")
+        st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
 
     if st.session_state.get("relatorio_excel_bytes"):
         st.download_button(
@@ -1981,7 +2139,7 @@ with tab5:
             file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja).")
+        st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)
