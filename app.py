@@ -248,10 +248,11 @@ st.markdown(
             margin-bottom: 12px;
             border-bottom: 1px solid {COLORS["border"]};
         }}
-        .sidebar-brand .dot {{
-            width: 10px; height: 10px; border-radius: 50%;
-            background: {COLORS["primary"]};
-            box-shadow: 0 0 10px {COLORS["primary"]};
+        .sidebar-brand .brand-logo {{
+            width: 30px; height: 30px; border-radius: 50%;
+            object-fit: cover;
+            box-shadow: 0 0 10px {COLORS["primary_soft"]};
+            flex-shrink: 0;
         }}
         .sidebar-brand span.title {{
             font-size: 14px; font-weight: 700; color: {COLORS["text"]};
@@ -268,38 +269,32 @@ st.markdown(
             letter-spacing: 0.4px;
         }}
 
-        /* Cabeçalho principal */
-        .main-header {{
-            background: linear-gradient(135deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
-            padding: 16px 22px;
-            border-radius: 10px;
-            border: 1px solid {COLORS["border"]};
-            border-left: 3px solid {COLORS["primary"]};
-            margin-bottom: 14px;
-            box-shadow: 0 4px 18px rgba(0,0,0,0.25);
+        /* Faixa de contexto — fina, uma linha só, para não repetir um bloco
+           grande e genérico em cima de todas as abas (libera espaço vertical
+           pra cada aba usar com informação própria/diferente) */
+        .top-status-strip {{
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 6px 4px 10px 4px;
+            border-bottom: 1px solid {COLORS["border"]};
+            margin-bottom: 12px;
+            font-size: 12px;
+            color: {COLORS["text_muted"]};
         }}
-        .main-header h3 {{
-            margin: 0 !important;
-            padding: 0 !important;
-            font-size: 19px !important;
-            color: {COLORS["text"]} !important;
-            font-weight: 700;
-            letter-spacing: 0.2px;
-        }}
-        .main-header p {{
-            margin: 5px 0 0 0 !important;
-            font-size: 12.5px !important;
-            color: {COLORS["text_muted"]} !important;
-        }}
-        .main-header .chip {{
+        .top-status-strip b {{ color: {COLORS["text"]}; font-weight: 600; }}
+        .top-status-strip .chip {{
             display: inline-block;
             background: {COLORS["primary_soft"]};
             color: {COLORS["primary"]};
             border-radius: 20px;
             padding: 1px 10px;
-            font-weight: 600;
-            font-size: 11.5px;
+            font-weight: 700;
+            font-size: 11px;
+            letter-spacing: 0.2px;
         }}
+        .top-status-strip .sep {{ color: {COLORS["border"]}; }}
 
         /* Linha de cartões de KPI em flexbox (usada no cabeçalho fixo) */
         .kpi-row {{
@@ -437,9 +432,7 @@ st.markdown(
                 flex: 1 1 100% !important;
                 min-width: 100% !important;
             }}
-            .main-header {{ padding: 12px 16px !important; }}
-            .main-header h3 {{ font-size: 16px !important; }}
-            .main-header p {{ font-size: 11px !important; }}
+            .top-status-strip {{ font-size: 11px !important; padding: 5px 2px 8px 2px !important; }}
             .kpi-card {{ padding: 12px !important; }}
             .kpi-value {{ font-size: 19px !important; }}
             div[data-baseweb="tab-list"] {{
@@ -642,10 +635,20 @@ def _esquecer_credenciais_no_navegador():
 
 def _tentar_autologin_via_url():
     """Se a URL trouxer credenciais (?le=&ls=) vindas do navegador, tenta
-    logar automaticamente com elas. Retorna True se conseguiu logar."""
+    logar automaticamente com elas. Retorna True se conseguiu logar.
+
+    IMPORTANTE: remove só as chaves 'le'/'ls' da URL -- nunca usar
+    st.query_params.clear() aqui, porque isso apagaria TAMBÉM outros
+    parâmetros importantes da URL, como o "?modo=tv" do Painel de TV
+    (era exatamente por isso que o link do Painel de TV caía sempre
+    no painel normal: o parâmetro "modo" era apagado antes mesmo de
+    ser lido)."""
     le = st.query_params.get("le")
     ls = st.query_params.get("ls")
-    st.query_params.clear()
+    if "le" in st.query_params:
+        del st.query_params["le"]
+    if "ls" in st.query_params:
+        del st.query_params["ls"]
     if not le or not ls:
         return False
 
@@ -1062,12 +1065,19 @@ def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
 
 
 # ============================================================================
-# 4.3 PAINEL PARA TV — visão executiva, cheia de KPIs, para deixar exibida
-# numa tela/TV da empresa. Acessada por uma URL própria (?modo=tv), separada
-# da sessão normal de quem está navegando no painel -- assim dá pra deixar
-# aberta numa TV/monitor sem interferir (nem ser afetada) pelos filtros que
-# um usuário está usando na sua própria sessão.
+# 4.3 PAINEL PARA TV — visão executiva "tech", cheia de KPIs, gauges e
+# ranking de lojas, para deixar exibida numa tela/TV da empresa. Acessada por
+# uma URL própria (?modo=tv), separada da sessão normal de quem está
+# navegando no painel -- assim dá pra deixar aberta numa TV/monitor sem
+# interferir (nem ser afetada) pelos filtros que um usuário está usando na
+# sua própria sessão. Se auto-atualiza a cada 60s e tem botão de tela cheia.
 # ============================================================================
+ABAS_CONSOLIDADAS_TV = [
+    "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
+    "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A",
+]
+
+
 def _obter_aba_consolidada_padrao(lista_abas):
     prioridade = ["DRE CONSOLIDADO", "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A"]
     for nome in prioridade:
@@ -1100,60 +1110,124 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     idx_mes_atual = min(max(agora.month - 1, 0), len(m_map_tv) - 1) if m_map_tv else 0
     cols_ytd = list(m_map_tv.values())[: idx_mes_atual + 1]
 
-    # ---- CSS de modo "quiosque": some com sidebar/header, fundo cheio, fontes grandes ----
+    # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
     st.markdown(
         f"""
-        <meta http-equiv="refresh" content="120">
+        <meta http-equiv="refresh" content="60">
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"], footer {{ display: none !important; }}
-            .block-container {{ padding: 1.2rem 2.4rem 1rem 2.4rem !important; max-width: 100% !important; }}
-            .stApp {{ background: radial-gradient(circle at 15% 0%, #101626 0%, {COLORS["bg"]} 55%, #05070c 100%) !important; }}
+            .block-container {{ padding: 1rem 2.2rem 1rem 2.2rem !important; max-width: 100% !important; }}
+            .stApp {{
+                background:
+                    radial-gradient(circle at 12% 0%, rgba(76,141,255,0.10) 0%, transparent 40%),
+                    radial-gradient(circle at 90% 100%, rgba(62,207,142,0.08) 0%, transparent 45%),
+                    repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 42px),
+                    repeating-linear-gradient(90deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 42px),
+                    linear-gradient(180deg, #0A0D16 0%, #05070c 100%) !important;
+            }}
+            @keyframes tv-pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
+            @keyframes tv-glow {{ 0%,100% {{ box-shadow: 0 0 14px rgba(76,141,255,0.25); }} 50% {{ box-shadow: 0 0 26px rgba(76,141,255,0.5); }} }}
+            @keyframes tv-marquee {{ 0% {{ transform: translateX(100%); }} 100% {{ transform: translateX(-100%); }} }}
             .tv-header {{
                 display: flex; justify-content: space-between; align-items: center;
-                padding: 6px 4px 18px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 18px;
+                padding: 4px 4px 16px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 18px;
             }}
-            .tv-header h1 {{
-                font-size: 28px; font-weight: 700; color: {COLORS["text"]}; margin: 0;
-                letter-spacing: 0.3px;
+            .tv-header .brand {{ display:flex; align-items:center; gap:14px; }}
+            .tv-header img.logo {{ width: 42px; height: 42px; border-radius: 50%; box-shadow: 0 0 14px rgba(76,141,255,0.35); }}
+            .tv-header h1 {{ font-size: 26px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
+            .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 13px; margin-top: 3px; }}
+            .tv-live-pill {{
+                display: inline-flex; align-items: center; gap: 6px; background: rgba(62,207,142,0.12);
+                border: 1px solid {COLORS["positive"]}; color: {COLORS["positive"]}; border-radius: 20px;
+                padding: 3px 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; margin-left: 12px;
             }}
-            .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 13.5px; margin-top: 4px; }}
-            .tv-clock {{ text-align: right; color: {COLORS["text_muted"]}; font-size: 13px; }}
-            .tv-clock b {{ color: {COLORS["primary"]}; font-size: 20px; display:block; letter-spacing: 1px; }}
-            .tv-kpi-grid {{ display: flex; gap: 18px; margin-bottom: 22px; }}
+            .tv-live-pill .dot {{ width: 7px; height: 7px; border-radius: 50%; background: {COLORS["positive"]}; animation: tv-pulse 1.4s infinite; }}
+            .tv-clock {{ text-align: right; color: {COLORS["text_muted"]}; font-size: 12.5px; }}
+            .tv-clock b {{
+                color: {COLORS["primary"]}; font-size: 30px; display:block; letter-spacing: 2px;
+                font-family: 'Consolas','Courier New',monospace;
+            }}
+            .tv-kpi-grid {{ display: flex; gap: 16px; margin-bottom: 20px; }}
             .tv-kpi {{
                 flex: 1; background: linear-gradient(160deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
-                border: 1px solid {COLORS["border"]}; border-radius: 16px; padding: 22px 24px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-                border-top: 4px solid var(--tv-accent, {COLORS["primary"]});
+                border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 18px 20px;
+                box-shadow: 0 10px 26px rgba(0,0,0,0.35);
+                border-top: 3px solid var(--tv-accent, {COLORS["primary"]});
+                position: relative; overflow: hidden;
             }}
-            .tv-kpi .lbl {{
-                font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
-                color: {COLORS["text_muted"]};
+            .tv-kpi::after {{
+                content: ""; position: absolute; top: -40%; right: -30%; width: 90px; height: 90px; border-radius: 50%;
+                background: radial-gradient(circle, var(--tv-accent, {COLORS["primary"]}) 0%, transparent 70%); opacity: 0.12;
             }}
-            .tv-kpi .val {{ font-size: 34px; font-weight: 800; margin-top: 8px; letter-spacing: -0.5px; }}
-            .tv-kpi .sub {{ font-size: 13px; margin-top: 6px; color: {COLORS["muted_line"]}; }}
+            .tv-kpi .lbl {{ font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
+            .tv-kpi .val {{ font-size: 28px; font-weight: 800; margin-top: 6px; letter-spacing: -0.5px; }}
+            .tv-kpi .sub {{ font-size: 12px; margin-top: 5px; color: {COLORS["muted_line"]}; }}
+            .tv-section-title {{
+                font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
+                letter-spacing: 0.6px; margin: 4px 0 10px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
+            }}
+            .tv-panel {{
+                background: linear-gradient(160deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
+                border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 14px 16px 4px 16px;
+                box-shadow: 0 10px 26px rgba(0,0,0,0.3); margin-bottom: 18px; height: 100%;
+            }}
+            .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 7px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
+            .tv-rank-badge {{
+                width:22px; height:22px; border-radius:50%; background:{COLORS["primary_soft"]}; color:{COLORS["primary"]};
+                font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+            }}
+            .tv-rank-name {{ flex:1; font-size:12.5px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .tv-rank-bar-bg {{ flex:1.4; background:{COLORS["border"]}; border-radius:4px; height:8px; overflow:hidden; }}
+            .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["primary"]}, {COLORS["positive"]}); animation: tv-glow 2.4s infinite; }}
+            .tv-rank-val {{ font-size:11.5px; color:{COLORS["muted_line"]}; width: 78px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
+            .tv-ticker-wrap {{
+                overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
+                border-bottom: 1px solid {COLORS["border"]}; padding: 9px 0; margin-top: 6px; background: rgba(255,255,255,0.015);
+            }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 32s linear infinite; font-size: 13px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker b {{ color: {COLORS["text"]}; }}
+            .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 22px; }}
+            .tv-fullscreen-btn {{
+                position: fixed; bottom: 18px; right: 22px; z-index: 999999;
+                background: {COLORS["primary"]}; color: #fff; border: none; border-radius: 30px;
+                padding: 10px 18px; font-size: 13px; font-weight: 700; cursor: pointer;
+                box-shadow: 0 6px 20px rgba(76,141,255,0.45);
+            }}
         </style>
+        <button class="tv-fullscreen-btn" onclick="
+            var el = document.documentElement;
+            if (!document.fullscreenElement) {{ el.requestFullscreen().catch(function(e){{}}); }}
+            else {{ document.exitFullscreen(); }}
+        ">⛶ Tela Cheia</button>
         """,
         unsafe_allow_html=True,
     )
 
+    # ---------------- Cálculo dos indicadores ----------------
+    rec_bruta_real = get_valor_consolidado_multi(list_df_real_tv, "1 - Receita Operacional Bruta", cols_ytd)
     rec_liq_real = get_valor_consolidado_multi(list_df_real_tv, "3 - Receita Operacional Liquida", cols_ytd)
     rec_liq_orc = get_valor_consolidado_multi(list_df_orc_tv, "3 - Receita Operacional Liquida", cols_ytd)
     ebitda_real = get_valor_consolidado_multi(list_df_real_tv, "11 - EBITDA", cols_ytd)
     ebitda_orc = get_valor_consolidado_multi(list_df_orc_tv, "11 - EBITDA", cols_ytd)
     margem_ebitda = (ebitda_real / rec_liq_real * 100) if rec_liq_real else 0
+    margem_ebitda_orc = (ebitda_orc / rec_liq_orc * 100) if rec_liq_orc else 0
     desvio_ebitda = ebitda_real - ebitda_orc
     pct_desvio_ebitda = (desvio_ebitda / abs(ebitda_orc) * 100) if ebitda_orc else 0
     pct_atingimento_rec = (rec_liq_real / rec_liq_orc * 100) if rec_liq_orc else 0
+    pct_atingimento_eb = (ebitda_real / ebitda_orc * 100) if ebitda_orc else 0
+    desp_op_tv_kpi = abs(get_valor_consolidado_multi(list_df_real_tv, "8 - Despesas Operacionais", cols_ytd))
 
     st.markdown(
         f"""
         <div class="tv-header">
-            <div>
-                <h1>📊 Grupo B&amp;A · Painel Executivo ao Vivo</h1>
-                <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026</div>
+            <div class="brand">
+                <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+                <div>
+                    <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
+                    <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026 · Atualiza a cada 60s</div>
+                </div>
             </div>
-            <div class="tv-clock"><b>{agora.strftime('%H:%M')}</b>{agora.strftime('%A, %d/%m/%Y')}</div>
+            <div class="tv-clock"><b>{agora.strftime('%H:%M')}</b>{agora.strftime('%A, %d/%m/%Y').capitalize()}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1169,22 +1243,71 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
 
     st.markdown(
         '<div class="tv-kpi-grid">'
-        + _tv_kpi(cor_variacao(rec_liq_real), "Receita Líquida (YTD)", formata_brl(rec_liq_real),
-                  f"{pct_atingimento_rec:.1f}% do orçado no período", COLORS["primary"])
-        + _tv_kpi(cor_variacao(ebitda_real), "EBITDA (YTD)", formata_brl(ebitda_real),
-                  f"Orçado: {formata_brl(ebitda_orc)}", COLORS["positive"])
-        + _tv_kpi(cor_variacao(desvio_ebitda), "Desvio de EBITDA", formata_brl(desvio_ebitda),
+        + _tv_kpi(COLORS["text"], "Receita Bruta (YTD)", formata_m(rec_bruta_real),
+                  "Antes de deduções", COLORS["muted_line"])
+        + _tv_kpi(cor_variacao(rec_liq_real), "Receita Líquida (YTD)", formata_m(rec_liq_real),
+                  f"{pct_atingimento_rec:.1f}% do orçado", COLORS["primary"])
+        + _tv_kpi(cor_variacao(ebitda_real), "EBITDA (YTD)", formata_m(ebitda_real),
+                  f"{pct_atingimento_eb:.1f}% do orçado", COLORS["positive"])
+        + _tv_kpi(cor_variacao(desvio_ebitda), "Desvio de EBITDA", formata_m(desvio_ebitda),
                   f"{pct_desvio_ebitda:+.1f}% vs. Orçamento", COLORS["warning"])
-        + _tv_kpi(cor_variacao(margem_ebitda), "Margem EBITDA %", f"{margem_ebitda:.1f}%",
-                  "Sobre a Receita Líquida", COLORS["secondary"])
+        + _tv_kpi(cor_variacao(margem_ebitda), "Margem EBITDA", f"{margem_ebitda:.1f}%",
+                  f"Orçado: {margem_ebitda_orc:.1f}%", COLORS["secondary"])
         + "</div>",
         unsafe_allow_html=True,
     )
 
-    cgtv1, cgtv2 = st.columns([1.4, 1])
+    # ---------------- Gauges de atingimento (estilo instrumento de painel) ----------------
+    cg_gauge1, cg_gauge2 = st.columns(2)
+    for col, (titulo, valor_real, valor_orc, pct_atg, cor_gauge) in zip(
+        (cg_gauge1, cg_gauge2),
+        [
+            ("Atingimento de Receita Líquida", rec_liq_real, rec_liq_orc, pct_atingimento_rec, COLORS["primary"]),
+            ("Atingimento de EBITDA", ebitda_real, ebitda_orc, pct_atingimento_eb, COLORS["positive"]),
+        ],
+    ):
+        with col:
+            teto_gauge = max(abs(valor_orc) * 1.3, abs(valor_real) * 1.15, 1.0)
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=valor_real,
+                number={"valueformat": ",.0f", "prefix": "R$ ", "font": {"size": 26, "color": COLORS["text"]}},
+                delta={"reference": valor_orc, "valueformat": ",.0f", "prefix": "R$ ",
+                       "increasing": {"color": COLORS["positive"]}, "decreasing": {"color": COLORS["negative"]}},
+                title={"text": f"{titulo} · {pct_atg:.0f}%", "font": {"size": 13, "color": COLORS["text_muted"]}},
+                gauge={
+                    "axis": {"range": [0, teto_gauge], "tickfont": {"size": 9, "color": COLORS["text_muted"]}},
+                    "bar": {"color": cor_gauge, "thickness": 0.32},
+                    "bgcolor": COLORS["surface_alt"],
+                    "borderwidth": 0,
+                    "steps": [
+                        {"range": [0, abs(valor_orc)], "color": COLORS["border_soft"]},
+                        {"range": [abs(valor_orc), teto_gauge], "color": COLORS["surface"]},
+                    ],
+                    "threshold": {"line": {"color": COLORS["warning"], "width": 3}, "thickness": 0.85, "value": abs(valor_orc)},
+                },
+            ))
+            estilo_grafico(fig_gauge, height=190, margin=dict(l=24, r=24, t=40, b=6))
+            st.plotly_chart(fig_gauge, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+    # ---------------- Carrega dados por loja p/ ranking (top performers) ----------------
+    lojas_tv = [a for a in abas_disponiveis if a not in ABAS_CONSOLIDADAS_TV]
+    dados_por_loja_tv = carregar_dados_por_loja(path_orc, path_real, lojas_tv) if lojas_tv else {}
+
+    ranking_lojas = []
+    for loja, (df_o_loja, df_r_loja) in dados_por_loja_tv.items():
+        v_rec = get_valor_consolidado_multi([df_r_loja], "3 - Receita Operacional Liquida", cols_ytd)
+        ranking_lojas.append((loja, v_rec))
+    ranking_lojas.sort(key=lambda x: x[1], reverse=True)
+    top_lojas = ranking_lojas[:6]
+    max_rank_val = max((v for _, v in top_lojas), default=1.0) or 1.0
+
+    cgtv1, cgtv2, cgtv3 = st.columns([1.25, 1, 1])
 
     with cgtv1:
-        st.markdown('<div class="section-title">Evolução Mensal — Receita vs. EBITDA</div>', unsafe_allow_html=True)
+        st.markdown('<div class="tv-section-title">📈 Evolução Mensal — Receita vs. EBITDA</div>', unsafe_allow_html=True)
         rec_m_tv, eb_m_tv, rot_m_tv = [], [], []
         for m_nome, c in m_map_tv.items():
             rec_m_tv.append(get_valor_consolidado_multi(list_df_real_tv, "3 - Receita Operacional Liquida", [c]))
@@ -1192,7 +1315,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             rot_m_tv.append(m_nome.capitalize()[:3])
         fig_tv_line = go.Figure()
         fig_tv_line.add_trace(go.Scatter(
-            x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers",
+            x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers", fill="tozeroy",
+            fillcolor="rgba(76,141,255,0.08)",
             line=dict(color=COLORS["primary"], width=3), marker=dict(size=7),
         ))
         fig_tv_line.add_trace(go.Scatter(
@@ -1200,24 +1324,23 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             line=dict(color=COLORS["positive"], width=3, dash="dot"), marker=dict(size=7),
         ))
         estilo_grafico(
-            fig_tv_line, height=340,
-            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color=COLORS["text_muted"])),
+            fig_tv_line, height=320,
+            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=11, color=COLORS["text_muted"])),
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.24, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig_tv_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     with cgtv2:
-        st.markdown('<div class="section-title">Composição de Custos & Saídas</div>', unsafe_allow_html=True)
+        st.markdown('<div class="tv-section-title">🥧 Composição de Custos & Saídas</div>', unsafe_allow_html=True)
         cmv_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "4 - ", cols_ytd, exato_linha_sintetica=True)) or \
             abs(get_valor_consolidado_multi(list_df_real_tv, "4 - Custo das Vendas", cols_ytd))
         desp_var_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "6 - Despesas Variáveis", cols_ytd))
-        desp_op_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "8 - Despesas Operacionais", cols_ytd))
         deprec_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "13 - Depreciação e Amortização", cols_ytd))
-        total_tv = cmv_tv + desp_var_tv + desp_op_tv + deprec_tv
+        total_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
         fig_tv_donut = go.Figure(data=[go.Pie(
             labels=["CMV", "Desp. Variáveis", "Desp. Operacionais", "Deprec./Amort."],
-            values=[cmv_tv, desp_var_tv, desp_op_tv, deprec_tv], hole=0.6,
+            values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.62,
             marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
                         line=dict(color=COLORS["surface"], width=2)),
             textinfo="percent",
@@ -1226,13 +1349,53 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             text=f"<b>{formata_m(total_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
             showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
         )
-        estilo_grafico(fig_tv_donut, height=340, legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5))
+        estilo_grafico(fig_tv_donut, height=320, legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5))
         st.plotly_chart(fig_tv_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
+    with cgtv3:
+        st.markdown('<div class="tv-section-title">🏆 Ranking de Lojas — Receita Líquida (YTD)</div>', unsafe_allow_html=True)
+        if top_lojas:
+            linhas_rank = ['<div class="tv-panel" style="padding-top:6px;">']
+            for i, (loja, valor) in enumerate(top_lojas, start=1):
+                pct_barra = max(2, min(100, (valor / max_rank_val * 100))) if max_rank_val else 2
+                linhas_rank.append(
+                    '<div class="tv-rank-row">'
+                    f'<div class="tv-rank-badge">{i}</div>'
+                    f'<div class="tv-rank-name" title="{loja}">{loja}</div>'
+                    f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
+                    f'<div class="tv-rank-val">{formata_m(valor)}</div>'
+                    "</div>"
+                )
+            linhas_rank.append("</div>")
+            st.markdown("".join(linhas_rank), unsafe_allow_html=True)
+        else:
+            st.info("Sem lojas individuais disponíveis para ranking.")
+
+    # ---------------- Ticker de destaques (rodapé animado) ----------------
+    meses_com_receita = {
+        m_nome: get_valor_consolidado_multi(list_df_real_tv, "3 - Receita Operacional Liquida", [c])
+        for m_nome, c in m_map_tv.items()
+    }
+    meses_validos = {m: v for m, v in meses_com_receita.items() if v != 0}
+    destaques = []
+    if meses_validos:
+        melhor_mes = max(meses_validos, key=meses_validos.get)
+        destaques.append(f"🏆 Melhor mês: <b>{melhor_mes.capitalize()}</b> ({formata_m(meses_validos[melhor_mes])})")
+    if top_lojas:
+        destaques.append(f"🥇 Loja destaque: <b>{top_lojas[0][0]}</b> ({formata_m(top_lojas[0][1])} em receita líquida)")
+    destaques.append(f"📊 Margem EBITDA no período: <b>{margem_ebitda:.1f}%</b>")
+    destaques.append(f"🎯 Atingimento de receita: <b>{pct_atingimento_rec:.1f}%</b> do orçado")
+    destaques.append(f"⚖️ Desvio de EBITDA: <b>{formata_brl(desvio_ebitda)}</b> ({pct_desvio_ebitda:+.1f}%)")
+
+    ticker_html = f'<span class="tv-tick-sep">·</span>'.join(destaques)
     st.markdown(
-        f"""<div style="text-align:center;margin-top:6px;color:{COLORS['text_muted']};font-size:11.5px;">
-        Atualiza automaticamente a cada 2 minutos · Painel para exibição (somente leitura) ·
-        <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a></div>""",
+        f"""
+        <div class="tv-ticker-wrap"><div class="tv-ticker">{ticker_html}</div></div>
+        <div style="text-align:center;margin-top:8px;color:{COLORS['text_muted']};font-size:11px;">
+            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 60 segundos ·
+            <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -1246,9 +1409,9 @@ if st.query_params.get("modo") == "tv":
 # 5. BARRA LATERAL — FILTROS
 # ============================================================================
 st.sidebar.markdown(
-    """
+    f"""
     <div class="sidebar-brand">
-        <div class="dot"></div>
+        <img class="brand-logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
         <div>
             <span class="title">Controladoria B&A</span>
             <span class="subtitle">Painel Financeiro 2026</span>
@@ -2090,22 +2253,20 @@ def montar_relatorio_excel(
 
 
 # ============================================================================
-# 7. CABEÇALHO PRINCIPAL
+# 7. FAIXA DE CONTEXTO (fina — não repete um bloco grande em toda aba)
 # ============================================================================
 st.markdown(
     f"""
-    <div class="main-header">
-        <h3>PAINEL ANALÍTICO DE PERFORMANCE ESTRATÉGICA</h3>
-        <p>
-            <span class="chip">{label_visao}</span>
-            &nbsp;·&nbsp; Período: <b>{label_periodo_kpi}</b>
-        </p>
+    <div class="top-status-strip">
+        <span class="chip">{label_visao}</span>
+        <span class="sep">·</span>
+        <span>Período: <b>{label_periodo_kpi}</b></span>
+        <span class="sep">·</span>
+        <span>Controladoria B&amp;A · Painel Financeiro 2026</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
-st.markdown("<br>", unsafe_allow_html=True)
 
 # ============================================================================
 # 8. ABAS
@@ -2127,6 +2288,12 @@ else:
 # ABA 1: VISÃO GERAL & CHARTS
 # ---------------------------------------------------------------------------
 with tab1:
+    st.markdown(
+        '<div class="section-title">📊 Visão Geral & Charts — Indicadores Executivos e Composição do Resultado</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # ---- KPIs executivos da visão geral ----
     rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
     rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
@@ -2392,7 +2559,7 @@ with tab1:
 # ABA 2: DRE COMPLETA & DESVIOS
 # ---------------------------------------------------------------------------
 with tab2:
-    st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_periodo_graf}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, _ = st.columns([2, 1])
@@ -2503,7 +2670,7 @@ with tab2:
 # ABA 3: HISTÓRICO MENSAL
 # ---------------------------------------------------------------------------
 with tab3:
-    st.markdown('<div class="section-title">📅 Histórico Mensal Mês a Mês</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">📅 Histórico Mensal Mês a Mês — {label_visao}</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
     ch1, ch2 = st.columns(2)
