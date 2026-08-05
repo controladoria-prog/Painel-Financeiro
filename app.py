@@ -87,6 +87,10 @@ def estilo_grafico(fig, height=400, **overrides):
         font=dict(color=COLORS["text_muted"], family=FONT_STACK, size=12),
         margin=dict(l=20, r=20, t=30, b=60),
         height=height,
+        # Separadores no padrão numérico brasileiro (vírgula decimal, ponto de
+        # milhar) -- afeta eixos, indicadores e qualquer número que o próprio
+        # Plotly formatar automaticamente.
+        separators=",.",
         hoverlabel=dict(
             bgcolor=COLORS["surface_alt"],
             bordercolor=COLORS["border"],
@@ -933,34 +937,39 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
 def carregar_tabela_lojas(path_r):
     """Lê a aba Tabela_Lojas da planilha Realizado 2026: relação (DE_PARA)
     entre o nome da Loja e o Centro de Custos correspondente."""
-    try:
-        df = pd.read_excel(path_r, sheet_name="Tabela_Lojas")
-    except Exception:
+    df = None
+    for nome_aba in ("Tabela_Lojas", "Tabela Lojas", "TabelaLojas", "tabela_lojas", "DE_PARA"):
+        try:
+            df = pd.read_excel(path_r, sheet_name=nome_aba)
+            break
+        except Exception:
+            continue
+    if df is None:
         return pd.DataFrame(columns=["Loja", "Centro de Custos"])
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
 
 def montar_mapa_loja_centro_custo(df_tabela_lojas):
-    """A partir da Tabela_Lojas, retorna {nome_da_loja: centro_de_custo}.
-    Tenta reconhecer as colunas pelo nome (tolerante a variações); se não
-    encontrar, cai para as duas primeiras colunas da aba."""
+    """A partir da Tabela_Lojas (ou DE_PARA), retorna {nome_da_loja:
+    centro_de_custo}. Tenta reconhecer as colunas pelo nome (tolerante a
+    várias variações, inclusive um DE_PARA genérico "De"/"Para"); se não
+    encontrar, cai para as duas primeiras colunas da aba. Monta o mapa nos
+    DOIS sentidos (loja->CC e CC->loja) e devolve a união, para não depender
+    de qual das duas colunas veio primeiro na planilha."""
     mapa = {}
     if df_tabela_lojas is None or df_tabela_lojas.empty:
         return mapa
 
     cols_lower = {str(c).strip().lower(): c for c in df_tabela_lojas.columns}
-    col_loja = next(
-        (cols_lower[c] for c in ["loja", "nome da loja", "unidade", "nome loja"] if c in cols_lower), None
-    )
-    col_cc = next(
-        (
-            cols_lower[c]
-            for c in ["centro de custos", "centro de custo", "cod centro de custo", "código centro de custo", "centro custo"]
-            if c in cols_lower
-        ),
-        None,
-    )
+    nomes_loja = ["loja", "nome da loja", "unidade", "nome loja", "nome unidade", "de"]
+    nomes_cc = [
+        "centro de custos", "centro de custo", "cod centro de custo", "código centro de custo",
+        "centro custo", "cc", "cod cc", "código cc", "para",
+    ]
+    col_loja = next((cols_lower[c] for c in nomes_loja if c in cols_lower), None)
+    col_cc = next((cols_lower[c] for c in nomes_cc if c in cols_lower), None)
+
     if col_loja is None or col_cc is None:
         if len(df_tabela_lojas.columns) >= 2:
             col_loja, col_cc = df_tabela_lojas.columns[0], df_tabela_lojas.columns[1]
@@ -972,6 +981,7 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
         centro_custo = str(linha[col_cc]).strip()
         if loja and centro_custo and loja.lower() != "nan" and centro_custo.lower() != "nan":
             mapa[loja] = centro_custo
+            mapa.setdefault(centro_custo, loja)
     return mapa
 
 
@@ -1042,19 +1052,48 @@ def _normalizar_texto(txt):
     return re.sub(r"\s+", " ", str(txt or "").strip().upper())
 
 
+def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
+    """Retorna a máscara (True/False por linha) de correspondência da coluna
+    "Centro de Custos" do DIÁRIO contra um ou mais candidatos de loja.
+
+    Aceita tanto uma string única quanto uma lista de candidatos -- isso é
+    usado para tentar, na ordem, o Centro de Custos resolvido pela
+    Tabela_Lojas (DE_PARA) E o nome da própria loja/aba, sem depender de um
+    único mapeamento estar 100% correto (se o DE_PARA não achar nada, ainda
+    tentamos casar direto pelo nome da loja, e vice-versa)."""
+    if isinstance(candidatos_loja, str):
+        candidatos_loja = [candidatos_loja]
+    candidatos_norm = [c for c in (_normalizar_texto(c) for c in candidatos_loja) if c]
+
+    centros_norm = df_diario["Centro de Custos"].map(_normalizar_texto)
+
+    # 1ª tentativa: correspondência exata com qualquer um dos candidatos.
+    for cand in candidatos_norm:
+        mask = centros_norm == cand
+        if mask.any():
+            return mask
+
+    # 2ª tentativa: correspondência "contém" (num sentido ou no outro) com
+    # qualquer um dos candidatos.
+    for cand in candidatos_norm:
+        mask = centros_norm.apply(lambda x: (cand in x) or (x in cand) if x else False)
+        if mask.any():
+            return mask
+
+    return pd.Series(False, index=df_diario.index)
+
+
 def _filtrar_diario_por_loja_e_conta(df_diario, loja, conta):
     """Filtra o DIÁRIO pelo Centro de Custos (loja) e pela Linha DRE (conta),
-    com correspondência tolerante (exata primeiro, depois por contém)."""
+    com correspondência tolerante (exata primeiro, depois por contém).
+    "loja" pode ser uma string ou uma lista de candidatos (ver
+    _mask_loja_por_centro_custo)."""
     if df_diario is None or df_diario.empty:
         return df_diario
 
-    loja_norm = _normalizar_texto(loja)
     conta_norm = _normalizar_texto(conta)
 
-    centros_norm = df_diario["Centro de Custos"].map(_normalizar_texto)
-    mask_loja = centros_norm == loja_norm
-    if not mask_loja.any():
-        mask_loja = centros_norm.apply(lambda x: (loja_norm in x) or (x in loja_norm) if x else False)
+    mask_loja = _mask_loja_por_centro_custo(df_diario, loja)
 
     linhas_norm = df_diario["Linha DRE"].map(_normalizar_texto)
     mask_conta = linhas_norm == conta_norm
@@ -1068,17 +1107,14 @@ def _filtrar_diario_por_loja_e_plano(df_diario, loja, plano):
     """Filtra o DIÁRIO pelo Centro de Custos (loja) e pelo nome exato do
     Plano de Contas, IGNORANDO a Linha DRE -- usado para planos de contas
     que fazem parte de um modelo de relatório mas não têm linha da DRE
-    correspondente (ex.: "Mercadorias" no modelo de Compras)."""
+    correspondente (ex.: "Mercadorias" no modelo de Compras). "loja" pode
+    ser uma string ou uma lista de candidatos."""
     if df_diario is None or df_diario.empty:
         return df_diario
 
-    loja_norm = _normalizar_texto(loja)
     plano_norm = _normalizar_texto(plano)
 
-    centros_norm = df_diario["Centro de Custos"].map(_normalizar_texto)
-    mask_loja = centros_norm == loja_norm
-    if not mask_loja.any():
-        mask_loja = centros_norm.apply(lambda x: (loja_norm in x) or (x in loja_norm) if x else False)
+    mask_loja = _mask_loja_por_centro_custo(df_diario, loja)
 
     planos_norm = df_diario["Plano de Contas"].map(_normalizar_texto)
     mask_plano = planos_norm == plano_norm
@@ -1166,14 +1202,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .block-container {{ padding: 1rem 2.2rem 1rem 2.2rem !important; max-width: 100% !important; }}
             .stApp {{
                 background:
-                    radial-gradient(circle at 12% 0%, rgba(76,141,255,0.10) 0%, transparent 40%),
-                    radial-gradient(circle at 90% 100%, rgba(62,207,142,0.08) 0%, transparent 45%),
-                    repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 42px),
-                    repeating-linear-gradient(90deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 42px),
+                    radial-gradient(circle at 15% 0%, rgba(76,141,255,0.09) 0%, transparent 42%),
+                    radial-gradient(circle at 90% 100%, rgba(62,207,142,0.06) 0%, transparent 45%),
                     linear-gradient(180deg, #0A0D16 0%, #05070c 100%) !important;
             }}
             @keyframes tv-pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
-            @keyframes tv-glow {{ 0%,100% {{ box-shadow: 0 0 14px rgba(76,141,255,0.25); }} 50% {{ box-shadow: 0 0 26px rgba(76,141,255,0.5); }} }}
             @keyframes tv-marquee {{ 0% {{ transform: translateX(100%); }} 100% {{ transform: translateX(-100%); }} }}
             .tv-header {{
                 display: flex; justify-content: space-between; align-items: center;
@@ -1196,15 +1229,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             }}
             .tv-kpi-grid {{ display: flex; gap: 16px; margin-bottom: 20px; }}
             .tv-kpi {{
-                flex: 1; background: linear-gradient(160deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
+                flex: 1; background: {COLORS["surface"]};
                 border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 18px 20px;
-                box-shadow: 0 10px 26px rgba(0,0,0,0.35);
                 border-top: 3px solid var(--tv-accent, {COLORS["primary"]});
-                position: relative; overflow: hidden;
-            }}
-            .tv-kpi::after {{
-                content: ""; position: absolute; top: -40%; right: -30%; width: 90px; height: 90px; border-radius: 50%;
-                background: radial-gradient(circle, var(--tv-accent, {COLORS["primary"]}) 0%, transparent 70%); opacity: 0.12;
             }}
             .tv-kpi .lbl {{ font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
             .tv-kpi .val {{ font-size: 28px; font-weight: 800; margin-top: 6px; letter-spacing: -0.5px; }}
@@ -1214,9 +1241,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 letter-spacing: 0.6px; margin: 4px 0 10px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
             }}
             .tv-panel {{
-                background: linear-gradient(160deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
+                background: {COLORS["surface"]};
                 border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 14px 16px 4px 16px;
-                box-shadow: 0 10px 26px rgba(0,0,0,0.3); margin-bottom: 18px; height: 100%;
+                margin-bottom: 18px; height: 100%;
             }}
             .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 7px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
             .tv-rank-badge {{
@@ -1225,7 +1252,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             }}
             .tv-rank-name {{ flex:1; font-size:12.5px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
             .tv-rank-bar-bg {{ flex:1.4; background:{COLORS["border"]}; border-radius:4px; height:8px; overflow:hidden; }}
-            .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["primary"]}, {COLORS["positive"]}); animation: tv-glow 2.4s infinite; }}
+            .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["primary"]}, {COLORS["positive"]}); }}
             .tv-rank-val {{ font-size:11.5px; color:{COLORS["muted_line"]}; width: 78px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
@@ -1234,76 +1261,16 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 150s linear infinite; font-size: 16px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
             .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
-            .tv-fullscreen-btn {{
-                position: fixed; bottom: 18px; right: 22px; z-index: 999999;
-                background: {COLORS["primary"]}; color: #fff; border: none; border-radius: 30px;
-                padding: 10px 18px; font-size: 13px; font-weight: 700; cursor: pointer;
-                box-shadow: 0 6px 20px rgba(76,141,255,0.45);
-            }}
             .tv-fullscreen-hint {{
-                position: fixed; bottom: 18px; right: 168px; z-index: 999998;
-                color: {COLORS["text_muted"]}; font-size: 10.5px; max-width: 130px; text-align: right;
-                background: rgba(0,0,0,0.35); border-radius: 8px; padding: 4px 8px;
+                position: fixed; bottom: 18px; right: 22px; z-index: 999999;
+                color: {COLORS["text_muted"]}; font-size: 11px; text-align: right;
+                background: rgba(0,0,0,0.35); border-radius: 8px; padding: 6px 12px;
+                border: 1px solid {COLORS["border"]};
             }}
         </style>
-        <span class="tv-fullscreen-hint" id="tvFullscreenHint">Se não entrar sozinho, use F11 no navegador</span>
-        <button class="tv-fullscreen-btn" id="tvFullscreenBtn" onclick="
-            (function() {{
-                var el = document.documentElement;
-                var jaEmTela = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement;
-                try {{
-                    if (!jaEmTela) {{
-                        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-                        if (!req) {{ alert('Seu navegador não suporta tela cheia por aqui. Use a tecla F11.'); return; }}
-                        var resultado = req.call(el);
-                        if (resultado && resultado.catch) {{
-                            resultado.catch(function() {{
-                                alert('O navegador bloqueou a tela cheia automática. Pressione F11 para entrar em tela cheia manualmente.');
-                            }});
-                        }}
-                    }} else {{
-                        var sair = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
-                        if (sair) {{ sair.call(document); }}
-                    }}
-                }} catch (erro) {{
-                    alert('Não foi possível alternar a tela cheia automaticamente. Use a tecla F11.');
-                }}
-            }})();
-        ">⛶ Tela Cheia</button>
+        <span class="tv-fullscreen-hint">⛶ F11 para tela cheia · Esc para sair</span>
         """,
         unsafe_allow_html=True,
-    )
-
-    # Controlador de visibilidade do botão de tela cheia: roda num componente
-    # à parte (só ele consegue executar JavaScript de verdade -- HTML solto
-    # via st.markdown não roda <script>) e fica de olho no estado real de
-    # tela cheia do navegador (entrada pelo botão OU pelo F11, tanto faz).
-    # Quando já está em tela cheia, esconde o botão e a dica -- não fica mais
-    # "grudado" na tela sem necessidade.
-    components.html(
-        """
-        <script>
-        function _tvChecarTelaCheia() {
-            try {
-                var doc = window.parent.document;
-                var emTela = !!(doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
-                var btn = doc.getElementById('tvFullscreenBtn');
-                var dica = doc.getElementById('tvFullscreenHint');
-                if (btn) btn.style.display = emTela ? 'none' : 'inline-block';
-                if (dica) dica.style.display = emTela ? 'none' : 'block';
-            } catch (e) {}
-        }
-        try {
-            window.parent.document.addEventListener('fullscreenchange', _tvChecarTelaCheia);
-            window.parent.document.addEventListener('webkitfullscreenchange', _tvChecarTelaCheia);
-            window.parent.document.addEventListener('MSFullscreenChange', _tvChecarTelaCheia);
-        } catch (e) {}
-        _tvChecarTelaCheia();
-        setInterval(_tvChecarTelaCheia, 1000);
-        </script>
-        """,
-        height=0,
-        width=0,
     )
 
     # ---------------- Cálculo dos indicadores ----------------
@@ -1329,7 +1296,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <div>
                         <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026 · Dados atualizados a cada 60s</div>
+                        <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026 · Dados atualizados a cada 30 minutos</div>
                     </div>
                 </div>
             </div>
@@ -1404,25 +1371,19 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         with col:
             teto_gauge = max(abs(valor_orc) * 1.3, abs(valor_real) * 1.15, 1.0)
             fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
+                mode="gauge+number",
                 value=valor_real,
                 number={"valueformat": ",.0f", "prefix": "R$ ", "font": {"size": 26, "color": COLORS["text"]}},
-                delta={"reference": valor_orc, "valueformat": ",.0f", "prefix": "R$ ",
-                       "increasing": {"color": COLORS["positive"]}, "decreasing": {"color": COLORS["negative"]}},
-                title={"text": f"{titulo} · {pct_atg:.0f}%", "font": {"size": 13, "color": COLORS["text_muted"]}},
+                title={"text": f"{titulo} · {pct_atg:.0f}% do orçado", "font": {"size": 13, "color": COLORS["text_muted"]}},
                 gauge={
                     "axis": {"range": [0, teto_gauge], "tickfont": {"size": 9, "color": COLORS["text_muted"]}},
-                    "bar": {"color": cor_gauge, "thickness": 0.32},
+                    "bar": {"color": cor_gauge, "thickness": 0.35},
                     "bgcolor": COLORS["surface_alt"],
                     "borderwidth": 0,
-                    "steps": [
-                        {"range": [0, abs(valor_orc)], "color": COLORS["border_soft"]},
-                        {"range": [abs(valor_orc), teto_gauge], "color": COLORS["surface"]},
-                    ],
-                    "threshold": {"line": {"color": COLORS["warning"], "width": 3}, "thickness": 0.85, "value": abs(valor_orc)},
+                    "threshold": {"line": {"color": COLORS["warning"], "width": 3}, "thickness": 0.9, "value": abs(valor_orc)},
                 },
             ))
-            estilo_grafico(fig_gauge, height=190, margin=dict(l=24, r=24, t=40, b=6))
+            estilo_grafico(fig_gauge, height=180, margin=dict(l=24, r=24, t=40, b=6), separators=",.")
             st.plotly_chart(fig_gauge, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
@@ -1450,12 +1411,15 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             rot_m_tv.append(m_nome.capitalize()[:3])
         fig_tv_line = go.Figure()
         fig_tv_line.add_trace(go.Scatter(
-            x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers", fill="tozeroy",
-            fillcolor="rgba(76,141,255,0.08)",
+            x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers+text",
+            text=[formata_m(v) for v in rec_m_tv], textposition="top center",
+            textfont=dict(size=10, color=COLORS["primary"]),
             line=dict(color=COLORS["primary"], width=3), marker=dict(size=7),
         ))
         fig_tv_line.add_trace(go.Scatter(
-            x=rot_m_tv, y=eb_m_tv, name="EBITDA", mode="lines+markers",
+            x=rot_m_tv, y=eb_m_tv, name="EBITDA", mode="lines+markers+text",
+            text=[formata_m(v) for v in eb_m_tv], textposition="bottom center",
+            textfont=dict(size=10, color=COLORS["positive"]),
             line=dict(color=COLORS["positive"], width=3, dash="dot"), marker=dict(size=7),
         ))
         estilo_grafico(
@@ -1478,13 +1442,13 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.62,
             marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
                         line=dict(color=COLORS["surface"], width=2)),
-            textinfo="percent",
+            textinfo="percent", textfont=dict(size=11),
         )])
         fig_tv_donut.add_annotation(
             text=f"<b>{formata_m(total_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
             showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
         )
-        estilo_grafico(fig_tv_donut, height=320, legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5))
+        estilo_grafico(fig_tv_donut, height=320, legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=11)))
         st.plotly_chart(fig_tv_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     with cgtv3:
@@ -1515,54 +1479,27 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     destaques = []
     if meses_validos:
         melhor_mes = max(meses_validos, key=meses_validos.get)
-        destaques.append(
-            f"🏆 O melhor mês do período em receita líquida foi <b>{melhor_mes.capitalize()}</b>, "
-            f"com {formata_m(meses_validos[melhor_mes])} faturados"
-        )
+        destaques.append(f"🏆 Melhor mês: <b>{melhor_mes.capitalize()}</b> ({formata_m(meses_validos[melhor_mes])})")
         if len(meses_validos) > 1:
             pior_mes = min(meses_validos, key=meses_validos.get)
-            destaques.append(
-                f"📉 O mês com menor receita líquida no período foi <b>{pior_mes.capitalize()}</b>, "
-                f"com {formata_m(meses_validos[pior_mes])}"
-            )
+            destaques.append(f"📉 Pior mês: <b>{pior_mes.capitalize()}</b> ({formata_m(meses_validos[pior_mes])})")
     if top_lojas:
-        destaques.append(
-            f"🥇 A loja com melhor desempenho em receita líquida (YTD) é <b>{top_lojas[0][0]}</b>, "
-            f"faturando {formata_m(top_lojas[0][1])} no período"
-        )
+        destaques.append(f"🥇 Loja destaque: <b>{top_lojas[0][0]}</b> ({formata_m(top_lojas[0][1])})")
         if len(top_lojas) > 1:
-            destaques.append(
-                f"🥈 Em segundo lugar no ranking de lojas está <b>{top_lojas[1][0]}</b>, "
-                f"com {formata_m(top_lojas[1][1])} em receita líquida"
-            )
-    destaques.append(
-        f"📊 A margem EBITDA realizada no período é de <b>{margem_ebitda:.1f}%</b>, "
-        f"contra uma margem orçada de {margem_ebitda_orc:.1f}%"
-    )
-    destaques.append(
-        f"🎯 A receita líquida realizada atingiu <b>{pct_atingimento_rec:.1f}%</b> do valor orçado "
-        f"para o período ({formata_m(rec_liq_real)} de {formata_m(rec_liq_orc)})"
-    )
-    destaques.append(
-        f"💹 O EBITDA realizado atingiu <b>{pct_atingimento_eb:.1f}%</b> da meta orçada "
-        f"({formata_m(ebitda_real)} de {formata_m(ebitda_orc)})"
-    )
-    destaques.append(
-        f"⚖️ O desvio de EBITDA no período é de <b>{formata_brl(desvio_ebitda)}</b>, "
-        f"equivalente a {pct_desvio_ebitda:+.1f}% em relação ao orçamento"
-    )
-    destaques.append(f"💰 A receita bruta acumulada no período soma <b>{formata_m(rec_bruta_real)}</b>")
-    destaques.append(
-        f"🧾 As saídas do período somam {formata_m(total_tv)}, sendo {formata_m(cmv_tv)} de CMV "
-        f"e {formata_m(desp_op_tv_kpi)} de despesas operacionais"
-    )
+            destaques.append(f"🥈 2º lugar: <b>{top_lojas[1][0]}</b> ({formata_m(top_lojas[1][1])})")
+    destaques.append(f"📊 Margem EBITDA: <b>{margem_ebitda:.1f}%</b> (orçado: {margem_ebitda_orc:.1f}%)")
+    destaques.append(f"🎯 Atingimento de receita: <b>{pct_atingimento_rec:.1f}%</b>")
+    destaques.append(f"💹 Atingimento de EBITDA: <b>{pct_atingimento_eb:.1f}%</b>")
+    destaques.append(f"⚖️ Desvio de EBITDA: <b>{formata_brl(desvio_ebitda)}</b> ({pct_desvio_ebitda:+.1f}%)")
+    destaques.append(f"💰 Receita bruta: <b>{formata_m(rec_bruta_real)}</b>")
+    destaques.append(f"🧾 Saídas: <b>{formata_m(total_tv)}</b> (CMV {formata_m(cmv_tv)} · OpEx {formata_m(desp_op_tv_kpi)})")
 
     ticker_html = f'<span class="tv-tick-sep">·</span>'.join(destaques)
     st.markdown(
         f"""
         <div class="tv-ticker-wrap"><div class="tv-ticker">{ticker_html}</div></div>
         <div style="text-align:center;margin-top:8px;color:{COLORS['text_muted']};font-size:11px;">
-            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 60 segundos ·
+            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 30 minutos ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
         """,
@@ -1573,7 +1510,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # cheia e evita cair de novo na tela de login a cada ciclo, como
     # acontecia com o <meta refresh> -- esse rerun acontece dentro da mesma
     # sessão/aba, sem navegação de página).
-    time.sleep(60)
+    time.sleep(1800)
     st.rerun()
 
 
@@ -1984,11 +1921,15 @@ def montar_relatorio_excel(
     diario_disponivel = df_diario is not None and not df_diario.empty
 
     def _cc(loja):
-        """Resolve o nome da loja para o Centro de Custos correspondente
-        (via Tabela_Lojas/DE_PARA), usado em toda filtragem da DIÁRIO. Se a
-        loja não estiver mapeada, usa o próprio nome da loja como alternativa
-        (mantém o comportamento tolerante já existente na busca)."""
-        return mapa_loja_centro_custo.get(loja, loja)
+        """Resolve os candidatos de Centro de Custos para uma loja: o valor
+        mapeado pela Tabela_Lojas (DE_PARA) E o próprio nome da loja/aba,
+        nessa ordem. A busca no DIÁRIO tenta os dois, então funciona mesmo
+        que o DE_PARA esteja incompleto/não encontrado para alguma loja, ou
+        caso o Centro de Custos já seja igual ao nome da loja em alguns
+        casos."""
+        centro_mapeado = mapa_loja_centro_custo.get(loja)
+        candidatos = [c for c in (centro_mapeado, loja) if c]
+        return candidatos or [loja]
     wb = Workbook()
     gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
 
@@ -3320,7 +3261,14 @@ with tab5:
 
     if gerar_clicado and contas_relatorio:
         with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
-            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, opcoes_unidades)
+            # IMPORTANTE: o relatório considera COMO LOJA todas as abas
+            # disponíveis -- inclusive as visões consolidadas (DRE
+            # CONSOLIDADO, ABPR + VD, ABPR CONSOLIDADO, VD CONSOLIDADO,
+            # LJ - G&A, LJ CONSOLIDADO). Antes só as unidades individuais
+            # entravam no filtro de loja do relatório; agora usamos
+            # abas_disponiveis (o conjunto completo) em vez de
+            # opcoes_unidades (que exclui as consolidadas).
+            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, abas_disponiveis)
             df_tabela_contas = carregar_tabela_contas(path_real)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
             df_diario_rel = carregar_diario(path_real)
