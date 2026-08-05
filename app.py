@@ -11,6 +11,7 @@ import base64
 import io
 import os
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -781,20 +782,6 @@ def checar_login():
     return False
 
 
-if not checar_login():
-    st.stop()
-
-# Apos um login bem-sucedido nesta mesma execucao: salva ou apaga as
-# credenciais no navegador, conforme a caixa "Lembrar de mim".
-_creds_pendentes = st.session_state.pop("_credenciais_para_salvar", None)
-if _creds_pendentes:
-    _salvar_credenciais_no_navegador(*_creds_pendentes)
-if st.session_state.pop("_esquecer_credenciais", False):
-    _esquecer_credenciais_no_navegador()
-
-usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil": "admin"}
-eh_admin = usuario_atual["perfil"] == "admin"
-
 # ============================================================================
 # 4. CARREGAMENTO DE DADOS (Google Sheets com fallback local em rede)
 # ============================================================================
@@ -1113,7 +1100,6 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
     st.markdown(
         f"""
-        <meta http-equiv="refresh" content="60">
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"], footer {{ display: none !important; }}
             .block-container {{ padding: 1rem 2.2rem 1rem 2.2rem !important; max-width: 100% !important; }}
@@ -1193,11 +1179,35 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 padding: 10px 18px; font-size: 13px; font-weight: 700; cursor: pointer;
                 box-shadow: 0 6px 20px rgba(76,141,255,0.45);
             }}
+            .tv-fullscreen-hint {{
+                position: fixed; bottom: 18px; right: 168px; z-index: 999998;
+                color: {COLORS["text_muted"]}; font-size: 10.5px; max-width: 130px; text-align: right;
+                background: rgba(0,0,0,0.35); border-radius: 8px; padding: 4px 8px;
+            }}
         </style>
-        <button class="tv-fullscreen-btn" onclick="
-            var el = document.documentElement;
-            if (!document.fullscreenElement) {{ el.requestFullscreen().catch(function(e){{}}); }}
-            else {{ document.exitFullscreen(); }}
+        <span class="tv-fullscreen-hint">Se não entrar sozinho, use F11 no navegador</span>
+        <button class="tv-fullscreen-btn" id="tvFullscreenBtn" onclick="
+            (function() {{
+                var el = document.documentElement;
+                var jaEmTela = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement;
+                try {{
+                    if (!jaEmTela) {{
+                        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+                        if (!req) {{ alert('Seu navegador não suporta tela cheia por aqui. Use a tecla F11.'); return; }}
+                        var resultado = req.call(el);
+                        if (resultado && resultado.catch) {{
+                            resultado.catch(function() {{
+                                alert('O navegador bloqueou a tela cheia automática. Pressione F11 para entrar em tela cheia manualmente.');
+                            }});
+                        }}
+                    }} else {{
+                        var sair = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+                        if (sair) {{ sair.call(document); }}
+                    }}
+                }} catch (erro) {{
+                    alert('Não foi possível alternar a tela cheia automaticamente. Use a tecla F11.');
+                }}
+            }})();
         ">⛶ Tela Cheia</button>
         """,
         unsafe_allow_html=True,
@@ -1399,10 +1409,32 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         unsafe_allow_html=True,
     )
 
+    # Atualização automática SEM recarregar a página (evita perder a tela
+    # cheia e evita cair de novo na tela de login a cada ciclo, como
+    # acontecia com o <meta refresh> -- esse rerun acontece dentro da mesma
+    # sessão/aba, sem navegação de página).
+    time.sleep(60)
+    st.rerun()
+
 
 if st.query_params.get("modo") == "tv":
     renderizar_painel_tv(path_orc, path_real, abas_disponiveis)
     st.stop()
+
+if not checar_login():
+    st.stop()
+
+# Apos um login bem-sucedido nesta mesma execucao: salva ou apaga as
+# credenciais no navegador, conforme a caixa "Lembrar de mim".
+_creds_pendentes = st.session_state.pop("_credenciais_para_salvar", None)
+if _creds_pendentes:
+    _salvar_credenciais_no_navegador(*_creds_pendentes)
+if st.session_state.pop("_esquecer_credenciais", False):
+    _esquecer_credenciais_no_navegador()
+
+usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil": "admin"}
+eh_admin = usuario_atual["perfil"] == "admin"
+
 
 
 # ============================================================================
@@ -1499,7 +1531,9 @@ if tipo_periodo == "ANO COMPLETO (2026)":
     label_periodo_kpi = "ANO COMPLETO (2026)"
     label_periodo_graf = "ANO COMPLETO (2026)"
 elif tipo_periodo == "Mês Selecionado":
-    idx_default = min(6, len(m_map) - 1)
+    # Abre por padrão no mês atual (real), não num índice fixo.
+    idx_mes_real = datetime.now(FUSO_BR).month - 1
+    idx_default = min(max(idx_mes_real, 0), len(m_map) - 1)
     mes_ref = st.sidebar.selectbox("Mês Desejado:", list(m_map.keys()), index=idx_default)
     idx = list(m_map.keys()).index(mes_ref)
 
