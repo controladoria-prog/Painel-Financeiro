@@ -805,7 +805,14 @@ def obter_caminhos_excel():
 
     xls_real = pd.ExcelFile(path_real)
 
-    abas_ignorar = ["Sint Ebt loja", "CONS 25X26 V.1", "CONS 25X26 V.2"]
+    # Abas auxiliares/de referência: usadas para buscar dados (DE_PARA de
+    # loja x centro de custo, lançamentos do DIÁRIO, mapeamento de plano de
+    # contas x linha da DRE etc.), mas que NÃO são lojas/unidades -- por isso
+    # nunca devem aparecer no filtro de lojas do painel nem do relatório.
+    abas_ignorar = [
+        "Sint Ebt loja", "CONS 25X26 V.1", "CONS 25X26 V.2",
+        "DE_PARA", "DIÁRIO", "DIARIO", "DRE_MENSAL", "Tabela_Contas", "Tabela_Lojas",
+    ]
 
     # IMPORTANTE: a lista de abas/lojas disponíveis precisa ser a UNIÃO das abas
     # dos dois arquivos (Orçado e Realizado), e não só do Orçado. Uma loja nova
@@ -911,6 +918,60 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
     for linha_dre, grupo in df_tabela_contas.groupby("Linha DRE"):
         planos = grupo["Natureza Financeira"].dropna().astype(str).str.strip().unique().tolist()
         mapa[str(linha_dre).strip()] = planos
+    return mapa
+
+
+# ---------------------------------------------------------------------------
+# 4.1.1 TABELA_LOJAS — DE_PARA entre o nome da Loja (aba) e o Centro de Custos
+# usado na DIÁRIO. Essencial para o detalhamento de lançamentos: a DIÁRIO
+# identifica a loja pelo "Centro de Custos", que normalmente NÃO é igual ao
+# nome da aba da loja (ex.: aba "LJ ASSAI 23157" pode ter Centro de Custos
+# "23157" ou outro código) -- sem esse DE_PARA, o filtro por loja no DIÁRIO
+# nunca encontra nada, e por isso os lançamentos apareciam sempre vazios.
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=300)
+def carregar_tabela_lojas(path_r):
+    """Lê a aba Tabela_Lojas da planilha Realizado 2026: relação (DE_PARA)
+    entre o nome da Loja e o Centro de Custos correspondente."""
+    try:
+        df = pd.read_excel(path_r, sheet_name="Tabela_Lojas")
+    except Exception:
+        return pd.DataFrame(columns=["Loja", "Centro de Custos"])
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def montar_mapa_loja_centro_custo(df_tabela_lojas):
+    """A partir da Tabela_Lojas, retorna {nome_da_loja: centro_de_custo}.
+    Tenta reconhecer as colunas pelo nome (tolerante a variações); se não
+    encontrar, cai para as duas primeiras colunas da aba."""
+    mapa = {}
+    if df_tabela_lojas is None or df_tabela_lojas.empty:
+        return mapa
+
+    cols_lower = {str(c).strip().lower(): c for c in df_tabela_lojas.columns}
+    col_loja = next(
+        (cols_lower[c] for c in ["loja", "nome da loja", "unidade", "nome loja"] if c in cols_lower), None
+    )
+    col_cc = next(
+        (
+            cols_lower[c]
+            for c in ["centro de custos", "centro de custo", "cod centro de custo", "código centro de custo", "centro custo"]
+            if c in cols_lower
+        ),
+        None,
+    )
+    if col_loja is None or col_cc is None:
+        if len(df_tabela_lojas.columns) >= 2:
+            col_loja, col_cc = df_tabela_lojas.columns[0], df_tabela_lojas.columns[1]
+        else:
+            return mapa
+
+    for _, linha in df_tabela_lojas.iterrows():
+        loja = str(linha[col_loja]).strip()
+        centro_custo = str(linha[col_cc]).strip()
+        if loja and centro_custo and loja.lower() != "nan" and centro_custo.lower() != "nan":
+            mapa[loja] = centro_custo
     return mapa
 
 
@@ -1170,9 +1231,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 9px 0; margin-top: 6px; background: rgba(255,255,255,0.015);
             }}
-            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 32s linear infinite; font-size: 13px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 150s linear infinite; font-size: 16px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
-            .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 22px; }}
+            .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
             .tv-fullscreen-btn {{
                 position: fixed; bottom: 18px; right: 22px; z-index: 999999;
                 background: {COLORS["primary"]}; color: #fff; border: none; border-radius: 30px;
@@ -1185,7 +1246,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 background: rgba(0,0,0,0.35); border-radius: 8px; padding: 4px 8px;
             }}
         </style>
-        <span class="tv-fullscreen-hint">Se não entrar sozinho, use F11 no navegador</span>
+        <span class="tv-fullscreen-hint" id="tvFullscreenHint">Se não entrar sozinho, use F11 no navegador</span>
         <button class="tv-fullscreen-btn" id="tvFullscreenBtn" onclick="
             (function() {{
                 var el = document.documentElement;
@@ -1213,6 +1274,38 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         unsafe_allow_html=True,
     )
 
+    # Controlador de visibilidade do botão de tela cheia: roda num componente
+    # à parte (só ele consegue executar JavaScript de verdade -- HTML solto
+    # via st.markdown não roda <script>) e fica de olho no estado real de
+    # tela cheia do navegador (entrada pelo botão OU pelo F11, tanto faz).
+    # Quando já está em tela cheia, esconde o botão e a dica -- não fica mais
+    # "grudado" na tela sem necessidade.
+    components.html(
+        """
+        <script>
+        function _tvChecarTelaCheia() {
+            try {
+                var doc = window.parent.document;
+                var emTela = !!(doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
+                var btn = doc.getElementById('tvFullscreenBtn');
+                var dica = doc.getElementById('tvFullscreenHint');
+                if (btn) btn.style.display = emTela ? 'none' : 'inline-block';
+                if (dica) dica.style.display = emTela ? 'none' : 'block';
+            } catch (e) {}
+        }
+        try {
+            window.parent.document.addEventListener('fullscreenchange', _tvChecarTelaCheia);
+            window.parent.document.addEventListener('webkitfullscreenchange', _tvChecarTelaCheia);
+            window.parent.document.addEventListener('MSFullscreenChange', _tvChecarTelaCheia);
+        } catch (e) {}
+        _tvChecarTelaCheia();
+        setInterval(_tvChecarTelaCheia, 1000);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
     # ---------------- Cálculo dos indicadores ----------------
     rec_bruta_real = get_valor_consolidado_multi(list_df_real_tv, "1 - Receita Operacional Bruta", cols_ytd)
     rec_liq_real = get_valor_consolidado_multi(list_df_real_tv, "3 - Receita Operacional Liquida", cols_ytd)
@@ -1227,21 +1320,53 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     pct_atingimento_eb = (ebitda_real / ebitda_orc * 100) if ebitda_orc else 0
     desp_op_tv_kpi = abs(get_valor_consolidado_multi(list_df_real_tv, "8 - Despesas Operacionais", cols_ytd))
 
-    st.markdown(
-        f"""
-        <div class="tv-header">
-            <div class="brand">
-                <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
-                <div>
-                    <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                    <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026 · Atualiza a cada 60s</div>
+    col_head_a, col_head_b = st.columns([3, 1])
+    with col_head_a:
+        st.markdown(
+            f"""
+            <div class="tv-header">
+                <div class="brand">
+                    <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+                    <div>
+                        <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
+                        <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/2026 · Dados atualizados a cada 60s</div>
+                    </div>
                 </div>
             </div>
-            <div class="tv-clock"><b>{agora.strftime('%H:%M')}</b>{agora.strftime('%A, %d/%m/%Y').capitalize()}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_head_b:
+        # Relógio de verdade "ao vivo": roda dentro de um componente (só ele
+        # consegue executar JavaScript de fato -- HTML solto via st.markdown
+        # não executa <script>) e atualiza a cada segundo com o horário real
+        # do computador de quem está vendo, em vez de ficar parado até o
+        # próximo ciclo de atualização dos dados (60s).
+        components.html(
+            f"""
+            <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
+                        color:{COLORS['text_muted']}; padding-top:6px;">
+                <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:28px; font-weight:800; letter-spacing:2px;">--:--:--</div>
+                <div id="tvDateLive" style="font-size:12px;"></div>
+            </div>
+            <script>
+            function _tvAtualizarRelogio() {{
+                var agora = new Date();
+                function pad(n) {{ return String(n).padStart(2, '0'); }}
+                var elC = document.getElementById('tvClockLive');
+                var elD = document.getElementById('tvDateLive');
+                if (elC) {{ elC.textContent = pad(agora.getHours()) + ':' + pad(agora.getMinutes()) + ':' + pad(agora.getSeconds()); }}
+                if (elD) {{
+                    var dias = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+                    elD.textContent = dias[agora.getDay()] + ', ' + pad(agora.getDate()) + '/' + pad(agora.getMonth() + 1) + '/' + agora.getFullYear();
+                }}
+            }}
+            _tvAtualizarRelogio();
+            setInterval(_tvAtualizarRelogio, 1000);
+            </script>
+            """,
+            height=70,
+        )
 
     def _tv_kpi(cor_var, label, valor, sub, accent):
         return (
@@ -1390,12 +1515,47 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     destaques = []
     if meses_validos:
         melhor_mes = max(meses_validos, key=meses_validos.get)
-        destaques.append(f"🏆 Melhor mês: <b>{melhor_mes.capitalize()}</b> ({formata_m(meses_validos[melhor_mes])})")
+        destaques.append(
+            f"🏆 O melhor mês do período em receita líquida foi <b>{melhor_mes.capitalize()}</b>, "
+            f"com {formata_m(meses_validos[melhor_mes])} faturados"
+        )
+        if len(meses_validos) > 1:
+            pior_mes = min(meses_validos, key=meses_validos.get)
+            destaques.append(
+                f"📉 O mês com menor receita líquida no período foi <b>{pior_mes.capitalize()}</b>, "
+                f"com {formata_m(meses_validos[pior_mes])}"
+            )
     if top_lojas:
-        destaques.append(f"🥇 Loja destaque: <b>{top_lojas[0][0]}</b> ({formata_m(top_lojas[0][1])} em receita líquida)")
-    destaques.append(f"📊 Margem EBITDA no período: <b>{margem_ebitda:.1f}%</b>")
-    destaques.append(f"🎯 Atingimento de receita: <b>{pct_atingimento_rec:.1f}%</b> do orçado")
-    destaques.append(f"⚖️ Desvio de EBITDA: <b>{formata_brl(desvio_ebitda)}</b> ({pct_desvio_ebitda:+.1f}%)")
+        destaques.append(
+            f"🥇 A loja com melhor desempenho em receita líquida (YTD) é <b>{top_lojas[0][0]}</b>, "
+            f"faturando {formata_m(top_lojas[0][1])} no período"
+        )
+        if len(top_lojas) > 1:
+            destaques.append(
+                f"🥈 Em segundo lugar no ranking de lojas está <b>{top_lojas[1][0]}</b>, "
+                f"com {formata_m(top_lojas[1][1])} em receita líquida"
+            )
+    destaques.append(
+        f"📊 A margem EBITDA realizada no período é de <b>{margem_ebitda:.1f}%</b>, "
+        f"contra uma margem orçada de {margem_ebitda_orc:.1f}%"
+    )
+    destaques.append(
+        f"🎯 A receita líquida realizada atingiu <b>{pct_atingimento_rec:.1f}%</b> do valor orçado "
+        f"para o período ({formata_m(rec_liq_real)} de {formata_m(rec_liq_orc)})"
+    )
+    destaques.append(
+        f"💹 O EBITDA realizado atingiu <b>{pct_atingimento_eb:.1f}%</b> da meta orçada "
+        f"({formata_m(ebitda_real)} de {formata_m(ebitda_orc)})"
+    )
+    destaques.append(
+        f"⚖️ O desvio de EBITDA no período é de <b>{formata_brl(desvio_ebitda)}</b>, "
+        f"equivalente a {pct_desvio_ebitda:+.1f}% em relação ao orçamento"
+    )
+    destaques.append(f"💰 A receita bruta acumulada no período soma <b>{formata_m(rec_bruta_real)}</b>")
+    destaques.append(
+        f"🧾 As saídas do período somam {formata_m(total_tv)}, sendo {formata_m(cmv_tv)} de CMV "
+        f"e {formata_m(desp_op_tv_kpi)} de despesas operacionais"
+    )
 
     ticker_html = f'<span class="tv-tick-sep">·</span>'.join(destaques)
     st.markdown(
@@ -1716,37 +1876,40 @@ def _filtrar_diario_completo(df_diario, loja, conta, plano):
 def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
     """Cria uma aba nova com o detalhamento dos lançamentos do DIÁRIO que
     compõem um valor (usada para o "clique" que abre o detalhamento a partir
-    da aba Detalhe Mensal ou Plano de Contas). Retorna o nome da aba criada."""
+    da aba Detalhe Mensal ou Plano de Contas). É basicamente uma cópia da
+    própria aba DIÁRIO, só que filtrada para aqueles lançamentos específicos
+    -- por isso mantém as mesmas colunas dela (Competência, Centro de Custos,
+    Linha DRE, Plano de Contas, Valor Bruto). Retorna o nome da aba criada."""
     nome_aba = _nome_aba_seguro(f"Lc_{titulo_bloco}", nomes_usados)
     ws = wb.create_sheet(nome_aba)
     ws.sheet_properties.tabColor = "FF4C8DFF"
 
-    n_col = 4
+    n_col = 5
     _escrever_titulo(ws, f"Lançamentos — {titulo_bloco}"[:250], 1, n_col)
     _escrever_legenda(ws, f"{len(df_lancamentos)} lançamento(s) encontrados na aba DIÁRIO (Realizado 2026).", 2, n_col)
 
     linha = 4
-    headers = ["Data (Competência)", "Plano de Contas", "Mês", "Valor Bruto (R$)"]
+    headers = ["Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto (R$)"]
     for col, texto in enumerate(headers, start=1):
         cell = ws.cell(row=linha, column=col, value=texto)
         cell.font = EXCEL_STYLE["font_header"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
-        cell.alignment = Alignment(horizontal="left" if col in (1, 2) else "center")
+        cell.alignment = Alignment(horizontal="left" if col in (1, 2, 3, 4) else "center")
     linha += 1
 
     df_ordenado = df_lancamentos.sort_values("Competência", na_position="last")
     for i, (_, row) in enumerate(df_ordenado.iterrows()):
         data_val = row["Competência"]
         data_txt = data_val.strftime("%d/%m/%Y") if pd.notna(data_val) and hasattr(data_val, "strftime") else str(data_val)
-        valores = [data_txt, row["Plano de Contas"], row["Mês"], row["Valor Bruto"]]
+        valores = [data_txt, row["Centro de Custos"], row["Linha DRE"], row["Plano de Contas"], row["Valor Bruto"]]
         fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
         for col, val in enumerate(valores, start=1):
             cell = ws.cell(row=linha, column=col, value=val)
             cell.border = EXCEL_STYLE["border"]
             if fill:
                 cell.fill = fill
-            if col == 4:
+            if col == 5:
                 cell.font = EXCEL_STYLE["font_normal"]
                 cell.number_format = '"R$" #,##0.00'
                 cell.alignment = Alignment(horizontal="right")
@@ -1758,7 +1921,7 @@ def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
     total_valor = df_ordenado["Valor Bruto"].sum()
     cell_total_lbl = ws.cell(row=linha, column=1, value="TOTAL")
     cell_total_lbl.font = EXCEL_STYLE["font_bold"]
-    cell_total = ws.cell(row=linha, column=4, value=total_valor)
+    cell_total = ws.cell(row=linha, column=5, value=total_valor)
     cell_total.font = EXCEL_STYLE["font_bold"]
     cell_total.number_format = '"R$" #,##0.00'
     cell_total.alignment = Alignment(horizontal="right")
@@ -1767,9 +1930,10 @@ def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
         ws.cell(row=linha, column=col).border = EXCEL_STYLE["border"]
 
     ws.column_dimensions["A"].width = 16
-    ws.column_dimensions["B"].width = 42
-    ws.column_dimensions["C"].width = 12
-    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 34
+    ws.column_dimensions["E"].width = 18
     ws.freeze_panes = "A5"
     return nome_aba
 
@@ -1786,6 +1950,7 @@ def montar_relatorio_excel(
     df_diario=None,
     forcar_planos_contas=None,
     permitir_lancamento_manual=False,
+    mapa_loja_centro_custo=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -1804,11 +1969,26 @@ def montar_relatorio_excel(
     de Contas correspondente no DIÁRIO/Tabela_Contas aparece como
     "Lançado Manualmente", com o valor da própria linha da DRE -- usado pelo
     modelo de RH, que tem várias linhas lançadas direto, sem plano de contas.
+
+    mapa_loja_centro_custo: {nome_da_loja: centro_de_custo}, vindo da
+    Tabela_Lojas (DE_PARA). A DIÁRIO identifica a loja pelo Centro de Custos,
+    que normalmente é diferente do nome da aba da loja -- por isso, sempre
+    que formos filtrar a DIÁRIO por loja, resolvemos primeiro o nome da loja
+    para o Centro de Custos correspondente por esse mapa (usando o próprio
+    nome da loja como alternativa, caso não haja correspondência no DE_PARA).
     """
     dados_por_loja = dados_por_loja or {}
     mapa_planos_dre = mapa_planos_dre or {}
     forcar_planos_contas = forcar_planos_contas or []
+    mapa_loja_centro_custo = mapa_loja_centro_custo or {}
     diario_disponivel = df_diario is not None and not df_diario.empty
+
+    def _cc(loja):
+        """Resolve o nome da loja para o Centro de Custos correspondente
+        (via Tabela_Lojas/DE_PARA), usado em toda filtragem da DIÁRIO. Se a
+        loja não estiver mapeada, usa o próprio nome da loja como alternativa
+        (mantém o comportamento tolerante já existente na busca)."""
+        return mapa_loja_centro_custo.get(loja, loja)
     wb = Workbook()
     gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
 
@@ -1904,7 +2084,7 @@ def montar_relatorio_excel(
                 linhas_dados_mensal.append((loja, conta, "Orçado", mes_chave, v_orc))
 
             if diario_disponivel:
-                filtrado_dm = _filtrar_diario_por_loja_e_conta(df_diario, loja, conta)
+                filtrado_dm = _filtrar_diario_por_loja_e_conta(df_diario, _cc(loja), conta)
                 _registrar_detalhe("DM", loja, conta, "", f"{loja} — {conta}", filtrado_dm)
 
     # ---- Dados_PlanoContas: Loja | ContaBucket | Plano | Mês | Valor (para a Plano de Contas) ----
@@ -1917,7 +2097,7 @@ def montar_relatorio_excel(
         df_o_loja, df_r_loja = dados_por_loja[loja]
 
         for conta in contas_sel:
-            composicao_diario = montar_composicao_diario(df_diario, loja, conta, mapa_meses) if diario_disponivel else {}
+            composicao_diario = montar_composicao_diario(df_diario, _cc(loja), conta, mapa_meses) if diario_disponivel else {}
 
             if composicao_diario:
                 comp = composicao_diario
@@ -1942,14 +2122,14 @@ def montar_relatorio_excel(
                     linhas_dados_pc.append((loja, conta, plano, mes_chave, valor))
 
                 if diario_disponivel and plano != "Lançado Manualmente":
-                    filtrado_pc = _filtrar_diario_completo(df_diario, loja, conta, plano)
+                    filtrado_pc = _filtrar_diario_completo(df_diario, _cc(loja), conta, plano)
                     _registrar_detalhe("PC", loja, conta, plano, f"{loja} — {plano}", filtrado_pc)
 
         if forcar_planos_contas:
             lista_forcada = planos_union.setdefault(BUCKET_FORCADO, [])
             for plano_forcado in forcar_planos_contas:
                 valores_plano = (
-                    montar_composicao_plano_direto(df_diario, loja, plano_forcado, mapa_meses)
+                    montar_composicao_plano_direto(df_diario, _cc(loja), plano_forcado, mapa_meses)
                     if diario_disponivel else [0.0] * n_meses
                 )
                 if plano_forcado not in lista_forcada:
@@ -1958,7 +2138,7 @@ def montar_relatorio_excel(
                     linhas_dados_pc.append((loja, BUCKET_FORCADO, plano_forcado, mes_chave, valor))
 
                 if diario_disponivel:
-                    filtrado_forc = _filtrar_diario_por_loja_e_plano(df_diario, loja, plano_forcado)
+                    filtrado_forc = _filtrar_diario_por_loja_e_plano(df_diario, _cc(loja), plano_forcado)
                     _registrar_detalhe("PC", loja, BUCKET_FORCADO, plano_forcado, f"{loja} — {plano_forcado}", filtrado_forc)
 
     for conta_bucket in contas_pc:
@@ -2041,9 +2221,21 @@ def montar_relatorio_excel(
     def _celula_hyperlink_lancamentos(ws, linha_alvo, col_helper, col_visivel):
         letra_helper = get_column_letter(col_helper)
         cel_h = ws.cell(row=linha_alvo, column=col_helper)
-        cel_v = ws.cell(row=linha_alvo, column=col_visivel,
-                         value=(f'=IF({letra_helper}{linha_alvo}="","(sem lançamentos)",'
-                                f'HYPERLINK("#\'"&{letra_helper}{linha_alvo}&"\'!A1","🔎 Ver lançamentos"))'))
+        # IMPORTANTE: o HYPERLINK() do Excel precisa SEMPRE de um destino
+        # interno válido -- se o destino ficar vazio (célula auxiliar em
+        # branco quando não há lançamentos), o Excel tenta interpretar o
+        # texto como um CAMINHO DE ARQUIVO externo (ex.: ".../Downloads/(sem
+        # lançamentos)"), disparando o aviso de segurança. Por isso, quando
+        # não há aba de detalhamento, o link aponta de volta para a própria
+        # aba (destino interno sempre válido) -- só o texto muda.
+        titulo_seguro = str(ws.title).replace("'", "''")
+        cel_v = ws.cell(
+            row=linha_alvo, column=col_visivel,
+            value=(
+                f'=HYPERLINK("#\'"&IF({letra_helper}{linha_alvo}="","{titulo_seguro}",{letra_helper}{linha_alvo})&"\'!A1",'
+                f'IF({letra_helper}{linha_alvo}="","(sem lançamentos)","🔎 Ver lançamentos"))'
+            ),
+        )
         cel_v.font = Font(color="FF4C8DFF", underline="single", size=10.5, name="Calibri")
         cel_v.alignment = Alignment(horizontal="center")
         cel_v.border = EXCEL_STYLE["border"]
@@ -3132,6 +3324,8 @@ with tab5:
             df_tabela_contas = carregar_tabela_contas(path_real)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
             df_diario_rel = carregar_diario(path_real)
+            df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
+            mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
 
         info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
 
@@ -3143,6 +3337,7 @@ with tab5:
                 df_diario=df_diario_rel,
                 forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
                 permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
+                mapa_loja_centro_custo=mapa_loja_cc_rel,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
         st.session_state["relatorio_excel_nome"] = (
