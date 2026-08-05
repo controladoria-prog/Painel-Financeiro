@@ -2046,7 +2046,7 @@ with tab4:
 # ABA 5: EMISSÃO DE RELATÓRIOS
 # ---------------------------------------------------------------------------
 MODELOS_RELATORIO = {
-    "🛒 Compras — Embalagens, Catálogos, Amostras e Flaconetes": [
+    "🛒 Relatório de Custos - Compras": [
         "6.6 - Material de Embalagem",
         "6.11 - Catálogos e Revistas",
         "6.13 - Amostras",
