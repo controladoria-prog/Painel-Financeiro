@@ -1628,17 +1628,33 @@ if tipo_periodo == "ANO COMPLETO (2026)":
     label_periodo_kpi = "ANO COMPLETO (2026)"
     label_periodo_graf = "ANO COMPLETO (2026)"
 elif tipo_periodo == "Mês Selecionado":
-    # Abre por padrão no mês atual (real), não num índice fixo.
-    idx_mes_real = datetime.now(FUSO_BR).month - 1
-    idx_default = min(max(idx_mes_real, 0), len(m_map) - 1)
-    mes_ref = st.sidebar.selectbox("Mês Desejado:", list(m_map.keys()), index=idx_default)
-    idx = list(m_map.keys()).index(mes_ref)
+    if not m_map:
+        # Nenhum mês com dados válidos para o escopo selecionado (ex.: uma
+        # loja/aba sem nenhuma coluna de mês reconhecida) -- evita quebrar o
+        # app tentando montar um selectbox vazio.
+        st.sidebar.warning("Nenhum mês com dados disponível para este escopo.")
+        cols_kpi = []
+        cols_graficos = []
+        label_periodo_kpi = "Sem dados no escopo selecionado"
+        label_periodo_graf = "Sem dados no escopo selecionado"
+    else:
+        # Abre por padrão no mês atual (real), não num índice fixo.
+        idx_mes_real = datetime.now(FUSO_BR).month - 1
+        idx_default = min(max(idx_mes_real, 0), len(m_map) - 1)
+        mes_ref = st.sidebar.selectbox("Mês Desejado:", list(m_map.keys()), index=idx_default)
+        if mes_ref not in m_map:
+            # Segurança extra: se por qualquer motivo (ex.: opções do
+            # selectbox mudaram entre execuções) o valor devolvido não
+            # estiver mais no mapa atual, cai para o padrão em vez de
+            # quebrar com ValueError.
+            mes_ref = list(m_map.keys())[idx_default]
+        idx = list(m_map.keys()).index(mes_ref)
 
-    cols_kpi = list(m_map.values())[: idx + 1]
-    cols_graficos = [m_map[mes_ref]]
+        cols_kpi = list(m_map.values())[: idx + 1]
+        cols_graficos = [m_map[mes_ref]]
 
-    label_periodo_kpi = f"Acumulado YTD até {mes_ref}"
-    label_periodo_graf = f"Mês de {mes_ref}"
+        label_periodo_kpi = f"Acumulado YTD até {mes_ref}"
+        label_periodo_graf = f"Mês de {mes_ref}"
 else:
     meses_mult = st.sidebar.multiselect(
         "Selecione os Meses:",
