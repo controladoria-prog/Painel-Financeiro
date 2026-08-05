@@ -6,3 +6,5 @@ openpyxl
 requests
 google-api-python-client
 google-auth
+streamlit>=1.38.0
+starlette<0.38.0
