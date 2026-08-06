@@ -331,6 +331,13 @@ st.markdown(
         }}
         [data-testid="stSidebarUserContent"] {{
             padding-bottom: 80px !important;
+            padding-top: 0.8rem !important;
+        }}
+        /* Aproveita o espaço vazio que sobrava no topo (acima do primeiro
+           elemento) tanto na barra lateral quanto no conteúdo principal. */
+        div[data-testid="stAppViewContainer"] > .main div.block-container,
+        .block-container {{
+            padding-top: 1.2rem !important;
         }}
         div[data-baseweb="popover"] {{
             z-index: 999999 !important;
