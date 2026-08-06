@@ -189,6 +189,95 @@ def eh_linha_custos_despesas(nome_linha):
     return bool(m) and m.group(1) in ("4", "6", "8")
 
 
+# ---------------------------------------------------------------------------
+# Expandir/colapsar grupos da DRE clicando no checkbox da linha (usado nas
+# abas "DRE Orçado X Realizado" e "Histórico Mensal", nas visões Sintética,
+# Analítica e Gerencial).
+# ---------------------------------------------------------------------------
+def _numero_linha_dre(nome_linha):
+    """Extrai o número hierárquico do início da linha (ex.: "8.3.1" de
+    "8.3.1 - Salários"). Retorna None se a linha não começar com número."""
+    m = re.match(r"^(\d+(?:\.\d+)*)", str(nome_linha).strip())
+    return m.group(1) if m else None
+
+
+def _linha_pertence_ao_grupo(nome_linha, numero_grupo):
+    """True se `nome_linha` é uma sublinha (em qualquer profundidade) do
+    grupo de número `numero_grupo` -- ex.: "8.3.1" pertence ao grupo "8"."""
+    numero = _numero_linha_dre(nome_linha)
+    if numero is None or numero_grupo is None:
+        return False
+    return numero == numero_grupo or numero.startswith(numero_grupo + ".")
+
+
+def _montar_linhas_com_expansao(todas_linhas, modo, grupos_alternados):
+    """Monta a lista de linhas a exibir, respeitando quais grupos estão
+    expandidos/colapsados.
+
+    modo == "sintetica": mostra só as linhas de grupo (nível 1, sem ponto no
+    número). Se o número de um grupo estiver em `grupos_alternados`, esse
+    grupo está "expandido" -- mostra também todas as sublinhas dele (em
+    qualquer profundidade), logo depois da linha do grupo.
+
+    modo == "expandida": mostra todas as linhas (comportamento padrão das
+    visões Analítica/Gerencial). Se o grupo "pai" de nível 1 de uma sublinha
+    estiver em `grupos_alternados`, esse grupo está "colapsado" -- essa
+    sublinha fica escondida (só a linha do grupo em si continua visível)."""
+    todas_linhas = list(todas_linhas)
+    if modo == "sintetica":
+        resultado = []
+        for linha in todas_linhas:
+            if not eh_grupo_sintetico(linha):
+                continue
+            resultado.append(linha)
+            numero_grupo = _numero_linha_dre(linha)
+            if numero_grupo in grupos_alternados:
+                for sub in todas_linhas:
+                    if sub != linha and _linha_pertence_ao_grupo(sub, numero_grupo):
+                        resultado.append(sub)
+        return resultado
+
+    resultado = []
+    for linha in todas_linhas:
+        if eh_grupo_sintetico(linha):
+            resultado.append(linha)
+            continue
+        numero = _numero_linha_dre(linha)
+        grupo_pai = numero.split(".")[0] if numero else None
+        if grupo_pai in grupos_alternados:
+            continue
+        resultado.append(linha)
+    return resultado
+
+
+def _processar_clique_expansao(df_tabela, evento, grupos_alternados, col_nome_linha="Conta / Linha DRE"):
+    """Processa o(s) checkbox(es) clicado(s) no st.dataframe (evento de
+    seleção) e alterna (liga/desliga) o grupo correspondente dentro de
+    `grupos_alternados` (um set, mutado in-place). Só reage a cliques em
+    linhas de GRUPO (nível 1) -- clicar numa sublinha não faz nada, já que
+    ela não tem "filhos" pra expandir/colapsar. Retorna True se algum grupo
+    mudou de estado (e a tabela precisa recarregar pra refletir isso)."""
+    if not evento or not getattr(evento, "selection", None):
+        return False
+    linhas_sel = evento.selection.rows or []
+    mudou = False
+    for idx in linhas_sel:
+        if idx >= len(df_tabela):
+            continue
+        nome_linha = df_tabela.iloc[idx][col_nome_linha]
+        if not eh_grupo_sintetico(nome_linha):
+            continue
+        numero_grupo = _numero_linha_dre(nome_linha)
+        if not numero_grupo:
+            continue
+        if numero_grupo in grupos_alternados:
+            grupos_alternados.discard(numero_grupo)
+        else:
+            grupos_alternados.add(numero_grupo)
+        mudou = True
+    return mudou
+
+
 def cor_valor(val):
     if pd.isna(val):
         return ""
@@ -2820,26 +2909,42 @@ with tab2:
             ],
             horizontal=True,
         )
+    st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintética) ou fechar (Analítica/Gerencial) as contas dela.")
+
+    if "grupos_dre_expandidos" not in st.session_state:
+        st.session_state["grupos_dre_expandidos"] = set()
+    if "grupos_dre_colapsados" not in st.session_state:
+        st.session_state["grupos_dre_colapsados"] = set()
 
     col_nome = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-    linhas_dre = df_ref[col_nome].dropna().astype(str).unique()
+    linhas_dre_todas = list(df_ref[col_nome].dropna().astype(str).unique())
 
     is_sintetica_dre = tipo_visao_dre == "Apenas Grupos Principais (Sintética)"
     is_gerencial_dre = tipo_visao_dre == "Visão Gerencial (Custos e Despesas)"
-    if is_sintetica_dre:
-        linhas_dre = [l for l in linhas_dre if eh_grupo_sintetico(l)]
-    elif is_gerencial_dre:
-        linhas_dre = [l for l in linhas_dre if eh_linha_custos_despesas(l)]
 
-    if not is_sintetica_dre and not is_gerencial_dre:
+    filtro_manual_dre_ativo = False
+    if is_sintetica_dre:
+        linhas_dre = _montar_linhas_com_expansao(
+            linhas_dre_todas, "sintetica", st.session_state["grupos_dre_expandidos"]
+        )
+    elif is_gerencial_dre:
+        linhas_dre_ger = [l for l in linhas_dre_todas if eh_linha_custos_despesas(l)]
+        linhas_dre = _montar_linhas_com_expansao(
+            linhas_dre_ger, "expandida", st.session_state["grupos_dre_colapsados"]
+        )
+    else:
+        linhas_dre = _montar_linhas_com_expansao(
+            linhas_dre_todas, "expandida", st.session_state["grupos_dre_colapsados"]
+        )
         contas_filtradas_dre = st.multiselect(
             "🔍 Filtrar Contas Específicas (Estilo Excel):",
-            options=linhas_dre,
+            options=linhas_dre_todas,
             default=[],
             key="filtro_contas_dre",
         )
         if contas_filtradas_dre:
             linhas_dre = contas_filtradas_dre
+            filtro_manual_dre_ativo = True
 
     rec_bruta_real = get_valor_consolidado_multi(list_df_real, "1 - Receita Operacional Bruta", cols_graficos)
     rec_bruta_orc = get_valor_consolidado_multi(list_df_orc, "1 - Receita Operacional Bruta", cols_graficos)
@@ -2944,7 +3049,12 @@ with tab2:
     ALTURA_17_LINHAS = 633
     cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
 
-    st.dataframe(
+    key_tabela_dre = (
+        f"tabela_dre__{tipo_visao_dre}__{len(linhas_dre)}__"
+        f"{','.join(sorted(st.session_state['grupos_dre_expandidos']))}__"
+        f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}"
+    )
+    evento_dre = st.dataframe(
         df_dre_final.style.format(
             {
                 "Realizado (R$)": formata_brl,
@@ -2961,7 +3071,16 @@ with tab2:
         hide_index=True,
         on_select="rerun",
         selection_mode="multi-row",
+        key=key_tabela_dre,
     )
+
+    if not filtro_manual_dre_ativo:
+        grupos_alvo_dre = (
+            st.session_state["grupos_dre_expandidos"] if is_sintetica_dre
+            else st.session_state["grupos_dre_colapsados"]
+        )
+        if _processar_clique_expansao(df_dre_final, evento_dre, grupos_alvo_dre):
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -2984,24 +3103,40 @@ with tab3:
             ],
             horizontal=True,
         )
+    st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintético) ou fechar (Analítico/Gerencial) as contas dela.")
 
-    linhas_hist = df_ref[col_nome].dropna().astype(str).unique()
+    if "grupos_hist_expandidos" not in st.session_state:
+        st.session_state["grupos_hist_expandidos"] = set()
+    if "grupos_hist_colapsados" not in st.session_state:
+        st.session_state["grupos_hist_colapsados"] = set()
+
+    linhas_hist_todas = list(df_ref[col_nome].dropna().astype(str).unique())
     is_sintetica_hist = visao_hist_dre == "Grupos Fechados (Sintético)"
     is_gerencial_hist = visao_hist_dre == "Visão Gerencial (Custos e Despesas)"
-    if is_sintetica_hist:
-        linhas_hist = [l for l in linhas_hist if eh_grupo_sintetico(l)]
-    elif is_gerencial_hist:
-        linhas_hist = [l for l in linhas_hist if eh_linha_custos_despesas(l)]
 
-    if not is_sintetica_hist and not is_gerencial_hist:
+    filtro_manual_hist_ativo = False
+    if is_sintetica_hist:
+        linhas_hist = _montar_linhas_com_expansao(
+            linhas_hist_todas, "sintetica", st.session_state["grupos_hist_expandidos"]
+        )
+    elif is_gerencial_hist:
+        linhas_hist_ger = [l for l in linhas_hist_todas if eh_linha_custos_despesas(l)]
+        linhas_hist = _montar_linhas_com_expansao(
+            linhas_hist_ger, "expandida", st.session_state["grupos_hist_colapsados"]
+        )
+    else:
+        linhas_hist = _montar_linhas_com_expansao(
+            linhas_hist_todas, "expandida", st.session_state["grupos_hist_colapsados"]
+        )
         contas_filtradas_hist = st.multiselect(
             "🔍 Filtrar Contas Específicas (Estilo Excel):",
-            options=linhas_hist,
+            options=linhas_hist_todas,
             default=[],
             key="filtro_contas_hist",
         )
         if contas_filtradas_hist:
             linhas_hist = contas_filtradas_hist
+            filtro_manual_hist_ativo = True
 
     target_dfs = list_df_real if tipo_hist == "Realizado" else list_df_orc
 
@@ -3089,7 +3224,12 @@ with tab3:
 
     ALTURA_17_LINHAS = 633
 
-    st.dataframe(
+    key_tabela_hist = (
+        f"tabela_hist__{visao_hist_dre}__{tipo_hist}__{len(linhas_hist)}__"
+        f"{','.join(sorted(st.session_state['grupos_hist_expandidos']))}__"
+        f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}"
+    )
+    evento_hist = st.dataframe(
         df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
         column_config=col_config_hist,
         use_container_width=True,
@@ -3097,7 +3237,16 @@ with tab3:
         hide_index=True,
         on_select="rerun",
         selection_mode="multi-row",
+        key=key_tabela_hist,
     )
+
+    if not filtro_manual_hist_ativo:
+        grupos_alvo_hist = (
+            st.session_state["grupos_hist_expandidos"] if is_sintetica_hist
+            else st.session_state["grupos_hist_colapsados"]
+        )
+        if _processar_clique_expansao(df_hist, evento_hist, grupos_alvo_hist):
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
