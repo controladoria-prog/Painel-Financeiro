@@ -2002,432 +2002,336 @@ def montar_relatorio_excel(
         ws1.column_dimensions[get_column_letter(col)].width = largura
 
     # ========================================================================
-    # PREPARAÇÃO: dados "achatados" (long format) que alimentam as fórmulas
-    # dinâmicas das abas "Detalhe Mensal" e "Plano de Contas" -- essas duas
-    # abas funcionam como uma tabela dinâmica: em vez de empilhar TODAS as
-    # lojas (o que ficava gigante e poluído), elas mostram só a loja
-    # escolhida num seletor, recalculando na hora via fórmula.
+    # Dados auxiliares: lojas individuais x visões consolidadas, e o filtro
+    # único da DIÁRIO que alimenta tanto a aba "Lançamentos" quanto a aba
+    # "Plano de Contas".
     # ========================================================================
     lojas_ordenadas = sorted(dados_por_loja.keys()) if dados_por_loja else []
-    meses_chaves = list(mapa_meses.keys())  # ex.: ["JANEIRO", "FEVEREIRO", ...]
+    meses_chaves = list(mapa_meses.keys())
     n_meses = len(meses_chaves)
     n_col_matriz = 1 + n_meses + 1  # rótulo + meses + Total Ano
 
-    nomes_abas_usados = {"resumo", "detalhe mensal", "plano de contas", "índice", "listas", "dados_mensal", "dados_planocontas"}
-    MAX_ABAS_DETALHE = 400
-    contador_abas_detalhe = [0]
-    indice_rows = []  # (Tipo, Loja, ContaBucket, Plano, NomeAba, Chave)
+    LOJAS_CONSOLIDADAS = {
+        "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
+        "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A",
+    }
+    lojas_individuais = [l for l in lojas_ordenadas if l not in LOJAS_CONSOLIDADAS]
 
-    def _registrar_detalhe(tipo, loja, conta_bucket, plano, titulo_bloco, df_filtrado):
-        if df_filtrado is None or df_filtrado.empty:
-            return
-        if contador_abas_detalhe[0] >= MAX_ABAS_DETALHE:
-            return
-        contador_abas_detalhe[0] += 1
-        nome_aba_criada = _criar_aba_lancamentos(wb, nomes_abas_usados, titulo_bloco[:80], df_filtrado)
-        chave = f"{tipo}|{loja}|{conta_bucket}|{plano}"
-        indice_rows.append((tipo, loja, conta_bucket, plano, nome_aba_criada, chave))
+    def _lojas_do_grupo_consolidado(nome_grupo):
+        """Para uma "loja" que na verdade é uma visão consolidada (ex.: "ABPR
+        + VD"), devolve as lojas INDIVIDUAIS que fazem parte dela -- usado
+        para somar corretamente a composição de Plano de Contas (que vem da
+        DIÁRIO, que só reconhece lojas individuais, nunca uma visão
+        consolidada). Baseado no prefixo do nome, seguindo a convenção
+        observada nos nomes das lojas ("ABPR ...", "LJ ...", "VD - ...",
+        "ESCRIT ..."). Se a sua convenção de nomes for diferente disso, o
+        agrupamento abaixo pode precisar de ajuste."""
+        nome_norm = nome_grupo.strip().upper()
+        if nome_norm == "DRE CONSOLIDADO":
+            return list(lojas_individuais)
+        if nome_norm == "ABPR CONSOLIDADO":
+            return [l for l in lojas_individuais if l.upper().startswith("ABPR ")]
+        if nome_norm == "VD CONSOLIDADO":
+            return [l for l in lojas_individuais if l.upper().replace(" ", "").startswith("VD-")]
+        if nome_norm == "LJ CONSOLIDADO":
+            return [l for l in lojas_individuais if l.upper().startswith("LJ ")]
+        if nome_norm == "ABPR + VD":
+            return [
+                l for l in lojas_individuais
+                if l.upper().startswith("ABPR ") or l.upper().replace(" ", "").startswith("VD-")
+            ]
+        if nome_norm == "LJ - G&A":
+            return [l for l in lojas_individuais if l.upper().startswith("LJ ") or l.upper().startswith("ESCRIT")]
+        return []
 
-    # ---- Dados_Mensal: Loja | Conta | Tipo | Mês | Valor (para a Detalhe Mensal) ----
-    linhas_dados_mensal = []
-    for loja in lojas_ordenadas:
-        df_o_loja, df_r_loja = dados_por_loja[loja]
+    # ---- Filtra a DIÁRIO para pegar só os lançamentos relevantes deste
+    # relatório: linhas cuja "Linha DRE" bate com alguma conta selecionada,
+    # OU cujo "Plano de Contas" bate com um dos planos forçados (ex.:
+    # "Mercadorias", que não tem Linha DRE). Essa é a ÚNICA fonte usada tanto
+    # pela aba "Lançamentos" quanto para montar a composição da aba
+    # "Plano de Contas" -- ou seja, os dois batem entre si por construção. ----
+    if diario_disponivel:
+        linhas_norm = df_diario["Linha DRE"].map(_normalizar_texto)
+        mask_conta = pd.Series(False, index=df_diario.index)
         for conta in contas_sel:
-            for mes_chave in meses_chaves:
-                m_col = mapa_meses[mes_chave]
-                v_real = get_valor_consolidado_multi([df_r_loja], conta, [m_col])
-                v_orc = get_valor_consolidado_multi([df_o_loja], conta, [m_col])
-                linhas_dados_mensal.append((loja, conta, "Realizado", mes_chave, v_real))
-                linhas_dados_mensal.append((loja, conta, "Orçado", mes_chave, v_orc))
+            conta_norm = _normalizar_texto(conta)
+            m = linhas_norm == conta_norm
+            if not m.any():
+                m = linhas_norm.apply(lambda x: (conta_norm in x) or (x in conta_norm) if x else False)
+            mask_conta |= m
 
-            if diario_disponivel:
-                filtrado_dm = _filtrar_diario_por_loja_e_conta(df_diario, _cc(loja), conta)
-                _registrar_detalhe("DM", loja, conta, "", f"{loja} — {conta}", filtrado_dm)
+        planos_norm = df_diario["Plano de Contas"].map(_normalizar_texto)
+        mask_forcado = pd.Series(False, index=df_diario.index)
+        for plano in forcar_planos_contas:
+            plano_norm = _normalizar_texto(plano)
+            m = planos_norm == plano_norm
+            if not m.any():
+                m = planos_norm.apply(lambda x: (plano_norm in x) or (x in plano_norm) if x else False)
+            mask_forcado |= m
 
-    # ---- Dados_PlanoContas: Loja | ContaBucket | Plano | Mês | Valor (para a Plano de Contas) ----
-    BUCKET_FORCADO = "_FORA_DA_DRE_"
-    contas_pc = list(contas_sel) + ([BUCKET_FORCADO] if forcar_planos_contas else [])
-    planos_union = {}   # conta_bucket -> [planos, na ordem em que apareceram]
-    linhas_dados_pc = []
-
-    for loja in lojas_ordenadas:
-        df_o_loja, df_r_loja = dados_por_loja[loja]
-
-        for conta in contas_sel:
-            composicao_diario = montar_composicao_diario(df_diario, _cc(loja), conta, mapa_meses) if diario_disponivel else {}
-
-            if composicao_diario:
-                comp = composicao_diario
-            elif permitir_lancamento_manual and not mapa_planos_dre.get(str(conta).strip(), []):
-                comp = {
-                    "Lançado Manualmente": [
-                        get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()
-                    ]
-                }
-            else:
-                planos_fallback = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
-                comp = {
-                    plano: [get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()]
-                    for plano in planos_fallback
-                }
-
-            lista_planos = planos_union.setdefault(conta, [])
-            for plano, valores in comp.items():
-                if plano not in lista_planos:
-                    lista_planos.append(plano)
-                for mes_chave, valor in zip(meses_chaves, valores):
-                    linhas_dados_pc.append((loja, conta, plano, mes_chave, valor))
-
-                if diario_disponivel and plano != "Lançado Manualmente":
-                    filtrado_pc = _filtrar_diario_completo(df_diario, _cc(loja), conta, plano)
-                    _registrar_detalhe("PC", loja, conta, plano, f"{loja} — {plano}", filtrado_pc)
-
-        if forcar_planos_contas:
-            lista_forcada = planos_union.setdefault(BUCKET_FORCADO, [])
-            for plano_forcado in forcar_planos_contas:
-                valores_plano = (
-                    montar_composicao_plano_direto(df_diario, _cc(loja), plano_forcado, mapa_meses)
-                    if diario_disponivel else [0.0] * n_meses
-                )
-                if plano_forcado not in lista_forcada:
-                    lista_forcada.append(plano_forcado)
-                for mes_chave, valor in zip(meses_chaves, valores_plano):
-                    linhas_dados_pc.append((loja, BUCKET_FORCADO, plano_forcado, mes_chave, valor))
-
-                if diario_disponivel:
-                    filtrado_forc = _filtrar_diario_por_loja_e_plano(df_diario, _cc(loja), plano_forcado)
-                    _registrar_detalhe("PC", loja, BUCKET_FORCADO, plano_forcado, f"{loja} — {plano_forcado}", filtrado_forc)
-
-    for conta_bucket in contas_pc:
-        if not planos_union.get(conta_bucket):
-            planos_union[conta_bucket] = ["(Sem Plano de Contas Identificado)"]
-
-    # ---- Grava as abas auxiliares (ocultas) que alimentam as fórmulas ----
-    ws_listas = wb.create_sheet("Listas")
-    for i, loja in enumerate(lojas_ordenadas, start=1):
-        ws_listas.cell(row=i, column=1, value=loja)
-    ws_listas.sheet_state = "hidden"
-
-    ws_dados_mensal = wb.create_sheet("Dados_Mensal")
-    for c, h in enumerate(["Loja", "Conta", "Tipo", "Mês", "Valor"], start=1):
-        ws_dados_mensal.cell(row=1, column=c, value=h)
-    for r, (loja, conta, tipo, mes_chave, valor) in enumerate(linhas_dados_mensal, start=2):
-        ws_dados_mensal.cell(row=r, column=1, value=loja)
-        ws_dados_mensal.cell(row=r, column=2, value=conta)
-        ws_dados_mensal.cell(row=r, column=3, value=tipo)
-        ws_dados_mensal.cell(row=r, column=4, value=mes_chave)
-        ws_dados_mensal.cell(row=r, column=5, value=valor)
-    ws_dados_mensal.sheet_state = "hidden"
-
-    ws_dados_pc = wb.create_sheet("Dados_PlanoContas")
-    for c, h in enumerate(["Loja", "ContaBucket", "Plano", "Mês", "Valor"], start=1):
-        ws_dados_pc.cell(row=1, column=c, value=h)
-    for r, (loja, conta_bucket, plano, mes_chave, valor) in enumerate(linhas_dados_pc, start=2):
-        ws_dados_pc.cell(row=r, column=1, value=loja)
-        ws_dados_pc.cell(row=r, column=2, value=conta_bucket)
-        ws_dados_pc.cell(row=r, column=3, value=plano)
-        ws_dados_pc.cell(row=r, column=4, value=mes_chave)
-        ws_dados_pc.cell(row=r, column=5, value=valor)
-    ws_dados_pc.sheet_state = "hidden"
-
-    ws_indice = wb.create_sheet("Índice")
-    for c, h in enumerate(["Tipo", "Loja", "ContaBucket", "Plano", "NomeAba", "Chave"], start=1):
-        ws_indice.cell(row=1, column=c, value=h)
-    for r, (tipo, loja, conta_bucket, plano, nome_aba, chave) in enumerate(indice_rows, start=2):
-        ws_indice.cell(row=r, column=1, value=tipo)
-        ws_indice.cell(row=r, column=2, value=loja)
-        ws_indice.cell(row=r, column=3, value=conta_bucket)
-        ws_indice.cell(row=r, column=4, value=plano)
-        ws_indice.cell(row=r, column=5, value=nome_aba)
-        ws_indice.cell(row=r, column=6, value=chave)
-    ws_indice.sheet_state = "hidden"
-
-    nome_dv_lojas = None
-    if lojas_ordenadas:
-        nome_dv_lojas = "Lista_Lojas_Relatorio"
-        wb.defined_names[nome_dv_lojas] = DefinedName(
-            nome_dv_lojas, attr_text=f"{_ref_aba('Listas')}!$A$1:$A${len(lojas_ordenadas)}"
+        df_lanc = df_diario[mask_conta | mask_forcado].copy()
+        # Resolve o nome "bonito" da loja a partir do Centro de Custos (usa o
+        # mapa nos dois sentidos, montado pela Tabela_Lojas/DE_PARA). Se não
+        # achar correspondência, mantém o próprio Centro de Custos como
+        # rótulo (mais transparente do que esconder a linha).
+        df_lanc["Loja"] = df_lanc["Centro de Custos"].astype(str).str.strip().map(
+            lambda cc: mapa_loja_centro_custo.get(cc, cc)
+        )
+    else:
+        df_lanc = pd.DataFrame(
+            columns=["Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto", "Mês", "Loja"]
         )
 
-    def _aplicar_seletor_loja(ws, celula_loja):
-        ws.cell(row=3, column=1, value="🏬 Selecione a Loja:").font = EXCEL_STYLE["font_bold"]
-        cel = ws[celula_loja]
-        cel.value = lojas_ordenadas[0] if lojas_ordenadas else ""
-        cel.font = EXCEL_STYLE["font_bold"]
-        cel.fill = EXCEL_STYLE["fill_total"]
-        cel.border = EXCEL_STYLE["border"]
-        cel.alignment = Alignment(horizontal="center")
-        ws.row_dimensions[3].height = 20
-        if nome_dv_lojas:
-            dv = DataValidation(type="list", formula1=f"={nome_dv_lojas}", allow_blank=False)
-            dv.error = "Selecione uma loja válida na lista."
-            dv.prompt = "Escolha a loja/unidade que deseja visualizar."
-            ws.add_data_validation(dv)
-            dv.add(cel)
-        if not lojas_ordenadas:
-            ws.cell(row=4, column=1, value="Nenhuma loja/unidade disponível para divisão.").font = EXCEL_STYLE["font_normal"]
-
-    def _cor_faixa_desvio(ws, faixa):
-        ws.conditional_formatting.add(
-            faixa, CellIsRule(operator="greaterThanOrEqual", formula=["0"], font=Font(color="FF1B8A5A"))
-        )
-        ws.conditional_formatting.add(
-            faixa, CellIsRule(operator="lessThan", formula=["0"], font=Font(color="FFC0392B"))
-        )
-
-    def _celula_hyperlink_lancamentos(ws, linha_alvo, col_helper, col_visivel):
-        letra_helper = get_column_letter(col_helper)
-        cel_h = ws.cell(row=linha_alvo, column=col_helper)
-        # IMPORTANTE: o HYPERLINK() do Excel precisa SEMPRE de um destino
-        # interno válido -- se o destino ficar vazio (célula auxiliar em
-        # branco quando não há lançamentos), o Excel tenta interpretar o
-        # texto como um CAMINHO DE ARQUIVO externo (ex.: ".../Downloads/(sem
-        # lançamentos)"), disparando o aviso de segurança. Por isso, quando
-        # não há aba de detalhamento, o link aponta de volta para a própria
-        # aba (destino interno sempre válido) -- só o texto muda.
-        titulo_seguro = str(ws.title).replace("'", "''")
-        cel_v = ws.cell(
-            row=linha_alvo, column=col_visivel,
-            value=(
-                f'=HYPERLINK("#\'"&IF({letra_helper}{linha_alvo}="","{titulo_seguro}",{letra_helper}{linha_alvo})&"\'!A1",'
-                f'IF({letra_helper}{linha_alvo}="","(sem lançamentos)","🔎 Ver lançamentos"))'
-            ),
-        )
-        cel_v.font = Font(color="FF4C8DFF", underline="single", size=10.5, name="Calibri")
-        cel_v.alignment = Alignment(horizontal="center")
-        cel_v.border = EXCEL_STYLE["border"]
-        return cel_h
-
-    # ---------------- ABA "DETALHE MENSAL" (estilo tabela dinâmica: 1 loja por vez) ----------------
+    # ---------------- ABA "DETALHE MENSAL" (Orçado x Realizado, por loja) ----------------
     ws2 = wb.create_sheet("Detalhe Mensal")
-    col_lanc_dm = n_col_matriz + 1
-    col_conta_pura = n_col_matriz + 2
-    col_nome_aba_dm = n_col_matriz + 3
+    _escrever_titulo(ws2, "Detalhe Mensal — Orçado vs. Realizado, por Loja", 1, n_col_matriz)
+    _escrever_legenda(ws2, gerado_em, 2, n_col_matriz)
 
-    _escrever_titulo(ws2, "Detalhe Mensal — Orçado vs. Realizado (estilo Tabela Dinâmica)", 1, col_lanc_dm)
-    _escrever_legenda(
-        ws2,
-        f'{gerado_em} · Escolha a loja na célula B3 (lista suspensa). Clique em "🔎 Ver lançamentos" '
-        f"na linha Realizado para abrir o detalhamento dos lançamentos do DIÁRIO.",
-        2, col_lanc_dm,
-    )
-    _aplicar_seletor_loja(ws2, "B3")
-    loja_ref_dm = "$B$3"
+    linha = 4
+    if not lojas_ordenadas:
+        ws2.cell(row=linha, column=1, value="Nenhuma loja/unidade disponível para divisão.").font = EXCEL_STYLE["font_normal"]
+    for loja in lojas_ordenadas:
+        df_o_loja, df_r_loja = dados_por_loja[loja]
 
-    linha_header = 5
-    _escrever_cabecalho_matriz(ws2, linha_header, "Conta / Tipo", mapa_meses)
-    cel_h_lanc = ws2.cell(row=linha_header, column=col_lanc_dm, value="Lançamentos")
-    cel_h_lanc.font, cel_h_lanc.fill, cel_h_lanc.border = EXCEL_STYLE["font_bold"], EXCEL_STYLE["fill_zebra"], EXCEL_STYLE["border"]
-    cel_h_lanc.alignment = Alignment(horizontal="center")
-
-    letra_ultima_col_mes = get_column_letter(1 + n_meses)
-    letra_total_dm = get_column_letter(2 + n_meses)
-    letra_conta_pura = get_column_letter(col_conta_pura)
-
-    linha = linha_header + 1
-    for conta in contas_sel:
-        r_real, r_orc, r_desv = linha, linha + 1, linha + 2
-
-        for r_bloco, rotulo, tipo_sumif, fill_bloco in (
-            (r_real, f"{conta} — Realizado", "Realizado", None),
-            (r_orc, f"{conta} — Orçado", "Orçado", EXCEL_STYLE["fill_zebra"]),
-        ):
-            cel_rot = ws2.cell(row=r_bloco, column=1, value=rotulo)
-            cel_rot.font = EXCEL_STYLE["font_normal"]
-            cel_rot.border = EXCEL_STYLE["border"]
-            cel_rot.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            if fill_bloco:
-                cel_rot.fill = fill_bloco
-            ws2.cell(row=r_bloco, column=col_conta_pura, value=conta)  # coluna oculta (chave p/ fórmulas)
-            for i_mes, mes_chave in enumerate(meses_chaves):
-                col = 2 + i_mes
-                cel = ws2.cell(
-                    row=r_bloco, column=col,
-                    value=(f"=SUMIFS(Dados_Mensal!$E:$E,Dados_Mensal!$A:$A,{loja_ref_dm},"
-                           f"Dados_Mensal!$B:$B,${letra_conta_pura}{r_bloco},"
-                           f'Dados_Mensal!$C:$C,"{tipo_sumif}",Dados_Mensal!$D:$D,"{mes_chave}")'),
-                )
-                cel.number_format = '"R$" #,##0.00'
-                cel.alignment = Alignment(horizontal="right")
-                cel.font = EXCEL_STYLE["font_normal"]
-                cel.border = EXCEL_STYLE["border"]
-                if fill_bloco:
-                    cel.fill = fill_bloco
-            cel_tot = ws2.cell(row=r_bloco, column=2 + n_meses, value=f"=SUM(B{r_bloco}:{letra_ultima_col_mes}{r_bloco})")
-            cel_tot.number_format = '"R$" #,##0.00'
-            cel_tot.alignment = Alignment(horizontal="right")
-            cel_tot.font = EXCEL_STYLE["font_normal"]
-            cel_tot.border = EXCEL_STYLE["border"]
-            if fill_bloco:
-                cel_tot.fill = fill_bloco
-
-        # Linha de Desvio = Realizado - Orçado (cor condicional aplicada depois)
-        cel_rot_d = ws2.cell(row=r_desv, column=1, value=f"{conta} — Desvio")
-        cel_rot_d.font = EXCEL_STYLE["font_normal"]
-        cel_rot_d.border = EXCEL_STYLE["border"]
-        cel_rot_d.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        for i_mes in range(n_meses):
-            col = 2 + i_mes
-            letra = get_column_letter(col)
-            cel = ws2.cell(row=r_desv, column=col, value=f"={letra}{r_real}-{letra}{r_orc}")
-            cel.number_format = '"R$" #,##0.00'
-            cel.alignment = Alignment(horizontal="right")
-            cel.font = EXCEL_STYLE["font_normal"]
-            cel.border = EXCEL_STYLE["border"]
-        cel_tot_d = ws2.cell(row=r_desv, column=2 + n_meses, value=f"={letra_total_dm}{r_real}-{letra_total_dm}{r_orc}")
-        cel_tot_d.number_format = '"R$" #,##0.00'
-        cel_tot_d.alignment = Alignment(horizontal="right")
-        cel_tot_d.font = EXCEL_STYLE["font_normal"]
-        cel_tot_d.border = EXCEL_STYLE["border"]
-        _cor_faixa_desvio(ws2, f"B{r_desv}:{letra_total_dm}{r_desv}")
-
-        # Coluna oculta com o nome da aba de detalhamento + hyperlink visível (só na linha Realizado)
-        ws2.cell(
-            row=r_real, column=col_nome_aba_dm,
-            value=(f'=IFERROR(INDEX(Índice!$E:$E,MATCH("DM|"&{loja_ref_dm}&"|"&${letra_conta_pura}{r_real}&"|",'
-                   f"Índice!$F:$F,0)),\"\")"),
-        )
-        _celula_hyperlink_lancamentos(ws2, r_real, col_nome_aba_dm, col_lanc_dm)
-
-        linha = r_desv + 1
-
-    ws2.column_dimensions["A"].width = 40
-    for col in range(2, n_col_matriz + 1):
-        ws2.column_dimensions[get_column_letter(col)].width = 14
-    ws2.column_dimensions[get_column_letter(col_lanc_dm)].width = 20
-    for col in (col_conta_pura, col_nome_aba_dm):
-        letra = get_column_letter(col)
-        ws2.column_dimensions[letra].width = 4
-        ws2.column_dimensions[letra].hidden = True
-    ws2.freeze_panes = "B6"
-
-    # ---------------- ABA "PLANO DE CONTAS" (estilo tabela dinâmica: 1 loja por vez) ----------------
-    ws3 = wb.create_sheet("Plano de Contas")
-    col_lanc_pc = n_col_matriz + 1
-    col_nome_aba_pc = n_col_matriz + 2
-
-    _escrever_titulo(ws3, "Plano de Contas — Composição das Linhas da DRE (estilo Tabela Dinâmica)", 1, col_lanc_pc)
-    _escrever_legenda(
-        ws3,
-        f'{gerado_em} · Escolha a loja na célula B3 (lista suspensa). Valores puxados da aba DIÁRIO '
-        f'(Realizado 2026). Clique em "🔎 Ver lançamentos" para abrir o detalhamento de cada plano de contas.',
-        2, col_lanc_pc,
-    )
-    _aplicar_seletor_loja(ws3, "B3")
-    loja_ref_pc = "$B$3"
-
-    letra_total_pc = get_column_letter(2 + n_meses)
-
-    linha = 5
-    for conta_bucket in contas_pc:
-        titulo_bloco = (
-            "📦 Planos de Contas Adicionais do Modelo (sem Linha DRE correspondente)"
-            if conta_bucket == BUCKET_FORCADO else f"Conta: {conta_bucket}"
-        )
-        ws3.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=col_lanc_pc)
-        cell_conta = ws3.cell(row=linha, column=1, value=titulo_bloco)
-        cell_conta.font = EXCEL_STYLE["font_header"]
-        cell_conta.fill = EXCEL_STYLE["fill_header"]
-        cell_conta.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        ws3.row_dimensions[linha].height = 20
+        ws2.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_col_matriz)
+        cell_loja = ws2.cell(row=linha, column=1, value=f"🏬 Loja: {loja}")
+        cell_loja.font = EXCEL_STYLE["font_title"]
+        cell_loja.fill = EXCEL_STYLE["fill_title"]
+        cell_loja.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws2.row_dimensions[linha].height = 22
         linha += 1
 
-        _escrever_cabecalho_matriz(ws3, linha, "Plano de Contas", mapa_meses)
-        cel_h_lanc_pc = ws3.cell(row=linha, column=col_lanc_pc, value="Lançamentos")
-        cel_h_lanc_pc.font, cel_h_lanc_pc.fill, cel_h_lanc_pc.border = (
-            EXCEL_STYLE["font_bold"], EXCEL_STYLE["fill_zebra"], EXCEL_STYLE["border"],
-        )
-        cel_h_lanc_pc.alignment = Alignment(horizontal="center")
+        _escrever_cabecalho_matriz(ws2, linha, "Conta / Tipo", mapa_meses)
         linha += 1
 
-        conta_bucket_escapado = str(conta_bucket).replace('"', '""')
-        linha_inicio_bloco = linha
-        for i_plano, plano in enumerate(planos_union.get(conta_bucket, [])):
-            fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
-            plano_escapado = str(plano).replace('"', '""')
+        for conta in contas_sel:
+            valores_real = [get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()]
+            valores_orc = [get_valor_consolidado_multi([df_o_loja], conta, [m_col]) for m_col in mapa_meses.values()]
+            valores_desvio = [vr - vo for vr, vo in zip(valores_real, valores_orc)]
 
-            cel_rot = ws3.cell(row=linha, column=1, value=plano)
-            cel_rot.font = EXCEL_STYLE["font_normal"]
-            cel_rot.border = EXCEL_STYLE["border"]
-            cel_rot.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            if fill_plano:
-                cel_rot.fill = fill_plano
-
-            for i_mes, mes_chave in enumerate(meses_chaves):
-                col = 2 + i_mes
-                cel = ws3.cell(
-                    row=linha, column=col,
-                    value=(f"=SUMIFS(Dados_PlanoContas!$E:$E,Dados_PlanoContas!$A:$A,{loja_ref_pc},"
-                           f'Dados_PlanoContas!$B:$B,"{conta_bucket_escapado}",'
-                           f'Dados_PlanoContas!$C:$C,"{plano_escapado}",'
-                           f'Dados_PlanoContas!$D:$D,"{mes_chave}")'),
-                )
-                cel.number_format = '"R$" #,##0.00'
-                cel.alignment = Alignment(horizontal="right")
-                cel.font = EXCEL_STYLE["font_normal"]
-                cel.border = EXCEL_STYLE["border"]
-                if fill_plano:
-                    cel.fill = fill_plano
-
-            cel_tot = ws3.cell(row=linha, column=2 + n_meses, value=f"=SUM(B{linha}:{letra_ultima_col_mes}{linha})")
-            cel_tot.number_format = '"R$" #,##0.00'
-            cel_tot.alignment = Alignment(horizontal="right")
-            cel_tot.font = EXCEL_STYLE["font_normal"]
-            cel_tot.border = EXCEL_STYLE["border"]
-            if fill_plano:
-                cel_tot.fill = fill_plano
-
-            ws3.cell(
-                row=linha, column=col_nome_aba_pc,
-                value=(f'=IFERROR(INDEX(Índice!$E:$E,MATCH("PC|"&{loja_ref_pc}&"|"&"{conta_bucket_escapado}"&"|"&'
-                       f'"{plano_escapado}",Índice!$F:$F,0)),"")'),
-            )
-            _celula_hyperlink_lancamentos(ws3, linha, col_nome_aba_pc, col_lanc_pc)
-
+            _escrever_linha_matriz(ws2, linha, f"{conta} — Realizado", valores_real, sum(valores_real))
+            linha += 1
+            _escrever_linha_matriz(ws2, linha, f"{conta} — Orçado", valores_orc, sum(valores_orc), fill=EXCEL_STYLE["fill_zebra"])
+            linha += 1
+            _escrever_linha_matriz(ws2, linha, f"{conta} — Desvio", valores_desvio, sum(valores_desvio), colorir_por_sinal=True)
             linha += 1
 
-        linha_fim_bloco = linha - 1
-        cel_tot_lbl = ws3.cell(row=linha, column=1, value=f"TOTAL — {conta_bucket if conta_bucket != BUCKET_FORCADO else 'Adicionais do Modelo'}")
-        cel_tot_lbl.font = EXCEL_STYLE["font_bold"]
-        cel_tot_lbl.border = EXCEL_STYLE["border"]
-        cel_tot_lbl.fill = EXCEL_STYLE["fill_total"]
-        cel_tot_lbl.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        for i_mes in range(n_meses):
-            col = 2 + i_mes
-            letra = get_column_letter(col)
-            cel = ws3.cell(row=linha, column=col, value=f"=SUM({letra}{linha_inicio_bloco}:{letra}{linha_fim_bloco})")
-            cel.number_format = '"R$" #,##0.00'
-            cel.alignment = Alignment(horizontal="right")
-            cel.font = EXCEL_STYLE["font_bold"]
-            cel.border = EXCEL_STYLE["border"]
-            cel.fill = EXCEL_STYLE["fill_total"]
-        letra_tot = get_column_letter(2 + n_meses)
-        cel_tot_geral = ws3.cell(row=linha, column=2 + n_meses, value=f"=SUM({letra_tot}{linha_inicio_bloco}:{letra_tot}{linha_fim_bloco})")
-        cel_tot_geral.number_format = '"R$" #,##0.00'
-        cel_tot_geral.alignment = Alignment(horizontal="right")
-        cel_tot_geral.font = EXCEL_STYLE["font_bold"]
-        cel_tot_geral.border = EXCEL_STYLE["border"]
-        cel_tot_geral.fill = EXCEL_STYLE["fill_total"]
-        ws3.cell(row=linha, column=col_lanc_pc).fill = EXCEL_STYLE["fill_total"]
-        ws3.cell(row=linha, column=col_lanc_pc).border = EXCEL_STYLE["border"]
+        linha += 1  # espaço entre lojas
 
-        linha += 2  # espaço entre blocos de conta
+    largura_mes = 14
+    ws2.column_dimensions["A"].width = 40
+    for col in range(2, n_col_matriz + 1):
+        ws2.column_dimensions[get_column_letter(col)].width = largura_mes
+    ws2.freeze_panes = "B4"
+
+    # ---------------- ABA "PLANO DE CONTAS" (composição de cada linha da DRE, por loja) ----------------
+    ws3 = wb.create_sheet("Plano de Contas")
+    _escrever_titulo(ws3, "Plano de Contas — Composição das Linhas da DRE, por Loja", 1, n_col_matriz)
+    _escrever_legenda(
+        ws3,
+        f"{gerado_em}  ·  Valores de cada plano de contas puxados da aba DIÁRIO (Realizado 2026), "
+        f"pela loja/Centro de Custos. Visões consolidadas somam as lojas individuais correspondentes.",
+        2, n_col_matriz,
+    )
+
+    linha = 4
+    if not lojas_ordenadas:
+        ws3.cell(row=linha, column=1, value="Nenhuma loja/unidade disponível para divisão.").font = EXCEL_STYLE["font_normal"]
+
+    for loja in lojas_ordenadas:
+        df_o_loja, df_r_loja = dados_por_loja[loja]
+
+        ws3.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_col_matriz)
+        cell_loja = ws3.cell(row=linha, column=1, value=f"🏬 Loja: {loja}")
+        cell_loja.font = EXCEL_STYLE["font_title"]
+        cell_loja.fill = EXCEL_STYLE["fill_title"]
+        cell_loja.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws3.row_dimensions[linha].height = 22
+        linha += 1
+
+        # Lançamentos desta loja -- ou, se for uma visão consolidada, de
+        # todas as lojas individuais que fazem parte dela.
+        if loja in LOJAS_CONSOLIDADAS:
+            lojas_do_grupo = _lojas_do_grupo_consolidado(loja)
+            df_lanc_loja = df_lanc[df_lanc["Loja"].isin(lojas_do_grupo)] if lojas_do_grupo else df_lanc.iloc[0:0]
+        else:
+            df_lanc_loja = df_lanc[df_lanc["Loja"] == loja]
+
+        for conta in contas_sel:
+            ws3.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_col_matriz)
+            cell_conta = ws3.cell(row=linha, column=1, value=f"Conta: {conta}")
+            cell_conta.font = EXCEL_STYLE["font_header"]
+            cell_conta.fill = EXCEL_STYLE["fill_header"]
+            cell_conta.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws3.row_dimensions[linha].height = 20
+            linha += 1
+
+            _escrever_cabecalho_matriz(ws3, linha, "Plano de Contas", mapa_meses)
+            linha += 1
+
+            df_diario_conta = pd.DataFrame()
+            if not df_lanc_loja.empty:
+                conta_norm = _normalizar_texto(conta)
+                linhas_norm_loja = df_lanc_loja["Linha DRE"].map(_normalizar_texto)
+                mask_conta_loja = linhas_norm_loja == conta_norm
+                if not mask_conta_loja.any():
+                    mask_conta_loja = linhas_norm_loja.apply(lambda x: (conta_norm in x) or (x in conta_norm) if x else False)
+                df_diario_conta = df_lanc_loja[mask_conta_loja]
+
+            soma_planos_mes = [0.0] * n_meses
+            if not df_diario_conta.empty:
+                # Fonte principal: DIÁRIO/Lançamentos (Valor Bruto por Plano de Contas x Mês).
+                grupos_ordenados = sorted(df_diario_conta.groupby("Plano de Contas"), key=lambda item: item[0])
+                for i_plano, (plano, grupo) in enumerate(grupos_ordenados):
+                    valores_plano = [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
+                    soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
+                    fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
+                    _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
+                    linha += 1
+            elif permitir_lancamento_manual and not (mapa_planos_dre.get(str(conta).strip(), [])):
+                # Linha DRE sem nenhum Plano de Contas correspondente (nem no
+                # DIÁRIO, nem na Tabela_Contas) -- típico do modelo de RH.
+                valores_manual = [
+                    get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()
+                ]
+                soma_planos_mes = valores_manual
+                _escrever_linha_matriz(ws3, linha, "Lançado Manualmente", valores_manual, sum(valores_manual))
+                linha += 1
+            else:
+                # Fallback: Tabela_Contas + soma nas abas por loja (método antigo).
+                planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
+                for i_plano, plano in enumerate(planos):
+                    valores_plano = [
+                        get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()
+                    ]
+                    soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
+                    fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
+                    _escrever_linha_matriz(ws3, linha, plano, valores_plano, sum(valores_plano), fill=fill_plano)
+                    linha += 1
+
+            _escrever_linha_matriz(
+                ws3, linha, f"TOTAL — {conta}", soma_planos_mes, sum(soma_planos_mes),
+                negrito=True, fill=EXCEL_STYLE["fill_total"],
+            )
+            linha += 2  # espaço entre contas
+
+        if forcar_planos_contas:
+            # Planos de contas que fazem parte do modelo mas não têm Linha DRE
+            # correspondente (ex.: "Mercadorias" no modelo de Compras) --
+            # puxados direto da DIÁRIO/Lançamentos pelo nome do plano,
+            # ignorando a Linha DRE.
+            ws3.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=n_col_matriz)
+            cell_extra = ws3.cell(
+                row=linha, column=1,
+                value="Planos de Contas Adicionais do Modelo (sem Linha DRE correspondente)",
+            )
+            cell_extra.font = EXCEL_STYLE["font_header"]
+            cell_extra.fill = EXCEL_STYLE["fill_header"]
+            cell_extra.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws3.row_dimensions[linha].height = 20
+            linha += 1
+
+            _escrever_cabecalho_matriz(ws3, linha, "Plano de Contas", mapa_meses)
+            linha += 1
+
+            soma_forcados_mes = [0.0] * n_meses
+            for i_plano, plano_forcado in enumerate(forcar_planos_contas):
+                df_plano_forcado = pd.DataFrame()
+                if not df_lanc_loja.empty:
+                    plano_norm = _normalizar_texto(plano_forcado)
+                    planos_norm_loja = df_lanc_loja["Plano de Contas"].map(_normalizar_texto)
+                    mask_plano = planos_norm_loja == plano_norm
+                    if not mask_plano.any():
+                        mask_plano = planos_norm_loja.apply(lambda x: (plano_norm in x) or (x in plano_norm) if x else False)
+                    df_plano_forcado = df_lanc_loja[mask_plano]
+
+                valores_plano = (
+                    [df_plano_forcado.loc[df_plano_forcado["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
+                    if not df_plano_forcado.empty else [0.0] * n_meses
+                )
+                soma_forcados_mes = [s + v for s, v in zip(soma_forcados_mes, valores_plano)]
+                fill_plano = EXCEL_STYLE["fill_zebra"] if i_plano % 2 == 1 else None
+                _escrever_linha_matriz(ws3, linha, plano_forcado, valores_plano, sum(valores_plano), fill=fill_plano)
+                linha += 1
+
+            _escrever_linha_matriz(
+                ws3, linha, "TOTAL — Adicionais do Modelo", soma_forcados_mes, sum(soma_forcados_mes),
+                negrito=True, fill=EXCEL_STYLE["fill_total"],
+            )
+            linha += 1  # espaço após o bloco extra
+
+        linha += 1  # espaço entre lojas
 
     ws3.column_dimensions["A"].width = 46
     for col in range(2, n_col_matriz + 1):
-        ws3.column_dimensions[get_column_letter(col)].width = 14
-    ws3.column_dimensions[get_column_letter(col_lanc_pc)].width = 20
-    letra_oculta_pc = get_column_letter(col_nome_aba_pc)
-    ws3.column_dimensions[letra_oculta_pc].width = 4
-    ws3.column_dimensions[letra_oculta_pc].hidden = True
-    ws3.freeze_panes = "B6"
+        ws3.column_dimensions[get_column_letter(col)].width = largura_mes
+    ws3.freeze_panes = "B4"
 
-    if contador_abas_detalhe[0] >= MAX_ABAS_DETALHE:
-        ws_indice.cell(
-            row=len(indice_rows) + 3, column=1,
-            value=(f"Aviso: limite de {MAX_ABAS_DETALHE} abas de detalhamento atingido -- "
-                   f"algumas combinações de loja/conta podem não ter o link de lançamentos."),
-        )
+    # ---------------- ABA "LANÇAMENTOS" (cópia filtrada da DIÁRIO) ----------------
+    ws4 = wb.create_sheet("Lançamentos")
+    _escrever_titulo(ws4, "Lançamentos — Cópia filtrada da aba DIÁRIO (Realizado 2026)", 1, 6)
+    _escrever_legenda(
+        ws4,
+        f"{gerado_em} · {len(df_lanc)} lançamento(s): linhas cujo Plano de Contas pertence às linhas "
+        f"da DRE deste relatório, ou aos planos adicionais do modelo (ex.: Mercadorias).",
+        2, 6,
+    )
+
+    linha = 4
+    headers_lanc = ["Loja", "Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto (R$)"]
+    for col, texto in enumerate(headers_lanc, start=1):
+        cell = ws4.cell(row=linha, column=col, value=texto)
+        cell.font = EXCEL_STYLE["font_header"]
+        cell.fill = EXCEL_STYLE["fill_header"]
+        cell.border = EXCEL_STYLE["border"]
+        cell.alignment = Alignment(horizontal="left" if col <= 5 else "center")
+    ws4.row_dimensions[linha].height = 20
+    ws4.freeze_panes = f"A{linha + 1}"
+    linha += 1
+
+    if not df_lanc.empty:
+        df_lanc_ordenado = df_lanc.sort_values(["Loja", "Competência"], na_position="last")
+        for i, (_, row) in enumerate(df_lanc_ordenado.iterrows()):
+            data_val = row["Competência"]
+            data_txt = data_val.strftime("%d/%m/%Y") if pd.notna(data_val) and hasattr(data_val, "strftime") else str(data_val)
+            valores = [row["Loja"], data_txt, row["Centro de Custos"], row["Linha DRE"], row["Plano de Contas"], row["Valor Bruto"]]
+            fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+            for col, val in enumerate(valores, start=1):
+                cell = ws4.cell(row=linha, column=col, value=val)
+                cell.border = EXCEL_STYLE["border"]
+                if fill:
+                    cell.fill = fill
+                if col == 6:
+                    cell.font = EXCEL_STYLE["font_normal"]
+                    cell.number_format = '"R$" #,##0.00'
+                    cell.alignment = Alignment(horizontal="right")
+                else:
+                    cell.font = EXCEL_STYLE["font_normal"]
+                    cell.alignment = Alignment(horizontal="left")
+            linha += 1
+
+        total_lanc = df_lanc["Valor Bruto"].sum()
+        cell_total_lbl = ws4.cell(row=linha, column=1, value="TOTAL")
+        cell_total_lbl.font = EXCEL_STYLE["font_bold"]
+        cell_total = ws4.cell(row=linha, column=6, value=total_lanc)
+        cell_total.font = EXCEL_STYLE["font_bold"]
+        cell_total.number_format = '"R$" #,##0.00'
+        cell_total.alignment = Alignment(horizontal="right")
+        for col in range(1, 7):
+            ws4.cell(row=linha, column=col).fill = EXCEL_STYLE["fill_total"]
+            ws4.cell(row=linha, column=col).border = EXCEL_STYLE["border"]
+    else:
+        ws4.cell(
+            row=linha, column=1,
+            value="Nenhum lançamento encontrado (DIÁRIO indisponível ou sem correspondência para os filtros deste relatório).",
+        ).font = EXCEL_STYLE["font_normal"]
+
+    ws4.column_dimensions["A"].width = 24
+    ws4.column_dimensions["B"].width = 14
+    ws4.column_dimensions["C"].width = 22
+    ws4.column_dimensions["D"].width = 34
+    ws4.column_dimensions["E"].width = 34
+    ws4.column_dimensions["F"].width = 18
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -2456,7 +2360,7 @@ st.markdown(
 # ============================================================================
 _nomes_abas = [
     "📊 Visão Geral & Charts",
-    "📋 DRE Completa & Desvios",
+    "📋 DRE Orçado X Realizado",
     "📅 Histórico Mensal",
     "🔮 Previsões & Trends",
     "📤 Emitir Relatório",
@@ -3139,6 +3043,116 @@ with tab4:
         use_container_width=True,
         hide_index=True,
         height=ALTURA_12_LINHAS,
+    )
+
+    # -----------------------------------------------------------------------
+    # Estresse por Linha da DRE — impacto em cascata
+    # -----------------------------------------------------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">🧪 Estresse de Cenário por Linha da DRE — Impacto em Cascata</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Escolha uma linha da DRE e aplique uma variação percentual para ver o impacto direto no "
+        "EBITDA (e na Receita Líquida, se a linha escolhida fizer parte dela). Se outras linhas devem "
+        "se mover junto (ex.: um custo variável que sobe quando as vendas sobem), marque-as em "
+        "\"Linhas dependentes\" -- elas recebem a MESMA variação percentual da linha principal."
+    )
+
+    col_nome_stress = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
+    todas_linhas_dre = df_ref[col_nome_stress].dropna().astype(str).unique().tolist()
+
+    ce1, ce2 = st.columns([1.3, 1.3])
+    with ce1:
+        idx_padrao_stress = (
+            todas_linhas_dre.index("3 - Receita Operacional Liquida")
+            if "3 - Receita Operacional Liquida" in todas_linhas_dre else 0
+        )
+        linha_estresse_sel = st.selectbox(
+            "Linha da DRE a estressar:", todas_linhas_dre, index=idx_padrao_stress, key="linha_estresse_sel",
+        )
+        pct_estresse_linha = st.slider(
+            f'Variação em "{linha_estresse_sel}" (%):',
+            min_value=-50.0, max_value=50.0, value=5.0, step=1.0, key="pct_estresse_linha",
+        )
+    with ce2:
+        linhas_dependentes = st.multiselect(
+            "Linhas dependentes (variam junto, mesma variação %):",
+            [l for l in todas_linhas_dre if l != linha_estresse_sel],
+            key="linhas_dependentes_estresse",
+            help='Ex.: se estressar "Vendas", marque aqui os custos variáveis que sobem/descem junto.',
+        )
+
+    periodo_estresse = colunas_validas  # ano completo com dados válidos no escopo atual
+
+    def _valor_linha_stress(termo):
+        return get_valor_consolidado_multi(list_df_real, termo, periodo_estresse, exato_linha_sintetica=True)
+
+    LINHAS_RECEITA_STRESS = {"1 - Receita Operacional Bruta", "3 - Receita Operacional Liquida"}
+
+    valor_original_linha = _valor_linha_stress(linha_estresse_sel)
+    valor_estressado_linha = valor_original_linha * (1 + pct_estresse_linha / 100.0)
+    delta_linha_principal = valor_estressado_linha - valor_original_linha
+
+    delta_total_ebitda = delta_linha_principal
+    delta_total_receita = delta_linha_principal if linha_estresse_sel in LINHAS_RECEITA_STRESS else 0.0
+
+    detalhes_dependentes = []
+    for linha_dep in linhas_dependentes:
+        valor_dep = _valor_linha_stress(linha_dep)
+        valor_dep_novo = valor_dep * (1 + pct_estresse_linha / 100.0)
+        delta_dep = valor_dep_novo - valor_dep
+        delta_total_ebitda += delta_dep
+        if linha_dep in LINHAS_RECEITA_STRESS:
+            delta_total_receita += delta_dep
+        detalhes_dependentes.append((linha_dep, valor_dep, valor_dep_novo, delta_dep))
+
+    ebitda_original_stress = _valor_linha_stress("11 - EBITDA")
+    ebitda_novo_stress = ebitda_original_stress + delta_total_ebitda
+
+    rec_liq_original_stress = _valor_linha_stress("3 - Receita Operacional Liquida")
+    rec_liq_novo_stress = rec_liq_original_stress + delta_total_receita
+
+    margem_original_stress = (ebitda_original_stress / rec_liq_original_stress * 100) if rec_liq_original_stress else 0
+    margem_nova_stress = (ebitda_novo_stress / rec_liq_novo_stress * 100) if rec_liq_novo_stress else 0
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        render_kpi_row([
+            dict(label=f'"{linha_estresse_sel[:28]}" — Original', value=formata_brl(valor_original_linha),
+                 value_color=COLORS["text"], subtext="Valor realizado no período", icon="📍"),
+            dict(label=f'"{linha_estresse_sel[:28]}" — Estressado', value=formata_brl(valor_estressado_linha),
+                 value_color=cor_variacao(delta_linha_principal), subtext=f"{pct_estresse_linha:+.1f}% aplicado", icon="🧪"),
+            dict(label="EBITDA — Impacto do Cenário", value=formata_brl(ebitda_novo_stress),
+                 value_color=cor_variacao(delta_total_ebitda),
+                 subtext=f"Original: {formata_brl(ebitda_original_stress)} · Delta: {formata_brl(delta_total_ebitda)}", icon="💹"),
+            dict(label="Margem EBITDA — Impacto do Cenário", value=f"{margem_nova_stress:.1f}%",
+                 value_color=cor_variacao(margem_nova_stress - margem_original_stress),
+                 subtext=f"Original: {margem_original_stress:.1f}%", icon="📊"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    if detalhes_dependentes:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">🔗 Linhas Dependentes — Detalhe do Impacto</div>', unsafe_allow_html=True)
+        df_dependentes_stress = pd.DataFrame(
+            [(l, v_o, v_n, d) for l, v_o, v_n, d in detalhes_dependentes],
+            columns=["Linha da DRE", "Valor Original", "Valor Estressado", "Delta (R$)"],
+        )
+        st.dataframe(
+            df_dependentes_stress.style.format({
+                "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
+            }).map(cor_valor, subset=["Delta (R$)"]),
+            use_container_width=True, hide_index=True,
+            height=38 + len(df_dependentes_stress) * 35,
+        )
+
+    st.caption(
+        "⚠️ Este cenário assume que todas as demais linhas da DRE permanecem constantes, exceto a linha "
+        "estressada e as linhas dependentes marcadas -- é uma simulação isolada (\"what-if\"), não uma "
+        "reprojeção completa do orçamento."
     )
 
 # ---------------------------------------------------------------------------
