@@ -1425,21 +1425,21 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 display: flex; align-items: center; gap: 10px; padding: 8px 2px;
                 border-bottom: 1px dashed {COLORS["border_soft"]};
             }}
-            .tv-cost-dot {{ width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }}
-            .tv-cost-nome {{ flex: 1.3; font-size: 12.5px; color: {COLORS["text"]}; font-weight: 600; }}
-            .tv-cost-pct {{ flex: 0.6; font-size: 11.5px; color: {COLORS["text_muted"]}; text-align: right; }}
-            .tv-cost-val {{ flex: 1; font-size: 12.5px; color: {COLORS["text"]}; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
-            .tv-cost-desvio {{ flex: 0.9; font-size: 11px; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
-            .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 6px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
-            .tv-rank-name {{ flex:1; font-size:12px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .tv-cost-dot {{ width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }}
+            .tv-cost-nome {{ flex: 1.3; font-size: 15px; color: {COLORS["text"]}; font-weight: 600; }}
+            .tv-cost-pct {{ flex: 0.6; font-size: 13.5px; color: {COLORS["text_muted"]}; text-align: right; }}
+            .tv-cost-val {{ flex: 1; font-size: 15px; color: {COLORS["text"]}; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
+            .tv-cost-desvio {{ flex: 0.9; font-size: 13.5px; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
+            .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 8px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
+            .tv-rank-name {{ flex:1; font-size:14.5px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
             .tv-rank-bar-bg {{ flex:1.6; background:{COLORS["border"]}; border-radius:4px; height:7px; overflow:hidden; }}
             .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["secondary"]}, {COLORS["warning"]}); }}
-            .tv-rank-val {{ font-size:11px; color:{COLORS["muted_line"]}; width: 118px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
+            .tv-rank-val {{ font-size:13.5px; color:{COLORS["muted_line"]}; width: 130px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
             }}
-            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 95s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 90s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
             .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
         </style>
