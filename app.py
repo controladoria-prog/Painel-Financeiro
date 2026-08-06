@@ -992,10 +992,14 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
 def carregar_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
     com Valor Bruto, Competência (data do lançamento), Plano de Contas,
-    Centro de Custos (loja/unidade) e Linha DRE (a linha da DRE a que
-    aquele plano de contas pertence). É a fonte usada para montar a aba
-    "Plano de Contas" do relatório em Excel, mês a mês, por loja."""
-    colunas_saida = ["Valor Bruto", "Competência", "Plano de Contas", "Centro de Custos", "Linha DRE", "Mês"]
+    Centro de Custos (loja/unidade), Linha DRE (a linha da DRE a que aquele
+    plano de contas pertence) e, quando disponíveis, Número, Cliente /
+    Fornecedor e Histórico. É a fonte usada para montar as abas "Plano de
+    Contas" e "Lançamentos" do relatório em Excel."""
+    colunas_saida = [
+        "Valor Bruto", "Competência", "Plano de Contas", "Centro de Custos", "Linha DRE",
+        "Número", "Cliente / Fornecedor", "Histórico", "Mês",
+    ]
 
     apelidos_coluna = {
         "valor bruto": "Valor Bruto",
@@ -1005,6 +1009,21 @@ def carregar_diario(path_r):
         "centro de custos": "Centro de Custos",
         "centro de custo": "Centro de Custos",
         "linha dre": "Linha DRE",
+        "número": "Número",
+        "numero": "Número",
+        "nº": "Número",
+        "n°": "Número",
+        "num": "Número",
+        "cliente / fornecedor": "Cliente / Fornecedor",
+        "cliente/fornecedor": "Cliente / Fornecedor",
+        "fornecedor / cliente": "Cliente / Fornecedor",
+        "fornecedor/cliente": "Cliente / Fornecedor",
+        "cliente": "Cliente / Fornecedor",
+        "fornecedor": "Cliente / Fornecedor",
+        "histórico": "Histórico",
+        "historico": "Histórico",
+        "descrição": "Histórico",
+        "descricao": "Histórico",
     }
 
     df = None
@@ -1025,11 +1044,20 @@ def carregar_diario(path_r):
     if any(c not in df.columns for c in colunas_necessarias):
         return pd.DataFrame(columns=colunas_saida)
 
-    df = df[colunas_necessarias].copy()
+    # Colunas extras (opcionais) para dar mais contexto na aba "Lançamentos".
+    # Se a DIÁRIO não tiver alguma delas, entra em branco -- não impede o resto.
+    colunas_extras = ["Número", "Cliente / Fornecedor", "Histórico"]
+    for col_extra in colunas_extras:
+        if col_extra not in df.columns:
+            df[col_extra] = ""
+
+    df = df[colunas_necessarias + colunas_extras].copy()
     df["Valor Bruto"] = pd.to_numeric(df["Valor Bruto"], errors="coerce").fillna(0)
     df["Plano de Contas"] = df["Plano de Contas"].astype(str).str.strip()
     df["Centro de Custos"] = df["Centro de Custos"].astype(str).str.strip()
     df["Linha DRE"] = df["Linha DRE"].astype(str).str.strip()
+    for col_extra in colunas_extras:
+        df[col_extra] = df[col_extra].fillna("").astype(str).str.strip()
 
     # Competência normalmente vem como data (dd/mm/aaaa) -> convertemos para "mm/aaaa"
     # para casar com as colunas de mês (ex.: "01/2026") usadas no resto do painel.
@@ -1043,7 +1071,11 @@ def carregar_diario(path_r):
         mes_formatado[mask_sem_data] = df.loc[mask_sem_data, "Competência"].astype(str).str.strip()
     df["Mês"] = mes_formatado
 
-    df = df[(df["Plano de Contas"] != "") & (df["Linha DRE"] != "")]
+    # IMPORTANTE: filtra só por Plano de Contas preenchido -- NÃO exige Linha
+    # DRE preenchida, porque planos de contas "fora da DRE" (ex.: Mercadorias
+    # no modelo de Compras) legitimamente não têm Linha DRE, e precisam
+    # continuar aparecendo aqui para serem encontrados pelo relatório.
+    df = df[df["Plano de Contas"] != ""]
     return df.reset_index(drop=True)
 
 
@@ -2022,27 +2054,41 @@ def montar_relatorio_excel(
         + VD"), devolve as lojas INDIVIDUAIS que fazem parte dela -- usado
         para somar corretamente a composição de Plano de Contas (que vem da
         DIÁRIO, que só reconhece lojas individuais, nunca uma visão
-        consolidada). Baseado no prefixo do nome, seguindo a convenção
-        observada nos nomes das lojas ("ABPR ...", "LJ ...", "VD - ...",
-        "ESCRIT ..."). Se a sua convenção de nomes for diferente disso, o
-        agrupamento abaixo pode precisar de ajuste."""
-        nome_norm = nome_grupo.strip().upper()
-        if nome_norm == "DRE CONSOLIDADO":
-            return list(lojas_individuais)
-        if nome_norm == "ABPR CONSOLIDADO":
-            return [l for l in lojas_individuais if l.upper().startswith("ABPR ")]
-        if nome_norm == "VD CONSOLIDADO":
-            return [l for l in lojas_individuais if l.upper().replace(" ", "").startswith("VD-")]
-        if nome_norm == "LJ CONSOLIDADO":
-            return [l for l in lojas_individuais if l.upper().startswith("LJ ")]
-        if nome_norm == "ABPR + VD":
-            return [
-                l for l in lojas_individuais
-                if l.upper().startswith("ABPR ") or l.upper().replace(" ", "").startswith("VD-")
-            ]
-        if nome_norm == "LJ - G&A":
-            return [l for l in lojas_individuais if l.upper().startswith("LJ ") or l.upper().startswith("ESCRIT")]
-        return []
+        consolidada). Grupos definidos explicitamente:
+        - ABPR CONSOLIDADO = ABPR 23427 + ABPR ZNS 24527
+        - VD CONSOLIDADO = VD - GUAJARA 23859 + VD - LESTE 21506 + VD - MACHAD 21691 +
+          VD - MATRIZ 13967 + VD - VST ALEG 21497
+        - ABPR + VD = ABPR CONSOLIDADO + VD CONSOLIDADO
+        - LJ - G&A = as 13 lojas "LJ ..." (sem ESCRIT MATRIZ, sem lojas VD)
+        - LJ CONSOLIDADO = ESCRIT MATRIZ 6037 + LJ - G&A (sem lojas VD)
+        - DRE CONSOLIDADO = ABPR CONSOLIDADO + VD CONSOLIDADO + LJ CONSOLIDADO
+          (na prática, todas as 21 lojas individuais)
+        """
+        grupo_abpr = ["ABPR 23427", "ABPR ZNS 24527"]
+        grupo_vd = [
+            "VD - GUAJARA 23859", "VD - LESTE 21506", "VD - MACHAD 21691",
+            "VD - MATRIZ 13967", "VD - VST ALEG 21497",
+        ]
+        grupo_lj_ga = [
+            "LJ ARAUJO 12606", "LJ ASSAI 23157", "LJ GUAJARA 23809", "LJ IG SHOP 20330",
+            "LJ JATUARANA 6040", "LJ JK 12478", "LJ MACHAD 21462", "LJ MARECHAL 6039",
+            "LJ NV ERA 18539", "LJ PVH1 11927", "LJ PVH2 14625", "LJ QDB 910332", "LJ SETE 6052",
+        ]
+        grupo_lj_consolidado = ["ESCRIT MATRIZ 6037"] + grupo_lj_ga
+        grupo_dre_consolidado = grupo_abpr + grupo_vd + grupo_lj_consolidado
+
+        mapa_grupos = {
+            "ABPR CONSOLIDADO": grupo_abpr,
+            "VD CONSOLIDADO": grupo_vd,
+            "ABPR + VD": grupo_abpr + grupo_vd,
+            "LJ - G&A": grupo_lj_ga,
+            "LJ CONSOLIDADO": grupo_lj_consolidado,
+            "DRE CONSOLIDADO": grupo_dre_consolidado,
+        }
+        lojas_definidas = mapa_grupos.get(nome_grupo.strip(), [])
+        # Só devolve lojas que realmente existem entre as lojas individuais carregadas.
+        return [l for l in lojas_definidas if l in lojas_individuais]
+
 
     # ---- Filtra a DIÁRIO para pegar só os lançamentos relevantes deste
     # relatório: linhas cuja "Linha DRE" bate com alguma conta selecionada,
@@ -2079,7 +2125,10 @@ def montar_relatorio_excel(
         )
     else:
         df_lanc = pd.DataFrame(
-            columns=["Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto", "Mês", "Loja"]
+            columns=[
+                "Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto", "Mês",
+                "Número", "Cliente / Fornecedor", "Histórico", "Loja",
+            ]
         )
 
     # ---------------- ABA "DETALHE MENSAL" (Orçado x Realizado, por loja) ----------------
@@ -2269,22 +2318,27 @@ def montar_relatorio_excel(
 
     # ---------------- ABA "LANÇAMENTOS" (cópia filtrada da DIÁRIO) ----------------
     ws4 = wb.create_sheet("Lançamentos")
-    _escrever_titulo(ws4, "Lançamentos — Cópia filtrada da aba DIÁRIO (Realizado 2026)", 1, 6)
+    N_COL_LANC = 9
+    _escrever_titulo(ws4, "Lançamentos — Cópia filtrada da aba DIÁRIO (Realizado 2026)", 1, N_COL_LANC)
     _escrever_legenda(
         ws4,
         f"{gerado_em} · {len(df_lanc)} lançamento(s): linhas cujo Plano de Contas pertence às linhas "
         f"da DRE deste relatório, ou aos planos adicionais do modelo (ex.: Mercadorias).",
-        2, 6,
+        2, N_COL_LANC,
     )
 
     linha = 4
-    headers_lanc = ["Loja", "Competência", "Centro de Custos", "Linha DRE", "Plano de Contas", "Valor Bruto (R$)"]
+    headers_lanc = [
+        "Loja", "Competência", "Número", "Centro de Custos", "Linha DRE",
+        "Plano de Contas", "Cliente / Fornecedor", "Histórico", "Valor Bruto (R$)",
+    ]
+    col_valor_lanc = len(headers_lanc)
     for col, texto in enumerate(headers_lanc, start=1):
         cell = ws4.cell(row=linha, column=col, value=texto)
         cell.font = EXCEL_STYLE["font_header"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
-        cell.alignment = Alignment(horizontal="left" if col <= 5 else "center")
+        cell.alignment = Alignment(horizontal="left" if col < col_valor_lanc else "center")
     ws4.row_dimensions[linha].height = 20
     ws4.freeze_panes = f"A{linha + 1}"
     linha += 1
@@ -2294,14 +2348,17 @@ def montar_relatorio_excel(
         for i, (_, row) in enumerate(df_lanc_ordenado.iterrows()):
             data_val = row["Competência"]
             data_txt = data_val.strftime("%d/%m/%Y") if pd.notna(data_val) and hasattr(data_val, "strftime") else str(data_val)
-            valores = [row["Loja"], data_txt, row["Centro de Custos"], row["Linha DRE"], row["Plano de Contas"], row["Valor Bruto"]]
+            valores = [
+                row["Loja"], data_txt, row.get("Número", ""), row["Centro de Custos"], row["Linha DRE"],
+                row["Plano de Contas"], row.get("Cliente / Fornecedor", ""), row.get("Histórico", ""), row["Valor Bruto"],
+            ]
             fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
             for col, val in enumerate(valores, start=1):
                 cell = ws4.cell(row=linha, column=col, value=val)
                 cell.border = EXCEL_STYLE["border"]
                 if fill:
                     cell.fill = fill
-                if col == 6:
+                if col == col_valor_lanc:
                     cell.font = EXCEL_STYLE["font_normal"]
                     cell.number_format = '"R$" #,##0.00'
                     cell.alignment = Alignment(horizontal="right")
@@ -2313,11 +2370,11 @@ def montar_relatorio_excel(
         total_lanc = df_lanc["Valor Bruto"].sum()
         cell_total_lbl = ws4.cell(row=linha, column=1, value="TOTAL")
         cell_total_lbl.font = EXCEL_STYLE["font_bold"]
-        cell_total = ws4.cell(row=linha, column=6, value=total_lanc)
+        cell_total = ws4.cell(row=linha, column=col_valor_lanc, value=total_lanc)
         cell_total.font = EXCEL_STYLE["font_bold"]
         cell_total.number_format = '"R$" #,##0.00'
         cell_total.alignment = Alignment(horizontal="right")
-        for col in range(1, 7):
+        for col in range(1, N_COL_LANC + 1):
             ws4.cell(row=linha, column=col).fill = EXCEL_STYLE["fill_total"]
             ws4.cell(row=linha, column=col).border = EXCEL_STYLE["border"]
     else:
@@ -2328,10 +2385,13 @@ def montar_relatorio_excel(
 
     ws4.column_dimensions["A"].width = 24
     ws4.column_dimensions["B"].width = 14
-    ws4.column_dimensions["C"].width = 22
-    ws4.column_dimensions["D"].width = 34
-    ws4.column_dimensions["E"].width = 34
-    ws4.column_dimensions["F"].width = 18
+    ws4.column_dimensions["C"].width = 14
+    ws4.column_dimensions["D"].width = 20
+    ws4.column_dimensions["E"].width = 30
+    ws4.column_dimensions["F"].width = 30
+    ws4.column_dimensions["G"].width = 28
+    ws4.column_dimensions["H"].width = 40
+    ws4.column_dimensions["I"].width = 18
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -3281,24 +3341,37 @@ with tab5:
         key=f"contas_relatorio__{modelo_sel}",
     )
 
+    LOJAS_CONSOLIDADAS_TAB5 = {
+        "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
+        "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A",
+    }
+    opcoes_lojas_relatorio = list(abas_disponiveis)
+    default_lojas_relatorio = [a for a in opcoes_lojas_relatorio if a in LOJAS_CONSOLIDADAS_TAB5] or opcoes_lojas_relatorio[:1]
+
+    lojas_relatorio_sel = st.multiselect(
+        "🏬 Lojas / Visões incluídas no relatório:",
+        options=opcoes_lojas_relatorio,
+        default=default_lojas_relatorio,
+        help=(
+            "Escolha quais lojas e/ou visões consolidadas entram no relatório. Quanto menos você "
+            "escolher, menor e mais rápido fica o arquivo -- por padrão, só as visões consolidadas "
+            "vêm marcadas."
+        ),
+    )
+
     col_btn, col_info = st.columns([1, 2])
     with col_btn:
         gerar_clicado = st.button(
             "📊 Gerar Relatório Excel",
             use_container_width=True,
-            disabled=not contas_relatorio,
+            disabled=not contas_relatorio or not lojas_relatorio_sel,
         )
 
     if gerar_clicado and contas_relatorio:
         with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
-            # IMPORTANTE: o relatório considera COMO LOJA todas as abas
-            # disponíveis -- inclusive as visões consolidadas (DRE
-            # CONSOLIDADO, ABPR + VD, ABPR CONSOLIDADO, VD CONSOLIDADO,
-            # LJ - G&A, LJ CONSOLIDADO). Antes só as unidades individuais
-            # entravam no filtro de loja do relatório; agora usamos
-            # abas_disponiveis (o conjunto completo) em vez de
-            # opcoes_unidades (que exclui as consolidadas).
-            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, abas_disponiveis)
+            # Carrega só as lojas/visões escolhidas no filtro acima -- evita
+            # gerar um arquivo gigante com todas as 26 abas de uma vez.
+            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
             df_tabela_contas = carregar_tabela_contas(path_real)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
             df_diario_rel = carregar_diario(path_real)
