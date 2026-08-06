@@ -3451,9 +3451,17 @@ with tab5:
                 mapa_loja_centro_custo=mapa_loja_cc_rel,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
-        st.session_state["relatorio_excel_nome"] = (
-            f"Relatorio_DRE_{datetime.now(FUSO_BR).strftime('%Y%m%d_%H%M')}.xlsx"
-        )
+
+        def _nome_arquivo_modelo(nome_modelo):
+            """Usa o nome completo do modelo (igual aparece no seletor, só
+            sem o emoji na frente) como base do nome do arquivo -- ex.:
+            "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
+            Compras". Só remove caracteres inválidos em nome de arquivo."""
+            texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
+            texto = re.sub(r'[\\/*?:"<>|]', "", texto)
+            return texto or "Relatório"
+
+        st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
         st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
 
         if df_diario_rel is None or df_diario_rel.empty:
