@@ -3646,6 +3646,35 @@ MODELOS_RELATORIO = {
         # "Lançado Manualmente" com o valor da própria linha da DRE.
         "permitir_lancamento_manual": True,
     },
+    "📣 Relatório de Custos - MKT": {
+        "linhas_dre": [
+            "6.24 - Esforços de Marketing",
+            "6.24.1 - Marketing Regional - Gestão GB",
+            "6.24.1.1 - Mídia Regional / Local",
+            "6.24.1.1.1 - MKT-REG: 01. Mídia e Ativação (Gestão do GB)",
+            "6.24.2 - Marketing Regional - Gestão CP",
+            "6.24.2.1 - Eventos",
+            "6.24.2.1.1 - MKT-REG: 02. Evento e Patrocínio",
+            "6.24.2.2 - Produção e Propaganda",
+            "6.24.2.2.1 - MKT-REG: 03. Mídia Exterior",
+            "6.24.2.2.2 - MKT-REG: 04. Mídia e Ativação (Gestão do CP com agências locais)",
+            "6.24.2.2.3 - MKT-REG: 05. Mídia e Ativação (Gestão do CP com Opus ou Idea3)",
+            "6.24.2.3 - Material Promocional",
+            "6.24.2.3.1 - MKT-REG: 06. Impressão e Produção de Material",
+            "6.24.2.3.2 - MKT-REG: 07. Brinde, amostra, flaconete e PRM",
+            "6.24.2.4 - Mkt Digital",
+            "6.24.2.4.1 - MKT-REG: 08. Redes Sociais e Influenciador Digital",
+            "6.24.2.4.2 - MKT-REG: 09. Loja Digital e Mensagem SMS Turbo",
+            "6.24.2.5 - Encontro de Ciclo",
+            "6.24.2.6 - Outras Despesas de Marketing",
+        ],
+        "forcar_planos_contas": [],
+        # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
+        # tiverem um Plano de Contas próprio já caem como "Lançado
+        # Manualmente" automaticamente (mesma regra geral de todos os
+        # modelos) -- não precisa de nada especial aqui.
+        "permitir_lancamento_manual": False,
+    },
 }
 
 with tab5:
