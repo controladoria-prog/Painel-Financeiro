@@ -1439,7 +1439,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
             }}
-            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 45s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 95s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
             .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
         </style>
