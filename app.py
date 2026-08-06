@@ -1294,10 +1294,14 @@ ABAS_CONSOLIDADAS_TV = [
 
 
 def _obter_aba_consolidada_padrao(lista_abas):
-    prioridade = ["DRE CONSOLIDADO", "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A"]
-    for nome in prioridade:
-        if nome in lista_abas:
-            return nome
+    """Mesma regra de padrão usada na barra lateral (Visão Consolidada):
+    a primeira visão consolidada, na ordem em que aparece nas abas
+    disponíveis -- garante que o Painel de TV mostre exatamente o mesmo
+    escopo que a pessoa vê por padrão no painel principal, evitando
+    números "diferentes" entre os dois."""
+    consolidadas = [a for a in lista_abas if a in ABAS_CONSOLIDADAS_TV]
+    if consolidadas:
+        return consolidadas[0]
     return lista_abas[0] if lista_abas else None
 
 
@@ -1330,7 +1334,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         f"""
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"], footer {{ display: none !important; }}
-            .block-container {{ padding: 1rem 2.2rem 1rem 2.2rem !important; max-width: 100% !important; }}
+            div[data-testid="stAppViewContainer"] {{ padding-top: 0 !important; }}
+            div[data-testid="stAppViewContainer"] > .main {{ padding-top: 0 !important; }}
+            section.main > div.block-container, .block-container {{
+                padding: 0.5rem 1.8rem 0.4rem 1.8rem !important; max-width: 100% !important;
+            }}
+            div[data-testid="stVerticalBlock"] {{ gap: 0.5rem !important; }}
             .stApp {{
                 background:
                     radial-gradient(circle at 15% 0%, rgba(76,141,255,0.09) 0%, transparent 42%),
@@ -1341,65 +1350,64 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             @keyframes tv-marquee {{ 0% {{ transform: translateX(100%); }} 100% {{ transform: translateX(-100%); }} }}
             .tv-header {{
                 display: flex; justify-content: space-between; align-items: center;
-                padding: 4px 4px 16px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 18px;
+                padding: 2px 4px 10px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 10px;
             }}
-            .tv-header .brand {{ display:flex; align-items:center; gap:14px; }}
-            .tv-header img.logo {{ width: 42px; height: 42px; border-radius: 50%; box-shadow: 0 0 14px rgba(76,141,255,0.35); }}
-            .tv-header h1 {{ font-size: 26px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
-            .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 13px; margin-top: 3px; }}
+            .tv-header .brand {{ display:flex; align-items:center; gap:12px; }}
+            .tv-header img.logo {{ width: 38px; height: 38px; border-radius: 50%; box-shadow: 0 0 14px rgba(76,141,255,0.35); }}
+            .tv-header h1 {{ font-size: 23px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
+            .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 12.5px; margin-top: 2px; }}
             .tv-live-pill {{
                 display: inline-flex; align-items: center; gap: 6px; background: rgba(62,207,142,0.12);
                 border: 1px solid {COLORS["positive"]}; color: {COLORS["positive"]}; border-radius: 20px;
                 padding: 3px 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; margin-left: 12px;
             }}
             .tv-live-pill .dot {{ width: 7px; height: 7px; border-radius: 50%; background: {COLORS["positive"]}; animation: tv-pulse 1.4s infinite; }}
-            .tv-clock {{ text-align: right; color: {COLORS["text_muted"]}; font-size: 12.5px; }}
-            .tv-clock b {{
-                color: {COLORS["primary"]}; font-size: 30px; display:block; letter-spacing: 2px;
-                font-family: 'Consolas','Courier New',monospace;
-            }}
-            .tv-kpi-grid {{ display: flex; gap: 16px; margin-bottom: 20px; }}
+            .tv-kpi-grid {{ display: flex; gap: 14px; margin-bottom: 12px; }}
             .tv-kpi {{
                 flex: 1; background: {COLORS["surface"]};
-                border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 18px 20px;
+                border: 1px solid {COLORS["border"]}; border-radius: 12px; padding: 14px 16px;
                 border-top: 3px solid var(--tv-accent, {COLORS["primary"]});
             }}
-            .tv-kpi .lbl {{ font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
-            .tv-kpi .val {{ font-size: 28px; font-weight: 800; margin-top: 6px; letter-spacing: -0.5px; }}
-            .tv-kpi .sub {{ font-size: 12px; margin-top: 5px; color: {COLORS["muted_line"]}; }}
+            .tv-kpi .lbl {{ font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
+            .tv-kpi .val {{ font-size: 25px; font-weight: 800; margin-top: 5px; letter-spacing: -0.5px; }}
+            .tv-kpi .sub {{ font-size: 11.5px; margin-top: 4px; color: {COLORS["muted_line"]}; display:flex; align-items:center; gap:4px; }}
             .tv-section-title {{
-                font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
-                letter-spacing: 0.6px; margin: 4px 0 10px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
+                font-size: 12.5px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
+                letter-spacing: 0.6px; margin: 2px 0 8px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
             }}
             .tv-panel {{
                 background: {COLORS["surface"]};
-                border: 1px solid {COLORS["border"]}; border-radius: 14px; padding: 14px 16px 4px 16px;
-                margin-bottom: 18px; height: 100%;
+                border: 1px solid {COLORS["border"]}; border-radius: 12px; padding: 12px 16px;
+                margin-bottom: 12px; height: 100%;
             }}
-            .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 7px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
-            .tv-rank-badge {{
-                width:22px; height:22px; border-radius:50%; background:{COLORS["primary_soft"]}; color:{COLORS["primary"]};
-                font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+            /* ---- Barras de atingimento minimalistas (no lugar dos velocímetros) ---- */
+            .tv-atg-grid {{ display: flex; gap: 28px; }}
+            .tv-atg-item {{ flex: 1; }}
+            .tv-atg-head {{ display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }}
+            .tv-atg-title {{ font-size: 12.5px; color: {COLORS["text_muted"]}; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }}
+            .tv-atg-pct {{ font-size: 20px; font-weight: 800; font-family: 'Consolas','Courier New',monospace; }}
+            .tv-atg-track {{ position: relative; height: 9px; background: {COLORS["border"]}; border-radius: 6px; }}
+            .tv-atg-fill {{ height: 100%; border-radius: 6px; }}
+            .tv-atg-marker {{ position: absolute; top: -4px; bottom: -4px; width: 2px; background: {COLORS["warning"]}; }}
+            .tv-atg-foot {{ display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; color: {COLORS["muted_line"]}; }}
+            /* ---- Lista de composição de custos (ao lado do donut) ---- */
+            .tv-cost-row {{
+                display: flex; align-items: center; gap: 10px; padding: 8px 2px;
+                border-bottom: 1px dashed {COLORS["border_soft"]};
             }}
-            .tv-rank-name {{ flex:1; font-size:12.5px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-            .tv-rank-bar-bg {{ flex:1.4; background:{COLORS["border"]}; border-radius:4px; height:8px; overflow:hidden; }}
-            .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["primary"]}, {COLORS["positive"]}); }}
-            .tv-rank-val {{ font-size:11.5px; color:{COLORS["muted_line"]}; width: 78px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
+            .tv-cost-dot {{ width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }}
+            .tv-cost-nome {{ flex: 1.3; font-size: 12.5px; color: {COLORS["text"]}; font-weight: 600; }}
+            .tv-cost-pct {{ flex: 0.6; font-size: 11.5px; color: {COLORS["text_muted"]}; text-align: right; }}
+            .tv-cost-val {{ flex: 1; font-size: 12.5px; color: {COLORS["text"]}; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
+            .tv-cost-desvio {{ flex: 0.9; font-size: 11px; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
-                border-bottom: 1px solid {COLORS["border"]}; padding: 9px 0; margin-top: 6px; background: rgba(255,255,255,0.015);
+                border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
             }}
-            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 150s linear infinite; font-size: 16px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 150s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
             .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
-            .tv-fullscreen-hint {{
-                position: fixed; bottom: 18px; right: 22px; z-index: 999999;
-                color: {COLORS["text_muted"]}; font-size: 11px; text-align: right;
-                background: rgba(0,0,0,0.35); border-radius: 8px; padding: 6px 12px;
-                border: 1px solid {COLORS["border"]};
-            }}
         </style>
-        <span class="tv-fullscreen-hint">⛶ F11 para tela cheia · Esc para sair</span>
         """,
         unsafe_allow_html=True,
     )
@@ -1416,7 +1424,18 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     pct_desvio_ebitda = (desvio_ebitda / abs(ebitda_orc) * 100) if ebitda_orc else 0
     pct_atingimento_rec = (rec_liq_real / rec_liq_orc * 100) if rec_liq_orc else 0
     pct_atingimento_eb = (ebitda_real / ebitda_orc * 100) if ebitda_orc else 0
+
+    cmv_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "4 - ", cols_ytd, exato_linha_sintetica=True)) or \
+        abs(get_valor_consolidado_multi(list_df_real_tv, "4 - Custo das Vendas", cols_ytd))
+    cmv_tv_o = abs(get_valor_consolidado_multi(list_df_orc_tv, "4 - ", cols_ytd, exato_linha_sintetica=True)) or \
+        abs(get_valor_consolidado_multi(list_df_orc_tv, "4 - Custo das Vendas", cols_ytd))
+    desp_var_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "6 - Despesas Variáveis", cols_ytd))
+    desp_var_tv_o = abs(get_valor_consolidado_multi(list_df_orc_tv, "6 - Despesas Variáveis", cols_ytd))
     desp_op_tv_kpi = abs(get_valor_consolidado_multi(list_df_real_tv, "8 - Despesas Operacionais", cols_ytd))
+    desp_op_tv_o = abs(get_valor_consolidado_multi(list_df_orc_tv, "8 - Despesas Operacionais", cols_ytd))
+    deprec_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "13 - Depreciação e Amortização", cols_ytd))
+    total_saidas_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
+    total_custos_desp_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi
 
     col_head_a, col_head_b = st.columns([3, 1])
     with col_head_a:
@@ -1436,16 +1455,13 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         )
     with col_head_b:
         # Relógio de verdade "ao vivo": roda dentro de um componente (só ele
-        # consegue executar JavaScript de fato -- HTML solto via st.markdown
-        # não executa <script>) e atualiza a cada segundo com o horário real
-        # do computador de quem está vendo, em vez de ficar parado até o
-        # próximo ciclo de atualização dos dados (60s).
+        # consegue executar JavaScript de fato) e atualiza a cada segundo.
         components.html(
             f"""
             <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
-                        color:{COLORS['text_muted']}; padding-top:6px;">
-                <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:28px; font-weight:800; letter-spacing:2px;">--:--:--</div>
-                <div id="tvDateLive" style="font-size:12px;"></div>
+                        color:{COLORS['text_muted']}; padding-top:2px;">
+                <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:24px; font-weight:800; letter-spacing:2px;">--:--:--</div>
+                <div id="tvDateLive" style="font-size:11px;"></div>
             </div>
             <script>
             function _tvAtualizarRelogio() {{
@@ -1463,75 +1479,62 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             setInterval(_tvAtualizarRelogio, 1000);
             </script>
             """,
-            height=70,
+            height=54,
         )
 
-    def _tv_kpi(cor_var, label, valor, sub, accent):
+    def _tv_kpi(cor_var, label, valor, sub, accent, icone=""):
         return (
             f'<div class="tv-kpi" style="--tv-accent:{accent};">'
             f'<div class="lbl">{label}</div>'
             f'<div class="val" style="color:{cor_var};">{valor}</div>'
-            f'<div class="sub">{sub}</div></div>'
+            f'<div class="sub">{icone} {sub}</div></div>'
         )
+
+    seta_rec = "▲" if rec_liq_real >= rec_liq_orc else "▼"
+    seta_eb = "▲" if ebitda_real >= ebitda_orc else "▼"
+    pct_custos_sobre_receita = (total_custos_desp_tv / rec_liq_real * 100) if rec_liq_real else 0
 
     st.markdown(
         '<div class="tv-kpi-grid">'
         + _tv_kpi(COLORS["text"], "Receita Bruta (YTD)", formata_m(rec_bruta_real),
-                  "Antes de deduções", COLORS["muted_line"])
-        + _tv_kpi(cor_variacao(rec_liq_real), "Receita Líquida (YTD)", formata_m(rec_liq_real),
-                  f"{pct_atingimento_rec:.1f}% do orçado", COLORS["primary"])
-        + _tv_kpi(cor_variacao(ebitda_real), "EBITDA (YTD)", formata_m(ebitda_real),
-                  f"{pct_atingimento_eb:.1f}% do orçado", COLORS["positive"])
-        + _tv_kpi(cor_variacao(desvio_ebitda), "Desvio de EBITDA", formata_m(desvio_ebitda),
-                  f"{pct_desvio_ebitda:+.1f}% vs. Orçamento", COLORS["warning"])
-        + _tv_kpi(cor_variacao(margem_ebitda), "Margem EBITDA", f"{margem_ebitda:.1f}%",
-                  f"Orçado: {margem_ebitda_orc:.1f}%", COLORS["secondary"])
+                  "Antes de deduções", COLORS["muted_line"], "💰")
+        + _tv_kpi(cor_variacao(rec_liq_real - rec_liq_orc), "Receita Líquida (YTD)", formata_m(rec_liq_real),
+                  f"{seta_rec} {pct_atingimento_rec:.0f}% do orçado ({formata_m(rec_liq_orc)})", COLORS["primary"], "")
+        + _tv_kpi(cor_variacao(ebitda_real - ebitda_orc), "EBITDA (YTD)", formata_m(ebitda_real),
+                  f"{seta_eb} {pct_atingimento_eb:.0f}% do orçado ({formata_m(ebitda_orc)})", COLORS["positive"], "")
+        + _tv_kpi(cor_variacao(margem_ebitda - margem_ebitda_orc), "Margem EBITDA", f"{margem_ebitda:.1f}%",
+                  f"Orçado: {margem_ebitda_orc:.1f}% · Desvio: {formata_brl(desvio_ebitda)}", COLORS["secondary"], "")
+        + _tv_kpi(cor_variacao(-(pct_custos_sobre_receita)), "Custos + Despesas / Receita", f"{pct_custos_sobre_receita:.1f}%",
+                  f"{formata_m(total_custos_desp_tv)} sobre {formata_m(rec_liq_real)}", COLORS["warning"], "")
         + "</div>",
         unsafe_allow_html=True,
     )
 
-    # ---------------- Gauges de atingimento (estilo instrumento de painel) ----------------
-    cg_gauge1, cg_gauge2 = st.columns(2)
-    for col, (titulo, valor_real, valor_orc, pct_atg, cor_gauge) in zip(
-        (cg_gauge1, cg_gauge2),
-        [
-            ("Atingimento de Receita Líquida", rec_liq_real, rec_liq_orc, pct_atingimento_rec, COLORS["primary"]),
-            ("Atingimento de EBITDA", ebitda_real, ebitda_orc, pct_atingimento_eb, COLORS["positive"]),
-        ],
-    ):
-        with col:
-            teto_gauge = max(abs(valor_orc) * 1.3, abs(valor_real) * 1.15, 1.0)
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=valor_real,
-                number={"valueformat": ",.0f", "prefix": "R$ ", "font": {"size": 26, "color": COLORS["text"]}},
-                title={"text": f"{titulo} · {pct_atg:.0f}% do orçado", "font": {"size": 13, "color": COLORS["text_muted"]}},
-                gauge={
-                    "axis": {"range": [0, teto_gauge], "tickfont": {"size": 9, "color": COLORS["text_muted"]}},
-                    "bar": {"color": cor_gauge, "thickness": 0.35},
-                    "bgcolor": COLORS["surface_alt"],
-                    "borderwidth": 0,
-                    "threshold": {"line": {"color": COLORS["warning"], "width": 3}, "thickness": 0.9, "value": abs(valor_orc)},
-                },
-            ))
-            estilo_grafico(fig_gauge, height=180, margin=dict(l=24, r=24, t=40, b=6), separators=",.")
-            st.plotly_chart(fig_gauge, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+    # ---------------- Atingimento vs. Orçado (barras minimalistas) ----------------
+    def _tv_barra_atingimento(titulo, valor_real, valor_orc, pct_atg, cor):
+        escala_max = max(150.0, pct_atg + 20.0)
+        largura = max(2.0, min(100.0, pct_atg / escala_max * 100))
+        marca = min(98.0, 100.0 / escala_max * 100)
+        return (
+            '<div class="tv-atg-item">'
+            f'<div class="tv-atg-head"><span class="tv-atg-title">{titulo}</span>'
+            f'<span class="tv-atg-pct" style="color:{cor};">{pct_atg:.0f}%</span></div>'
+            f'<div class="tv-atg-track"><div class="tv-atg-fill" style="width:{largura:.1f}%; background:{cor};"></div>'
+            f'<div class="tv-atg-marker" style="left:{marca:.1f}%;"></div></div>'
+            f'<div class="tv-atg-foot"><span>{formata_m(valor_real)} realizado</span>'
+            f'<span>Meta: {formata_m(valor_orc)}</span></div></div>'
+        )
 
-    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tv-panel"><div class="tv-atg-grid">'
+        + _tv_barra_atingimento("🎯 Atingimento de Receita Líquida", rec_liq_real, rec_liq_orc, pct_atingimento_rec, COLORS["primary"])
+        + _tv_barra_atingimento("🎯 Atingimento de EBITDA", ebitda_real, ebitda_orc, pct_atingimento_eb, COLORS["positive"])
+        + "</div></div>",
+        unsafe_allow_html=True,
+    )
 
-    # ---------------- Carrega dados por loja p/ ranking (top performers) ----------------
-    lojas_tv = [a for a in abas_disponiveis if a not in ABAS_CONSOLIDADAS_TV]
-    dados_por_loja_tv = carregar_dados_por_loja(path_orc, path_real, lojas_tv) if lojas_tv else {}
-
-    ranking_lojas = []
-    for loja, (df_o_loja, df_r_loja) in dados_por_loja_tv.items():
-        v_rec = get_valor_consolidado_multi([df_r_loja], "3 - Receita Operacional Liquida", cols_ytd)
-        ranking_lojas.append((loja, v_rec))
-    ranking_lojas.sort(key=lambda x: x[1], reverse=True)
-    top_lojas = ranking_lojas[:6]
-    max_rank_val = max((v for _, v in top_lojas), default=1.0) or 1.0
-
-    cgtv1, cgtv2, cgtv3 = st.columns([1.25, 1, 1])
+    # ---------------- Evolução Mensal (grande) + Composição de Custos (detalhada) ----------------
+    cgtv1, cgtv2 = st.columns([1.6, 1])
 
     with cgtv1:
         st.markdown('<div class="tv-section-title">📈 Evolução Mensal — Receita vs. EBITDA</div>', unsafe_allow_html=True)
@@ -1544,64 +1547,68 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         fig_tv_line.add_trace(go.Scatter(
             x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers+text",
             text=[formata_m(v) for v in rec_m_tv], textposition="top center",
-            textfont=dict(size=10, color=COLORS["primary"]),
-            line=dict(color=COLORS["primary"], width=3), marker=dict(size=7),
+            textfont=dict(size=11, color=COLORS["primary"]),
+            line=dict(color=COLORS["primary"], width=4), marker=dict(size=9),
         ))
         fig_tv_line.add_trace(go.Scatter(
             x=rot_m_tv, y=eb_m_tv, name="EBITDA", mode="lines+markers+text",
             text=[formata_m(v) for v in eb_m_tv], textposition="bottom center",
-            textfont=dict(size=10, color=COLORS["positive"]),
-            line=dict(color=COLORS["positive"], width=3, dash="dot"), marker=dict(size=7),
+            textfont=dict(size=11, color=COLORS["positive"]),
+            line=dict(color=COLORS["positive"], width=4, dash="dot"), marker=dict(size=9),
         ))
         estilo_grafico(
-            fig_tv_line, height=320,
-            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=11, color=COLORS["text_muted"])),
+            fig_tv_line, height=430,
+            margin=dict(l=20, r=20, t=20, b=50),
+            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=13, color=COLORS["text_muted"])),
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.24, xanchor="center", x=0.5),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.16, xanchor="center", x=0.5, font=dict(size=13)),
         )
         st.plotly_chart(fig_tv_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     with cgtv2:
         st.markdown('<div class="tv-section-title">🥧 Composição de Custos & Saídas</div>', unsafe_allow_html=True)
-        cmv_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "4 - ", cols_ytd, exato_linha_sintetica=True)) or \
-            abs(get_valor_consolidado_multi(list_df_real_tv, "4 - Custo das Vendas", cols_ytd))
-        desp_var_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "6 - Despesas Variáveis", cols_ytd))
-        deprec_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "13 - Depreciação e Amortização", cols_ytd))
-        total_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
         fig_tv_donut = go.Figure(data=[go.Pie(
             labels=["CMV", "Desp. Variáveis", "Desp. Operacionais", "Deprec./Amort."],
-            values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.62,
+            values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.66,
             marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
                         line=dict(color=COLORS["surface"], width=2)),
-            textinfo="percent", textfont=dict(size=11),
+            textinfo="percent", textfont=dict(size=11), showlegend=False,
         )])
         fig_tv_donut.add_annotation(
-            text=f"<b>{formata_m(total_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
+            text=f"<b>{formata_m(total_saidas_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
             showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
         )
-        estilo_grafico(fig_tv_donut, height=320, legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=11)))
+        estilo_grafico(fig_tv_donut, height=200, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig_tv_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
-    with cgtv3:
-        st.markdown('<div class="tv-section-title">🏆 Ranking de Lojas — Receita Líquida (YTD)</div>', unsafe_allow_html=True)
-        if top_lojas:
-            linhas_rank = ['<div class="tv-panel" style="padding-top:6px;">']
-            for i, (loja, valor) in enumerate(top_lojas, start=1):
-                pct_barra = max(2, min(100, (valor / max_rank_val * 100))) if max_rank_val else 2
-                linhas_rank.append(
-                    '<div class="tv-rank-row">'
-                    f'<div class="tv-rank-badge">{i}</div>'
-                    f'<div class="tv-rank-name" title="{loja}">{loja}</div>'
-                    f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
-                    f'<div class="tv-rank-val">{formata_m(valor)}</div>'
-                    "</div>"
-                )
-            linhas_rank.append("</div>")
-            st.markdown("".join(linhas_rank), unsafe_allow_html=True)
-        else:
-            st.info("Sem lojas individuais disponíveis para ranking.")
+        # Detalhamento: cada categoria com % da receita líquida e desvio vs. orçado
+        # (é o "mais detalhe de custos" pedido -- não só o donut).
+        categorias_custo = [
+            ("CMV", cmv_tv, cmv_tv_o, COLORS["primary"]),
+            ("Despesas Variáveis", desp_var_tv, desp_var_tv_o, COLORS["muted_line"]),
+            ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["secondary"]),
+        ]
+        linhas_custo = ['<div class="tv-panel" style="padding-top:8px;">']
+        for nome_cat, v_real, v_orc, cor_cat in categorias_custo:
+            pct_da_receita = (v_real / rec_liq_real * 100) if rec_liq_real else 0
+            desvio_cat = v_orc - v_real  # custo menor que orçado = positivo (bom)
+            cor_desvio = cor_variacao(desvio_cat)
+            linhas_custo.append(
+                '<div class="tv-cost-row">'
+                f'<div class="tv-cost-dot" style="background:{cor_cat};"></div>'
+                f'<div class="tv-cost-nome">{nome_cat}</div>'
+                f'<div class="tv-cost-pct">{pct_da_receita:.1f}% rec.</div>'
+                f'<div class="tv-cost-val">{formata_m(v_real)}</div>'
+                f'<div class="tv-cost-desvio" style="color:{cor_desvio};">{formata_m(desvio_cat)}</div>'
+                "</div>"
+            )
+        linhas_custo.append(
+            f'<div style="text-align:right; font-size:10px; color:{COLORS["text_muted"]}; margin-top:4px;">'
+            f"Desvio = orçado − realizado (positivo é favorável)</div></div>"
+        )
+        st.markdown("".join(linhas_custo), unsafe_allow_html=True)
 
-    # ---------------- Ticker de destaques (rodapé animado) ----------------
+    # ---------------- Ticker de destaques + controles de tela cheia (rodapé) ----------------
     meses_com_receita = {
         m_nome: get_valor_consolidado_multi(list_df_real_tv, "3 - Receita Operacional Liquida", [c])
         for m_nome, c in m_map_tv.items()
@@ -1614,22 +1621,88 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         if len(meses_validos) > 1:
             pior_mes = min(meses_validos, key=meses_validos.get)
             destaques.append(f"📉 Pior mês: <b>{pior_mes.capitalize()}</b> ({formata_m(meses_validos[pior_mes])})")
-    if top_lojas:
-        destaques.append(f"🥇 Loja destaque: <b>{top_lojas[0][0]}</b> ({formata_m(top_lojas[0][1])})")
-        if len(top_lojas) > 1:
-            destaques.append(f"🥈 2º lugar: <b>{top_lojas[1][0]}</b> ({formata_m(top_lojas[1][1])})")
     destaques.append(f"📊 Margem EBITDA: <b>{margem_ebitda:.1f}%</b> (orçado: {margem_ebitda_orc:.1f}%)")
     destaques.append(f"🎯 Atingimento de receita: <b>{pct_atingimento_rec:.1f}%</b>")
     destaques.append(f"💹 Atingimento de EBITDA: <b>{pct_atingimento_eb:.1f}%</b>")
     destaques.append(f"⚖️ Desvio de EBITDA: <b>{formata_brl(desvio_ebitda)}</b> ({pct_desvio_ebitda:+.1f}%)")
     destaques.append(f"💰 Receita bruta: <b>{formata_m(rec_bruta_real)}</b>")
-    destaques.append(f"🧾 Saídas: <b>{formata_m(total_tv)}</b> (CMV {formata_m(cmv_tv)} · OpEx {formata_m(desp_op_tv_kpi)})")
+    destaques.append(f"🧾 Custos + despesas / receita: <b>{pct_custos_sobre_receita:.1f}%</b> ({formata_m(total_custos_desp_tv)})")
+    destaques.append(f"📦 CMV: <b>{formata_m(cmv_tv)}</b> · Desp. Variáveis: <b>{formata_m(desp_var_tv)}</b> · Desp. Operacionais: <b>{formata_m(desp_op_tv_kpi)}</b>")
 
     ticker_html = f'<span class="tv-tick-sep">·</span>'.join(destaques)
     st.markdown(
+        f"""<div class="tv-ticker-wrap"><div class="tv-ticker">{ticker_html}</div></div>""",
+        unsafe_allow_html=True,
+    )
+
+    # Botão de tela cheia + aviso -- tudo dentro do MESMO componente (só ele
+    # roda JavaScript de verdade). O aviso/botão somem sozinhos assim que a
+    # página entra em tela cheia (por esse botão OU pelo F11), e reaparecem
+    # ao sair (Esc). Se o navegador bloquear o pedido automático de tela
+    # cheia, mostra um aviso na hora (em vez de falhar calado) recomendando
+    # o F11, que é sempre a forma mais confiável.
+    components.html(
         f"""
-        <div class="tv-ticker-wrap"><div class="tv-ticker">{ticker_html}</div></div>
-        <div style="text-align:center;margin-top:8px;color:{COLORS['text_muted']};font-size:11px;">
+        <div id="tvFsWrap" style="display:flex; align-items:center; justify-content:center; gap:12px;
+                    font-family:{FONT_STACK}; padding-top:6px;">
+            <button id="tvFsBtn" style="background:{COLORS['primary']}; color:#fff; border:none;
+                    border-radius:20px; padding:6px 18px; font-size:12.5px; font-weight:700; cursor:pointer;">
+                ⛶ Tela Cheia
+            </button>
+            <span id="tvFsMsg" style="color:{COLORS['text_muted']}; font-size:11.5px;">
+                (F11 também funciona · Esc para sair)
+            </span>
+        </div>
+        <script>
+        function _tvAlvo() {{
+            try {{ if (window.top && window.top.document) {{ window.top.document.title; return window.top; }} }} catch (e) {{}}
+            try {{ if (window.parent && window.parent.document) {{ window.parent.document.title; return window.parent; }} }} catch (e) {{}}
+            return window;
+        }}
+        function _tvEmTela() {{
+            try {{
+                var d = _tvAlvo().document;
+                return !!(d.fullscreenElement || d.webkitFullscreenElement || d.msFullscreenElement);
+            }} catch (e) {{ return false; }}
+        }}
+        function _tvAtualizarUI() {{
+            var wrap = document.getElementById('tvFsWrap');
+            if (wrap) wrap.style.display = _tvEmTela() ? 'none' : 'flex';
+        }}
+        var btn = document.getElementById('tvFsBtn');
+        if (btn) {{
+            btn.addEventListener('click', function () {{
+                var msg = document.getElementById('tvFsMsg');
+                try {{
+                    var w = _tvAlvo();
+                    var el = w.document.documentElement;
+                    var pedido = el.requestFullscreen ? el.requestFullscreen()
+                        : (el.webkitRequestFullscreen ? el.webkitRequestFullscreen() : null);
+                    if (pedido && pedido.catch) {{
+                        pedido.catch(function () {{
+                            if (msg) msg.textContent = 'Bloqueado pelo navegador -- pressione F11';
+                        }});
+                    }} else if (!pedido) {{
+                        if (msg) msg.textContent = 'Não suportado aqui -- pressione F11';
+                    }}
+                }} catch (e) {{
+                    if (msg) msg.textContent = 'Não foi possível -- pressione F11';
+                }}
+            }});
+        }}
+        try {{ _tvAlvo().document.addEventListener('fullscreenchange', _tvAtualizarUI); }} catch (e) {{}}
+        try {{ _tvAlvo().document.addEventListener('webkitfullscreenchange', _tvAtualizarUI); }} catch (e) {{}}
+        document.addEventListener('fullscreenchange', _tvAtualizarUI);
+        _tvAtualizarUI();
+        setInterval(_tvAtualizarUI, 1500);
+        </script>
+        """,
+        height=44,
+    )
+
+    st.markdown(
+        f"""
+        <div style="text-align:center;margin-top:2px;color:{COLORS['text_muted']};font-size:11px;">
             Painel para exibição (somente leitura) · Atualiza automaticamente a cada 30 minutos ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
