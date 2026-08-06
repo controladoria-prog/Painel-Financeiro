@@ -2177,7 +2177,7 @@ def montar_relatorio_excel(
     headers_dm = ["Loja", "Conta", "Tipo"] + [m.capitalize() for m in mapa_meses.keys()] + ["Total Ano"]
     for col, texto in enumerate(headers_dm, start=1):
         cell = ws2.cell(row=linha_header_dm, column=col, value=texto)
-        cell.font = EXCEL_STYLE["font_bold"]
+        cell.font = EXCEL_STYLE["font_header"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
         cell.alignment = Alignment(horizontal="left" if col <= n_campos_dm else "center")
@@ -2231,7 +2231,7 @@ def montar_relatorio_excel(
     headers_pc = ["Loja", "Conta", "Plano de Contas"] + [m.capitalize() for m in mapa_meses.keys()] + ["Total Ano"]
     for col, texto in enumerate(headers_pc, start=1):
         cell = ws3.cell(row=linha_header_pc, column=col, value=texto)
-        cell.font = EXCEL_STYLE["font_bold"]
+        cell.font = EXCEL_STYLE["font_header"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
         cell.alignment = Alignment(horizontal="left" if col <= n_campos_pc else "center")
@@ -2273,6 +2273,7 @@ def montar_relatorio_excel(
                     soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
                     _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano))
                     linha += 1
+                n_planos_escritos = len(grupos_ordenados)
             elif permitir_lancamento_manual and not (mapa_planos_dre.get(str(conta).strip(), [])):
                 # Linha DRE sem nenhum Plano de Contas correspondente (nem no
                 # DIÁRIO, nem na Tabela_Contas) -- típico do modelo de RH.
@@ -2282,6 +2283,7 @@ def montar_relatorio_excel(
                 soma_planos_mes = valores_manual
                 _escrever_linha_flat(ws3, linha, [loja, conta, "Lançado Manualmente"], valores_manual, sum(valores_manual))
                 linha += 1
+                n_planos_escritos = 1
             else:
                 # Fallback: Tabela_Contas + soma nas abas por loja (método antigo).
                 planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
@@ -2292,12 +2294,18 @@ def montar_relatorio_excel(
                     soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
                     _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano))
                     linha += 1
+                n_planos_escritos = len(planos)
 
-            _escrever_linha_flat(
-                ws3, linha, [loja, conta, "TOTAL"], soma_planos_mes, sum(soma_planos_mes),
-                negrito=True, fill=EXCEL_STYLE["fill_total"],
-            )
-            linha += 1
+            # A linha de TOTAL só faz sentido (e só é escrita) quando há MAIS
+            # DE UM plano de contas para essa linha da DRE -- com um único
+            # plano, o total seria idêntico à própria linha, repetindo o
+            # mesmo valor à toa.
+            if n_planos_escritos > 1:
+                _escrever_linha_flat(
+                    ws3, linha, [loja, conta, "TOTAL"], soma_planos_mes, sum(soma_planos_mes),
+                    negrito=True, fill=EXCEL_STYLE["fill_total"],
+                )
+                linha += 1
 
         if forcar_planos_contas:
             # Planos de contas que fazem parte do modelo mas não têm Linha DRE
@@ -2325,11 +2333,12 @@ def montar_relatorio_excel(
                 )
                 linha += 1
 
-            _escrever_linha_flat(
-                ws3, linha, [loja, "(Fora da DRE)", "TOTAL"], soma_forcados_mes, sum(soma_forcados_mes),
-                negrito=True, fill=EXCEL_STYLE["fill_total"],
-            )
-            linha += 1
+            if len(forcar_planos_contas) > 1:
+                _escrever_linha_flat(
+                    ws3, linha, [loja, "(Fora da DRE)", "TOTAL"], soma_forcados_mes, sum(soma_forcados_mes),
+                    negrito=True, fill=EXCEL_STYLE["fill_total"],
+                )
+                linha += 1
 
     ultima_linha_pc = linha - 1
     ws3.column_dimensions["A"].width = 26
