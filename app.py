@@ -1749,6 +1749,7 @@ EXCEL_STYLE = {
     "fill_title": PatternFill(fill_type="solid", start_color="FF0B0E14", end_color="FF0B0E14"),
     "fill_header": PatternFill(fill_type="solid", start_color="FF1A1F2E", end_color="FF1A1F2E"),
     "fill_zebra": PatternFill(fill_type="solid", start_color="FFF3F5F9", end_color="FFF3F5F9"),
+    "fill_group": PatternFill(fill_type="solid", start_color="FFEFF3FA", end_color="FFEFF3FA"),
     "fill_total": PatternFill(fill_type="solid", start_color="FFDCE8FF", end_color="FFDCE8FF"),
     "font_title": Font(color="FFFFFFFF", bold=True, size=13, name="Calibri"),
     "font_header": Font(color="FFFFFFFF", bold=True, size=11, name="Calibri"),
@@ -2243,6 +2244,7 @@ def montar_relatorio_excel(
         ws3.cell(row=linha, column=1, value="Nenhuma loja/unidade disponível para divisão.").font = EXCEL_STYLE["font_normal"]
         linha += 1
 
+    indice_grupo = 0
     for loja in lojas_ordenadas:
         df_o_loja, df_r_loja = dados_por_loja[loja]
 
@@ -2255,6 +2257,13 @@ def montar_relatorio_excel(
             df_lanc_loja = df_lanc[df_lanc["Loja"] == loja]
 
         for conta in contas_sel:
+            # Cada conta (linha da DRE) forma um "grupo" -- as linhas de
+            # plano de contas dela, mais o TOTAL, recebem o mesmo
+            # sombreamento leve alternado, pra ficar visualmente claro onde
+            # um grupo termina e o próximo começa (em vez de tudo num fundo
+            # branco igual, que se perde fácil numa planilha grande).
+            indice_grupo += 1
+            fill_grupo = EXCEL_STYLE["fill_group"] if indice_grupo % 2 == 1 else None
             df_diario_conta = pd.DataFrame()
             if not df_lanc_loja.empty:
                 conta_norm = _normalizar_texto(conta)
@@ -2271,7 +2280,7 @@ def montar_relatorio_excel(
                 for plano, grupo in grupos_ordenados:
                     valores_plano = [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
                     soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
-                    _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano))
+                    _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano), fill=fill_grupo)
                     linha += 1
                 n_planos_escritos = len(grupos_ordenados)
             elif permitir_lancamento_manual and not (mapa_planos_dre.get(str(conta).strip(), [])):
@@ -2281,28 +2290,41 @@ def montar_relatorio_excel(
                     get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()
                 ]
                 soma_planos_mes = valores_manual
-                _escrever_linha_flat(ws3, linha, [loja, conta, "Lançado Manualmente"], valores_manual, sum(valores_manual))
+                _escrever_linha_flat(ws3, linha, [loja, conta, "Lançado Manualmente"], valores_manual, sum(valores_manual), fill=fill_grupo)
                 linha += 1
                 n_planos_escritos = 1
             else:
                 # Fallback: Tabela_Contas + soma nas abas por loja (método antigo).
                 planos = mapa_planos_dre.get(str(conta).strip(), []) or [conta]
+                conta_norm_cmp = _normalizar_texto(conta)
                 for plano in planos:
                     valores_plano = [
                         get_valor_consolidado_multi([df_r_loja], plano, [m_col]) for m_col in mapa_meses.values()
                     ]
                     soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
-                    _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano))
+                    # Quando não há um Plano de Contas distinto de verdade
+                    # (caiu no fallback "ou [conta]", ou a Tabela_Contas só
+                    # tem o próprio nome da linha da DRE como "plano"), o
+                    # valor já vem certo, mas o rótulo repetia a conta --
+                    # mostramos "Lançado Manualmente" para deixar claro que
+                    # esse valor foi lançado direto na linha da DRE, sem
+                    # composição por plano de contas. Vale para qualquer
+                    # modelo de relatório, não só o de RH.
+                    rotulo_plano = "Lançado Manualmente" if _normalizar_texto(plano) == conta_norm_cmp else plano
+                    _escrever_linha_flat(ws3, linha, [loja, conta, rotulo_plano], valores_plano, sum(valores_plano), fill=fill_grupo)
                     linha += 1
                 n_planos_escritos = len(planos)
 
             # A linha de TOTAL só faz sentido (e só é escrita) quando há MAIS
             # DE UM plano de contas para essa linha da DRE -- com um único
             # plano, o total seria idêntico à própria linha, repetindo o
-            # mesmo valor à toa.
+            # mesmo valor à toa. O rótulo cita a própria conta ("TOTAL —
+            # <conta>") para deixar explícito a quais linhas de plano de
+            # contas, logo acima, aquele total se refere -- em vez de
+            # depender só da cor de fundo pra não se perder na leitura.
             if n_planos_escritos > 1:
                 _escrever_linha_flat(
-                    ws3, linha, [loja, conta, "TOTAL"], soma_planos_mes, sum(soma_planos_mes),
+                    ws3, linha, [loja, conta, f"TOTAL — {conta}"], soma_planos_mes, sum(soma_planos_mes),
                     negrito=True, fill=EXCEL_STYLE["fill_total"],
                 )
                 linha += 1
@@ -2312,6 +2334,8 @@ def montar_relatorio_excel(
             # correspondente (ex.: "Mercadorias" no modelo de Compras) --
             # puxados direto da DIÁRIO/Lançamentos pelo nome do plano,
             # ignorando a Linha DRE.
+            indice_grupo += 1
+            fill_grupo_forcado = EXCEL_STYLE["fill_group"] if indice_grupo % 2 == 1 else None
             soma_forcados_mes = [0.0] * n_meses
             for plano_forcado in forcar_planos_contas:
                 df_plano_forcado = pd.DataFrame()
@@ -2330,12 +2354,13 @@ def montar_relatorio_excel(
                 soma_forcados_mes = [s + v for s, v in zip(soma_forcados_mes, valores_plano)]
                 _escrever_linha_flat(
                     ws3, linha, [loja, "(Fora da DRE)", plano_forcado], valores_plano, sum(valores_plano),
+                    fill=fill_grupo_forcado,
                 )
                 linha += 1
 
             if len(forcar_planos_contas) > 1:
                 _escrever_linha_flat(
-                    ws3, linha, [loja, "(Fora da DRE)", "TOTAL"], soma_forcados_mes, sum(soma_forcados_mes),
+                    ws3, linha, [loja, "(Fora da DRE)", "TOTAL — Fora da DRE"], soma_forcados_mes, sum(soma_forcados_mes),
                     negrito=True, fill=EXCEL_STYLE["fill_total"],
                 )
                 linha += 1
@@ -2343,7 +2368,7 @@ def montar_relatorio_excel(
     ultima_linha_pc = linha - 1
     ws3.column_dimensions["A"].width = 26
     ws3.column_dimensions["B"].width = 40
-    ws3.column_dimensions["C"].width = 34
+    ws3.column_dimensions["C"].width = 42
     for col in range(n_campos_pc + 1, n_col_pc + 1):
         ws3.column_dimensions[get_column_letter(col)].width = largura_mes
     if ultima_linha_pc >= linha_header_pc + 1:
