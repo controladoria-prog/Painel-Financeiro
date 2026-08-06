@@ -1439,7 +1439,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
             }}
-            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 150s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
+            .tv-ticker {{ display:inline-block; padding-left: 100%; animation: tv-marquee 15s linear infinite; font-size: 15px; color: {COLORS["text_muted"]}; }}
             .tv-ticker b {{ color: {COLORS["text"]}; }}
             .tv-ticker .tv-tick-sep {{ color: {COLORS["primary"]}; margin: 0 30px; }}
         </style>
@@ -1712,20 +1712,29 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         for m_nome, c in m_map_tv.items()
     }
     meses_validos = {m: v for m, v in meses_com_receita.items() if v != 0}
+
+    # Projeções simples (extrapolação linear do acumulado do ano até agora)
+    # e outros números que NÃO aparecem em nenhum card/lista da tela --
+    # o letreiro é pra trazer coisa nova, não repetir o que já tá visível.
+    n_meses_decorridos = idx_mes_atual + 1
+    n_meses_restantes = max(0, 12 - n_meses_decorridos)
+    media_mensal_receita = (rec_liq_real / n_meses_decorridos) if n_meses_decorridos else 0
+    media_mensal_ebitda = (ebitda_real / n_meses_decorridos) if n_meses_decorridos else 0
+    projecao_receita_ano = media_mensal_receita * 12
+    projecao_ebitda_ano = media_mensal_ebitda * 12
+
     destaques = []
     if meses_validos:
         melhor_mes = max(meses_validos, key=meses_validos.get)
-        destaques.append(f"🏆 Melhor mês: <b>{melhor_mes.capitalize()}</b> ({formata_m(meses_validos[melhor_mes])})")
+        destaques.append(f"🏆 Melhor mês em receita: <b>{melhor_mes.capitalize()}</b> ({formata_m(meses_validos[melhor_mes])})")
         if len(meses_validos) > 1:
             pior_mes = min(meses_validos, key=meses_validos.get)
-            destaques.append(f"📉 Pior mês: <b>{pior_mes.capitalize()}</b> ({formata_m(meses_validos[pior_mes])})")
-    destaques.append(f"📊 Margem EBITDA: <b>{margem_ebitda:.1f}%</b> (orçado: {margem_ebitda_orc:.1f}%)")
-    destaques.append(f"🎯 Atingimento de receita: <b>{pct_atingimento_rec:.1f}%</b>")
-    destaques.append(f"💹 Atingimento de EBITDA: <b>{pct_atingimento_eb:.1f}%</b>")
-    destaques.append(f"⚖️ Desvio de EBITDA: <b>{formata_brl(desvio_ebitda)}</b> ({pct_desvio_ebitda:+.1f}%)")
-    destaques.append(f"💰 Receita bruta: <b>{formata_m(rec_bruta_real)}</b>")
-    destaques.append(f"🧾 Custos + despesas / receita: <b>{pct_custos_sobre_receita:.1f}%</b> ({formata_m(total_custos_desp_tv)})")
-    destaques.append(f"📦 CMV: <b>{formata_m(cmv_tv)}</b> · Desp. Variáveis: <b>{formata_m(desp_var_tv)}</b> · Desp. Operacionais: <b>{formata_m(desp_op_tv_kpi)}</b>")
+            destaques.append(f"📉 Pior mês em receita: <b>{pior_mes.capitalize()}</b> ({formata_m(meses_validos[pior_mes])})")
+    destaques.append(f"🔮 Projeção de Receita Líquida no ano: <b>{formata_m(projecao_receita_ano)}</b> (ritmo atual)")
+    destaques.append(f"🔮 Projeção de EBITDA no ano: <b>{formata_m(projecao_ebitda_ano)}</b> (ritmo atual)")
+    destaques.append(f"📅 Ticket médio mensal de Receita Líquida: <b>{formata_m(media_mensal_receita)}</b>")
+    destaques.append(f"⏳ Faltam <b>{n_meses_restantes}</b> mês(es) para fechar 2026")
+    destaques.append(f"🗓️ Acumulado de <b>{n_meses_decorridos}</b> mês(es) no período (Jan a {nomes_meses_tv[idx_mes_atual].capitalize()})")
 
     ticker_html = f'<span class="tv-tick-sep">·</span>'.join(destaques)
     st.markdown(
