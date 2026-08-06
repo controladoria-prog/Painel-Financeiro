@@ -1979,7 +1979,7 @@ st.sidebar.markdown(
             background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
             border-radius:8px; padding:8px 12px; text-align:center; font-weight:600; font-size:13.5px;
             margin-bottom: 6px;">
-            📺 Abrir Painel de TV (nova aba)
+            📺 Abrir Painel de TV
         </div>
     </a>
     """,
