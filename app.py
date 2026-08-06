@@ -3353,7 +3353,7 @@ with tab3:
     st.markdown(f'<div class="section-title">📅 Histórico Mensal Mês a Mês — {label_visao}</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    ch1, ch2 = st.columns(2)
+    ch1, ch2 = st.columns([1, 2.4])
     with ch1:
         tipo_hist = st.radio("Base de Dados:", ["Realizado", "Orçado"], horizontal=True)
     with ch2:
