@@ -1593,6 +1593,34 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         )
         st.plotly_chart(fig_tv_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
+        # ---- Desvio Mensal de EBITDA (barras) — usa o espaço abaixo do
+        # gráfico de linha e complementa a evolução com "quanto acima/abaixo
+        # do orçado cada mês ficou", mês a mês. ----
+        st.markdown('<div class="tv-section-title">📐 Desvio Mensal — EBITDA Real vs. Orçado</div>', unsafe_allow_html=True)
+        desvio_m_tv, cores_desvio_tv = [], []
+        for m_nome, c in m_map_tv.items():
+            eb_real_m = get_valor_consolidado_multi(list_df_real_tv, "11 - EBITDA", [c])
+            eb_orc_m = get_valor_consolidado_multi(list_df_orc_tv, "11 - EBITDA", [c])
+            d = eb_real_m - eb_orc_m
+            desvio_m_tv.append(d)
+            cores_desvio_tv.append(COLORS["positive"] if d >= 0 else COLORS["negative"])
+        fig_tv_desvio = go.Figure()
+        fig_tv_desvio.add_trace(go.Bar(
+            x=rot_m_tv, y=desvio_m_tv, marker=dict(color=cores_desvio_tv),
+            text=[formata_m(v) for v in desvio_m_tv], textposition="outside",
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+        ))
+        estilo_grafico(
+            fig_tv_desvio, height=160,
+            margin=dict(l=20, r=20, t=10, b=30),
+            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color=COLORS["text_muted"])),
+            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=True,
+                       zerolinecolor=COLORS["border"], zerolinewidth=1),
+            showlegend=False,
+            bargap=0.35,
+        )
+        st.plotly_chart(fig_tv_desvio, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
     with cgtv2:
         st.markdown('<div class="tv-section-title">🥧 Composição de Custos & Saídas</div>', unsafe_allow_html=True)
         fig_tv_donut = go.Figure(data=[go.Pie(
