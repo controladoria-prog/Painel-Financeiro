@@ -2158,6 +2158,26 @@ def montar_relatorio_excel(
             ]
         )
 
+    # ---- Planos de contas GLOBAIS por conta (juntando TODAS as lojas) ----
+    # A aba "Plano de Contas" precisa mostrar sempre o MESMO conjunto de
+    # planos de contas para uma dada linha da DRE, em todas as lojas -- com
+    # valor ou não. Sem isso, uma loja que não tem lançamento pra um plano
+    # específico simplesmente não mostrava aquela linha, enquanto outra loja
+    # (que tem) mostrava -- deixando a estrutura inconsistente entre visões.
+    planos_por_conta_global = {}
+    if not df_lanc.empty:
+        linhas_norm_geral = df_lanc["Linha DRE"].map(_normalizar_texto)
+        for conta in contas_sel:
+            conta_norm_geral = _normalizar_texto(conta)
+            mask_geral = linhas_norm_geral == conta_norm_geral
+            if not mask_geral.any():
+                mask_geral = linhas_norm_geral.apply(
+                    lambda x: (conta_norm_geral in x) or (x in conta_norm_geral) if x else False
+                )
+            planos_conta = sorted(df_lanc.loc[mask_geral, "Plano de Contas"].dropna().unique().tolist())
+            if planos_conta:
+                planos_por_conta_global[conta] = planos_conta
+
     # ---------------- ABA "DETALHE MENSAL" (Orçado x Realizado, por loja) ----------------
     # Formato tabular "achatado" (Loja/Conta/Tipo em colunas próprias, uma
     # linha por combinação) -- isso permite usar o AutoFilter nativo do
@@ -2274,15 +2294,23 @@ def montar_relatorio_excel(
                 df_diario_conta = df_lanc_loja[mask_conta_loja]
 
             soma_planos_mes = [0.0] * n_meses
-            if not df_diario_conta.empty:
-                # Fonte principal: DIÁRIO/Lançamentos (Valor Bruto por Plano de Contas x Mês).
-                grupos_ordenados = sorted(df_diario_conta.groupby("Plano de Contas"), key=lambda item: item[0])
-                for plano, grupo in grupos_ordenados:
-                    valores_plano = [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
+            planos_globais_conta = planos_por_conta_global.get(conta)
+            if planos_globais_conta:
+                # Fonte principal: DIÁRIO/Lançamentos. Usa o conjunto GLOBAL
+                # de planos de contas dessa linha da DRE (calculado juntando
+                # todas as lojas) -- assim TODA loja mostra as mesmas linhas
+                # de plano de contas, mesmo que, para essa loja específica,
+                # o valor seja zero (sem lançamento).
+                for plano in planos_globais_conta:
+                    grupo = df_diario_conta[df_diario_conta["Plano de Contas"] == plano] if not df_diario_conta.empty else df_diario_conta
+                    valores_plano = (
+                        [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
+                        if not grupo.empty else [0.0] * n_meses
+                    )
                     soma_planos_mes = [s + v for s, v in zip(soma_planos_mes, valores_plano)]
                     _escrever_linha_flat(ws3, linha, [loja, conta, plano], valores_plano, sum(valores_plano), fill=fill_grupo)
                     linha += 1
-                n_planos_escritos = len(grupos_ordenados)
+                n_planos_escritos = len(planos_globais_conta)
             elif permitir_lancamento_manual and not (mapa_planos_dre.get(str(conta).strip(), [])):
                 # Linha DRE sem nenhum Plano de Contas correspondente (nem no
                 # DIÁRIO, nem na Tabela_Contas) -- típico do modelo de RH.
