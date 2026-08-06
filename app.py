@@ -179,6 +179,16 @@ def eh_grupo_sintetico(nome_linha):
     return bool(re.match(r"^\d+\s*-\s*", str(nome_linha).strip()))
 
 
+def eh_linha_custos_despesas(nome_linha):
+    """Retorna True se a linha pertence a algum dos grupos de Custo das
+    Vendas (4), Despesas Variáveis (6) ou Despesas Operacionais (8) --
+    inclusive as sublinhas deles (ex.: "6.6 - ...", "8.3.1 - ..."). Usada na
+    visão "Gerencial" (foco em custos e despesas) das abas de DRE e
+    Histórico Mensal."""
+    m = re.match(r"^(\d+)", str(nome_linha).strip())
+    return bool(m) and m.group(1) in ("4", "6", "8")
+
+
 def cor_valor(val):
     if pd.isna(val):
         return ""
@@ -2803,7 +2813,11 @@ with tab2:
     with c1:
         tipo_visao_dre = st.radio(
             "Filtro de Nível de Visão:",
-            ["Apenas Grupos Principais (Sintética)", "Todas as Contas (Analítica)"],
+            [
+                "Apenas Grupos Principais (Sintética)",
+                "Todas as Contas (Analítica)",
+                "Visão Gerencial (Custos e Despesas)",
+            ],
             horizontal=True,
         )
 
@@ -2811,10 +2825,13 @@ with tab2:
     linhas_dre = df_ref[col_nome].dropna().astype(str).unique()
 
     is_sintetica_dre = tipo_visao_dre == "Apenas Grupos Principais (Sintética)"
+    is_gerencial_dre = tipo_visao_dre == "Visão Gerencial (Custos e Despesas)"
     if is_sintetica_dre:
         linhas_dre = [l for l in linhas_dre if eh_grupo_sintetico(l)]
+    elif is_gerencial_dre:
+        linhas_dre = [l for l in linhas_dre if eh_linha_custos_despesas(l)]
 
-    if not is_sintetica_dre:
+    if not is_sintetica_dre and not is_gerencial_dre:
         contas_filtradas_dre = st.multiselect(
             "🔍 Filtrar Contas Específicas (Estilo Excel):",
             options=linhas_dre,
@@ -2876,6 +2893,50 @@ with tab2:
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
+    if is_gerencial_dre:
+        # Visão rápida e completa de custos e despesas: CMV, Despesas
+        # Variáveis, Despesas Operacionais e o total dos três, cada um com
+        # % sobre a Receita Líquida e o desvio vs. orçado -- é o resumo que
+        # a visão Gerencial existe pra dar de cara, antes da tabela detalhada.
+        rec_liq_ger = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_graficos)
+
+        cmv_ger_r = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_graficos, exato_linha_sintetica=True)) \
+            or abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_graficos))
+        cmv_ger_o = abs(get_valor_consolidado_multi(list_df_orc, "4 - ", cols_graficos, exato_linha_sintetica=True)) \
+            or abs(get_valor_consolidado_multi(list_df_orc, "4 - Custo das Vendas", cols_graficos))
+
+        dvar_ger_r = abs(get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_graficos))
+        dvar_ger_o = abs(get_valor_consolidado_multi(list_df_orc, "6 - Despesas Variáveis", cols_graficos))
+
+        dop_ger_r = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_graficos))
+        dop_ger_o = abs(get_valor_consolidado_multi(list_df_orc, "8 - Despesas Operacionais", cols_graficos))
+
+        total_ger_r = cmv_ger_r + dvar_ger_r + dop_ger_r
+        total_ger_o = cmv_ger_o + dvar_ger_o + dop_ger_o
+
+        def _pct_receita(valor):
+            return (valor / rec_liq_ger * 100) if rec_liq_ger else 0.0
+
+        st.markdown('<div class="section-title">💸 Resumo Gerencial — Custos e Despesas</div>', unsafe_allow_html=True)
+        st.markdown(
+            render_kpi_row([
+                dict(label="CMV (CUSTO DAS VENDAS)", value=formata_brl(cmv_ger_r),
+                     value_color=cor_variacao(cmv_ger_o - cmv_ger_r),
+                     subtext=f"{_pct_receita(cmv_ger_r):.1f}% da receita líquida · Orçado: {formata_brl(cmv_ger_o)}", icon="📦"),
+                dict(label="DESPESAS VARIÁVEIS", value=formata_brl(dvar_ger_r),
+                     value_color=cor_variacao(dvar_ger_o - dvar_ger_r),
+                     subtext=f"{_pct_receita(dvar_ger_r):.1f}% da receita líquida · Orçado: {formata_brl(dvar_ger_o)}", icon="📉"),
+                dict(label="DESPESAS OPERACIONAIS", value=formata_brl(dop_ger_r),
+                     value_color=cor_variacao(dop_ger_o - dop_ger_r),
+                     subtext=f"{_pct_receita(dop_ger_r):.1f}% da receita líquida · Orçado: {formata_brl(dop_ger_o)}", icon="🏢"),
+                dict(label="TOTAL CUSTOS + DESPESAS", value=formata_brl(total_ger_r),
+                     value_color=cor_variacao(total_ger_o - total_ger_r),
+                     subtext=f"{_pct_receita(total_ger_r):.1f}% da receita líquida · Orçado: {formata_brl(total_ger_o)}", icon="🧾"),
+            ]),
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
     column_config_dre = {
         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
     }
@@ -2914,14 +2975,25 @@ with tab3:
     with ch1:
         tipo_hist = st.radio("Base de Dados:", ["Realizado", "Orçado"], horizontal=True)
     with ch2:
-        visao_hist_dre = st.radio("Detalhes:", ["Grupos Fechados (Sintético)", "Todas as Contas (Analítico)"], horizontal=True)
+        visao_hist_dre = st.radio(
+            "Detalhes:",
+            [
+                "Grupos Fechados (Sintético)",
+                "Todas as Contas (Analítico)",
+                "Visão Gerencial (Custos e Despesas)",
+            ],
+            horizontal=True,
+        )
 
     linhas_hist = df_ref[col_nome].dropna().astype(str).unique()
     is_sintetica_hist = visao_hist_dre == "Grupos Fechados (Sintético)"
+    is_gerencial_hist = visao_hist_dre == "Visão Gerencial (Custos e Despesas)"
     if is_sintetica_hist:
         linhas_hist = [l for l in linhas_hist if eh_grupo_sintetico(l)]
+    elif is_gerencial_hist:
+        linhas_hist = [l for l in linhas_hist if eh_linha_custos_despesas(l)]
 
-    if not is_sintetica_hist:
+    if not is_sintetica_hist and not is_gerencial_hist:
         contas_filtradas_hist = st.multiselect(
             "🔍 Filtrar Contas Específicas (Estilo Excel):",
             options=linhas_hist,
@@ -2934,31 +3006,66 @@ with tab3:
     target_dfs = list_df_real if tipo_hist == "Realizado" else list_df_orc
 
     # ---- KPIs contextuais do histórico (referência: Receita Operacional Líquida) ----
-    valores_ref_mensal = {
-        m_nome: get_valor_consolidado_multi(target_dfs, "3 - Receita Operacional Liquida", [m_col])
-        for m_nome, m_col in m_map.items()
-    }
-    meses_com_dado = {m: v for m, v in valores_ref_mensal.items() if v != 0}
+    if is_gerencial_hist:
+        # Na visão Gerencial, a referência de "melhor/pior mês" é o total de
+        # Custos + Despesas (CMV + Despesas Variáveis + Despesas
+        # Operacionais) -- e, diferente da receita, aqui "melhor" é o mês
+        # com o MENOR custo, não o maior.
+        def _total_custos_mes(m_col):
+            cmv_m = abs(get_valor_consolidado_multi(target_dfs, "4 - ", [m_col], exato_linha_sintetica=True)) \
+                or abs(get_valor_consolidado_multi(target_dfs, "4 - Custo das Vendas", [m_col]))
+            dvar_m = abs(get_valor_consolidado_multi(target_dfs, "6 - Despesas Variáveis", [m_col]))
+            dop_m = abs(get_valor_consolidado_multi(target_dfs, "8 - Despesas Operacionais", [m_col]))
+            return cmv_m + dvar_m + dop_m
 
-    if meses_com_dado:
-        mes_melhor = max(meses_com_dado, key=meses_com_dado.get)
-        mes_pior = min(meses_com_dado, key=meses_com_dado.get)
-        media_mensal_hist = sum(meses_com_dado.values()) / len(meses_com_dado)
+        valores_ref_mensal = {m_nome: _total_custos_mes(m_col) for m_nome, m_col in m_map.items()}
+        meses_com_dado = {m: v for m, v in valores_ref_mensal.items() if v != 0}
 
-        st.markdown(
-            render_kpi_row([
-                dict(label=f"MELHOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_melhor]),
-                     value_color=COLORS["positive"], subtext=mes_melhor.capitalize(), icon="🏆"),
-                dict(label=f"PIOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_pior]),
-                     value_color=COLORS["negative"], subtext=mes_pior.capitalize(), icon="📉"),
-                dict(label="MÉDIA MENSAL (RECEITA)", value=formata_brl(media_mensal_hist),
-                     value_color=COLORS["text"], subtext=f"{len(meses_com_dado)} meses com dados", icon="📊"),
-                dict(label="AMPLITUDE (MELHOR - PIOR)", value=formata_brl(meses_com_dado[mes_melhor] - meses_com_dado[mes_pior]),
-                     value_color=COLORS["muted_line"], subtext="Variação entre extremos", icon="↕️"),
-            ]),
-            unsafe_allow_html=True,
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
+        if meses_com_dado:
+            mes_menor_custo = min(meses_com_dado, key=meses_com_dado.get)
+            mes_maior_custo = max(meses_com_dado, key=meses_com_dado.get)
+            media_mensal_hist = sum(meses_com_dado.values()) / len(meses_com_dado)
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label=f"MENOR CUSTO MENSAL ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_menor_custo]),
+                         value_color=COLORS["positive"], subtext=mes_menor_custo.capitalize(), icon="🏆"),
+                    dict(label=f"MAIOR CUSTO MENSAL ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_maior_custo]),
+                         value_color=COLORS["negative"], subtext=mes_maior_custo.capitalize(), icon="📈"),
+                    dict(label="MÉDIA MENSAL (CUSTOS + DESPESAS)", value=formata_brl(media_mensal_hist),
+                         value_color=COLORS["text"], subtext=f"{len(meses_com_dado)} meses com dados", icon="📊"),
+                    dict(label="AMPLITUDE (MAIOR - MENOR)", value=formata_brl(meses_com_dado[mes_maior_custo] - meses_com_dado[mes_menor_custo]),
+                         value_color=COLORS["muted_line"], subtext="Variação entre extremos", icon="↕️"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+    else:
+        valores_ref_mensal = {
+            m_nome: get_valor_consolidado_multi(target_dfs, "3 - Receita Operacional Liquida", [m_col])
+            for m_nome, m_col in m_map.items()
+        }
+        meses_com_dado = {m: v for m, v in valores_ref_mensal.items() if v != 0}
+
+        if meses_com_dado:
+            mes_melhor = max(meses_com_dado, key=meses_com_dado.get)
+            mes_pior = min(meses_com_dado, key=meses_com_dado.get)
+            media_mensal_hist = sum(meses_com_dado.values()) / len(meses_com_dado)
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label=f"MELHOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_melhor]),
+                         value_color=COLORS["positive"], subtext=mes_melhor.capitalize(), icon="🏆"),
+                    dict(label=f"PIOR MÊS ({tipo_hist.upper()})", value=formata_brl(meses_com_dado[mes_pior]),
+                         value_color=COLORS["negative"], subtext=mes_pior.capitalize(), icon="📉"),
+                    dict(label="MÉDIA MENSAL (RECEITA)", value=formata_brl(media_mensal_hist),
+                         value_color=COLORS["text"], subtext=f"{len(meses_com_dado)} meses com dados", icon="📊"),
+                    dict(label="AMPLITUDE (MELHOR - PIOR)", value=formata_brl(meses_com_dado[mes_melhor] - meses_com_dado[mes_pior]),
+                         value_color=COLORS["muted_line"], subtext="Variação entre extremos", icon="↕️"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
 
     hist_data = []
     for linha in linhas_hist:
