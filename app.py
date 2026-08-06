@@ -210,6 +210,29 @@ def _linha_pertence_ao_grupo(nome_linha, numero_grupo):
     return numero == numero_grupo or numero.startswith(numero_grupo + ".")
 
 
+def _subgrupos_nivel2(linhas_disponiveis, numero_grupo):
+    """Entre as linhas da DRE disponíveis, devolve as que são subgrupos de
+    NÍVEL 2 (um ponto só, ex.: "8.3 - Pessoal") do grupo `numero_grupo` --
+    ex.: os subgrupos de "8 - Despesas Operacionais" (Pessoal, Ocupação,
+    Comercial etc). Usado pra detalhar a composição de custos do Painel de
+    TV com os grupos de verdade da DRE, em vez de nomes fixos."""
+    resultado = []
+    for linha in linhas_disponiveis:
+        numero = _numero_linha_dre(linha)
+        if not numero or "." not in numero:
+            continue
+        partes = numero.split(".")
+        if len(partes) == 2 and partes[0] == numero_grupo:
+            resultado.append(str(linha).strip())
+    return resultado
+
+
+def _nome_sem_numero_dre(nome_linha):
+    """Remove o prefixo numérico da linha da DRE (ex.: "8.3 - Pessoal" vira
+    "Pessoal") -- só para exibição mais limpa."""
+    return re.sub(r"^\d+(\.\d+)*\s*-\s*", "", str(nome_linha)).strip()
+
+
 def _montar_linhas_com_expansao(todas_linhas, modo, grupos_alternados):
     """Monta a lista de linhas a exibir, respeitando quais grupos estão
     expandidos/colapsados.
@@ -1311,7 +1334,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         st.error("Não foi possível carregar dados para o Painel de TV.")
         return
 
-    list_df_real_tv, list_df_orc_tv = carregar_dados_abas(path_orc, path_real, [aba_escolhida])
+    list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, [aba_escolhida])
 
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
@@ -1400,6 +1423,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-cost-pct {{ flex: 0.6; font-size: 11.5px; color: {COLORS["text_muted"]}; text-align: right; }}
             .tv-cost-val {{ flex: 1; font-size: 12.5px; color: {COLORS["text"]}; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
             .tv-cost-desvio {{ flex: 0.9; font-size: 11px; text-align: right; font-family: 'Consolas','Courier New',monospace; }}
+            .tv-rank-row {{ display:flex; align-items:center; gap:10px; padding: 6px 2px; border-bottom: 1px dashed {COLORS["border_soft"]}; }}
+            .tv-rank-name {{ flex:1; font-size:12px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+            .tv-rank-bar-bg {{ flex:1.6; background:{COLORS["border"]}; border-radius:4px; height:7px; overflow:hidden; }}
+            .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["secondary"]}, {COLORS["warning"]}); }}
+            .tv-rank-val {{ font-size:11px; color:{COLORS["muted_line"]}; width: 118px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
@@ -1547,20 +1575,20 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         fig_tv_line.add_trace(go.Scatter(
             x=rot_m_tv, y=rec_m_tv, name="Receita Líquida", mode="lines+markers+text",
             text=[formata_m(v) for v in rec_m_tv], textposition="top center",
-            textfont=dict(size=11, color=COLORS["primary"]),
-            line=dict(color=COLORS["primary"], width=4), marker=dict(size=9),
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+            line=dict(color=COLORS["primary"], width=2.5), marker=dict(size=5, color=COLORS["primary"]),
         ))
         fig_tv_line.add_trace(go.Scatter(
             x=rot_m_tv, y=eb_m_tv, name="EBITDA", mode="lines+markers+text",
             text=[formata_m(v) for v in eb_m_tv], textposition="bottom center",
-            textfont=dict(size=11, color=COLORS["positive"]),
-            line=dict(color=COLORS["positive"], width=4, dash="dot"), marker=dict(size=9),
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+            line=dict(color=COLORS["positive"], width=2.5, dash="dot"), marker=dict(size=5, color=COLORS["positive"]),
         ))
         estilo_grafico(
             fig_tv_line, height=430,
             margin=dict(l=20, r=20, t=20, b=50),
             xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=13, color=COLORS["text_muted"])),
-            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
             legend=dict(orientation="h", yanchor="bottom", y=-0.16, xanchor="center", x=0.5, font=dict(size=13)),
         )
         st.plotly_chart(fig_tv_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
@@ -1607,6 +1635,41 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             f"Desvio = orçado − realizado (positivo é favorável)</div></div>"
         )
         st.markdown("".join(linhas_custo), unsafe_allow_html=True)
+
+        # ---- Detalhamento de Despesas Operacionais pelos grupos reais da
+        # DRE (Pessoal, Ocupação, Comercial etc.) -- é o "de onde vem o
+        # custo" que o donut sozinho não mostra. ----
+        col_nome_tv = "Nome" if "Nome" in df_ref_tv.columns else df_ref_tv.columns[0]
+        linhas_dre_tv = df_ref_tv[col_nome_tv].dropna().astype(str).unique()
+        subgrupos_despop = _subgrupos_nivel2(linhas_dre_tv, "8")
+
+        detalhe_despop = []
+        for sub in subgrupos_despop:
+            v_sub = abs(get_valor_consolidado_multi(list_df_real_tv, sub, cols_ytd, exato_linha_sintetica=True))
+            if v_sub:
+                detalhe_despop.append((_nome_sem_numero_dre(sub), v_sub))
+        detalhe_despop.sort(key=lambda x: x[1], reverse=True)
+        top_despop = detalhe_despop[:5]
+
+        if top_despop:
+            st.markdown(
+                '<div class="tv-section-title" style="margin-top:10px;">🏢 Despesas Operacionais — Principais Grupos</div>',
+                unsafe_allow_html=True,
+            )
+            max_despop = max(v for _, v in top_despop) or 1.0
+            linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
+            for nome_grp, v_grp in top_despop:
+                pct_do_despop = (v_grp / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
+                pct_barra = max(3, min(100, v_grp / max_despop * 100))
+                linhas_despop.append(
+                    '<div class="tv-rank-row">'
+                    f'<div class="tv-rank-name" title="{nome_grp}">{nome_grp}</div>'
+                    f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
+                    f'<div class="tv-rank-val">{formata_m(v_grp)} · {pct_do_despop:.0f}%</div>'
+                    "</div>"
+                )
+            linhas_despop.append("</div>")
+            st.markdown("".join(linhas_despop), unsafe_allow_html=True)
 
     # ---------------- Ticker de destaques + controles de tela cheia (rodapé) ----------------
     meses_com_receita = {
