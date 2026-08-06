@@ -1828,6 +1828,92 @@ usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil"
 eh_admin = usuario_atual["perfil"] == "admin"
 
 
+# ============================================================================
+# 4.5 SELEÇÃO DE PAINEL — Controladoria x Financeiro (tela entre o login e
+# o painel de fato). O Financeiro ainda não existe -- mostra um aviso de
+# "em construção" com a opção de ir para a Controladoria, que é o único
+# painel ativo por enquanto.
+# ============================================================================
+if "painel_escolhido" not in st.session_state:
+    st.session_state["painel_escolhido"] = None
+
+if st.session_state["painel_escolhido"] is None:
+    st.markdown(
+        f"""
+        <style>
+            [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
+            .hub-wrap {{ max-width: 760px; margin: 64px auto 0 auto; text-align: center; }}
+            .hub-title {{ font-size: 26px; font-weight: 800; color: {COLORS['text']}; margin-bottom: 6px; }}
+            .hub-sub {{ font-size: 14px; color: {COLORS['text_muted']}; margin-bottom: 34px; }}
+            .hub-card {{
+                background: linear-gradient(160deg, {COLORS['surface']} 0%, {COLORS['surface_alt']} 100%);
+                border: 1px solid {COLORS['border']}; border-radius: 16px; padding: 30px 22px 18px 22px;
+                text-align: center; height: 100%;
+            }}
+            .hub-card .icone {{ font-size: 40px; margin-bottom: 8px; }}
+            .hub-card h3 {{ color: {COLORS['text']}; font-size: 18px; margin: 4px 0 8px 0; }}
+            .hub-card p {{ color: {COLORS['text_muted']}; font-size: 12.5px; margin-bottom: 4px; min-height: 36px; }}
+        </style>
+        <div class="hub-wrap">
+            <div class="hub-title">👋 Bem-vindo(a) de volta</div>
+            <div class="hub-sub">Escolha qual painel você quer acessar</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_hub_esp1, col_hub_a, col_hub_b, col_hub_esp2 = st.columns([0.6, 1, 1, 0.6])
+    with col_hub_a:
+        st.markdown(
+            '<div class="hub-card"><div class="icone">📊</div><h3>Controladoria</h3>'
+            "<p>DRE, orçado x realizado, histórico mensal, previsões e relatórios.</p></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Acessar Controladoria", use_container_width=True, type="primary", key="btn_hub_controladoria"):
+            st.session_state["painel_escolhido"] = "controladoria"
+            st.rerun()
+    with col_hub_b:
+        st.markdown(
+            '<div class="hub-card"><div class="icone">💰</div><h3>Financeiro</h3>'
+            "<p>Fluxo de caixa e demais indicadores financeiros.</p></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Acessar Financeiro", use_container_width=True, key="btn_hub_financeiro"):
+            st.session_state["painel_escolhido"] = "financeiro"
+            st.rerun()
+
+    st.stop()
+
+if st.session_state["painel_escolhido"] == "financeiro":
+    st.markdown(
+        f"""
+        <style>
+            [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
+        </style>
+        <div style="max-width:620px;margin:110px auto 0 auto;text-align:center;">
+            <div style="font-size:54px;">🚧</div>
+            <div style="font-size:23px;font-weight:800;color:{COLORS['text']};margin:14px 0 8px 0;">
+                Opa, ainda estamos em obras!
+            </div>
+            <div style="font-size:14px;color:{COLORS['text_muted']};line-height:1.6;">
+                O Painel Financeiro está sendo desenvolvido e em breve trará novidades por aqui.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1, 1])
+    with col_voltar:
+        st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+        if st.button("← Ir para o Painel de Controladoria", use_container_width=True, type="primary"):
+            st.session_state["painel_escolhido"] = "controladoria"
+            st.rerun()
+    st.stop()
+
+# Se chegou até aqui, painel_escolhido == "controladoria" -> segue para o
+# painel normal, abaixo.
+
+
 
 # ============================================================================
 # 5. BARRA LATERAL — FILTROS
@@ -1987,10 +2073,16 @@ st.sidebar.markdown(
 )
 
 st.sidebar.markdown("---")
+if st.sidebar.button("🔀 Trocar Painel", use_container_width=True):
+    st.session_state["painel_escolhido"] = None
+    st.rerun()
+
+st.sidebar.markdown("---")
 perfil_label = "Administrador" if eh_admin else "Visualização"
 st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{perfil_label}**")
 if st.sidebar.button("🚪 Sair", use_container_width=True):
     st.session_state["usuario_logado"] = None
+    st.session_state["painel_escolhido"] = None
     _esquecer_credenciais_no_navegador()
     st.rerun()
 
