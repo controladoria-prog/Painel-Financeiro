@@ -632,8 +632,9 @@ st.markdown(
             .hub-card {{ padding: 22px 16px 14px 16px !important; margin-bottom: 10px; }}
 
             /* Tela de login. */
-            .login-wrapper {{ margin-top: 4vh !important; }}
-            div[data-testid="column"]:has(.login-card) {{ padding: 24px 18px 20px 18px !important; max-width: 100% !important; }}
+            .login-visual-panel {{ display: none !important; }}
+            .login-split-left {{ min-height: auto !important; padding: 3vh 4% 2vh 4% !important; }}
+            .login-hero-title {{ font-size: 28px !important; }}
 
             /* Painel de TV: mesmo pensado pra tela grande, se alguém abrir
                no celular, os grupos de cartões/barras/detalhamento também
@@ -651,112 +652,131 @@ st.markdown(
         }}
 
         /* Tela de login (acesso restrito) */
-        .login-wrapper {{
-            display: flex;
-            justify-content: center;
-            margin-top: 6vh;
-            position: relative;
+        /* ==================== TELA DE LOGIN (split-screen) ==================== */
+        .login-split-left {{
+            padding: 2.5vh 8% 0 4%;
         }}
-        .login-wrapper::before {{
-            content: "";
-            position: absolute;
-            top: -18vh; left: 50%; transform: translateX(-50%);
-            width: 130vw; height: 90vh; max-width: 1100px;
-            background:
-                radial-gradient(circle at 22% 20%, rgba(76,141,255,0.22) 0%, transparent 42%),
-                radial-gradient(circle at 80% 75%, rgba(62,207,142,0.14) 0%, transparent 45%),
-                radial-gradient(circle at 50% 100%, rgba(91,100,114,0.10) 0%, transparent 50%);
-            z-index: -1;
-            pointer-events: none;
+        .login-split-left .login-badge {{
+            display: flex; align-items: center; gap: 10px; margin-bottom: 26px;
         }}
-        .login-card {{
-            background: transparent;
-            border: none;
-            padding: 6px 8px 4px 8px;
-            text-align: center;
+        .login-split-left .login-badge img {{
+            width: 40px; height: 40px; border-radius: 50%;
+            background: #FFFFFF; padding: 5px; object-fit: contain;
+            box-shadow: 0 4px 14px rgba(76,141,255,0.3);
         }}
-        .login-card .login-icon {{
-            font-size: 30px;
-            margin-bottom: 6px;
+        .login-split-left .login-badge span {{
+            font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]};
+            letter-spacing: 0.3px;
         }}
-        .login-card .login-logo {{
-            width: 76px;
-            height: 76px;
-            object-fit: contain;
-            background: #FFFFFF;
-            border-radius: 18px;
-            padding: 9px;
-            margin: 0 auto 12px auto;
-            display: block;
-            box-shadow: 0 6px 20px rgba(76,141,255,0.28);
+        .login-hero-title {{
+            font-size: 34px; font-weight: 800; color: {COLORS["text"]};
+            margin: 0 0 6px 0; line-height: 1.12; letter-spacing: -0.5px;
         }}
-        .login-card h2 {{
-            margin: 4px 0 2px 0 !important;
-            font-size: 20px !important;
-            color: {COLORS["text"]} !important;
-            font-weight: 800;
-            letter-spacing: 0.2px;
+        .login-hero-title .dot {{ color: {COLORS["primary"]}; }}
+        .login-hero-sub {{
+            font-size: 13px; color: {COLORS["text_muted"]}; margin-bottom: 22px; max-width: 380px;
         }}
-        .login-card p {{
-            margin: 0 !important;
-            font-size: 12.5px !important;
-            color: {COLORS["text_muted"]} !important;
+        .login-field-label {{
+            font-size: 12px; font-weight: 700; color: {COLORS["text_muted"]};
+            text-transform: uppercase; letter-spacing: 0.4px; margin: 0 0 6px 2px;
         }}
 
-        /* O "cartão" de verdade é o CONTÊINER da coluna central inteira --
-           não dá pra colocar widgets nativos do Streamlit dentro de uma div
-           HTML customizada, então em vez disso aplicamos o visual de cartão
-           (fundo, borda, sombra) na coluna que engloba tanto a parte
-           decorativa (logo/título) quanto os campos de verdade (e-mail,
-           senha, botão) -- assim tudo fica visualmente unificado, um único
-           cartão flutuante, do jeito que um login moderno costuma ser. */
-        div[data-testid="column"]:has(.login-card) {{
-            background: linear-gradient(165deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
-            border: 1px solid {COLORS["border"]};
-            border-top: 3px solid {COLORS["primary"]};
-            border-radius: 20px;
-            padding: 30px 28px 26px 28px !important;
-            box-shadow: 0 24px 70px rgba(0,0,0,0.45);
-            max-width: 400px;
-            margin: 0 auto;
+        /* Painel visual à direita — como não temos uma foto de verdade pra
+           usar, montamos um "céu noturno" abstrato só com CSS (gradientes +
+           pontinhos de estrela + silhueta de montanha via clip-path),
+           seguindo a composição da referência. */
+        .login-visual-panel {{
+            position: relative;
+            height: 640px;
+            max-height: 80vh;
+            border-radius: 26px;
+            overflow: hidden;
+            margin: 2.5vh 4% 0 0;
+            background:
+                radial-gradient(1.5px 1.5px at 12% 18%, #fff 60%, transparent 61%),
+                radial-gradient(1px 1px at 24% 9%, #fff 60%, transparent 61%),
+                radial-gradient(1.5px 1.5px at 38% 22%, #fff 55%, transparent 56%),
+                radial-gradient(1px 1px at 52% 12%, #fff 55%, transparent 56%),
+                radial-gradient(1.5px 1.5px at 68% 26%, #fff 55%, transparent 56%),
+                radial-gradient(1px 1px at 78% 14%, #fff 55%, transparent 56%),
+                radial-gradient(1.5px 1.5px at 88% 20%, #fff 55%, transparent 56%),
+                radial-gradient(1px 1px at 8% 35%, #fff 50%, transparent 51%),
+                radial-gradient(1px 1px at 92% 38%, #fff 50%, transparent 51%),
+                radial-gradient(1.5px 1.5px at 45% 6%, #fff 55%, transparent 56%),
+                radial-gradient(1px 1px at 62% 8%, #fff 50%, transparent 51%),
+                linear-gradient(200deg, #0c1830 0%, #16204a 30%, #2c3a6e 55%, #3a2d5e 72%, #0b0e14 100%);
+            box-shadow: 0 24px 70px rgba(0,0,0,0.5);
         }}
-        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] label,
-        div[data-testid="column"]:has(.login-card) div[data-testid="stCheckbox"] label p {{
-            color: {COLORS["text_muted"]} !important;
-            font-size: 12.5px !important;
-            font-weight: 600;
+        .login-visual-panel .shooting-star {{
+            position: absolute; top: 22%; right: 18%; width: 90px; height: 2px;
+            background: linear-gradient(90deg, #fff 0%, rgba(255,255,255,0) 100%);
+            transform: rotate(-30deg);
+            opacity: 0.85;
         }}
-        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] input {{
-            background: {COLORS["bg"]} !important;
-            border: 1px solid {COLORS["border"]} !important;
+        .login-visual-panel .mountains {{
+            position: absolute; left: -2%; right: -2%; bottom: 0; height: 38%;
+            background: linear-gradient(180deg, rgba(11,14,20,0.2) 0%, {COLORS["bg"]} 70%);
+            clip-path: polygon(0% 100%, 0% 62%, 12% 42%, 22% 58%, 34% 22%, 46% 52%,
+                                58% 30%, 70% 50%, 82% 34%, 92% 48%, 100% 38%, 100% 100%);
+        }}
+        .login-visual-panel .panel-footer {{
+            position: absolute; left: 28px; bottom: 24px; right: 28px;
+            display: flex; justify-content: space-between; align-items: flex-end;
+            color: rgba(241,245,249,0.9);
+        }}
+        .login-visual-panel .panel-footer .marca {{
+            font-size: 15px; font-weight: 800; letter-spacing: 0.3px;
+        }}
+        .login-visual-panel .panel-footer .marca small {{
+            display: block; font-size: 11px; font-weight: 500; color: rgba(241,245,249,0.6); margin-top: 2px;
+        }}
+
+        /* Campos com "borda em gradiente" (dupla camada de background) --
+           border simples não suporta gradiente, então usamos esse truque:
+           uma camada de fundo sólida por cima (clip: padding-box) e o
+           gradiente só aparece na faixa da borda (clip: border-box).
+           Tudo escopado só pra coluna do formulário de login (via :has),
+           pra não vazar esse estilo pro resto do painel. */
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input {{
+            background-image:
+                linear-gradient({COLORS["bg"]}, {COLORS["bg"]}),
+                linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
+            background-origin: border-box !important;
+            background-clip: padding-box, border-box !important;
+            border: 2px solid transparent !important;
             border-radius: 12px !important;
             color: {COLORS["text"]} !important;
-            padding: 11px 14px !important;
-            font-size: 14px !important;
-            transition: border-color 0.15s, box-shadow 0.15s;
+            padding: 12px 16px !important;
+            font-size: 14.5px !important;
         }}
-        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] input:focus {{
-            border-color: {COLORS["primary"]} !important;
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input:focus {{
             box-shadow: 0 0 0 3px {COLORS["primary_soft"]} !important;
         }}
-        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] {{
-            margin-bottom: 4px;
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] label p {{
+            display: none !important; /* usamos .login-field-label no lugar */
         }}
-        div[data-testid="column"]:has(.login-card) .stButton > button {{
-            background: linear-gradient(135deg, {COLORS["primary"]} 0%, #6FA6FF 100%) !important;
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stCheckbox"] label p {{
+            color: {COLORS["text_muted"]} !important;
+            font-size: 12.5px !important;
+        }}
+        .login-forgot-hint {{
+            font-size: 12px; color: {COLORS["text_muted"]}; margin: 2px 0 18px 2px;
+        }}
+        div[data-testid="column"]:has(.login-hero-title) .stButton > button {{
+            background: linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
             border: none !important;
-            border-radius: 12px !important;
+            border-radius: 30px !important;
             color: #FFFFFF !important;
             font-weight: 700 !important;
-            font-size: 14.5px !important;
-            padding: 11px 0 !important;
-            margin-top: 8px;
-            box-shadow: 0 8px 22px rgba(76,141,255,0.35);
+            font-size: 15px !important;
+            padding: 13px 0 !important;
+            margin-top: 6px;
+            box-shadow: 0 10px 26px rgba(76,141,255,0.35);
             transition: transform 0.12s, box-shadow 0.12s;
         }}
-        div[data-testid="column"]:has(.login-card) .stButton > button:hover {{
+        div[data-testid="column"]:has(.login-hero-title) .stButton > button:hover {{
             transform: translateY(-1px);
-            box-shadow: 0 10px 26px rgba(76,141,255,0.45);
+            box-shadow: 0 12px 30px rgba(76,141,255,0.45);
         }}
     </style>
     """,
@@ -1017,34 +1037,60 @@ def checar_login():
             st.session_state["usuario_logado"] = None
             st.session_state["login_invalido"] = True
 
-    _, col_centro, _ = st.columns([1, 1.1, 1])
-    with col_centro:
+    col_form, col_visual = st.columns([1, 1.05])
+    with col_form:
         st.markdown(
             f"""
-            <div class="login-wrapper">
-                <div class="login-card">
-                    <img class="login-logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
-                    <h2>Controladoria B&amp;A</h2>
-                    <p>Acesso restrito — Painel Financeiro 2026</p>
+            <div class="login-split-left">
+                <div class="login-badge">
+                    <img src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+                    <span>GRUPO B&amp;A</span>
                 </div>
+                <div class="login-hero-title">Faça seu Login<span class="dot">.</span></div>
+                <div class="login-hero-sub">Acesso restrito à Controladoria — Painel Financeiro 2026</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        st.text_input("📧  E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br")
+        st.markdown('<div class="login-field-label">E-mail</div>', unsafe_allow_html=True)
+        st.text_input("E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br", label_visibility="collapsed")
+        st.markdown('<div class="login-field-label">Senha</div>', unsafe_allow_html=True)
         st.text_input(
-            "🔒  Senha",
+            "Senha",
             type="password",
             key="campo_senha",
             on_change=validar_login,
             placeholder="Digite sua senha",
+            label_visibility="collapsed",
         )
         st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
+        st.markdown(
+            '<div class="login-forgot-hint">Esqueceu a senha ou ainda não tem acesso? '
+            "Fale com o administrador da Controladoria.</div>",
+            unsafe_allow_html=True,
+        )
         if st.button("Entrar", use_container_width=True):
             validar_login()
             st.rerun()
         if st.session_state.get("login_invalido", False):
             st.error("E-mail ou senha incorretos. Tente novamente.")
+
+    with col_visual:
+        st.markdown(
+            """
+            <div class="login-visual-panel">
+                <div class="shooting-star"></div>
+                <div class="mountains"></div>
+                <div class="panel-footer">
+                    <div class="marca">Controladoria B&amp;A
+                        <small>Painel Financeiro 2026</small>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
     return False
 
