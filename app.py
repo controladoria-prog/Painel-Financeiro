@@ -561,6 +561,16 @@ st.markdown(
 
         /* ==================== RESPONSIVIDADE MOBILE ==================== */
         @media only screen and (max-width: 768px) {{
+            /* A coluna "fixa" (position: sticky) da primeira coluna das
+               tabelas dá bug em navegadores mobile ao arrastar a tabela pro
+               lado (texto cortado/invisível) -- desliga só no celular; a
+               tabela ainda rola normalmente, só sem a coluna presa. */
+            div[data-testid="stDataFrame"] div[role="grid"] div[role="row"] div[role="gridcell"]:first-child,
+            div[data-testid="stDataFrame"] div[role="grid"] div[role="row"] div[role="columnheader"]:first-child {{
+                position: static !important;
+                z-index: auto !important;
+            }}
+
             /* Colunas nativas do Streamlit (st.columns) empilham em vez de
                espremer lado a lado -- afeta filtros, formulários, botões etc. */
             div[data-testid="column"] {{
@@ -623,7 +633,7 @@ st.markdown(
 
             /* Tela de login. */
             .login-wrapper {{ margin-top: 4vh !important; }}
-            .login-card {{ padding: 26px 22px !important; max-width: 100% !important; }}
+            div[data-testid="column"]:has(.login-card) {{ padding: 24px 18px 20px 18px !important; max-width: 100% !important; }}
 
             /* Painel de TV: mesmo pensado pra tela grande, se alguém abrir
                no celular, os grupos de cartões/barras/detalhamento também
@@ -644,43 +654,109 @@ st.markdown(
         .login-wrapper {{
             display: flex;
             justify-content: center;
-            margin-top: 8vh;
+            margin-top: 6vh;
+            position: relative;
+        }}
+        .login-wrapper::before {{
+            content: "";
+            position: absolute;
+            top: -18vh; left: 50%; transform: translateX(-50%);
+            width: 130vw; height: 90vh; max-width: 1100px;
+            background:
+                radial-gradient(circle at 22% 20%, rgba(76,141,255,0.22) 0%, transparent 42%),
+                radial-gradient(circle at 80% 75%, rgba(62,207,142,0.14) 0%, transparent 45%),
+                radial-gradient(circle at 50% 100%, rgba(91,100,114,0.10) 0%, transparent 50%);
+            z-index: -1;
+            pointer-events: none;
         }}
         .login-card {{
-            background: linear-gradient(135deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
-            border: 1px solid {COLORS["border"]};
-            border-top: 3px solid {COLORS["primary"]};
-            border-radius: 14px;
-            padding: 34px 40px;
+            background: transparent;
+            border: none;
+            padding: 6px 8px 4px 8px;
             text-align: center;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.35);
-            max-width: 380px;
         }}
         .login-card .login-icon {{
             font-size: 30px;
             margin-bottom: 6px;
         }}
         .login-card .login-logo {{
-            width: 84px;
-            height: 84px;
+            width: 76px;
+            height: 76px;
             object-fit: contain;
             background: #FFFFFF;
-            border-radius: 16px;
-            padding: 10px;
-            margin: 0 auto 14px auto;
+            border-radius: 18px;
+            padding: 9px;
+            margin: 0 auto 12px auto;
             display: block;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+            box-shadow: 0 6px 20px rgba(76,141,255,0.28);
         }}
         .login-card h2 {{
             margin: 4px 0 2px 0 !important;
-            font-size: 19px !important;
+            font-size: 20px !important;
             color: {COLORS["text"]} !important;
-            font-weight: 700;
+            font-weight: 800;
+            letter-spacing: 0.2px;
         }}
         .login-card p {{
             margin: 0 !important;
             font-size: 12.5px !important;
             color: {COLORS["text_muted"]} !important;
+        }}
+
+        /* O "cartão" de verdade é o CONTÊINER da coluna central inteira --
+           não dá pra colocar widgets nativos do Streamlit dentro de uma div
+           HTML customizada, então em vez disso aplicamos o visual de cartão
+           (fundo, borda, sombra) na coluna que engloba tanto a parte
+           decorativa (logo/título) quanto os campos de verdade (e-mail,
+           senha, botão) -- assim tudo fica visualmente unificado, um único
+           cartão flutuante, do jeito que um login moderno costuma ser. */
+        div[data-testid="column"]:has(.login-card) {{
+            background: linear-gradient(165deg, {COLORS["surface"]} 0%, {COLORS["surface_alt"]} 100%);
+            border: 1px solid {COLORS["border"]};
+            border-top: 3px solid {COLORS["primary"]};
+            border-radius: 20px;
+            padding: 30px 28px 26px 28px !important;
+            box-shadow: 0 24px 70px rgba(0,0,0,0.45);
+            max-width: 400px;
+            margin: 0 auto;
+        }}
+        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] label,
+        div[data-testid="column"]:has(.login-card) div[data-testid="stCheckbox"] label p {{
+            color: {COLORS["text_muted"]} !important;
+            font-size: 12.5px !important;
+            font-weight: 600;
+        }}
+        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] input {{
+            background: {COLORS["bg"]} !important;
+            border: 1px solid {COLORS["border"]} !important;
+            border-radius: 12px !important;
+            color: {COLORS["text"]} !important;
+            padding: 11px 14px !important;
+            font-size: 14px !important;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }}
+        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] input:focus {{
+            border-color: {COLORS["primary"]} !important;
+            box-shadow: 0 0 0 3px {COLORS["primary_soft"]} !important;
+        }}
+        div[data-testid="column"]:has(.login-card) div[data-testid="stTextInput"] {{
+            margin-bottom: 4px;
+        }}
+        div[data-testid="column"]:has(.login-card) .stButton > button {{
+            background: linear-gradient(135deg, {COLORS["primary"]} 0%, #6FA6FF 100%) !important;
+            border: none !important;
+            border-radius: 12px !important;
+            color: #FFFFFF !important;
+            font-weight: 700 !important;
+            font-size: 14.5px !important;
+            padding: 11px 0 !important;
+            margin-top: 8px;
+            box-shadow: 0 8px 22px rgba(76,141,255,0.35);
+            transition: transform 0.12s, box-shadow 0.12s;
+        }}
+        div[data-testid="column"]:has(.login-card) .stButton > button:hover {{
+            transform: translateY(-1px);
+            box-shadow: 0 10px 26px rgba(76,141,255,0.45);
         }}
     </style>
     """,
@@ -955,9 +1031,9 @@ def checar_login():
             """,
             unsafe_allow_html=True,
         )
-        st.text_input("E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br")
+        st.text_input("📧  E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br")
         st.text_input(
-            "Senha",
+            "🔒  Senha",
             type="password",
             key="campo_senha",
             on_change=validar_login,
@@ -3066,7 +3142,7 @@ with tab1:
         estilo_grafico(
             fig_waterfall,
             height=400,
-            xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+            xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True),
             yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
         )
         st.plotly_chart(fig_waterfall, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
@@ -3122,11 +3198,15 @@ with tab1:
         )
         estilo_grafico(
             fig_bar,
-            height=400,
+            height=420,
             barmode="group",
-            xaxis=dict(gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True),
+            xaxis=dict(
+                gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
+                tickangle=-40, automargin=True,
+            ),
             yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
+            margin=dict(l=20, r=20, t=30, b=90),
         )
         st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
