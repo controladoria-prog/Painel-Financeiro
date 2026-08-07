@@ -561,14 +561,41 @@ st.markdown(
 
         /* ==================== RESPONSIVIDADE MOBILE ==================== */
         @media only screen and (max-width: 768px) {{
+            /* Colunas nativas do Streamlit (st.columns) empilham em vez de
+               espremer lado a lado -- afeta filtros, formulários, botões etc. */
             div[data-testid="column"] {{
                 width: 100% !important;
                 flex: 1 1 100% !important;
                 min-width: 100% !important;
             }}
+
+            /* Reduz o espaço em branco que sobra no topo no celular. */
+            div[data-testid="stAppViewContainer"] > .main div.block-container,
+            .block-container {{
+                padding: 0.6rem 0.8rem !important;
+            }}
+
+            /* Linhas de cartões de KPI (nosso HTML customizado em flexbox,
+               usado nas abas de DRE/Previsões/Relatório) NÃO são pegas pela
+               regra de coluna acima -- sem isso, ficavam 4-5 cartões
+               espremidos numa tela de celular, ilegíveis. Agora empilham um
+               por linha, ocupando a largura toda. */
+            .kpi-row {{
+                flex-direction: column !important;
+                gap: 10px !important;
+            }}
+            .kpi-row .kpi-card {{
+                flex: 1 1 100% !important;
+                width: 100% !important;
+            }}
             .top-status-strip {{ font-size: 11px !important; padding: 5px 2px 8px 2px !important; }}
             .kpi-card {{ padding: 12px !important; }}
-            .kpi-value {{ font-size: 19px !important; }}
+            .kpi-value {{ font-size: 20px !important; }}
+            .kpi-label {{ font-size: 10.5px !important; }}
+            .section-title {{ font-size: 13px !important; }}
+
+            /* Abas: viram uma faixa horizontal que rola, em vez de quebrar
+               linha ou cortar o texto. */
             div[data-baseweb="tab-list"] {{
                 display: flex !important;
                 overflow-x: auto !important;
@@ -580,6 +607,37 @@ st.markdown(
                 padding: 5px 10px !important;
             }}
             div[data-testid="stDataFrame"] {{ overflow-x: auto !important; }}
+
+            /* Radios horizontais (Sintética/Analítica/Gerencial etc.) --
+               deixa as opções quebrarem linha em vez de cortar. */
+            div[role="radiogroup"] {{
+                flex-wrap: wrap !important;
+                row-gap: 6px !important;
+            }}
+
+            /* Tela de escolha de painel (Controladoria x Financeiro),
+               logo após o login. */
+            .hub-wrap {{ margin-top: 32px !important; }}
+            .hub-title {{ font-size: 21px !important; }}
+            .hub-card {{ padding: 22px 16px 14px 16px !important; margin-bottom: 10px; }}
+
+            /* Tela de login. */
+            .login-wrapper {{ margin-top: 4vh !important; }}
+            .login-card {{ padding: 26px 22px !important; max-width: 100% !important; }}
+
+            /* Painel de TV: mesmo pensado pra tela grande, se alguém abrir
+               no celular, os grupos de cartões/barras/detalhamento também
+               precisam empilhar em vez de espremer. */
+            .tv-kpi-grid, .tv-atg-grid {{ flex-direction: column !important; gap: 10px !important; }}
+            .tv-header {{ flex-direction: column !important; align-items: flex-start !important; gap: 8px; }}
+            .tv-cost-row, .tv-rank-row {{ flex-wrap: wrap !important; }}
+        }}
+
+        /* Ajustes extras para telas bem pequenas (celulares na vertical). */
+        @media only screen and (max-width: 480px) {{
+            .kpi-value {{ font-size: 18px !important; }}
+            .hub-card .icone {{ font-size: 32px !important; }}
+            .hub-card h3 {{ font-size: 16px !important; }}
         }}
 
         /* Tela de login (acesso restrito) */
