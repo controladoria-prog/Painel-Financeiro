@@ -1912,7 +1912,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 Opa, ainda estamos em obras!
             </div>
             <div style="font-size:14px;color:{COLORS['text_muted']};line-height:1.6;">
-                O Painel Financeiro está sendo desenvolvido e em breve trará novidades por aqui.
+                O Painel Financeiro está sendo desenvolvido e em breve teremos novidades por aqui.
             </div>
         </div>
         """,
