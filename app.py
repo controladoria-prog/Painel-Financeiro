@@ -3395,8 +3395,8 @@ with tab2:
             linhas_dre = contas_filtradas_dre
             filtro_manual_dre_ativo = True
 
-    rec_bruta_real = get_valor_consolidado_multi(list_df_real, "1 - Receita Operacional Bruta", cols_graficos)
-    rec_bruta_orc = get_valor_consolidado_multi(list_df_orc, "1 - Receita Operacional Bruta", cols_graficos)
+    rec_liquida_real = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_graficos)
+    rec_liquida_orc = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_graficos)
 
     dados_dre = []
     for linha in linhas_dre:
@@ -3404,8 +3404,8 @@ with tab2:
         v_orc = get_valor_consolidado_multi(list_df_orc, linha, cols_graficos)
         desvio_rs = v_real - v_orc
 
-        av_real_pct = (v_real / rec_bruta_real * 100) if rec_bruta_real != 0 else 0.0
-        av_orc_pct = (v_orc / rec_bruta_orc * 100) if rec_bruta_orc != 0 else 0.0
+        av_real_pct = (v_real / rec_liquida_real * 100) if rec_liquida_real != 0 else 0.0
+        av_orc_pct = (v_orc / rec_liquida_orc * 100) if rec_liquida_orc != 0 else 0.0
         ah_pct = (desvio_rs / abs(v_orc) * 100) if v_orc != 0 else 0.0
 
         dados_dre.append(
