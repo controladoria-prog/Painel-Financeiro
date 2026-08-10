@@ -72,6 +72,22 @@ CONFIG_PLOTLY_TRAVADO = {
 }
 
 
+@st.cache_resource
+def _estado_compartilhado_painel():
+    """Pequeno dicionário mutável compartilhado entre TODAS as sessões deste
+    servidor (não é cache de dados pesados -- só guarda o escopo/período que
+    a pessoa tem selecionado no painel principal agora). É assim que o
+    Painel de TV (aberto numa aba separada, sem acesso ao session_state do
+    painel principal) consegue "ver" e acompanhar os filtros escolhidos lá,
+    inclusive quando eles mudam com o TV já aberto."""
+    return {
+        "abas_escolhidas": None,
+        "label_visao": None,
+        "cols_periodo": None,
+        "label_periodo": None,
+    }
+
+
 def cor_variacao(valor):
     """Retorna verde/vermelho conforme o sinal do valor (positivo/negativo)."""
     if pd.isna(valor):
@@ -1504,13 +1520,6 @@ def _obter_aba_consolidada_padrao(lista_abas):
 
 
 def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
-    aba_escolhida = _obter_aba_consolidada_padrao(abas_disponiveis)
-    if not aba_escolhida:
-        st.error("Não foi possível carregar dados para o Painel de TV.")
-        return
-
-    list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, [aba_escolhida])
-
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
         "07/2026", "08/2026", "09/2026", "10/2026", "11/2026", "12/2026",
@@ -1519,13 +1528,54 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
         "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO",
     ]
+
+    # ---- Segue o escopo/período do painel principal, se alguém já tiver
+    # aberto ele nesta sessão do servidor (ver _estado_compartilhado_painel).
+    # Se ainda não houver nenhum, cai no padrão de sempre: a primeira visão
+    # consolidada + acumulado até o mês atual. ----
+    _estado_tv = _estado_compartilhado_painel()
+    abas_escolhidas_compartilhadas = _estado_tv.get("abas_escolhidas")
+    seguindo_painel_principal = bool(
+        abas_escolhidas_compartilhadas
+        and all(a in abas_disponiveis for a in abas_escolhidas_compartilhadas)
+    )
+
+    if seguindo_painel_principal:
+        abas_para_tv = abas_escolhidas_compartilhadas
+        aba_escolhida = _estado_tv.get("label_visao") or " + ".join(abas_para_tv)
+    else:
+        aba_padrao = _obter_aba_consolidada_padrao(abas_disponiveis)
+        if not aba_padrao:
+            st.error("Não foi possível carregar dados para o Painel de TV.")
+            return
+        abas_para_tv = [aba_padrao]
+        aba_escolhida = aba_padrao
+
+    list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
+
     df_ref_tv = list_df_real_tv[0] if list_df_real_tv else pd.DataFrame()
     colunas_validas_tv = [m for m in meses_cols_tv if m in df_ref_tv.columns]
     m_map_tv = {n: c for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in colunas_validas_tv}
 
     agora = datetime.now(FUSO_BR)
     idx_mes_atual = min(max(agora.month - 1, 0), len(m_map_tv) - 1) if m_map_tv else 0
-    cols_ytd = list(m_map_tv.values())[: idx_mes_atual + 1]
+
+    # Período: também segue o painel principal (Mês Selecionado, Múltiplos
+    # Meses ou ANO COMPLETO -- o que estiver escolhido lá), desde que as
+    # colunas continuem batendo com os dados atuais. Senão, volta ao YTD
+    # padrão até o mês corrente.
+    cols_periodo_compartilhado = _estado_tv.get("cols_periodo")
+    label_periodo_compartilhado = _estado_tv.get("label_periodo")
+    if (
+        seguindo_painel_principal
+        and cols_periodo_compartilhado
+        and all(c in colunas_validas_tv for c in cols_periodo_compartilhado)
+    ):
+        cols_ytd = cols_periodo_compartilhado
+        legenda_periodo_tv = label_periodo_compartilhado or "Período do painel principal"
+    else:
+        cols_ytd = list(m_map_tv.values())[: idx_mes_atual + 1]
+        legenda_periodo_tv = f"Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/{list(m_map_tv.values())[idx_mes_atual].split('/')[-1]}" if m_map_tv else "Sem dados"
 
     # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
     st.markdown(
@@ -1650,7 +1700,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <div>
                         <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{aba_escolhida} · Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/{list(m_map_tv.values())[idx_mes_atual].split('/')[-1]} · Dados atualizados a cada 30 minutos</div>
+                        <div class="sub">{aba_escolhida} · {legenda_periodo_tv} · Dados atualizados a cada 90 segundos</div>
                     </div>
                 </div>
             </div>
@@ -1983,7 +2033,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     st.markdown(
         f"""
         <div style="text-align:center;margin-top:2px;color:{COLORS['text_muted']};font-size:11px;">
-            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 30 minutos ·
+            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 90 segundos (acompanha os filtros do painel principal) ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
         """,
@@ -1994,7 +2044,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # cheia e evita cair de novo na tela de login a cada ciclo, como
     # acontecia com o <meta refresh> -- esse rerun acontece dentro da mesma
     # sessão/aba, sem navegação de página).
-    time.sleep(1800)
+    time.sleep(90)
     st.rerun()
 
 
@@ -2235,6 +2285,15 @@ else:
     cols_graficos = cols_kpi
     label_periodo_kpi = "Meses Selecionados"
     label_periodo_graf = "Meses Selecionados"
+
+# Publica o escopo/período atuais no estado compartilhado -- é isso que
+# permite o Painel de TV (aberto numa aba separada) mostrar a mesma visão
+# escolhida aqui, inclusive acompanhando mudanças feitas com o TV já aberto.
+_estado_compartilhado = _estado_compartilhado_painel()
+_estado_compartilhado["abas_escolhidas"] = abas_para_carregar
+_estado_compartilhado["label_visao"] = label_visao
+_estado_compartilhado["cols_periodo"] = cols_kpi
+_estado_compartilhado["label_periodo"] = label_periodo_kpi
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
