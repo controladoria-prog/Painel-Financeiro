@@ -1503,7 +1503,7 @@ def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
 # ============================================================================
 ABAS_CONSOLIDADAS_TV = [
     "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
-    "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A",
+    "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A", "CONSOLIDADO - G&A",
 ]
 
 
@@ -2183,6 +2183,7 @@ abas_consolidadas_permitidas = [
     "LJ CONSOLIDADO",
     "ABPR + VD",
     "LJ - G&A",
+    "CONSOLIDADO - G&A",
 ]
 
 opcoes_consolidadas = [a for a in abas_disponiveis if a in abas_consolidadas_permitidas]
@@ -2675,7 +2676,7 @@ def montar_relatorio_excel(
 
     LOJAS_CONSOLIDADAS = {
         "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
-        "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A",
+        "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A", "CONSOLIDADO - G&A",
     }
     lojas_individuais = [l for l in lojas_ordenadas if l not in LOJAS_CONSOLIDADAS]
 
@@ -2691,6 +2692,7 @@ def montar_relatorio_excel(
         - ABPR + VD = ABPR CONSOLIDADO + VD CONSOLIDADO
         - LJ - G&A = as 13 lojas "LJ ..." (sem ESCRIT MATRIZ, sem lojas VD)
         - LJ CONSOLIDADO = ESCRIT MATRIZ 6037 + LJ - G&A (sem lojas VD)
+        - CONSOLIDADO - G&A = ABPR CONSOLIDADO + VD CONSOLIDADO + LJ - G&A
         - DRE CONSOLIDADO = ABPR CONSOLIDADO + VD CONSOLIDADO + LJ CONSOLIDADO
           (na prática, todas as 21 lojas individuais)
         """
@@ -2706,6 +2708,7 @@ def montar_relatorio_excel(
         ]
         grupo_lj_consolidado = ["ESCRIT MATRIZ 6037"] + grupo_lj_ga
         grupo_dre_consolidado = grupo_abpr + grupo_vd + grupo_lj_consolidado
+        grupo_consolidado_ga = grupo_abpr + grupo_vd + grupo_lj_ga
 
         mapa_grupos = {
             "ABPR CONSOLIDADO": grupo_abpr,
@@ -2713,6 +2716,7 @@ def montar_relatorio_excel(
             "ABPR + VD": grupo_abpr + grupo_vd,
             "LJ - G&A": grupo_lj_ga,
             "LJ CONSOLIDADO": grupo_lj_consolidado,
+            "CONSOLIDADO - G&A": grupo_consolidado_ga,
             "DRE CONSOLIDADO": grupo_dre_consolidado,
         }
         lojas_definidas = mapa_grupos.get(nome_grupo.strip(), [])
