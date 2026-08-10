@@ -2082,6 +2082,121 @@ usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil"
 eh_admin = usuario_atual["perfil"] == "admin"
 
 
+MODELOS_RELATORIO = {
+    "🛒 Relatório de Custos - Compras": {
+        "linhas_dre": [
+            "6.6 - Material de Embalagem",
+            "6.11 - Catálogos e Revistas",
+            "6.13 - Amostras",
+            "6.14 - Flaconetes",
+        ],
+        # O plano de contas "Mercadorias" faz parte do modelo de Compras, mas
+        # não tem uma "Linha DRE" correspondente na Tabela_Contas/DIÁRIO --
+        # por isso ele é puxado à parte, direto pelo nome do Plano de Contas,
+        # mesmo sem nenhuma linha da DRE selecionada apontar para ele.
+        "forcar_planos_contas": ["Mercadorias"],
+        "permitir_lancamento_manual": False,
+    },
+    "🚚 Relatório de Custos - Suprimentos": {
+        "linhas_dre": [
+            "6.8 - Serviço de Entrega",
+            "8.1.3 - Limpeza e Conservação",
+            "8.1.4 - Manutenção e Reparos",
+            "8.5.3 - Combustível",
+            "8.5.4 - Manutenção Veículos",
+            "8.6.1 - Material de Escritório",
+            "8.6.4 - Copa e Cozinha",
+            "8.7.1 - Despesas com Viagens",
+            "8.8.10 - Serviços de Transporte",
+            "8.8.11 - Outros Serviços Terceirizados",
+        ],
+        "forcar_planos_contas": [],
+        "permitir_lancamento_manual": False,
+    },
+    "👥 Relatório de Custos - RH": {
+        "linhas_dre": [
+            "6.1 - Comissões sobre Vendas",
+            "8.3 - Pessoal",
+            "8.3.1 - Salários",
+            "8.3.1.1 - Salário",
+            "8.3.1.2 - Adiantamento Salarial",
+            "8.3.1.3 - 13º Salário",
+            "8.3.1.4 - Hora Extra",
+            "8.3.1.5 - DSR",
+            "8.3.1.6 - Férias",
+            "8.3.1.7 - Descontos Gerais Sobre a Folha",
+            "8.3.2 - Encargos Sociais",
+            "8.3.2.1 - INSS",
+            "8.3.2.2 - FGTS",
+            "8.3.2.3 - IRRF Salários",
+            "8.3.2.4 - Contribuição Sindical / Assistencial",
+            "8.3.2.5 - Desconto INSS",
+            "8.3.2.6 - Desconto IRRF",
+            "8.3.3 - Benefícios",
+            "8.3.3.1 - Vale Transporte",
+            "8.3.3.2 - Vale Refeição",
+            "8.3.3.3 - Plano de Saúde",
+            "8.3.3.4 - Ajuda de Custo para Funcionários",
+            "8.3.3.5 - Outros Benefícios",
+            "8.3.3.6 - Desconto sobre Beneficios",
+            "8.3.3.7 - Prêmios / Bônus",
+            "8.3.4 - Movimentação de Pessoal",
+            "8.3.4.1 - Indenizações / Rescisões",
+            "8.3.4.2 - Multa de FGTS",
+            "8.3.4.3 - Exames Admissionais / Demissionais",
+            "8.3.4.4 - Recrutamento e Seleção",
+            "8.3.4.5 - Descontos Sobre Rescisões",
+            "8.3.4.6 - Temporários / Estagiários",
+            "8.3.5 - Uniformes",
+            "8.3.6 - Treinamento",
+            "8.3.7 - Pro Labore",
+            "8.3.8 - Saúde e Segurança do Trabalho",
+            "8.3.9 - Outras Despesas com Pessoal",
+            "8.3.10 - Contratação Pessoa Jurídica",
+            "8.3.11 - Encontro e Confraternização de Time",
+            "8.6.6 - Outras Despesas Administrativas",
+            "8.8.2 - Auditoria / Consultoria",
+        ],
+        "forcar_planos_contas": [],
+        # Várias linhas da DRE do RH não têm um Plano de Contas correspondente
+        # no DIÁRIO/Tabela_Contas (o valor é lançado direto na linha). Nesses
+        # casos, em vez de deixar a composição vazia, mostramos uma linha
+        # "Lançado Manualmente" com o valor da própria linha da DRE.
+        "permitir_lancamento_manual": True,
+    },
+    "📣 Relatório de Custos - MKT": {
+        "linhas_dre": [
+            "6.24 - Esforços de Marketing",
+            "6.24.1 - Marketing Regional - Gestão GB",
+            "6.24.1.1 - Mídia Regional / Local",
+            "6.24.1.1.1 - MKT-REG: 01. Mídia e Ativação (Gestão do GB)",
+            "6.24.2 - Marketing Regional - Gestão CP",
+            "6.24.2.1 - Eventos",
+            "6.24.2.1.1 - MKT-REG: 02. Evento e Patrocínio",
+            "6.24.2.2 - Produção e Propaganda",
+            "6.24.2.2.1 - MKT-REG: 03. Mídia Exterior",
+            "6.24.2.2.2 - MKT-REG: 04. Mídia e Ativação (Gestão do CP com agências locais)",
+            "6.24.2.2.3 - MKT-REG: 05. Mídia e Ativação (Gestão do CP com Opus ou Idea3)",
+            "6.24.2.3 - Material Promocional",
+            "6.24.2.3.1 - MKT-REG: 06. Impressão e Produção de Material",
+            "6.24.2.3.2 - MKT-REG: 07. Brinde, amostra, flaconete e PRM",
+            "6.24.2.4 - Mkt Digital",
+            "6.24.2.4.1 - MKT-REG: 08. Redes Sociais e Influenciador Digital",
+            "6.24.2.4.2 - MKT-REG: 09. Loja Digital e Mensagem SMS Turbo",
+            "6.24.2.5 - Encontro de Ciclo",
+            "6.24.2.6 - Outras Despesas de Marketing",
+        ],
+        "forcar_planos_contas": [],
+        # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
+        # tiverem um Plano de Contas próprio já caem como "Lançado
+        # Manualmente" automaticamente (mesma regra geral de todos os
+        # modelos) -- não precisa de nada especial aqui.
+        "permitir_lancamento_manual": False,
+    },
+}
+
+
+
 # ============================================================================
 # 4.5 SELEÇÃO DE PAINEL — Controladoria x Financeiro (tela entre o login e
 # o painel de fato). O Financeiro ainda não existe -- mostra um aviso de
@@ -2186,14 +2301,34 @@ st.sidebar.markdown(
 )
 
 st.sidebar.markdown("**🔎 Escopo da Análise**")
-with st.sidebar.expander("🔧 Abas detectadas nas planilhas"):
-    st.caption(
-        "Se uma aba nova (ex.: um consolidado que você acabou de criar) não "
-        "aparecer nos filtros, confira aqui o nome exato como o painel está "
-        "lendo -- pode ser uma pequena diferença de digitação/espaço em "
-        "relação ao nome esperado."
+if eh_admin:
+    with st.sidebar.expander("🔧 Abas detectadas nas planilhas"):
+        st.caption(
+            "Se uma aba nova (ex.: um consolidado que você acabou de criar) não "
+            "aparecer nos filtros, confira aqui o nome exato como o painel está "
+            "lendo -- pode ser uma pequena diferença de digitação/espaço em "
+            "relação ao nome esperado."
+        )
+        st.write(list(abas_disponiveis))
+
+# ---- Visão por Departamento (recurso em teste, só para administrador) ----
+# Troca o painel inteiro pra focar só nas linhas da DRE relevantes a um
+# departamento específico (reaproveita as linhas já definidas nos modelos
+# de relatório -- MKT, Compras, Suprimentos, RH -- como fonte da verdade de
+# "quais linhas pertencem a esse setor").
+departamento_ativo = None
+linhas_departamento_ativo = []
+if eh_admin:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🧪 Visão por Departamento (teste)**")
+    st.sidebar.caption("Recurso em teste, visível só para administrador por enquanto.")
+    opcoes_departamento = ["Controladoria (Padrão)"] + list(MODELOS_RELATORIO.keys())
+    departamento_sel = st.sidebar.selectbox(
+        "Ver painel como:", opcoes_departamento, key="departamento_sel_admin"
     )
-    st.write(list(abas_disponiveis))
+    if departamento_sel != "Controladoria (Padrão)":
+        departamento_ativo = departamento_sel
+        linhas_departamento_ativo = MODELOS_RELATORIO[departamento_sel]["linhas_dre"]
 
 modo_visao = st.sidebar.radio(
     "Modo de Visão:",
@@ -2262,6 +2397,19 @@ m_map = {
     for m_nome, m_col in zip(nomes_meses, meses_cols)
     if m_col in colunas_validas
 }
+
+# ---- Resolve as linhas do Departamento ativo (se algum estiver selecionado)
+# contra as linhas REAIS da DRE atual -- mesma lógica de correspondência
+# tolerante (substring) usada na aba de Emitir Relatório.
+col_nome_dre_dept = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
+linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique()) if not df_ref.empty else []
+linhas_departamento_resolvidas = []
+if departamento_ativo:
+    for termo in linhas_departamento_ativo:
+        termo_norm_dept = termo.strip().lower()
+        encontrados_dept = [l for l in linhas_dre_todas_painel if termo_norm_dept in str(l).strip().lower()]
+        linhas_departamento_resolvidas.extend(encontrados_dept)
+    linhas_departamento_resolvidas = list(dict.fromkeys(linhas_departamento_resolvidas))
 
 tipo_periodo = st.sidebar.radio(
     "Modo do Período:",
@@ -3159,6 +3307,69 @@ else:
 # ABA 1: VISÃO GERAL & CHARTS
 # ---------------------------------------------------------------------------
 with tab1:
+    if departamento_ativo:
+        nome_departamento_curto = re.sub(r"^[^\w]+", "", departamento_ativo, flags=re.UNICODE).strip()
+        st.markdown(
+            f'<div class="section-title">🧪 Visão do Departamento — {nome_departamento_curto} '
+            f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+            f'(recurso em teste, visível só para administrador)</span></div>',
+            unsafe_allow_html=True,
+        )
+        if not linhas_departamento_resolvidas:
+            st.warning(
+                f"Não encontrei nenhuma linha da DRE atual que bata com o modelo de {nome_departamento_curto}. "
+                "O texto das linhas pode estar um pouco diferente do esperado."
+            )
+        else:
+            dept_real = sum(
+                get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)
+                for l in linhas_departamento_resolvidas
+            )
+            dept_orc = sum(
+                get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True)
+                for l in linhas_departamento_resolvidas
+            )
+            dept_real_abs = abs(dept_real)
+            dept_orc_abs = abs(dept_orc)
+            desvio_dept = dept_orc_abs - dept_real_abs  # gasto menor que orçado é favorável
+            pct_atg_dept = (dept_real_abs / dept_orc_abs * 100) if dept_orc_abs else 0
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="TOTAL REALIZADO (PERÍODO)", value=formata_brl(dept_real_abs),
+                         value_color=COLORS["text"], subtext=f"{len(linhas_departamento_resolvidas)} linha(s) da DRE", icon="💸"),
+                    dict(label="TOTAL ORÇADO (PERÍODO)", value=formata_brl(dept_orc_abs),
+                         value_color=COLORS["text_muted"], subtext="Referência do orçamento", icon="🎯"),
+                    dict(label="DESVIO vs. ORÇADO", value=formata_brl(desvio_dept), value_color=cor_variacao(desvio_dept),
+                         subtext="Positivo = gastou menos que o orçado", subtext_color=cor_variacao(desvio_dept), icon="⚖️"),
+                    dict(label="% DO ORÇADO CONSUMIDO", value=f"{pct_atg_dept:.1f}%", value_color=cor_variacao(-(pct_atg_dept - 100)),
+                         subtext=f"Período: {label_periodo_kpi}", icon="📊"),
+                ]),
+                unsafe_allow_html=True,
+            )
+
+            with st.expander(f"📋 Ver as {len(linhas_departamento_resolvidas)} linhas da DRE deste departamento (Real vs. Orçado)"):
+                linhas_tabela_dept = []
+                for l in linhas_departamento_resolvidas:
+                    v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                    v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                    linhas_tabela_dept.append({
+                        "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
+                    })
+                st.dataframe(
+                    pd.DataFrame(linhas_tabela_dept),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Realizado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Orçado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Desvio (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                    },
+                )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
+        st.caption("Abaixo continua a visão executiva padrão da Controladoria (companhia toda), para referência.")
+        st.markdown("<br>", unsafe_allow_html=True)
+
     st.markdown(
         '<div class="section-title">📊 Visão Geral & Charts — Indicadores Executivos e Composição do Resultado</div>',
         unsafe_allow_html=True,
@@ -3435,6 +3646,8 @@ with tab1:
 # ---------------------------------------------------------------------------
 with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
+    if departamento_ativo:
+        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{departamento_ativo}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, _ = st.columns([2, 1])
@@ -3457,6 +3670,8 @@ with tab2:
 
     col_nome = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
     linhas_dre_todas = list(df_ref[col_nome].dropna().astype(str).unique())
+    if departamento_ativo and linhas_departamento_resolvidas:
+        linhas_dre_todas = [l for l in linhas_dre_todas if l in linhas_departamento_resolvidas]
 
     is_sintetica_dre = tipo_visao_dre == "Apenas Grupos Principais (Sintética)"
     is_gerencial_dre = tipo_visao_dre == "Visão Gerencial (Custos e Despesas)"
@@ -3627,6 +3842,8 @@ with tab2:
 # ---------------------------------------------------------------------------
 with tab3:
     st.markdown(f'<div class="section-title">📅 Histórico Mensal Mês a Mês — {label_visao}</div>', unsafe_allow_html=True)
+    if departamento_ativo:
+        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{departamento_ativo}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     ch1, ch2 = st.columns([1, 2.4])
@@ -3650,6 +3867,8 @@ with tab3:
         st.session_state["grupos_hist_colapsados"] = set()
 
     linhas_hist_todas = list(df_ref[col_nome].dropna().astype(str).unique())
+    if departamento_ativo and linhas_departamento_resolvidas:
+        linhas_hist_todas = [l for l in linhas_hist_todas if l in linhas_departamento_resolvidas]
     is_sintetica_hist = visao_hist_dre == "Grupos Fechados (Sintético)"
     is_gerencial_hist = visao_hist_dre == "Visão Gerencial (Custos e Despesas)"
 
@@ -4103,118 +4322,6 @@ with tab4:
 # ---------------------------------------------------------------------------
 # ABA 5: EMISSÃO DE RELATÓRIOS
 # ---------------------------------------------------------------------------
-MODELOS_RELATORIO = {
-    "🛒 Relatório de Custos - Compras": {
-        "linhas_dre": [
-            "6.6 - Material de Embalagem",
-            "6.11 - Catálogos e Revistas",
-            "6.13 - Amostras",
-            "6.14 - Flaconetes",
-        ],
-        # O plano de contas "Mercadorias" faz parte do modelo de Compras, mas
-        # não tem uma "Linha DRE" correspondente na Tabela_Contas/DIÁRIO --
-        # por isso ele é puxado à parte, direto pelo nome do Plano de Contas,
-        # mesmo sem nenhuma linha da DRE selecionada apontar para ele.
-        "forcar_planos_contas": ["Mercadorias"],
-        "permitir_lancamento_manual": False,
-    },
-    "🚚 Relatório de Custos - Suprimentos": {
-        "linhas_dre": [
-            "6.8 - Serviço de Entrega",
-            "8.1.3 - Limpeza e Conservação",
-            "8.1.4 - Manutenção e Reparos",
-            "8.5.3 - Combustível",
-            "8.5.4 - Manutenção Veículos",
-            "8.6.1 - Material de Escritório",
-            "8.6.4 - Copa e Cozinha",
-            "8.7.1 - Despesas com Viagens",
-            "8.8.10 - Serviços de Transporte",
-            "8.8.11 - Outros Serviços Terceirizados",
-        ],
-        "forcar_planos_contas": [],
-        "permitir_lancamento_manual": False,
-    },
-    "👥 Relatório de Custos - RH": {
-        "linhas_dre": [
-            "6.1 - Comissões sobre Vendas",
-            "8.3 - Pessoal",
-            "8.3.1 - Salários",
-            "8.3.1.1 - Salário",
-            "8.3.1.2 - Adiantamento Salarial",
-            "8.3.1.3 - 13º Salário",
-            "8.3.1.4 - Hora Extra",
-            "8.3.1.5 - DSR",
-            "8.3.1.6 - Férias",
-            "8.3.1.7 - Descontos Gerais Sobre a Folha",
-            "8.3.2 - Encargos Sociais",
-            "8.3.2.1 - INSS",
-            "8.3.2.2 - FGTS",
-            "8.3.2.3 - IRRF Salários",
-            "8.3.2.4 - Contribuição Sindical / Assistencial",
-            "8.3.2.5 - Desconto INSS",
-            "8.3.2.6 - Desconto IRRF",
-            "8.3.3 - Benefícios",
-            "8.3.3.1 - Vale Transporte",
-            "8.3.3.2 - Vale Refeição",
-            "8.3.3.3 - Plano de Saúde",
-            "8.3.3.4 - Ajuda de Custo para Funcionários",
-            "8.3.3.5 - Outros Benefícios",
-            "8.3.3.6 - Desconto sobre Beneficios",
-            "8.3.3.7 - Prêmios / Bônus",
-            "8.3.4 - Movimentação de Pessoal",
-            "8.3.4.1 - Indenizações / Rescisões",
-            "8.3.4.2 - Multa de FGTS",
-            "8.3.4.3 - Exames Admissionais / Demissionais",
-            "8.3.4.4 - Recrutamento e Seleção",
-            "8.3.4.5 - Descontos Sobre Rescisões",
-            "8.3.4.6 - Temporários / Estagiários",
-            "8.3.5 - Uniformes",
-            "8.3.6 - Treinamento",
-            "8.3.7 - Pro Labore",
-            "8.3.8 - Saúde e Segurança do Trabalho",
-            "8.3.9 - Outras Despesas com Pessoal",
-            "8.3.10 - Contratação Pessoa Jurídica",
-            "8.3.11 - Encontro e Confraternização de Time",
-            "8.6.6 - Outras Despesas Administrativas",
-            "8.8.2 - Auditoria / Consultoria",
-        ],
-        "forcar_planos_contas": [],
-        # Várias linhas da DRE do RH não têm um Plano de Contas correspondente
-        # no DIÁRIO/Tabela_Contas (o valor é lançado direto na linha). Nesses
-        # casos, em vez de deixar a composição vazia, mostramos uma linha
-        # "Lançado Manualmente" com o valor da própria linha da DRE.
-        "permitir_lancamento_manual": True,
-    },
-    "📣 Relatório de Custos - MKT": {
-        "linhas_dre": [
-            "6.24 - Esforços de Marketing",
-            "6.24.1 - Marketing Regional - Gestão GB",
-            "6.24.1.1 - Mídia Regional / Local",
-            "6.24.1.1.1 - MKT-REG: 01. Mídia e Ativação (Gestão do GB)",
-            "6.24.2 - Marketing Regional - Gestão CP",
-            "6.24.2.1 - Eventos",
-            "6.24.2.1.1 - MKT-REG: 02. Evento e Patrocínio",
-            "6.24.2.2 - Produção e Propaganda",
-            "6.24.2.2.1 - MKT-REG: 03. Mídia Exterior",
-            "6.24.2.2.2 - MKT-REG: 04. Mídia e Ativação (Gestão do CP com agências locais)",
-            "6.24.2.2.3 - MKT-REG: 05. Mídia e Ativação (Gestão do CP com Opus ou Idea3)",
-            "6.24.2.3 - Material Promocional",
-            "6.24.2.3.1 - MKT-REG: 06. Impressão e Produção de Material",
-            "6.24.2.3.2 - MKT-REG: 07. Brinde, amostra, flaconete e PRM",
-            "6.24.2.4 - Mkt Digital",
-            "6.24.2.4.1 - MKT-REG: 08. Redes Sociais e Influenciador Digital",
-            "6.24.2.4.2 - MKT-REG: 09. Loja Digital e Mensagem SMS Turbo",
-            "6.24.2.5 - Encontro de Ciclo",
-            "6.24.2.6 - Outras Despesas de Marketing",
-        ],
-        "forcar_planos_contas": [],
-        # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
-        # tiverem um Plano de Contas próprio já caem como "Lançado
-        # Manualmente" automaticamente (mesma regra geral de todos os
-        # modelos) -- não precisa de nada especial aqui.
-        "permitir_lancamento_manual": False,
-    },
-}
 
 with tab5:
     st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
