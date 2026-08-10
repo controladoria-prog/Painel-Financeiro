@@ -3304,18 +3304,32 @@ st.markdown(
 # ============================================================================
 # 8. ABAS
 # ============================================================================
-_nomes_abas = [
-    "📊 Visão Geral & Charts",
-    "📋 DRE Orçado X Realizado",
-    "📅 Histórico Mensal",
-    "🔮 Previsões & Trends",
-    "📤 Emitir Relatório",
-]
-if eh_admin:
-    _nomes_abas.append("👥 Usuários")
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(_nomes_abas)
+if departamento_ativo:
+    # Modo Departamento (teste, admin) -- painel inteiro focado só no
+    # departamento escolhido: 3 abas próprias, sem Previsões, Emitir
+    # Relatório nem Usuários (que são conceitos de companhia toda, não de
+    # um departamento/centro de custo específico).
+    _nome_dept_abas = _nome_departamento_curto(departamento_ativo)
+    tab1, tab2, tab3 = st.tabs([
+        f"📊 Visão Geral — {_nome_dept_abas}",
+        f"📋 Detalhe por Conta — {_nome_dept_abas}",
+        f"📅 Histórico Mensal — {_nome_dept_abas}",
+    ])
+    tab4 = tab5 = tab6 = None
 else:
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(_nomes_abas)
+    _nomes_abas = [
+        "📊 Visão Geral & Charts",
+        "📋 DRE Orçado X Realizado",
+        "📅 Histórico Mensal",
+        "🔮 Previsões & Trends",
+        "📤 Emitir Relatório",
+    ]
+    if eh_admin:
+        _nomes_abas.append("👥 Usuários")
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(_nomes_abas)
+    else:
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(_nomes_abas)
+        tab6 = None
 
 # ---------------------------------------------------------------------------
 # ABA 1: VISÃO GERAL & CHARTS
@@ -3379,289 +3393,284 @@ with tab1:
                         "Desvio (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                     },
                 )
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("---")
-        st.caption("Abaixo continua a visão executiva padrão da Controladoria (companhia toda), para referência.")
-        st.markdown("<br>", unsafe_allow_html=True)
 
-    st.markdown(
-        '<div class="section-title">📊 Visão Geral & Charts — Indicadores Executivos e Composição do Resultado</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ---- KPIs executivos da visão geral ----
-    rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
-    rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
-
-    ebitda_real_kpi = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
-    ebitda_orc_kpi = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
-
-    margem_ebitda_kpi = (ebitda_real_kpi / rec_liq_real_kpi * 100) if rec_liq_real_kpi != 0 else 0
-
-    diff_ebitda_kpi = ebitda_real_kpi - ebitda_orc_kpi
-    pct_ebitda_kpi = (diff_ebitda_kpi / abs(ebitda_orc_kpi)) * 100 if ebitda_orc_kpi != 0 else 0
-
-    pct_vendas_prog = min(100.0, max(0.0, (rec_liq_real_kpi / rec_liq_orc_kpi * 100))) if rec_liq_orc_kpi > 0 else 0
-    pct_lucro_prog = min(100.0, max(0.0, (ebitda_real_kpi / ebitda_orc_kpi * 100))) if ebitda_orc_kpi > 0 else 0
-
-    cor_rec = cor_variacao(rec_liq_real_kpi)
-    cor_ebitda = cor_variacao(ebitda_real_kpi)
-    cor_diff_eb = cor_variacao(diff_ebitda_kpi)
-    cor_mg_eb = cor_variacao(margem_ebitda_kpi)
-
-    st.markdown(
-        render_kpi_row([
-            dict(label="RECEITA LÍQUIDA (YTD)", value=formata_brl(rec_liq_real_kpi), value_color=cor_rec,
-                 subtext=f"Orçado: {formata_brl(rec_liq_orc_kpi)}", progress_pct=pct_vendas_prog, icon="💰"),
-            dict(label="EBITDA (YTD)", value=formata_brl(ebitda_real_kpi), value_color=cor_ebitda,
-                 subtext=f"Orçado: {formata_brl(ebitda_orc_kpi)}", progress_pct=pct_lucro_prog, icon="📈"),
-            dict(label="VARIAÇÃO EBITDA", value=formata_brl(diff_ebitda_kpi), value_color=cor_diff_eb,
-                 subtext=f"{pct_ebitda_kpi:+.1f}% vs Orçamento", subtext_color=cor_diff_eb, icon="⚖️"),
-            dict(label="MARGEM EBITDA %", value=f"{margem_ebitda_kpi:.1f}%", value_color=cor_mg_eb,
-                 subtext="Realizada no Período", icon="🎯"),
-        ]),
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
-
-    cg1, cg2 = st.columns(2)
-
-    with cg1:
-        st.markdown('<div class="section-title">Bridge de Performance (YTD)</div>', unsafe_allow_html=True)
-
-        rec_bruta = get_valor_consolidado_multi(list_df_real, "1 - Receita Operacional Bruta", cols_kpi)
-        deducoes = get_valor_consolidado_multi(list_df_real, "2 - Deduções da Receita Operacional Bruta", cols_kpi)
-        rec_liq = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
-
-        cmv_bridge = get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True)
-        if cmv_bridge == 0:
-            cmv_bridge = get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi)
-
-        margem_bruta = get_valor_consolidado_multi(list_df_real, "5 - Margem de Contribuição 1", cols_kpi)
-
-        desp_var = get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi)
-        if desp_var == 0:
-            desp_var = get_valor_consolidado_multi(list_df_real, "Despesas Variáveis", cols_kpi)
-
-        desp_op = get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi)
-        sga_total = desp_var + desp_op
-
-        deprec = get_valor_consolidado_multi(list_df_real, "13 - Depreciação e Amortização", cols_kpi)
-
-        ebitda = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
-        ebit = margem_bruta - abs(sga_total) - abs(deprec)
-
-        base_rec = rec_liq if rec_liq != 0 else 1.0
-
-        p_rec_bruta = round((rec_bruta / base_rec) * 100)
-        p_deducoes = round((deducoes / base_rec) * 100)
-        p_rec_liq = 100
-        p_cmv = round((-abs(cmv_bridge) / base_rec) * 100)
-        p_mb = round((margem_bruta / base_rec) * 100)
-        p_sga = round((-abs(sga_total) / base_rec) * 100)
-
-        p_ebit = round((ebit / base_rec) * 100)
-        p_deprec = round((-abs(deprec) / base_rec) * 100)
-        p_ebitda = round((ebitda / base_rec) * 100)
-
-        x_bridge = [
-            "Receita Bruta", "Deduções", "Receita Líquida", "CMV",
-            "Margem Bruta", "SG&A", "EBIT", "D&A", "EBITDA",
-        ]
-        measures = ["absolute", "relative", "total", "relative", "total", "relative", "total", "relative", "total"]
-        y_bridge = [p_rec_bruta, p_deducoes, 0, p_cmv, 0, p_sga, 0, abs(p_deprec), 0]
-        text_labels = [
-            f"{p_rec_bruta}%", f"{p_deducoes}%", f"{p_rec_liq}%",
-            f"{p_cmv}%", f"{p_mb}%", f"{p_sga}%",
-            f"{p_ebit}%", f"{p_deprec}%", f"{p_ebitda}%",
-        ]
-
-        fig_waterfall = go.Figure(
-            go.Waterfall(
-                orientation="v",
-                measure=measures,
-                x=x_bridge,
-                y=y_bridge,
-                text=text_labels,
-                textposition="outside",
-                connector={"line": {"color": COLORS["border"], "width": 1}},
-                decreasing={"marker": {"color": COLORS["muted_line"]}},
-                increasing={"marker": {"color": COLORS["primary"]}},
-                totals={"marker": {"color": COLORS["secondary"]}},
-            )
+    else:
+        st.markdown(
+            '<div class="section-title">📊 Visão Geral & Charts — Indicadores Executivos e Composição do Resultado</div>',
+            unsafe_allow_html=True,
         )
-        estilo_grafico(
-            fig_waterfall,
-            height=400,
-            xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True),
-            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ---- KPIs executivos da visão geral ----
+        rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
+        rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
+
+        ebitda_real_kpi = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+        ebitda_orc_kpi = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
+
+        margem_ebitda_kpi = (ebitda_real_kpi / rec_liq_real_kpi * 100) if rec_liq_real_kpi != 0 else 0
+
+        diff_ebitda_kpi = ebitda_real_kpi - ebitda_orc_kpi
+        pct_ebitda_kpi = (diff_ebitda_kpi / abs(ebitda_orc_kpi)) * 100 if ebitda_orc_kpi != 0 else 0
+
+        pct_vendas_prog = min(100.0, max(0.0, (rec_liq_real_kpi / rec_liq_orc_kpi * 100))) if rec_liq_orc_kpi > 0 else 0
+        pct_lucro_prog = min(100.0, max(0.0, (ebitda_real_kpi / ebitda_orc_kpi * 100))) if ebitda_orc_kpi > 0 else 0
+
+        cor_rec = cor_variacao(rec_liq_real_kpi)
+        cor_ebitda = cor_variacao(ebitda_real_kpi)
+        cor_diff_eb = cor_variacao(diff_ebitda_kpi)
+        cor_mg_eb = cor_variacao(margem_ebitda_kpi)
+
+        st.markdown(
+            render_kpi_row([
+                dict(label="RECEITA LÍQUIDA (YTD)", value=formata_brl(rec_liq_real_kpi), value_color=cor_rec,
+                     subtext=f"Orçado: {formata_brl(rec_liq_orc_kpi)}", progress_pct=pct_vendas_prog, icon="💰"),
+                dict(label="EBITDA (YTD)", value=formata_brl(ebitda_real_kpi), value_color=cor_ebitda,
+                     subtext=f"Orçado: {formata_brl(ebitda_orc_kpi)}", progress_pct=pct_lucro_prog, icon="📈"),
+                dict(label="VARIAÇÃO EBITDA", value=formata_brl(diff_ebitda_kpi), value_color=cor_diff_eb,
+                     subtext=f"{pct_ebitda_kpi:+.1f}% vs Orçamento", subtext_color=cor_diff_eb, icon="⚖️"),
+                dict(label="MARGEM EBITDA %", value=f"{margem_ebitda_kpi:.1f}%", value_color=cor_mg_eb,
+                     subtext="Realizada no Período", icon="🎯"),
+            ]),
+            unsafe_allow_html=True,
         )
-        st.plotly_chart(fig_waterfall, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    with cg2:
-        st.markdown('<div class="section-title">Real vs. Orçado (YTD)</div>', unsafe_allow_html=True)
+        st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 
-        cats = ["CMV", "TRF/REM", "Margem Contrib. 2", "Despesas Fixas", "EBITDA"]
+        cg1, cg2 = st.columns(2)
 
-        NOME_LINHA_CMV_DETALHADO = "4.1 - Custo da Mercadoria Vendida - CMV"
+        with cg1:
+            st.markdown('<div class="section-title">Bridge de Performance (YTD)</div>', unsafe_allow_html=True)
 
-        cmv_r = abs(get_valor_consolidado_multi(list_df_real, NOME_LINHA_CMV_DETALHADO, cols_kpi, exato_linha_sintetica=True))
-        if cmv_r == 0:
-            cmv_r = abs(get_valor_consolidado_multi(list_df_real, "4.1 - Custo da Mercadoria Vendida", cols_kpi))
+            rec_bruta = get_valor_consolidado_multi(list_df_real, "1 - Receita Operacional Bruta", cols_kpi)
+            deducoes = get_valor_consolidado_multi(list_df_real, "2 - Deduções da Receita Operacional Bruta", cols_kpi)
+            rec_liq = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
 
-        cmv_o = abs(get_valor_consolidado_multi(list_df_orc, NOME_LINHA_CMV_DETALHADO, cols_kpi, exato_linha_sintetica=True))
-        if cmv_o == 0:
-            cmv_o = abs(get_valor_consolidado_multi(list_df_orc, "4.1 - Custo da Mercadoria Vendida", cols_kpi))
+            cmv_bridge = get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True)
+            if cmv_bridge == 0:
+                cmv_bridge = get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi)
 
-        trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF/REM", cols_kpi))
-        if trf_r == 0:
-            trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF / REM", cols_kpi))
+            margem_bruta = get_valor_consolidado_multi(list_df_real, "5 - Margem de Contribuição 1", cols_kpi)
 
-        trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF/REM", cols_kpi))
-        if trf_o == 0:
-            trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF / REM", cols_kpi))
+            desp_var = get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi)
+            if desp_var == 0:
+                desp_var = get_valor_consolidado_multi(list_df_real, "Despesas Variáveis", cols_kpi)
 
-        mc_r = get_valor_consolidado_multi(list_df_real, "Margem de Contribuição 2", cols_kpi)
-        if mc_r == 0:
-            mc_r = get_valor_consolidado_multi(list_df_real, "7 - Margem de Contribuição 2", cols_kpi)
+            desp_op = get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi)
+            sga_total = desp_var + desp_op
 
-        mc_o = get_valor_consolidado_multi(list_df_orc, "Margem de Contribuição 2", cols_kpi)
-        if mc_o == 0:
-            mc_o = get_valor_consolidado_multi(list_df_orc, "7 - Margem de Contribuição 2", cols_kpi)
+            deprec = get_valor_consolidado_multi(list_df_real, "13 - Depreciação e Amortização", cols_kpi)
 
-        dfix_r = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
-        dfix_o = abs(get_valor_consolidado_multi(list_df_orc, "8 - Despesas Operacionais", cols_kpi))
+            ebitda = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+            ebit = margem_bruta - abs(sga_total) - abs(deprec)
 
-        eb_r = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
-        eb_o = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
+            base_rec = rec_liq if rec_liq != 0 else 1.0
 
-        val_r = [cmv_r, trf_r, mc_r, dfix_r, eb_r]
-        val_o = [cmv_o, trf_o, mc_o, dfix_o, eb_o]
+            p_rec_bruta = round((rec_bruta / base_rec) * 100)
+            p_deducoes = round((deducoes / base_rec) * 100)
+            p_rec_liq = 100
+            p_cmv = round((-abs(cmv_bridge) / base_rec) * 100)
+            p_mb = round((margem_bruta / base_rec) * 100)
+            p_sga = round((-abs(sga_total) / base_rec) * 100)
 
-        labels_r = [formata_m(v) for v in val_r]
-        labels_o = [formata_m(v) for v in val_o]
+            p_ebit = round((ebit / base_rec) * 100)
+            p_deprec = round((-abs(deprec) / base_rec) * 100)
+            p_ebitda = round((ebitda / base_rec) * 100)
 
-        fig_bar = go.Figure(
-            data=[
-                go.Bar(name="Realizado (R$)", x=cats, y=val_r, text=labels_r, textposition="outside", marker_color=COLORS["primary"]),
-                go.Bar(name="Orçado (R$)", x=cats, y=val_o, text=labels_o, textposition="outside", marker_color=COLORS["secondary"]),
+            x_bridge = [
+                "Receita Bruta", "Deduções", "Receita Líquida", "CMV",
+                "Margem Bruta", "SG&A", "EBIT", "D&A", "EBITDA",
             ]
-        )
-        estilo_grafico(
-            fig_bar,
-            height=420,
-            barmode="group",
-            xaxis=dict(
-                gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
-                tickangle=-40, automargin=True,
-            ),
-            yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
-            margin=dict(l=20, r=20, t=30, b=90),
-        )
-        st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            measures = ["absolute", "relative", "total", "relative", "total", "relative", "total", "relative", "total"]
+            y_bridge = [p_rec_bruta, p_deducoes, 0, p_cmv, 0, p_sga, 0, abs(p_deprec), 0]
+            text_labels = [
+                f"{p_rec_bruta}%", f"{p_deducoes}%", f"{p_rec_liq}%",
+                f"{p_cmv}%", f"{p_mb}%", f"{p_sga}%",
+                f"{p_ebit}%", f"{p_deprec}%", f"{p_ebitda}%",
+            ]
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    cg3, cg4 = st.columns([1.3, 0.7])
-
-    with cg3:
-        st.markdown('<div class="section-title">Evolução Mensal (Receita vs. Margem de Contribuição)</div>', unsafe_allow_html=True)
-
-        rec_m, mc_m, rotulos_m = [], [], []
-        for m_nome, c in m_map.items():
-            v_rec = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", [c])
-            v_mc = get_valor_consolidado_multi(list_df_real, "7 - Margem de Contribuição 2", [c])
-            if v_mc == 0:
-                v_mc = get_valor_consolidado_multi(list_df_real, "Margem de Contribuição 2", [c])
-
-            if v_rec != 0 or v_mc != 0:
-                rec_m.append(v_rec)
-                mc_m.append(v_mc)
-                rotulos_m.append(m_nome.capitalize())
-
-        labels_rec = [formata_m(v) for v in rec_m]
-        labels_mc = [formata_m(v) for v in mc_m]
-
-        fig_line = go.Figure()
-        fig_line.add_trace(
-            go.Scatter(
-                x=rotulos_m, y=rec_m, mode="lines+markers+text", name="Receita (R$)",
-                text=labels_rec, textposition="top center",
-                line=dict(color=COLORS["primary"], width=2, shape="spline"),
-                marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["primary"], width=2)),
-                textfont=dict(color=COLORS["text"], size=11, family=FONT_STACK),
-            )
-        )
-        fig_line.add_trace(
-            go.Scatter(
-                x=rotulos_m, y=mc_m, mode="lines+markers+text", name="Margem Contrib. 2 (R$)",
-                text=labels_mc, textposition="bottom center",
-                line=dict(color=COLORS["muted_line"], width=2, shape="spline"),
-                marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["muted_line"], width=2)),
-                textfont=dict(color=COLORS["text_muted"], size=11, family=FONT_STACK),
-            )
-        )
-        estilo_grafico(
-            fig_line,
-            height=380,
-            xaxis=dict(showgrid=False, zeroline=False, tickangle=-45, tickfont=dict(size=11, color=COLORS["text_muted"]), fixedrange=True),
-            yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, fixedrange=True),
-            legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5, font=dict(color=COLORS["text_muted"])),
-        )
-        st.plotly_chart(fig_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-
-    with cg4:
-        st.markdown('<div class="section-title">Composição dos Custos & Saídas</div>', unsafe_allow_html=True)
-
-        cmv_real_kpi = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True))
-        if cmv_real_kpi == 0:
-            cmv_real_kpi = abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi))
-
-        desp_op_real = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
-
-        v_cmv_pie = abs(cmv_real_kpi)
-        v_desp_var_pie = abs(get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi))
-        v_desp_op_pie = abs(desp_op_real)
-        v_deprec_pie = abs(get_valor_consolidado_multi(list_df_real, "13 - Depreciação e Amortização", cols_kpi))
-
-        total_pie = v_cmv_pie + v_desp_var_pie + v_desp_op_pie + v_deprec_pie
-
-        fig_donut = go.Figure(
-            data=[
-                go.Pie(
-                    labels=["CMV / Custo", "Despesas Var.", "Despesas Op. (OpEx)", "Depreciação/Amort."],
-                    values=[v_cmv_pie, v_desp_var_pie, v_desp_op_pie, v_deprec_pie],
-                    hole=0.62,
-                    marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
-                                line=dict(color=COLORS["surface"], width=2)),
-                    textinfo="percent",
-                    hoverinfo="label+value+percent",
+            fig_waterfall = go.Figure(
+                go.Waterfall(
+                    orientation="v",
+                    measure=measures,
+                    x=x_bridge,
+                    y=y_bridge,
+                    text=text_labels,
+                    textposition="outside",
+                    connector={"line": {"color": COLORS["border"], "width": 1}},
+                    decreasing={"marker": {"color": COLORS["muted_line"]}},
+                    increasing={"marker": {"color": COLORS["primary"]}},
+                    totals={"marker": {"color": COLORS["secondary"]}},
                 )
-            ]
-        )
-        fig_donut.add_annotation(
-            text=f"<b>{formata_m(total_pie)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
-            showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
-        )
-        estilo_grafico(
-            fig_donut,
-            height=380,
-            legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
-        )
-        st.plotly_chart(fig_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            )
+            estilo_grafico(
+                fig_waterfall,
+                height=400,
+                xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True),
+                yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+            )
+            st.plotly_chart(fig_waterfall, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+        with cg2:
+            st.markdown('<div class="section-title">Real vs. Orçado (YTD)</div>', unsafe_allow_html=True)
+
+            cats = ["CMV", "TRF/REM", "Margem Contrib. 2", "Despesas Fixas", "EBITDA"]
+
+            NOME_LINHA_CMV_DETALHADO = "4.1 - Custo da Mercadoria Vendida - CMV"
+
+            cmv_r = abs(get_valor_consolidado_multi(list_df_real, NOME_LINHA_CMV_DETALHADO, cols_kpi, exato_linha_sintetica=True))
+            if cmv_r == 0:
+                cmv_r = abs(get_valor_consolidado_multi(list_df_real, "4.1 - Custo da Mercadoria Vendida", cols_kpi))
+
+            cmv_o = abs(get_valor_consolidado_multi(list_df_orc, NOME_LINHA_CMV_DETALHADO, cols_kpi, exato_linha_sintetica=True))
+            if cmv_o == 0:
+                cmv_o = abs(get_valor_consolidado_multi(list_df_orc, "4.1 - Custo da Mercadoria Vendida", cols_kpi))
+
+            trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF/REM", cols_kpi))
+            if trf_r == 0:
+                trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF / REM", cols_kpi))
+
+            trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF/REM", cols_kpi))
+            if trf_o == 0:
+                trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF / REM", cols_kpi))
+
+            mc_r = get_valor_consolidado_multi(list_df_real, "Margem de Contribuição 2", cols_kpi)
+            if mc_r == 0:
+                mc_r = get_valor_consolidado_multi(list_df_real, "7 - Margem de Contribuição 2", cols_kpi)
+
+            mc_o = get_valor_consolidado_multi(list_df_orc, "Margem de Contribuição 2", cols_kpi)
+            if mc_o == 0:
+                mc_o = get_valor_consolidado_multi(list_df_orc, "7 - Margem de Contribuição 2", cols_kpi)
+
+            dfix_r = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
+            dfix_o = abs(get_valor_consolidado_multi(list_df_orc, "8 - Despesas Operacionais", cols_kpi))
+
+            eb_r = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+            eb_o = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
+
+            val_r = [cmv_r, trf_r, mc_r, dfix_r, eb_r]
+            val_o = [cmv_o, trf_o, mc_o, dfix_o, eb_o]
+
+            labels_r = [formata_m(v) for v in val_r]
+            labels_o = [formata_m(v) for v in val_o]
+
+            fig_bar = go.Figure(
+                data=[
+                    go.Bar(name="Realizado (R$)", x=cats, y=val_r, text=labels_r, textposition="outside", marker_color=COLORS["primary"]),
+                    go.Bar(name="Orçado (R$)", x=cats, y=val_o, text=labels_o, textposition="outside", marker_color=COLORS["secondary"]),
+                ]
+            )
+            estilo_grafico(
+                fig_bar,
+                height=420,
+                barmode="group",
+                xaxis=dict(
+                    gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
+                    tickangle=-40, automargin=True,
+                ),
+                yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
+                margin=dict(l=20, r=20, t=30, b=90),
+            )
+            st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        cg3, cg4 = st.columns([1.3, 0.7])
+
+        with cg3:
+            st.markdown('<div class="section-title">Evolução Mensal (Receita vs. Margem de Contribuição)</div>', unsafe_allow_html=True)
+
+            rec_m, mc_m, rotulos_m = [], [], []
+            for m_nome, c in m_map.items():
+                v_rec = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", [c])
+                v_mc = get_valor_consolidado_multi(list_df_real, "7 - Margem de Contribuição 2", [c])
+                if v_mc == 0:
+                    v_mc = get_valor_consolidado_multi(list_df_real, "Margem de Contribuição 2", [c])
+
+                if v_rec != 0 or v_mc != 0:
+                    rec_m.append(v_rec)
+                    mc_m.append(v_mc)
+                    rotulos_m.append(m_nome.capitalize())
+
+            labels_rec = [formata_m(v) for v in rec_m]
+            labels_mc = [formata_m(v) for v in mc_m]
+
+            fig_line = go.Figure()
+            fig_line.add_trace(
+                go.Scatter(
+                    x=rotulos_m, y=rec_m, mode="lines+markers+text", name="Receita (R$)",
+                    text=labels_rec, textposition="top center",
+                    line=dict(color=COLORS["primary"], width=2, shape="spline"),
+                    marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["primary"], width=2)),
+                    textfont=dict(color=COLORS["text"], size=11, family=FONT_STACK),
+                )
+            )
+            fig_line.add_trace(
+                go.Scatter(
+                    x=rotulos_m, y=mc_m, mode="lines+markers+text", name="Margem Contrib. 2 (R$)",
+                    text=labels_mc, textposition="bottom center",
+                    line=dict(color=COLORS["muted_line"], width=2, shape="spline"),
+                    marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["muted_line"], width=2)),
+                    textfont=dict(color=COLORS["text_muted"], size=11, family=FONT_STACK),
+                )
+            )
+            estilo_grafico(
+                fig_line,
+                height=380,
+                xaxis=dict(showgrid=False, zeroline=False, tickangle=-45, tickfont=dict(size=11, color=COLORS["text_muted"]), fixedrange=True),
+                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, fixedrange=True),
+                legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5, font=dict(color=COLORS["text_muted"])),
+            )
+            st.plotly_chart(fig_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+        with cg4:
+            st.markdown('<div class="section-title">Composição dos Custos & Saídas</div>', unsafe_allow_html=True)
+
+            cmv_real_kpi = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True))
+            if cmv_real_kpi == 0:
+                cmv_real_kpi = abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi))
+
+            desp_op_real = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
+
+            v_cmv_pie = abs(cmv_real_kpi)
+            v_desp_var_pie = abs(get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi))
+            v_desp_op_pie = abs(desp_op_real)
+            v_deprec_pie = abs(get_valor_consolidado_multi(list_df_real, "13 - Depreciação e Amortização", cols_kpi))
+
+            total_pie = v_cmv_pie + v_desp_var_pie + v_desp_op_pie + v_deprec_pie
+
+            fig_donut = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=["CMV / Custo", "Despesas Var.", "Despesas Op. (OpEx)", "Depreciação/Amort."],
+                        values=[v_cmv_pie, v_desp_var_pie, v_desp_op_pie, v_deprec_pie],
+                        hole=0.62,
+                        marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
+                                    line=dict(color=COLORS["surface"], width=2)),
+                        textinfo="percent",
+                        hoverinfo="label+value+percent",
+                    )
+                ]
+            )
+            fig_donut.add_annotation(
+                text=f"<b>{formata_m(total_pie)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
+                showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
+            )
+            estilo_grafico(
+                fig_donut,
+                height=380,
+                legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
+            )
+            st.plotly_chart(fig_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
 
-# ---------------------------------------------------------------------------
-# ABA 2: DRE COMPLETA & DESVIOS
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # ABA 2: DRE COMPLETA & DESVIOS
+    # ---------------------------------------------------------------------------
 with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
-    if departamento_ativo:
-        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{_nome_departamento_curto(departamento_ativo)}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, _ = st.columns([2, 1])
@@ -3673,6 +3682,10 @@ with tab2:
                 "Todas as Contas (Analítica)",
                 "Visão Gerencial (Custos e Despesas)",
             ],
+            # No Modo Departamento, a maioria das linhas já vem com "ponto"
+            # (ex.: "6.24.1 - ..."), então a visão Sintética quase sempre
+            # fica vazia -- por padrão, abre em Analítica nesse caso.
+            index=1 if departamento_ativo else 0,
             horizontal=True,
         )
     st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintética) ou fechar (Analítica/Gerencial) as contas dela.")
@@ -3870,8 +3883,6 @@ with tab2:
 # ---------------------------------------------------------------------------
 with tab3:
     st.markdown(f'<div class="section-title">📅 Histórico Mensal Mês a Mês — {label_visao}</div>', unsafe_allow_html=True)
-    if departamento_ativo:
-        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{_nome_departamento_curto(departamento_ativo)}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     ch1, ch2 = st.columns([1, 2.4])
@@ -3885,6 +3896,7 @@ with tab3:
                 "Todas as Contas (Analítico)",
                 "Visão Gerencial (Custos e Despesas)",
             ],
+            index=1 if departamento_ativo else 0,
             horizontal=True,
         )
     st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintético) ou fechar (Analítico/Gerencial) as contas dela.")
@@ -4046,443 +4058,445 @@ with tab3:
 # ---------------------------------------------------------------------------
 # ABA 4: PREVISÕES & TRENDS
 # ---------------------------------------------------------------------------
-with tab4:
-    st.markdown('<div class="section-title">🔮 Painel Avançado de Previsões e Tendências</div>', unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    c_f1, c_f2, c_f3 = st.columns([1.2, 1.2, 1.6])
-
-    with c_f1:
-        metrica_sel = st.selectbox("Métrica de Análise:", ["Receita Operacional Líquida", "EBITDA"], index=0)
-        termo_metrica = "3 - Receita Operacional Liquida" if metrica_sel == "Receita Operacional Líquida" else "11 - EBITDA"
-
-    with c_f2:
-        modelo_proj = st.selectbox(
-            "Modelo de Projeção Futura:",
-            ["Média Histórica (Run-Rate)", "Manter Orçamento (Budget)", "Ajustado por Sazonalidade/Performance"],
-            index=0,
-            help="Define como os meses futuros não realizados serão calculados.",
-        )
-
-    with c_f3:
-        sensibilidade = st.slider(
-            "Ajuste Fino de Cenário / Estresse (%):",
-            min_value=-20.0, max_value=20.0, value=0.0, step=1.0,
-            help="Aplica uma variação percentual sobre os meses projetados.",
-        )
-
-    meses_todos = list(m_map.keys())
-
-    meses_realizados_cols = (
-        cols_kpi if tipo_periodo == "Mês Selecionado"
-        else [m_map[m] for m in meses_todos if get_valor_consolidado_multi(list_df_real, termo_metrica, [m_map[m]]) != 0]
-    )
-
-    if not meses_realizados_cols:
-        meses_realizados_cols = list(m_map.values())[:7]
-
-    num_meses_realizados = len(meses_realizados_cols)
-
-    val_real_acumulado = get_valor_consolidado_multi(list_df_real, termo_metrica, meses_realizados_cols)
-    val_orc_acumulado = get_valor_consolidado_multi(list_df_orc, termo_metrica, meses_realizados_cols)
-
-    val_orc_anual_total = get_valor_consolidado_multi(list_df_orc, termo_metrica, colunas_validas)
-
-    media_mensal_real = val_real_acumulado / num_meses_realizados if num_meses_realizados > 0 else 0
-    fator_performance = (val_real_acumulado / val_orc_acumulado) if val_orc_acumulado != 0 else 1.0
-
-    fator_sensibilidade = 1.0 + (sensibilidade / 100.0)
-
-    valores_finais_mes = []
-    valores_orcado_mes = []
-    valores_real_mes = []
-    tipos_serie = []
-
-    for idx_m, m_nome in enumerate(meses_todos):
-        m_col = m_map[m_nome]
-        v_orc = get_valor_consolidado_multi(list_df_orc, termo_metrica, [m_col])
-        valores_orcado_mes.append(v_orc)
-
-        if idx_m < num_meses_realizados:
-            v_real = get_valor_consolidado_multi(list_df_real, termo_metrica, [m_col])
-            valores_finais_mes.append(v_real)
-            valores_real_mes.append(v_real)
-            tipos_serie.append("Realizado")
-        else:
-            if modelo_proj == "Média Histórica (Run-Rate)":
-                v_proj = media_mensal_real * fator_sensibilidade
-            elif modelo_proj == "Manter Orçamento (Budget)":
-                v_proj = v_orc * fator_sensibilidade
-            else:
-                v_proj = (v_orc * fator_performance) * fator_sensibilidade
-
-            valores_finais_mes.append(v_proj)
-            valores_real_mes.append(np.nan)
-            tipos_serie.append("Projetado")
-
-    projecao_total_anual = sum(valores_finais_mes)
-    diff_anual = projecao_total_anual - val_orc_anual_total
-    pct_atingimento_anual = (projecao_total_anual / val_orc_anual_total * 100) if val_orc_anual_total != 0 else 0
-
-    c_proj = cor_variacao(projecao_total_anual)
-    c_diff = cor_variacao(diff_anual)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    subtext_gap = f"{diff_anual / abs(val_orc_anual_total) * 100:+.1f}% vs Meta" if val_orc_anual_total != 0 else "—"
-
-    st.markdown(
-        render_kpi_row([
-            dict(label=f"PROJEÇÃO ANUAL ({metrica_sel.upper()})", value=formata_brl(projecao_total_anual),
-                 value_color=c_proj, subtext=f"Cenário: {modelo_proj.split(' ')[0]}", icon="🔮"),
-            dict(label="META ANUAL (ORÇADO)", value=formata_brl(val_orc_anual_total), value_color=COLORS["text"],
-                 subtext="Orçamento Fechado", icon="🎯"),
-            dict(label="GAP / DESVIO ANUAL", value=formata_brl(diff_anual), value_color=c_diff,
-                 subtext=subtext_gap, subtext_color=c_diff, icon="📐"),
-            dict(label="ATINGIMENTO ESTIMADO", value=f"{pct_atingimento_anual:.1f}%", value_color=c_diff,
-                 subtext=f"Média Mensal Real: {formata_m(media_mensal_real)}", icon="📊"),
-        ]),
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    df_trend = pd.DataFrame({
-        "Mês": [m.capitalize() for m in meses_todos],
-        "Valor Projetado/Real": valores_finais_mes,
-        "Orçado": valores_orcado_mes,
-        "Tipo": tipos_serie,
-    })
-
-    posicoes_meta = []
-    posicoes_barras = []
-    for val_p, val_o in zip(valores_finais_mes, valores_orcado_mes):
-        if val_p >= val_o:
-            posicoes_meta.append("bottom center")
-            posicoes_barras.append("outside")
-        else:
-            posicoes_meta.append("top center")
-            posicoes_barras.append("inside")
-
-    fig_comb = go.Figure()
-
-    df_real_bar = df_trend[df_trend["Tipo"] == "Realizado"]
-    pos_bar_real = [posicoes_barras[i] for i in df_real_bar.index]
-    fig_comb.add_trace(
-        go.Bar(
-            x=df_real_bar["Mês"], y=df_real_bar["Valor Projetado/Real"], name="Realizado",
-            marker_color=COLORS["primary"],
-            text=[formata_m(v) for v in df_real_bar["Valor Projetado/Real"]],
-            textposition=pos_bar_real, textfont=dict(size=11, color=COLORS["text"]),
-            cliponaxis=False,
-        )
-    )
-
-    df_proj_bar = df_trend[df_trend["Tipo"] == "Projetado"]
-    pos_bar_proj = [posicoes_barras[i] for i in df_proj_bar.index]
-    fig_comb.add_trace(
-        go.Bar(
-            x=df_proj_bar["Mês"], y=df_proj_bar["Valor Projetado/Real"], name="Projetado (Tendência)",
-            marker_color=COLORS["border_soft"],
-            text=[formata_m(v) for v in df_proj_bar["Valor Projetado/Real"]],
-            textposition=pos_bar_proj, textfont=dict(size=11, color=COLORS["text_muted"]),
-            cliponaxis=False,
-        )
-    )
-
-    fig_comb.add_trace(
-        go.Scatter(
-            x=df_trend["Mês"], y=df_trend["Orçado"], name="Orçado (Meta)",
-            mode="lines+markers+text",
-            text=[formata_m(v) for v in df_trend["Orçado"]],
-            textposition=posicoes_meta, textfont=dict(size=10, color=COLORS["warning"]),
-            line=dict(color=COLORS["warning"], width=2, dash="dash"),
-            marker=dict(size=6, color=COLORS["warning"]),
-            cliponaxis=False,
-        )
-    )
-
-    max_val = max(
-        max(df_trend["Valor Projetado/Real"].dropna(), default=0),
-        max(df_trend["Orçado"].dropna(), default=0),
-    )
-
-    estilo_grafico(
-        fig_comb,
-        height=500,
-        title=f"Evolução Mensal & Projeção Run-Rate: {metrica_sel}",
-        xaxis=dict(gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True),
-        yaxis=dict(
-            showticklabels=False, gridcolor="rgba(0,0,0,0)",
-            range=[0, max_val * 1.35] if max_val > 0 else None,
-            fixedrange=True,
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
-        barmode="group",
-    )
-    st.plotly_chart(fig_comb, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-
-    st.markdown('<div class="section-title">📋 Detalhamento da Projeção Mensal (R$)</div>', unsafe_allow_html=True)
-
-    df_resumo_proj = pd.DataFrame({
-        "Mês": [m.capitalize() for m in meses_todos],
-        "Tipo de Dado": tipos_serie,
-        "Valor Realizado / Projetado": valores_finais_mes,
-        "Orçado Original": valores_orcado_mes,
-        "Desvio (R$)": [v_p - v_o for v_p, v_o in zip(valores_finais_mes, valores_orcado_mes)],
-    })
-
-    ALTURA_12_LINHAS = 38 + len(df_resumo_proj) * 35
-
-    st.dataframe(
-        df_resumo_proj.style.format({
-            "Valor Realizado / Projetado": formata_brl,
-            "Orçado Original": formata_brl,
-            "Desvio (R$)": formata_brl,
-        }).map(cor_valor, subset=["Desvio (R$)"]),
-        use_container_width=True,
-        hide_index=True,
-        height=ALTURA_12_LINHAS,
-    )
-
-    # -----------------------------------------------------------------------
-    # Estresse por Linha da DRE — impacto em cascata
-    # -----------------------------------------------------------------------
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-title">🧪 Estresse de Cenário por Linha da DRE — Impacto em Cascata</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "Escolha uma linha da DRE e aplique uma variação percentual para ver o impacto direto no "
-        "EBITDA (e na Receita Líquida, se a linha escolhida fizer parte dela). Se outras linhas devem "
-        "se mover junto (ex.: um custo variável que sobe quando as vendas sobem), marque-as em "
-        "\"Linhas dependentes\" -- elas recebem a MESMA variação percentual da linha principal."
-    )
-
-    col_nome_stress = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-    todas_linhas_dre = df_ref[col_nome_stress].dropna().astype(str).unique().tolist()
-
-    ce1, ce2 = st.columns([1.3, 1.3])
-    with ce1:
-        idx_padrao_stress = (
-            todas_linhas_dre.index("3 - Receita Operacional Liquida")
-            if "3 - Receita Operacional Liquida" in todas_linhas_dre else 0
-        )
-        linha_estresse_sel = st.selectbox(
-            "Linha da DRE a estressar:", todas_linhas_dre, index=idx_padrao_stress, key="linha_estresse_sel",
-        )
-        pct_estresse_linha = st.slider(
-            f'Variação em "{linha_estresse_sel}" (%):',
-            min_value=-50.0, max_value=50.0, value=5.0, step=1.0, key="pct_estresse_linha",
-        )
-    with ce2:
-        linhas_dependentes = st.multiselect(
-            "Linhas dependentes (variam junto, mesma variação %):",
-            [l for l in todas_linhas_dre if l != linha_estresse_sel],
-            key="linhas_dependentes_estresse",
-            help='Ex.: se estressar "Vendas", marque aqui os custos variáveis que sobem/descem junto.',
-        )
-
-    periodo_estresse = colunas_validas  # ano completo com dados válidos no escopo atual
-
-    def _valor_linha_stress(termo):
-        return get_valor_consolidado_multi(list_df_real, termo, periodo_estresse, exato_linha_sintetica=True)
-
-    LINHAS_RECEITA_STRESS = {"1 - Receita Operacional Bruta", "3 - Receita Operacional Liquida"}
-
-    valor_original_linha = _valor_linha_stress(linha_estresse_sel)
-    valor_estressado_linha = valor_original_linha * (1 + pct_estresse_linha / 100.0)
-    delta_linha_principal = valor_estressado_linha - valor_original_linha
-
-    delta_total_ebitda = delta_linha_principal
-    delta_total_receita = delta_linha_principal if linha_estresse_sel in LINHAS_RECEITA_STRESS else 0.0
-
-    detalhes_dependentes = []
-    for linha_dep in linhas_dependentes:
-        valor_dep = _valor_linha_stress(linha_dep)
-        valor_dep_novo = valor_dep * (1 + pct_estresse_linha / 100.0)
-        delta_dep = valor_dep_novo - valor_dep
-        delta_total_ebitda += delta_dep
-        if linha_dep in LINHAS_RECEITA_STRESS:
-            delta_total_receita += delta_dep
-        detalhes_dependentes.append((linha_dep, valor_dep, valor_dep_novo, delta_dep))
-
-    ebitda_original_stress = _valor_linha_stress("11 - EBITDA")
-    ebitda_novo_stress = ebitda_original_stress + delta_total_ebitda
-
-    rec_liq_original_stress = _valor_linha_stress("3 - Receita Operacional Liquida")
-    rec_liq_novo_stress = rec_liq_original_stress + delta_total_receita
-
-    margem_original_stress = (ebitda_original_stress / rec_liq_original_stress * 100) if rec_liq_original_stress else 0
-    margem_nova_stress = (ebitda_novo_stress / rec_liq_novo_stress * 100) if rec_liq_novo_stress else 0
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(
-        render_kpi_row([
-            dict(label=f'"{linha_estresse_sel[:28]}" — Original', value=formata_brl(valor_original_linha),
-                 value_color=COLORS["text"], subtext="Valor realizado no período", icon="📍"),
-            dict(label=f'"{linha_estresse_sel[:28]}" — Estressado', value=formata_brl(valor_estressado_linha),
-                 value_color=cor_variacao(delta_linha_principal), subtext=f"{pct_estresse_linha:+.1f}% aplicado", icon="🧪"),
-            dict(label="EBITDA — Impacto do Cenário", value=formata_brl(ebitda_novo_stress),
-                 value_color=cor_variacao(delta_total_ebitda),
-                 subtext=f"Original: {formata_brl(ebitda_original_stress)} · Delta: {formata_brl(delta_total_ebitda)}", icon="💹"),
-            dict(label="Margem EBITDA — Impacto do Cenário", value=f"{margem_nova_stress:.1f}%",
-                 value_color=cor_variacao(margem_nova_stress - margem_original_stress),
-                 subtext=f"Original: {margem_original_stress:.1f}%", icon="📊"),
-        ]),
-        unsafe_allow_html=True,
-    )
-
-    if detalhes_dependentes:
+if not departamento_ativo:
+    with tab4:
+        st.markdown('<div class="section-title">🔮 Painel Avançado de Previsões e Tendências</div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-title">🔗 Linhas Dependentes — Detalhe do Impacto</div>', unsafe_allow_html=True)
-        df_dependentes_stress = pd.DataFrame(
-            [(l, v_o, v_n, d) for l, v_o, v_n, d in detalhes_dependentes],
-            columns=["Linha da DRE", "Valor Original", "Valor Estressado", "Delta (R$)"],
-        )
-        st.dataframe(
-            df_dependentes_stress.style.format({
-                "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
-            }).map(cor_valor, subset=["Delta (R$)"]),
-            use_container_width=True, hide_index=True,
-            height=38 + len(df_dependentes_stress) * 35,
+
+        c_f1, c_f2, c_f3 = st.columns([1.2, 1.2, 1.6])
+
+        with c_f1:
+            metrica_sel = st.selectbox("Métrica de Análise:", ["Receita Operacional Líquida", "EBITDA"], index=0)
+            termo_metrica = "3 - Receita Operacional Liquida" if metrica_sel == "Receita Operacional Líquida" else "11 - EBITDA"
+
+        with c_f2:
+            modelo_proj = st.selectbox(
+                "Modelo de Projeção Futura:",
+                ["Média Histórica (Run-Rate)", "Manter Orçamento (Budget)", "Ajustado por Sazonalidade/Performance"],
+                index=0,
+                help="Define como os meses futuros não realizados serão calculados.",
+            )
+
+        with c_f3:
+            sensibilidade = st.slider(
+                "Ajuste Fino de Cenário / Estresse (%):",
+                min_value=-20.0, max_value=20.0, value=0.0, step=1.0,
+                help="Aplica uma variação percentual sobre os meses projetados.",
+            )
+
+        meses_todos = list(m_map.keys())
+
+        meses_realizados_cols = (
+            cols_kpi if tipo_periodo == "Mês Selecionado"
+            else [m_map[m] for m in meses_todos if get_valor_consolidado_multi(list_df_real, termo_metrica, [m_map[m]]) != 0]
         )
 
-    st.caption(
-        "⚠️ Este cenário assume que todas as demais linhas da DRE permanecem constantes, exceto a linha "
-        "estressada e as linhas dependentes marcadas -- é uma simulação isolada (\"what-if\"), não uma "
-        "reprojeção completa do orçamento."
-    )
+        if not meses_realizados_cols:
+            meses_realizados_cols = list(m_map.values())[:7]
+
+        num_meses_realizados = len(meses_realizados_cols)
+
+        val_real_acumulado = get_valor_consolidado_multi(list_df_real, termo_metrica, meses_realizados_cols)
+        val_orc_acumulado = get_valor_consolidado_multi(list_df_orc, termo_metrica, meses_realizados_cols)
+
+        val_orc_anual_total = get_valor_consolidado_multi(list_df_orc, termo_metrica, colunas_validas)
+
+        media_mensal_real = val_real_acumulado / num_meses_realizados if num_meses_realizados > 0 else 0
+        fator_performance = (val_real_acumulado / val_orc_acumulado) if val_orc_acumulado != 0 else 1.0
+
+        fator_sensibilidade = 1.0 + (sensibilidade / 100.0)
+
+        valores_finais_mes = []
+        valores_orcado_mes = []
+        valores_real_mes = []
+        tipos_serie = []
+
+        for idx_m, m_nome in enumerate(meses_todos):
+            m_col = m_map[m_nome]
+            v_orc = get_valor_consolidado_multi(list_df_orc, termo_metrica, [m_col])
+            valores_orcado_mes.append(v_orc)
+
+            if idx_m < num_meses_realizados:
+                v_real = get_valor_consolidado_multi(list_df_real, termo_metrica, [m_col])
+                valores_finais_mes.append(v_real)
+                valores_real_mes.append(v_real)
+                tipos_serie.append("Realizado")
+            else:
+                if modelo_proj == "Média Histórica (Run-Rate)":
+                    v_proj = media_mensal_real * fator_sensibilidade
+                elif modelo_proj == "Manter Orçamento (Budget)":
+                    v_proj = v_orc * fator_sensibilidade
+                else:
+                    v_proj = (v_orc * fator_performance) * fator_sensibilidade
+
+                valores_finais_mes.append(v_proj)
+                valores_real_mes.append(np.nan)
+                tipos_serie.append("Projetado")
+
+        projecao_total_anual = sum(valores_finais_mes)
+        diff_anual = projecao_total_anual - val_orc_anual_total
+        pct_atingimento_anual = (projecao_total_anual / val_orc_anual_total * 100) if val_orc_anual_total != 0 else 0
+
+        c_proj = cor_variacao(projecao_total_anual)
+        c_diff = cor_variacao(diff_anual)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        subtext_gap = f"{diff_anual / abs(val_orc_anual_total) * 100:+.1f}% vs Meta" if val_orc_anual_total != 0 else "—"
+
+        st.markdown(
+            render_kpi_row([
+                dict(label=f"PROJEÇÃO ANUAL ({metrica_sel.upper()})", value=formata_brl(projecao_total_anual),
+                     value_color=c_proj, subtext=f"Cenário: {modelo_proj.split(' ')[0]}", icon="🔮"),
+                dict(label="META ANUAL (ORÇADO)", value=formata_brl(val_orc_anual_total), value_color=COLORS["text"],
+                     subtext="Orçamento Fechado", icon="🎯"),
+                dict(label="GAP / DESVIO ANUAL", value=formata_brl(diff_anual), value_color=c_diff,
+                     subtext=subtext_gap, subtext_color=c_diff, icon="📐"),
+                dict(label="ATINGIMENTO ESTIMADO", value=f"{pct_atingimento_anual:.1f}%", value_color=c_diff,
+                     subtext=f"Média Mensal Real: {formata_m(media_mensal_real)}", icon="📊"),
+            ]),
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        df_trend = pd.DataFrame({
+            "Mês": [m.capitalize() for m in meses_todos],
+            "Valor Projetado/Real": valores_finais_mes,
+            "Orçado": valores_orcado_mes,
+            "Tipo": tipos_serie,
+        })
+
+        posicoes_meta = []
+        posicoes_barras = []
+        for val_p, val_o in zip(valores_finais_mes, valores_orcado_mes):
+            if val_p >= val_o:
+                posicoes_meta.append("bottom center")
+                posicoes_barras.append("outside")
+            else:
+                posicoes_meta.append("top center")
+                posicoes_barras.append("inside")
+
+        fig_comb = go.Figure()
+
+        df_real_bar = df_trend[df_trend["Tipo"] == "Realizado"]
+        pos_bar_real = [posicoes_barras[i] for i in df_real_bar.index]
+        fig_comb.add_trace(
+            go.Bar(
+                x=df_real_bar["Mês"], y=df_real_bar["Valor Projetado/Real"], name="Realizado",
+                marker_color=COLORS["primary"],
+                text=[formata_m(v) for v in df_real_bar["Valor Projetado/Real"]],
+                textposition=pos_bar_real, textfont=dict(size=11, color=COLORS["text"]),
+                cliponaxis=False,
+            )
+        )
+
+        df_proj_bar = df_trend[df_trend["Tipo"] == "Projetado"]
+        pos_bar_proj = [posicoes_barras[i] for i in df_proj_bar.index]
+        fig_comb.add_trace(
+            go.Bar(
+                x=df_proj_bar["Mês"], y=df_proj_bar["Valor Projetado/Real"], name="Projetado (Tendência)",
+                marker_color=COLORS["border_soft"],
+                text=[formata_m(v) for v in df_proj_bar["Valor Projetado/Real"]],
+                textposition=pos_bar_proj, textfont=dict(size=11, color=COLORS["text_muted"]),
+                cliponaxis=False,
+            )
+        )
+
+        fig_comb.add_trace(
+            go.Scatter(
+                x=df_trend["Mês"], y=df_trend["Orçado"], name="Orçado (Meta)",
+                mode="lines+markers+text",
+                text=[formata_m(v) for v in df_trend["Orçado"]],
+                textposition=posicoes_meta, textfont=dict(size=10, color=COLORS["warning"]),
+                line=dict(color=COLORS["warning"], width=2, dash="dash"),
+                marker=dict(size=6, color=COLORS["warning"]),
+                cliponaxis=False,
+            )
+        )
+
+        max_val = max(
+            max(df_trend["Valor Projetado/Real"].dropna(), default=0),
+            max(df_trend["Orçado"].dropna(), default=0),
+        )
+
+        estilo_grafico(
+            fig_comb,
+            height=500,
+            title=f"Evolução Mensal & Projeção Run-Rate: {metrica_sel}",
+            xaxis=dict(gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True),
+            yaxis=dict(
+                showticklabels=False, gridcolor="rgba(0,0,0,0)",
+                range=[0, max_val * 1.35] if max_val > 0 else None,
+                fixedrange=True,
+            ),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            barmode="group",
+        )
+        st.plotly_chart(fig_comb, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+        st.markdown('<div class="section-title">📋 Detalhamento da Projeção Mensal (R$)</div>', unsafe_allow_html=True)
+
+        df_resumo_proj = pd.DataFrame({
+            "Mês": [m.capitalize() for m in meses_todos],
+            "Tipo de Dado": tipos_serie,
+            "Valor Realizado / Projetado": valores_finais_mes,
+            "Orçado Original": valores_orcado_mes,
+            "Desvio (R$)": [v_p - v_o for v_p, v_o in zip(valores_finais_mes, valores_orcado_mes)],
+        })
+
+        ALTURA_12_LINHAS = 38 + len(df_resumo_proj) * 35
+
+        st.dataframe(
+            df_resumo_proj.style.format({
+                "Valor Realizado / Projetado": formata_brl,
+                "Orçado Original": formata_brl,
+                "Desvio (R$)": formata_brl,
+            }).map(cor_valor, subset=["Desvio (R$)"]),
+            use_container_width=True,
+            hide_index=True,
+            height=ALTURA_12_LINHAS,
+        )
+
+        # -----------------------------------------------------------------------
+        # Estresse por Linha da DRE — impacto em cascata
+        # -----------------------------------------------------------------------
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">🧪 Estresse de Cenário por Linha da DRE — Impacto em Cascata</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Escolha uma linha da DRE e aplique uma variação percentual para ver o impacto direto no "
+            "EBITDA (e na Receita Líquida, se a linha escolhida fizer parte dela). Se outras linhas devem "
+            "se mover junto (ex.: um custo variável que sobe quando as vendas sobem), marque-as em "
+            "\"Linhas dependentes\" -- elas recebem a MESMA variação percentual da linha principal."
+        )
+
+        col_nome_stress = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
+        todas_linhas_dre = df_ref[col_nome_stress].dropna().astype(str).unique().tolist()
+
+        ce1, ce2 = st.columns([1.3, 1.3])
+        with ce1:
+            idx_padrao_stress = (
+                todas_linhas_dre.index("3 - Receita Operacional Liquida")
+                if "3 - Receita Operacional Liquida" in todas_linhas_dre else 0
+            )
+            linha_estresse_sel = st.selectbox(
+                "Linha da DRE a estressar:", todas_linhas_dre, index=idx_padrao_stress, key="linha_estresse_sel",
+            )
+            pct_estresse_linha = st.slider(
+                f'Variação em "{linha_estresse_sel}" (%):',
+                min_value=-50.0, max_value=50.0, value=5.0, step=1.0, key="pct_estresse_linha",
+            )
+        with ce2:
+            linhas_dependentes = st.multiselect(
+                "Linhas dependentes (variam junto, mesma variação %):",
+                [l for l in todas_linhas_dre if l != linha_estresse_sel],
+                key="linhas_dependentes_estresse",
+                help='Ex.: se estressar "Vendas", marque aqui os custos variáveis que sobem/descem junto.',
+            )
+
+        periodo_estresse = colunas_validas  # ano completo com dados válidos no escopo atual
+
+        def _valor_linha_stress(termo):
+            return get_valor_consolidado_multi(list_df_real, termo, periodo_estresse, exato_linha_sintetica=True)
+
+        LINHAS_RECEITA_STRESS = {"1 - Receita Operacional Bruta", "3 - Receita Operacional Liquida"}
+
+        valor_original_linha = _valor_linha_stress(linha_estresse_sel)
+        valor_estressado_linha = valor_original_linha * (1 + pct_estresse_linha / 100.0)
+        delta_linha_principal = valor_estressado_linha - valor_original_linha
+
+        delta_total_ebitda = delta_linha_principal
+        delta_total_receita = delta_linha_principal if linha_estresse_sel in LINHAS_RECEITA_STRESS else 0.0
+
+        detalhes_dependentes = []
+        for linha_dep in linhas_dependentes:
+            valor_dep = _valor_linha_stress(linha_dep)
+            valor_dep_novo = valor_dep * (1 + pct_estresse_linha / 100.0)
+            delta_dep = valor_dep_novo - valor_dep
+            delta_total_ebitda += delta_dep
+            if linha_dep in LINHAS_RECEITA_STRESS:
+                delta_total_receita += delta_dep
+            detalhes_dependentes.append((linha_dep, valor_dep, valor_dep_novo, delta_dep))
+
+        ebitda_original_stress = _valor_linha_stress("11 - EBITDA")
+        ebitda_novo_stress = ebitda_original_stress + delta_total_ebitda
+
+        rec_liq_original_stress = _valor_linha_stress("3 - Receita Operacional Liquida")
+        rec_liq_novo_stress = rec_liq_original_stress + delta_total_receita
+
+        margem_original_stress = (ebitda_original_stress / rec_liq_original_stress * 100) if rec_liq_original_stress else 0
+        margem_nova_stress = (ebitda_novo_stress / rec_liq_novo_stress * 100) if rec_liq_novo_stress else 0
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            render_kpi_row([
+                dict(label=f'"{linha_estresse_sel[:28]}" — Original', value=formata_brl(valor_original_linha),
+                     value_color=COLORS["text"], subtext="Valor realizado no período", icon="📍"),
+                dict(label=f'"{linha_estresse_sel[:28]}" — Estressado', value=formata_brl(valor_estressado_linha),
+                     value_color=cor_variacao(delta_linha_principal), subtext=f"{pct_estresse_linha:+.1f}% aplicado", icon="🧪"),
+                dict(label="EBITDA — Impacto do Cenário", value=formata_brl(ebitda_novo_stress),
+                     value_color=cor_variacao(delta_total_ebitda),
+                     subtext=f"Original: {formata_brl(ebitda_original_stress)} · Delta: {formata_brl(delta_total_ebitda)}", icon="💹"),
+                dict(label="Margem EBITDA — Impacto do Cenário", value=f"{margem_nova_stress:.1f}%",
+                     value_color=cor_variacao(margem_nova_stress - margem_original_stress),
+                     subtext=f"Original: {margem_original_stress:.1f}%", icon="📊"),
+            ]),
+            unsafe_allow_html=True,
+        )
+
+        if detalhes_dependentes:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="section-title">🔗 Linhas Dependentes — Detalhe do Impacto</div>', unsafe_allow_html=True)
+            df_dependentes_stress = pd.DataFrame(
+                [(l, v_o, v_n, d) for l, v_o, v_n, d in detalhes_dependentes],
+                columns=["Linha da DRE", "Valor Original", "Valor Estressado", "Delta (R$)"],
+            )
+            st.dataframe(
+                df_dependentes_stress.style.format({
+                    "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
+                }).map(cor_valor, subset=["Delta (R$)"]),
+                use_container_width=True, hide_index=True,
+                height=38 + len(df_dependentes_stress) * 35,
+            )
+
+        st.caption(
+            "⚠️ Este cenário assume que todas as demais linhas da DRE permanecem constantes, exceto a linha "
+            "estressada e as linhas dependentes marcadas -- é uma simulação isolada (\"what-if\"), não uma "
+            "reprojeção completa do orçamento."
+        )
 
 # ---------------------------------------------------------------------------
 # ABA 5: EMISSÃO DE RELATÓRIOS
 # ---------------------------------------------------------------------------
 
-with tab5:
-    st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
-    st.caption(
-        "Escolha um modelo padrão ou selecione manualmente as linhas da DRE, e gere um relatório "
-        "formatado com 4 planilhas: Resumo (consolidado), Detalhe Mensal (contas x meses, por loja), "
-        "Plano de Contas (composição de cada linha, por loja, a partir do DIÁRIO) e Lançamentos "
-        "(cópia filtrada da DIÁRIO). Dentro do Excel, use o filtro (▾) da coluna \"Loja\" para escolher "
-        "qual visão ver sem precisar gerar o arquivo de novo."
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
+if not departamento_ativo:
+    with tab5:
+        st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
+        st.caption(
+            "Escolha um modelo padrão ou selecione manualmente as linhas da DRE, e gere um relatório "
+            "formatado com 4 planilhas: Resumo (consolidado), Detalhe Mensal (contas x meses, por loja), "
+            "Plano de Contas (composição de cada linha, por loja, a partir do DIÁRIO) e Lançamentos "
+            "(cópia filtrada da DIÁRIO). Dentro do Excel, use o filtro (▾) da coluna \"Loja\" para escolher "
+            "qual visão ver sem precisar gerar o arquivo de novo."
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
+        linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
 
-    opcoes_modelo = ["Seleção manual"] + list(MODELOS_RELATORIO.keys())
-    modelo_sel = st.selectbox("📁 Modelo de Relatório:", opcoes_modelo)
+        opcoes_modelo = ["Seleção manual"] + list(MODELOS_RELATORIO.keys())
+        modelo_sel = st.selectbox("📁 Modelo de Relatório:", opcoes_modelo)
 
-    default_contas = []
-    termos_nao_encontrados = []
-    if modelo_sel != "Seleção manual":
-        for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
-            termo_norm = termo.strip().lower()
-            encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
-            if encontrados:
-                default_contas.extend(encontrados)
+        default_contas = []
+        termos_nao_encontrados = []
+        if modelo_sel != "Seleção manual":
+            for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
+                termo_norm = termo.strip().lower()
+                encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
+                if encontrados:
+                    default_contas.extend(encontrados)
+                else:
+                    termos_nao_encontrados.append(termo)
+            default_contas = list(dict.fromkeys(default_contas))
+            if termos_nao_encontrados:
+                st.warning(
+                    "Não encontrei estas linhas do modelo na DRE atual (o texto pode estar um pouco diferente): "
+                    + "; ".join(termos_nao_encontrados)
+                    + ". Adicione-as manualmente no campo abaixo, se existirem."
+                )
+
+        contas_relatorio = st.multiselect(
+            "🔍 Linhas da DRE incluídas no relatório:",
+            options=linhas_relatorio,
+            default=default_contas,
+            key=f"contas_relatorio__{modelo_sel}",
+        )
+
+        opcoes_lojas_relatorio = list(abas_disponiveis)
+
+        lojas_relatorio_sel = st.multiselect(
+            "🏬 Lojas / Visões incluídas no relatório:",
+            options=opcoes_lojas_relatorio,
+            default=opcoes_lojas_relatorio,
+            help=(
+                "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
+                "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
+                "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
+                "seleção aqui se quiser um arquivo menor desde já."
+            ),
+        )
+
+        col_btn, col_info = st.columns([1, 2])
+        with col_btn:
+            gerar_clicado = st.button(
+                "📊 Gerar Relatório Excel",
+                use_container_width=True,
+                disabled=not contas_relatorio or not lojas_relatorio_sel,
+            )
+
+        if gerar_clicado and contas_relatorio:
+            with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
+                # Carrega só as lojas/visões escolhidas no filtro acima -- evita
+                # gerar um arquivo gigante com todas as 26 abas de uma vez.
+                dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
+                df_tabela_contas = carregar_tabela_contas(path_real)
+                mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
+                df_diario_rel = carregar_diario(path_real)
+                df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
+                mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
+
+            info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
+
+            with st.spinner("Montando o relatório em Excel..."):
+                excel_bytes = montar_relatorio_excel(
+                    contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
+                    dados_por_loja=dados_por_loja_rel,
+                    mapa_planos_dre=mapa_planos_dre_rel,
+                    df_diario=df_diario_rel,
+                    forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
+                    permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
+                    mapa_loja_centro_custo=mapa_loja_cc_rel,
+                )
+            st.session_state["relatorio_excel_bytes"] = excel_bytes
+
+            def _nome_arquivo_modelo(nome_modelo):
+                """Usa o nome completo do modelo (igual aparece no seletor, só
+                sem o emoji na frente) como base do nome do arquivo -- ex.:
+                "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
+                Compras". Só remove caracteres inválidos em nome de arquivo."""
+                texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
+                texto = re.sub(r'[\\/*?:"<>|]', "", texto)
+                return texto or "Relatório"
+
+            st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
+            st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
+
+            if df_diario_rel is None or df_diario_rel.empty:
+                st.warning(
+                    "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
+                    "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
+                )
             else:
-                termos_nao_encontrados.append(termo)
-        default_contas = list(dict.fromkeys(default_contas))
-        if termos_nao_encontrados:
-            st.warning(
-                "Não encontrei estas linhas do modelo na DRE atual (o texto pode estar um pouco diferente): "
-                + "; ".join(termos_nao_encontrados)
-                + ". Adicione-as manualmente no campo abaixo, se existirem."
+                st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
+
+        if not contas_relatorio:
+            st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
+
+        if st.session_state.get("relatorio_excel_bytes"):
+            st.download_button(
+                label="⬇️ Baixar Relatório (.xlsx)",
+                data=st.session_state["relatorio_excel_bytes"],
+                file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-
-    contas_relatorio = st.multiselect(
-        "🔍 Linhas da DRE incluídas no relatório:",
-        options=linhas_relatorio,
-        default=default_contas,
-        key=f"contas_relatorio__{modelo_sel}",
-    )
-
-    opcoes_lojas_relatorio = list(abas_disponiveis)
-
-    lojas_relatorio_sel = st.multiselect(
-        "🏬 Lojas / Visões incluídas no relatório:",
-        options=opcoes_lojas_relatorio,
-        default=opcoes_lojas_relatorio,
-        help=(
-            "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
-            "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
-            "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
-            "seleção aqui se quiser um arquivo menor desde já."
-        ),
-    )
-
-    col_btn, col_info = st.columns([1, 2])
-    with col_btn:
-        gerar_clicado = st.button(
-            "📊 Gerar Relatório Excel",
-            use_container_width=True,
-            disabled=not contas_relatorio or not lojas_relatorio_sel,
-        )
-
-    if gerar_clicado and contas_relatorio:
-        with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
-            # Carrega só as lojas/visões escolhidas no filtro acima -- evita
-            # gerar um arquivo gigante com todas as 26 abas de uma vez.
-            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
-            df_tabela_contas = carregar_tabela_contas(path_real)
-            mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
-            df_diario_rel = carregar_diario(path_real)
-            df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
-            mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
-
-        info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
-
-        with st.spinner("Montando o relatório em Excel..."):
-            excel_bytes = montar_relatorio_excel(
-                contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
-                dados_por_loja=dados_por_loja_rel,
-                mapa_planos_dre=mapa_planos_dre_rel,
-                df_diario=df_diario_rel,
-                forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
-                permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
-                mapa_loja_centro_custo=mapa_loja_cc_rel,
-            )
-        st.session_state["relatorio_excel_bytes"] = excel_bytes
-
-        def _nome_arquivo_modelo(nome_modelo):
-            """Usa o nome completo do modelo (igual aparece no seletor, só
-            sem o emoji na frente) como base do nome do arquivo -- ex.:
-            "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
-            Compras". Só remove caracteres inválidos em nome de arquivo."""
-            texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
-            texto = re.sub(r'[\\/*?:"<>|]', "", texto)
-            return texto or "Relatório"
-
-        st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
-        st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
-
-        if df_diario_rel is None or df_diario_rel.empty:
-            st.warning(
-                "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
-                "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
-            )
-        else:
-            st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
-
-    if not contas_relatorio:
-        st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
-
-    if st.session_state.get("relatorio_excel_bytes"):
-        st.download_button(
-            label="⬇️ Baixar Relatório (.xlsx)",
-            data=st.session_state["relatorio_excel_bytes"],
-            file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
+            st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)
 # ---------------------------------------------------------------------------
-if eh_admin:
+if eh_admin and not departamento_ativo:
     with tab6:
         st.markdown('<div class="section-title">👥 Gestão de Usuários</div>', unsafe_allow_html=True)
         st.caption(
