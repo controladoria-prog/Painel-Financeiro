@@ -1397,6 +1397,20 @@ def _normalizar_texto(txt):
     return re.sub(r"\s+", " ", str(txt or "").strip().upper())
 
 
+def _normalizar_nome_aba(nome):
+    """Normaliza nome de ABA especificamente para reconhecer visões
+    consolidadas (ex.: "CONSOLIDADO - G&A") mesmo com pequenas diferenças de
+    digitação na planilha -- maiúsculas, espaços colapsados, variações de
+    hífen/traço (-, –, —) tratadas como o mesmo caractere, e espaçamento
+    irregular ao redor do hífen (ex.: "X- Y", "X -Y", "X-Y") normalizado
+    para o mesmo padrão "X - Y"."""
+    texto = str(nome or "").strip().upper()
+    texto = re.sub(r"[\u2010-\u2015\u2212]", "-", texto)
+    texto = re.sub(r"\s*-\s*", " - ", texto)
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip()
+
+
 def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
     """Retorna a máscara (True/False por linha) de correspondência da coluna
     "Centro de Custos" do DIÁRIO contra um ou mais candidatos de loja.
@@ -1502,7 +1516,7 @@ def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
 # sua própria sessão. Se auto-atualiza a cada 60s e tem botão de tela cheia.
 # ============================================================================
 ABAS_CONSOLIDADAS_TV = [
-    "DRE CONSOLIDADO", "CONSOLIDADO - G&A", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
+    "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
     "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A", "CONSOLIDADO - G&A",
 ]
 
@@ -1513,7 +1527,8 @@ def _obter_aba_consolidada_padrao(lista_abas):
     disponíveis -- garante que o Painel de TV mostre exatamente o mesmo
     escopo que a pessoa vê por padrão no painel principal, evitando
     números "diferentes" entre os dois."""
-    consolidadas = [a for a in lista_abas if a in ABAS_CONSOLIDADAS_TV]
+    consolidadas_normalizadas = {_normalizar_nome_aba(n) for n in ABAS_CONSOLIDADAS_TV}
+    consolidadas = [a for a in lista_abas if _normalizar_nome_aba(a) in consolidadas_normalizadas]
     if consolidadas:
         return consolidadas[0]
     return lista_abas[0] if lista_abas else None
@@ -2171,6 +2186,15 @@ st.sidebar.markdown(
 )
 
 st.sidebar.markdown("**🔎 Escopo da Análise**")
+with st.sidebar.expander("🔧 Abas detectadas nas planilhas"):
+    st.caption(
+        "Se uma aba nova (ex.: um consolidado que você acabou de criar) não "
+        "aparecer nos filtros, confira aqui o nome exato como o painel está "
+        "lendo -- pode ser uma pequena diferença de digitação/espaço em "
+        "relação ao nome esperado."
+    )
+    st.write(list(abas_disponiveis))
+
 modo_visao = st.sidebar.radio(
     "Modo de Visão:",
     ["Visão Consolidada", "Selecionar Unidade"],
@@ -2186,11 +2210,12 @@ abas_consolidadas_permitidas = [
     "CONSOLIDADO - G&A",
 ]
 
-opcoes_consolidadas = [a for a in abas_disponiveis if a in abas_consolidadas_permitidas]
+_consolidadas_normalizadas = {_normalizar_nome_aba(n) for n in abas_consolidadas_permitidas}
+opcoes_consolidadas = [a for a in abas_disponiveis if _normalizar_nome_aba(a) in _consolidadas_normalizadas]
 if not opcoes_consolidadas:
     opcoes_consolidadas = abas_disponiveis
 
-opcoes_unidades = [a for a in abas_disponiveis if a not in abas_consolidadas_permitidas]
+opcoes_unidades = [a for a in abas_disponiveis if _normalizar_nome_aba(a) not in _consolidadas_normalizadas]
 if not opcoes_unidades:
     opcoes_unidades = abas_disponiveis
 
@@ -2678,7 +2703,8 @@ def montar_relatorio_excel(
         "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
         "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A", "CONSOLIDADO - G&A",
     }
-    lojas_individuais = [l for l in lojas_ordenadas if l not in LOJAS_CONSOLIDADAS]
+    _LOJAS_CONSOLIDADAS_NORM = {_normalizar_nome_aba(n) for n in LOJAS_CONSOLIDADAS}
+    lojas_individuais = [l for l in lojas_ordenadas if _normalizar_nome_aba(l) not in _LOJAS_CONSOLIDADAS_NORM]
 
     def _lojas_do_grupo_consolidado(nome_grupo):
         """Para uma "loja" que na verdade é uma visão consolidada (ex.: "ABPR
@@ -2719,7 +2745,8 @@ def montar_relatorio_excel(
             "CONSOLIDADO - G&A": grupo_consolidado_ga,
             "DRE CONSOLIDADO": grupo_dre_consolidado,
         }
-        lojas_definidas = mapa_grupos.get(nome_grupo.strip(), [])
+        mapa_grupos_normalizado = {_normalizar_nome_aba(k): v for k, v in mapa_grupos.items()}
+        lojas_definidas = mapa_grupos_normalizado.get(_normalizar_nome_aba(nome_grupo), [])
         # Só devolve lojas que realmente existem entre as lojas individuais carregadas.
         return [l for l in lojas_definidas if l in lojas_individuais]
 
@@ -2877,7 +2904,7 @@ def montar_relatorio_excel(
 
         # Lançamentos desta loja -- ou, se for uma visão consolidada, de
         # todas as lojas individuais que fazem parte dela.
-        if loja in LOJAS_CONSOLIDADAS:
+        if _normalizar_nome_aba(loja) in _LOJAS_CONSOLIDADAS_NORM:
             lojas_do_grupo = _lojas_do_grupo_consolidado(loja)
             df_lanc_loja = df_lanc[df_lanc["Loja"].isin(lojas_do_grupo)] if lojas_do_grupo else df_lanc.iloc[0:0]
         else:
