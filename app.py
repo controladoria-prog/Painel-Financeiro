@@ -1502,7 +1502,7 @@ def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
 # sua própria sessão. Se auto-atualiza a cada 60s e tem botão de tela cheia.
 # ============================================================================
 ABAS_CONSOLIDADAS_TV = [
-    "DRE CONSOLIDADO", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
+    "DRE CONSOLIDADO", "CONSOLIDADO - G&A", "ABPR CONSOLIDADO", "VD CONSOLIDADO",
     "LJ CONSOLIDADO", "ABPR + VD", "LJ - G&A", "CONSOLIDADO - G&A",
 ]
 
