@@ -1411,6 +1411,19 @@ def _normalizar_nome_aba(nome):
     return texto.strip()
 
 
+def _nome_departamento_curto(nome_modelo):
+    """Extrai só o nome do departamento a partir da chave do modelo de
+    relatório -- ex.: "📣 Relatório de Custos - MKT" vira "MKT". Usado no
+    seletor de Visão por Departamento pra não repetir "Relatório de Custos"
+    toda hora."""
+    if nome_modelo == "Controladoria (Padrão)":
+        return nome_modelo
+    texto = re.sub(r"^[^\w]+", "", str(nome_modelo), flags=re.UNICODE).strip()
+    if " - " in texto:
+        texto = texto.split(" - ")[-1].strip()
+    return texto or nome_modelo
+
+
 def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
     """Retorna a máscara (True/False por linha) de correspondência da coluna
     "Centro de Custos" do DIÁRIO contra um ou mais candidatos de loja.
@@ -2324,7 +2337,8 @@ if eh_admin:
     st.sidebar.caption("Recurso em teste, visível só para administrador por enquanto.")
     opcoes_departamento = ["Controladoria (Padrão)"] + list(MODELOS_RELATORIO.keys())
     departamento_sel = st.sidebar.selectbox(
-        "Ver painel como:", opcoes_departamento, key="departamento_sel_admin"
+        "Ver painel como:", opcoes_departamento, key="departamento_sel_admin",
+        format_func=_nome_departamento_curto,
     )
     if departamento_sel != "Controladoria (Padrão)":
         departamento_ativo = departamento_sel
@@ -3308,7 +3322,7 @@ else:
 # ---------------------------------------------------------------------------
 with tab1:
     if departamento_ativo:
-        nome_departamento_curto = re.sub(r"^[^\w]+", "", departamento_ativo, flags=re.UNICODE).strip()
+        nome_departamento_curto = _nome_departamento_curto(departamento_ativo)
         st.markdown(
             f'<div class="section-title">🧪 Visão do Departamento — {nome_departamento_curto} '
             f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
@@ -3647,7 +3661,7 @@ with tab1:
 with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
     if departamento_ativo:
-        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{departamento_ativo}**.")
+        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{_nome_departamento_curto(departamento_ativo)}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     c1, _ = st.columns([2, 1])
@@ -3803,30 +3817,44 @@ with tab2:
     ALTURA_17_LINHAS = 633
     cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
 
-    key_tabela_dre = (
-        f"tabela_dre__{tipo_visao_dre}__{len(linhas_dre)}__"
-        f"{','.join(sorted(st.session_state['grupos_dre_expandidos']))}__"
-        f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}"
-    )
-    evento_dre = st.dataframe(
-        df_dre_final.style.format(
-            {
-                "Realizado (R$)": formata_brl,
-                "AV Real (%)": "{:.1f}%",
-                "Orçado (R$)": formata_brl,
-                "AV Orçado (%)": "{:.1f}%",
-                "Desvio (R$)": formata_brl,
-                "AH (%)": "{:.1f}%",
-            }
-        ).map(cor_valor, subset=cols_num_dre),
-        column_config=column_config_dre,
-        use_container_width=True,
-        height=ALTURA_17_LINHAS,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="multi-row",
-        key=key_tabela_dre,
-    )
+    if df_dre_final.empty:
+        # Nenhuma linha sobrou pra mostrar (ex.: a visão Sintética só mostra
+        # linhas de grupo "sem ponto", e um recorte -- como o Modo
+        # Departamento -- pode não ter nenhuma linha nesse formato). Sem essa
+        # proteção, um DataFrame sem nenhuma linha também vem sem nenhuma
+        # coluna, e o .style.format(...) quebra tentando achar colunas que
+        # não existem.
+        st.info(
+            "Nenhuma linha da DRE para mostrar nessa combinação de filtros. "
+            "Tente trocar para \"Todas as Contas (Analítica)\" ou revise o "
+            "escopo/departamento selecionado."
+        )
+        evento_dre = None
+    else:
+        key_tabela_dre = (
+            f"tabela_dre__{tipo_visao_dre}__{len(linhas_dre)}__"
+            f"{','.join(sorted(st.session_state['grupos_dre_expandidos']))}__"
+            f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}"
+        )
+        evento_dre = st.dataframe(
+            df_dre_final.style.format(
+                {
+                    "Realizado (R$)": formata_brl,
+                    "AV Real (%)": "{:.1f}%",
+                    "Orçado (R$)": formata_brl,
+                    "AV Orçado (%)": "{:.1f}%",
+                    "Desvio (R$)": formata_brl,
+                    "AH (%)": "{:.1f}%",
+                }
+            ).map(cor_valor, subset=cols_num_dre),
+            column_config=column_config_dre,
+            use_container_width=True,
+            height=ALTURA_17_LINHAS,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key=key_tabela_dre,
+        )
 
     if not filtro_manual_dre_ativo:
         grupos_alvo_dre = (
@@ -3843,7 +3871,7 @@ with tab2:
 with tab3:
     st.markdown(f'<div class="section-title">📅 Histórico Mensal Mês a Mês — {label_visao}</div>', unsafe_allow_html=True)
     if departamento_ativo:
-        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{departamento_ativo}**.")
+        st.caption(f"🧪 Modo Departamento ativo: mostrando só as linhas relevantes a **{_nome_departamento_curto(departamento_ativo)}**.")
     st.markdown("<br>", unsafe_allow_html=True)
 
     ch1, ch2 = st.columns([1, 2.4])
@@ -3982,21 +4010,29 @@ with tab3:
 
     ALTURA_17_LINHAS = 633
 
-    key_tabela_hist = (
-        f"tabela_hist__{visao_hist_dre}__{tipo_hist}__{len(linhas_hist)}__"
-        f"{','.join(sorted(st.session_state['grupos_hist_expandidos']))}__"
-        f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}"
-    )
-    evento_hist = st.dataframe(
-        df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
-        column_config=col_config_hist,
-        use_container_width=True,
-        height=ALTURA_17_LINHAS,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="multi-row",
-        key=key_tabela_hist,
-    )
+    if df_hist.empty:
+        st.info(
+            "Nenhuma linha da DRE para mostrar nessa combinação de filtros. "
+            "Tente trocar para \"Todas as Contas (Analítico)\" ou revise o "
+            "escopo/departamento selecionado."
+        )
+        evento_hist = None
+    else:
+        key_tabela_hist = (
+            f"tabela_hist__{visao_hist_dre}__{tipo_hist}__{len(linhas_hist)}__"
+            f"{','.join(sorted(st.session_state['grupos_hist_expandidos']))}__"
+            f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}"
+        )
+        evento_hist = st.dataframe(
+            df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
+            column_config=col_config_hist,
+            use_container_width=True,
+            height=ALTURA_17_LINHAS,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key=key_tabela_hist,
+        )
 
     if not filtro_manual_hist_ativo:
         grupos_alvo_hist = (
