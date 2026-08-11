@@ -3774,7 +3774,7 @@ with tab1:
         with cg2:
             st.markdown('<div class="section-title">Real vs. Orçado (YTD)</div>', unsafe_allow_html=True)
 
-            cats = ["CMV", "TRF/REM", "Margem Contrib. 2", "Despesas Fixas", "EBITDA"]
+            cats = ["CMV", "TRF/REM", "Marg. Contrib. 2", "Despesas Fixas", "EBITDA"]
 
             NOME_LINHA_CMV_DETALHADO = "4.1 - Custo da Mercadoria Vendida - CMV"
 
@@ -3826,11 +3826,11 @@ with tab1:
                 barmode="group",
                 xaxis=dict(
                     gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
-                    tickangle=-40, automargin=True,
+                    tickangle=-30, automargin=True,
                 ),
                 yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
                 legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
-                margin=dict(l=20, r=20, t=30, b=90),
+                margin=dict(l=50, r=30, t=30, b=90),
             )
             st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
@@ -4153,6 +4153,36 @@ with tab2:
         if _processar_clique_expansao(df_dre_final, evento_dre, grupos_alvo_dre):
             st.rerun()
 
+    # ---- Linhas informativas (ex.: no MKT, a gestão GB da indústria) --
+    # não fazem parte da gestão do departamento, mas ficam visíveis aqui só
+    # pra conhecimento dos valores. ----
+    if departamento_ativo and linhas_departamento_informativas:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">ℹ️ Outras Linhas Relacionadas (fora da gestão do departamento)</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Essas linhas aparecem na DRE dentro do mesmo grupo, mas não são geridas por este "
+            "departamento -- estão aqui só para conhecimento dos valores."
+        )
+        linhas_tabela_info_dre = []
+        for l in linhas_departamento_informativas:
+            v_r_info_dre = abs(get_valor_consolidado_multi(list_df_real, l, cols_graficos, exato_linha_sintetica=True))
+            v_o_info_dre = abs(get_valor_consolidado_multi(list_df_orc, l, cols_graficos, exato_linha_sintetica=True))
+            linhas_tabela_info_dre.append({
+                "Conta / Linha DRE": l, "Realizado (R$)": v_r_info_dre, "Orçado (R$)": v_o_info_dre,
+                "Desvio (R$)": v_o_info_dre - v_r_info_dre,
+            })
+        st.dataframe(
+            pd.DataFrame(linhas_tabela_info_dre).style.format(
+                {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
+            ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]),
+            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
+            use_container_width=True,
+            hide_index=True,
+        )
+
 
 # ---------------------------------------------------------------------------
 # ABA 3: HISTÓRICO MENSAL
@@ -4361,6 +4391,36 @@ with tab3:
         )
         if _processar_clique_expansao(df_hist, evento_hist, grupos_alvo_hist):
             st.rerun()
+
+    # ---- Linhas informativas (ex.: no MKT, a gestão GB da indústria) --
+    # não fazem parte da gestão do departamento, mas ficam visíveis aqui só
+    # pra conhecimento dos valores (total do ano completo). ----
+    if departamento_ativo and linhas_departamento_informativas:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">ℹ️ Outras Linhas Relacionadas (fora da gestão do departamento)</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Essas linhas aparecem na DRE dentro do mesmo grupo, mas não são geridas por este "
+            "departamento -- estão aqui só para conhecimento dos valores (ano completo)."
+        )
+        linhas_tabela_info_hist = []
+        for l in linhas_departamento_informativas:
+            v_r_info_hist = abs(get_valor_consolidado_multi(list_df_real, l, colunas_validas, exato_linha_sintetica=True))
+            v_o_info_hist = abs(get_valor_consolidado_multi(list_df_orc, l, colunas_validas, exato_linha_sintetica=True))
+            linhas_tabela_info_hist.append({
+                "Conta / Linha DRE": l, "Realizado (Ano) R$": v_r_info_hist, "Orçado (Ano) R$": v_o_info_hist,
+                "Desvio (R$)": v_o_info_hist - v_r_info_hist,
+            })
+        st.dataframe(
+            pd.DataFrame(linhas_tabela_info_hist).style.format(
+                {"Realizado (Ano) R$": formata_brl, "Orçado (Ano) R$": formata_brl, "Desvio (R$)": formata_brl}
+            ).map(cor_valor, subset=["Realizado (Ano) R$", "Orçado (Ano) R$", "Desvio (R$)"]),
+            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 # ---------------------------------------------------------------------------
