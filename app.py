@@ -2267,15 +2267,16 @@ MODELOS_RELATORIO = {
             # 6.24.2.1.1, etc.), automaticamente -- é o ramo que o
             # coordenador de MKT de fato gerencia.
             #
-            # Ficam de fora, de propósito:
+            # Fica de fora, de propósito:
             # - "6.24 - Esforços de Marketing" (só consolida os dois ramos,
             #   incluiria custo que não é do coordenador de MKT)
-            # - "6.24.1 - Marketing Regional - Gestão GB" e tudo abaixo dela
-            #   (gestão da indústria -- aparecem no painel só como
-            #   informação/monitoramento, não como algo sob controle do
-            #   coordenador de MKT)
             "PREFIXO:6.24.2",
         ],
+        # "6.24.1 - Marketing Regional - Gestão GB" e tudo abaixo dela
+        # (gestão da indústria, não do coordenador de MKT) -- não entram
+        # nos KPIs/gráficos de gestão do departamento, mas aparecem no
+        # relatório e num bloco à parte no painel, só pra conhecimento.
+        "linhas_informativas": ["PREFIXO:6.24.1"],
         "forcar_planos_contas": [],
         # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
         # tiverem um Plano de Contas próprio já caem como "Lançado
@@ -2513,6 +2514,7 @@ col_nome_dre_dept = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
 linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique()) if not df_ref.empty else []
 linhas_departamento_resolvidas = []
 linhas_departamento_raiz = []
+linhas_departamento_informativas = []
 if departamento_ativo:
     for termo in linhas_departamento_ativo:
         linhas_departamento_resolvidas.extend(_resolver_termo_departamento(termo, linhas_dre_todas_painel))
@@ -2524,6 +2526,12 @@ if departamento_ativo:
     # de detalhe (que lista linha por linha, sem somar) continua usando
     # linhas_departamento_resolvidas normalmente.
     linhas_departamento_raiz = _linhas_raiz_do_conjunto(linhas_departamento_resolvidas)
+    # Linhas "informativas" (ex.: no MKT, a gestão GB da indústria) -- não
+    # são geridas pelo departamento, mas precisam aparecer no relatório e
+    # em algum lugar do painel só pra conhecimento dos valores.
+    for termo in MODELOS_RELATORIO.get(departamento_ativo, {}).get("linhas_informativas", []):
+        linhas_departamento_informativas.extend(_resolver_termo_departamento(termo, linhas_dre_todas_painel))
+    linhas_departamento_informativas = list(dict.fromkeys(linhas_departamento_informativas))
 
 tipo_periodo = st.sidebar.radio(
     "Modo do Período:",
@@ -3604,6 +3612,45 @@ with tab1:
                 use_container_width=True,
                 hide_index=True,
             )
+
+            # ---- Linhas informativas (ex.: no MKT, a gestão GB da
+            # indústria) -- não entram em nenhum KPI/gráfico/soma do
+            # departamento, mas ficam visíveis aqui só pra conhecimento dos
+            # valores, já que aparecem na DRE consolidada. ----
+            if linhas_departamento_informativas:
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="section-title">ℹ️ Outras Linhas Relacionadas (fora da gestão do departamento)</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Essas linhas aparecem na DRE dentro do mesmo grupo, mas não são geridas por este "
+                    "departamento -- estão aqui só para conhecimento dos valores, e não entram em nenhum "
+                    "KPI, gráfico ou soma do departamento acima."
+                )
+                linhas_tabela_info = []
+                for l in linhas_departamento_informativas:
+                    v_r_info = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                    v_o_info = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                    linhas_tabela_info.append({
+                        "Conta / Linha DRE": l, "Realizado (R$)": v_r_info, "Orçado (R$)": v_o_info,
+                        "Desvio (R$)": v_o_info - v_r_info,
+                    })
+                df_tabela_info = pd.DataFrame(linhas_tabela_info)
+                st.dataframe(
+                    df_tabela_info.style.format(
+                        {
+                            "Realizado (R$)": formata_brl,
+                            "Orçado (R$)": formata_brl,
+                            "Desvio (R$)": formata_brl,
+                        }
+                    ).map(cor_valor, subset=cols_num_dept),
+                    column_config={
+                        "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     else:
         st.markdown(
@@ -4784,7 +4831,11 @@ with tab5:
     default_contas = []
     termos_nao_encontrados = []
     if modelo_sel != "Seleção manual":
-        for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
+        termos_do_modelo = (
+            MODELOS_RELATORIO[modelo_sel]["linhas_dre"]
+            + MODELOS_RELATORIO[modelo_sel].get("linhas_informativas", [])
+        )
+        for termo in termos_do_modelo:
             encontrados = _resolver_termo_departamento(termo, linhas_relatorio)
             if encontrados:
                 default_contas.extend(encontrados)
