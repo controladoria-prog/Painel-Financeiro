@@ -1132,6 +1132,54 @@ def obter_caminhos_excel():
     return abas_validas, path_orc, path_real
 
 
+@st.cache_resource
+def obter_dados_fluxo_caixa():
+    """Carrega a aba "Fluxo de Caixa 2026" da planilha do Painel Financeiro.
+
+    IMPORTANTE: ainda não temos como inspecionar a estrutura real dessa aba
+    (nomes exatos das colunas) -- por isso essa função é propositalmente
+    tolerante: carrega a aba inteira sem presumir nomes de coluna, e quem
+    for USAR o resultado (renderizar_painel_financeiro) que tenta detectar
+    de forma flexível qual coluna é a de data, canal, categoria e valor.
+    Retorna (df, erro); erro é None se carregou certo."""
+    url_fluxo = "https://docs.google.com/spreadsheets/d/1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH/export?format=xlsx"
+    try:
+        df = pd.read_excel(url_fluxo, sheet_name="Fluxo de Caixa 2026")
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        return df, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _detectar_coluna(df, candidatos_nome, tipo_esperado=None):
+    """Tenta achar, entre as colunas de `df`, uma que bata (por nome
+    aproximado) com algum dos `candidatos_nome`. Se `tipo_esperado` for
+    "data", também aceita qualquer coluna que já venha como datetime ou que
+    a maioria dos valores consiga converter para data. Devolve o nome da
+    coluna encontrada, ou None."""
+    colunas_norm = {str(c).strip().lower(): c for c in df.columns}
+    for candidato in candidatos_nome:
+        candidato_norm = candidato.strip().lower()
+        for nome_norm, nome_original in colunas_norm.items():
+            if candidato_norm in nome_norm:
+                return nome_original
+    if tipo_esperado == "data":
+        for c in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[c]):
+                return c
+            try:
+                convertido = pd.to_datetime(df[c], errors="coerce")
+                if convertido.notna().mean() > 0.7:
+                    return c
+            except Exception:
+                continue
+    if tipo_esperado == "numerico":
+        for c in df.columns:
+            if pd.api.types.is_numeric_dtype(df[c]):
+                return c
+    return None
+
+
 try:
     with st.spinner("Conectando às planilhas financeiras..."):
         abas_disponiveis, path_orc, path_real = obter_caminhos_excel()
@@ -2344,30 +2392,197 @@ if st.session_state["painel_escolhido"] is None:
 
     st.stop()
 
+EMAILS_FINANCEIRO_PERMITIDOS = {
+    "controladoria@grupobeea.com.br",
+    "coordenador.financeiro@grupobeea.com.br",
+    "diretoria.financeira@grupobeea.com.br",
+}
+
+# Colunas reais da aba "Fluxo de Caixa 2026" (confirmadas pelo usuário):
+COL_FIN_VALOR = "Valor.1"
+COL_FIN_MODALIDADE = "Modalidade"
+COL_FIN_CANAL = "Canal.1"
+COL_FIN_MOVIMENTO = "Movimento"
+COL_FIN_DATA_LIQUIDACAO = "Data Liquidação"
+COL_FIN_NUMERO = "Número"
+COL_FIN_PLANO_CONTAS = "Plano de Contas"
+COL_FIN_HISTORICO = "Histórico"
+COL_FIN_GRUPO_DESPESA = "GRUPO DESPESA"
+COL_FIN_VENCIMENTO = "Vencimento.1"
+
 if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
-        f"""
-        <style>
-            [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
-        </style>
-        <div style="max-width:620px;margin:110px auto 0 auto;text-align:center;">
-            <div style="font-size:54px;">🚧</div>
-            <div style="font-size:23px;font-weight:800;color:{COLORS['text']};margin:14px 0 8px 0;">
-                Opa, ainda estamos em obras!
-            </div>
-            <div style="font-size:14px;color:{COLORS['text_muted']};line-height:1.6;">
-                O Painel Financeiro está sendo desenvolvido e em breve teremos novidades por aqui.
-            </div>
-        </div>
-        """,
+        """<style>[data-testid="stSidebar"], header[data-testid="stHeader"] { display: none !important; }</style>""",
         unsafe_allow_html=True,
     )
-    col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1, 1])
-    with col_voltar:
-        st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
-        if st.button("← Ir para o Painel de Controladoria", use_container_width=True, type="primary"):
-            st.session_state["painel_escolhido"] = "controladoria"
+
+    email_atual_financeiro = str(usuario_atual.get("email", "")).strip().lower()
+    if email_atual_financeiro not in EMAILS_FINANCEIRO_PERMITIDOS:
+        st.markdown(
+            f"""
+            <div style="max-width:620px;margin:110px auto 0 auto;text-align:center;">
+                <div style="font-size:54px;">🔒</div>
+                <div style="font-size:23px;font-weight:800;color:{COLORS['text']};margin:14px 0 8px 0;">
+                    Acesso Restrito
+                </div>
+                <div style="font-size:14px;color:{COLORS['text_muted']};line-height:1.6;">
+                    O Painel Financeiro é restrito a um grupo específico de usuários.
+                    Se você acredita que deveria ter acesso, fale com o administrador da Controladoria.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1, 1])
+        with col_voltar:
+            st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+            if st.button("← Ir para o Painel de Controladoria", use_container_width=True, type="primary"):
+                st.session_state["painel_escolhido"] = "controladoria"
+                st.rerun()
+        st.stop()
+
+    # ---- Usuário autorizado: carrega a planilha do Fluxo de Caixa ----
+    st.markdown('<div class="section-title">💰 Painel Financeiro — Fluxo de Caixa 2026</div>', unsafe_allow_html=True)
+    col_topo_fin_a, col_topo_fin_b = st.columns([5, 1])
+    with col_topo_fin_b:
+        if st.button("🔀 Trocar Painel", use_container_width=True):
+            st.session_state["painel_escolhido"] = None
             st.rerun()
+
+    df_fluxo, erro_fluxo = obter_dados_fluxo_caixa()
+
+    if erro_fluxo:
+        st.error(
+            "Não consegui carregar a aba \"Fluxo de Caixa 2026\" da planilha. "
+            "Confirme se o link de compartilhamento permite acesso a qualquer pessoa com o link "
+            "(\"Qualquer pessoa com o link pode visualizar\"), e se o nome da aba está escrito "
+            "exatamente assim."
+        )
+        with st.expander("Detalhe técnico do erro"):
+            st.code(erro_fluxo)
+        st.stop()
+
+    if df_fluxo is None or df_fluxo.empty:
+        st.warning("A aba \"Fluxo de Caixa 2026\" foi encontrada, mas não trouxe nenhuma linha de dado.")
+        st.stop()
+
+    colunas_esperadas_fin = [
+        COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
+        COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
+    ]
+    colunas_faltando_fin = [c for c in colunas_esperadas_fin if c not in df_fluxo.columns]
+    if colunas_faltando_fin:
+        st.error(
+            "Algumas colunas esperadas não foram encontradas na planilha: "
+            + ", ".join(colunas_faltando_fin)
+            + ". Confira se o nome está escrito exatamente igual na aba, ou me avise pra eu ajustar."
+        )
+        with st.expander("Colunas que a planilha realmente tem"):
+            st.code(", ".join(str(c) for c in df_fluxo.columns))
+        st.stop()
+
+    df_fluxo_view = df_fluxo.copy()
+    df_fluxo_view[COL_FIN_VALOR] = pd.to_numeric(df_fluxo_view[COL_FIN_VALOR], errors="coerce").fillna(0)
+    df_fluxo_view[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(df_fluxo_view[COL_FIN_DATA_LIQUIDACAO], errors="coerce")
+    df_fluxo_view[COL_FIN_VENCIMENTO] = pd.to_datetime(df_fluxo_view[COL_FIN_VENCIMENTO], errors="coerce")
+
+    # Fluxo de caixa usa a Data de Liquidação (quando o dinheiro de fato
+    # entrou/saiu). Para lançamentos que ainda não liquidaram (ex.: "A
+    # Receber Projetado"), não existe Data de Liquidação ainda -- nesse
+    # caso, usa o Vencimento como a data prevista.
+    df_fluxo_view["Data Efetiva"] = df_fluxo_view[COL_FIN_DATA_LIQUIDACAO].fillna(df_fluxo_view[COL_FIN_VENCIMENTO])
+    df_fluxo_view = df_fluxo_view.dropna(subset=["Data Efetiva"])
+
+    with st.expander("🔧 Diagnóstico da planilha"):
+        st.write(f"**Linhas carregadas:** {len(df_fluxo)} · **Linhas com data válida:** {len(df_fluxo_view)}")
+        st.write("**Valores únicos em Movimento:**")
+        st.code(", ".join(sorted(df_fluxo[COL_FIN_MOVIMENTO].dropna().astype(str).unique())))
+        st.write("**Valores únicos em Canal.1:**")
+        st.code(", ".join(sorted(df_fluxo[COL_FIN_CANAL].dropna().astype(str).unique())))
+        st.write("**Valores únicos em Modalidade:**")
+        st.code(", ".join(sorted(df_fluxo[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
+        st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
+
+    # ---- Filtros: Canal.1 (os 3 grupos da empresa) e Modalidade ----
+    col_filtro_canal_fin, col_filtro_modal_fin = st.columns(2)
+    with col_filtro_canal_fin:
+        opcoes_canal_fin = ["Todos"] + sorted(df_fluxo_view[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+        canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
+        if canal_sel_fin != "Todos":
+            df_fluxo_view = df_fluxo_view[df_fluxo_view[COL_FIN_CANAL].astype(str) == canal_sel_fin]
+    with col_filtro_modal_fin:
+        opcoes_modal_fin = ["Todas"] + sorted(df_fluxo_view[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+        modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
+        if modal_sel_fin != "Todas":
+            df_fluxo_view = df_fluxo_view[df_fluxo_view[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+
+    tab_fin_mensal, tab_fin_diario = st.tabs(["📅 Fluxo de Caixa Mensal", "🗓️ Fluxo de Caixa Diário"])
+
+    with tab_fin_mensal:
+        df_mensal_fluxo = df_fluxo_view.copy()
+        df_mensal_fluxo["Mês"] = df_mensal_fluxo["Data Efetiva"].dt.to_period("M").dt.to_timestamp()
+        pivot_mensal = df_mensal_fluxo.pivot_table(
+            index=COL_FIN_MOVIMENTO, columns="Mês", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+        )
+        pivot_mensal.columns = [c.strftime("%b/%Y").upper() for c in pivot_mensal.columns]
+        pivot_mensal["Total"] = pivot_mensal.sum(axis=1)
+        pivot_mensal.loc["TOTAL GERAL"] = pivot_mensal.sum(axis=0)
+        st.dataframe(
+            pivot_mensal.style.format(formata_brl).map(cor_valor),
+            use_container_width=True,
+        )
+
+        total_mensal_geral = df_mensal_fluxo[COL_FIN_VALOR].sum()
+        total_a_pagar_mensal = df_mensal_fluxo.loc[
+            df_mensal_fluxo[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False), COL_FIN_VALOR
+        ].sum()
+        st.markdown(
+            render_kpi_row([
+                dict(label="TOTAL GERAL NO PERÍODO", value=formata_brl(total_mensal_geral),
+                     value_color=cor_variacao(total_mensal_geral), subtext="Soma de todos os movimentos filtrados", icon="💰"),
+                dict(label="TOTAL CONTAS A PAGAR", value=formata_brl(total_a_pagar_mensal),
+                     value_color=COLORS["negative"], subtext="Movimentos com \"pagar\" no nome", icon="📤"),
+            ]),
+            unsafe_allow_html=True,
+        )
+
+    with tab_fin_diario:
+        df_diario_fluxo = df_fluxo_view.copy()
+        meses_disponiveis_fluxo = sorted(df_diario_fluxo["Data Efetiva"].dt.to_period("M").unique())
+        if meses_disponiveis_fluxo:
+            opcoes_mes_fluxo = [m.strftime("%B/%Y").upper() for m in meses_disponiveis_fluxo]
+            mes_sel_fluxo = st.selectbox("Mês:", opcoes_mes_fluxo, index=len(opcoes_mes_fluxo) - 1, key="fin_mes_sel")
+            periodo_sel_fluxo = meses_disponiveis_fluxo[opcoes_mes_fluxo.index(mes_sel_fluxo)]
+            df_diario_fluxo = df_diario_fluxo[df_diario_fluxo["Data Efetiva"].dt.to_period("M") == periodo_sel_fluxo]
+
+        df_diario_fluxo["Dia"] = df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m")
+        ordem_dias = sorted(df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m").unique(), key=lambda d: (d[3:], d[:2]))
+        pivot_diario = df_diario_fluxo.pivot_table(
+            index=COL_FIN_MOVIMENTO, columns="Dia", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+        )
+        pivot_diario = pivot_diario.reindex(columns=[d for d in ordem_dias if d in pivot_diario.columns])
+        pivot_diario["Total do Mês"] = pivot_diario.sum(axis=1)
+        pivot_diario.loc["TOTAL GERAL"] = pivot_diario.sum(axis=0)
+        # Saldo acumulado dia a dia (soma corrida de todos os movimentos)
+        saldo_diario = df_diario_fluxo.groupby(df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m"))[COL_FIN_VALOR].sum()
+        saldo_diario = saldo_diario.reindex([d for d in ordem_dias if d in saldo_diario.index]).cumsum()
+
+        st.dataframe(pivot_diario.style.format(formata_brl).map(cor_valor), use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📈 Saldo Acumulado no Mês</div>', unsafe_allow_html=True)
+        fig_saldo_fin = go.Figure(data=[go.Scatter(
+            x=list(saldo_diario.index), y=list(saldo_diario.values), mode="lines+markers",
+            line=dict(color=COLORS["primary"], width=2.5),
+        )])
+        estilo_grafico(
+            fig_saldo_fin, height=300,
+            xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9)),
+            yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+            margin=dict(l=20, r=20, t=20, b=30),
+        )
+        st.plotly_chart(fig_saldo_fin, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
     st.stop()
 
 # Se chegou até aqui, painel_escolhido == "controladoria" -> segue para o
