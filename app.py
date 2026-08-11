@@ -1416,7 +1416,7 @@ def _nome_departamento_curto(nome_modelo):
     relatório -- ex.: "📣 Relatório de Custos - MKT" vira "MKT". Usado no
     seletor de Visão por Departamento pra não repetir "Relatório de Custos"
     toda hora."""
-    if nome_modelo == "Controladoria (Padrão)":
+    if nome_modelo == "Controladoria":
         return nome_modelo
     texto = re.sub(r"^[^\w]+", "", str(nome_modelo), flags=re.UNICODE).strip()
     if " - " in texto:
@@ -2329,17 +2329,35 @@ if eh_admin:
 # linhas já definidas nos modelos de relatório -- MKT, Compras,
 # Suprimentos, RH -- como fonte da verdade de "quais linhas pertencem a
 # esse setor"). Disponível para todos os perfis de acesso.
+#
+# Cada e-mail abre o painel já no departamento correspondente ao seu acesso
+# (mas a pessoa ainda pode trocar manualmente pelo seletor, se quiser ver
+# outra visão). Quem não está no mapa abre na Controladoria, como sempre.
+MAPA_EMAIL_DEPARTAMENTO = {
+    "coordenador.compras@grupobeea.com.br": "🛒 Relatório de Custos - Compras",
+    "coordenador.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT",
+    "gerente.logistica@grupobeea.com.br": "🚚 Relatório de Custos - Suprimentos",
+    "pessoas.cultura@grupobeea.com.br": "👥 Relatório de Custos - RH",
+}
+
 departamento_ativo = None
 linhas_departamento_ativo = []
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🏢 Visão por Departamento**")
 st.sidebar.caption("Filtra o painel inteiro (visão, tabelas e relatório) para o departamento escolhido.")
-opcoes_departamento = ["Controladoria (Padrão)"] + list(MODELOS_RELATORIO.keys())
+opcoes_departamento = ["Controladoria"] + list(MODELOS_RELATORIO.keys())
+departamento_padrao_usuario = MAPA_EMAIL_DEPARTAMENTO.get(usuario_atual["email"].strip().lower())
+indice_departamento_padrao = (
+    opcoes_departamento.index(departamento_padrao_usuario)
+    if departamento_padrao_usuario in opcoes_departamento
+    else 0
+)
 departamento_sel = st.sidebar.selectbox(
     "Ver painel como:", opcoes_departamento, key="departamento_sel",
+    index=indice_departamento_padrao,
     format_func=_nome_departamento_curto,
 )
-if departamento_sel != "Controladoria (Padrão)":
+if departamento_sel != "Controladoria":
     departamento_ativo = departamento_sel
     linhas_departamento_ativo = MODELOS_RELATORIO[departamento_sel]["linhas_dre"]
 
@@ -3305,17 +3323,19 @@ st.markdown(
 # ============================================================================
 if departamento_ativo:
     # Modo Departamento -- painel inteiro focado só no departamento
-    # escolhido: 4 abas próprias (inclusive Emitir Relatório, já filtrado
-    # pro modelo do departamento), sem Previsões nem Usuários (que são
-    # conceitos de companhia toda, não de um departamento específico).
+    # escolhido: 5 abas próprias (inclusive Impacto & Tendências e Emitir
+    # Relatório, já filtrado pro modelo do departamento), sem Previsões
+    # nem Usuários (que são conceitos de companhia toda, não de um
+    # departamento específico).
     _nome_dept_abas = _nome_departamento_curto(departamento_ativo)
-    tab1, tab2, tab3, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         f"📊 Visão Geral — {_nome_dept_abas}",
         f"📋 Detalhe por Conta — {_nome_dept_abas}",
         f"📅 Histórico Mensal — {_nome_dept_abas}",
+        f"🎯 Impacto & Tendências — {_nome_dept_abas}",
         f"📤 Emitir Relatório — {_nome_dept_abas}",
     ])
-    tab4 = tab6 = None
+    tab6 = None
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -3375,6 +3395,99 @@ with tab1:
             )
             st.markdown("<br>", unsafe_allow_html=True)
 
+            # ---- Impacto no resultado da empresa (Receita, EBITDA, Custos+Despesas totais) ----
+            rec_liq_real_dept = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
+            ebitda_real_dept = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+            cmv_real_dept = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True)) \
+                or abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi))
+            dvar_real_dept = abs(get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi))
+            dop_real_dept = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
+            total_custos_desp_dept = cmv_real_dept + dvar_real_dept + dop_real_dept
+
+            pct_da_receita_dept = (dept_real_abs / rec_liq_real_dept * 100) if rec_liq_real_dept else 0.0
+            pct_do_ebitda_dept = (dept_real_abs / abs(ebitda_real_dept) * 100) if ebitda_real_dept else 0.0
+            pct_dos_custos_dept = (dept_real_abs / total_custos_desp_dept * 100) if total_custos_desp_dept else 0.0
+
+            st.markdown('<div class="section-title">🎯 Peso do Departamento no Resultado da Empresa</div>', unsafe_allow_html=True)
+            st.markdown(
+                render_kpi_row([
+                    dict(label="% DA RECEITA LÍQUIDA", value=f"{pct_da_receita_dept:.1f}%",
+                         value_color=COLORS["text"], subtext="O quanto o departamento consome da receita", icon="💰"),
+                    dict(label="% DO EBITDA DA EMPRESA", value=f"{pct_do_ebitda_dept:.1f}%",
+                         value_color=COLORS["warning"], subtext=f"EBITDA do período: {formata_brl(ebitda_real_dept)}", icon="📐"),
+                    dict(label="% DOS CUSTOS + DESPESAS TOTAIS", value=f"{pct_dos_custos_dept:.1f}%",
+                         value_color=COLORS["text"], subtext="Fatia do departamento no total de custos e despesas", icon="🧾"),
+                    dict(label="MAIOR CONTA DO DEPARTAMENTO",
+                         value=formata_m(max(
+                             (abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)) for l in linhas_departamento_resolvidas),
+                             default=0,
+                         )),
+                         value_color=COLORS["negative"],
+                         subtext=_nome_sem_numero_dre(max(
+                             linhas_departamento_resolvidas,
+                             key=lambda l: abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)),
+                         ))[:38],
+                         icon="🔎"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            col_donut_dept, col_evol_dept = st.columns(2)
+            with col_donut_dept:
+                st.markdown('<div class="section-title">🍩 Composição do Departamento</div>', unsafe_allow_html=True)
+                valores_donut_dept = [
+                    abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                    for l in linhas_departamento_resolvidas
+                ]
+                labels_donut_dept = [_nome_sem_numero_dre(l) for l in linhas_departamento_resolvidas]
+                if sum(valores_donut_dept) > 0:
+                    fig_donut_dept = go.Figure(data=[go.Pie(
+                        labels=labels_donut_dept, values=valores_donut_dept, hole=0.55,
+                        marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
+                                             COLORS["negative"], COLORS["secondary"], COLORS["muted_line"]]),
+                        textinfo="percent", textfont=dict(color=COLORS["text"], size=11),
+                    )])
+                    fig_donut_dept.add_annotation(
+                        text=f"<b>{formata_m(dept_real_abs)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Realizado</span>",
+                        showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
+                    )
+                    estilo_grafico(
+                        fig_donut_dept, height=340,
+                        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=10)),
+                    )
+                    st.plotly_chart(fig_donut_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                else:
+                    st.info("Sem valores no período selecionado para montar o gráfico.")
+
+            with col_evol_dept:
+                st.markdown('<div class="section-title">📈 Evolução Mensal (Ano Completo)</div>', unsafe_allow_html=True)
+                meses_evol_real = [
+                    sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    for m_col in m_map.values()
+                ]
+                meses_evol_orc = [
+                    sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    for m_col in m_map.values()
+                ]
+                fig_evol_dept = go.Figure()
+                fig_evol_dept.add_trace(go.Scatter(
+                    x=list(m_map.keys()), y=[abs(v) for v in meses_evol_real], name="Realizado",
+                    mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
+                ))
+                fig_evol_dept.add_trace(go.Scatter(
+                    x=list(m_map.keys()), y=[abs(v) for v in meses_evol_orc], name="Orçado",
+                    mode="lines+markers", line=dict(color=COLORS["muted_line"], width=2, dash="dot"),
+                ))
+                estilo_grafico(
+                    fig_evol_dept, height=340,
+                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True),
+                    yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+                )
+                st.plotly_chart(fig_evol_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            st.markdown("<br>", unsafe_allow_html=True)
             st.markdown('<div class="section-title">📋 Linhas da DRE do Departamento</div>', unsafe_allow_html=True)
             linhas_tabela_dept = []
             for l in linhas_departamento_resolvidas:
@@ -3383,7 +3496,7 @@ with tab1:
                 linhas_tabela_dept.append({
                     "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
                 })
-            df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
+            df_tabela_dept = pd.DataFrame(linhas_tabela_dept).sort_values("Realizado (R$)", ascending=False)
             cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
             st.dataframe(
                 df_tabela_dept.style.format(
@@ -3410,6 +3523,7 @@ with tab1:
         # ---- KPIs executivos da visão geral ----
         rec_liq_real_kpi = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
         rec_liq_orc_kpi = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
+
 
         ebitda_real_kpi = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
         ebitda_orc_kpi = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
@@ -4059,6 +4173,119 @@ with tab3:
         )
         if _processar_clique_expansao(df_hist, evento_hist, grupos_alvo_hist):
             st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# ABA "IMPACTO & TENDÊNCIAS" (só no Modo Departamento)
+# ---------------------------------------------------------------------------
+if departamento_ativo:
+    with tab4:
+        st.markdown(
+            f'<div class="section-title">🎯 Impacto & Tendências — {_nome_dept_abas}</div>',
+            unsafe_allow_html=True,
+        )
+        if not linhas_departamento_resolvidas:
+            st.warning(
+                f"Não encontrei nenhuma linha da DRE atual que bata com o modelo de {_nome_dept_abas}."
+            )
+        else:
+            st.caption(
+                "Como os custos deste departamento pesam no resultado da empresa, e como eles "
+                "vêm se comportando mês a mês ao longo do ano completo."
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Simulação "e se": quanto o EBITDA melhoraria com um corte
+            # de X% nos custos do departamento (no período selecionado na
+            # barra lateral) ----
+            rec_liq_impacto = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
+            ebitda_impacto = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+            dept_real_impacto = abs(sum(
+                get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)
+                for l in linhas_departamento_resolvidas
+            ))
+            margem_atual_impacto = (ebitda_impacto / rec_liq_impacto * 100) if rec_liq_impacto else 0.0
+
+            st.markdown('<div class="section-title">🧪 Simulação: e se o departamento cortasse custos?</div>', unsafe_allow_html=True)
+            pct_corte_simulado = st.slider(
+                "Redução simulada nos custos do departamento (%)", min_value=0, max_value=30, value=10, step=5,
+                help="Arraste para simular o efeito de uma redução de custos deste departamento sobre o EBITDA da empresa, no período selecionado na barra lateral.",
+            )
+            economia_simulada = dept_real_impacto * (pct_corte_simulado / 100)
+            ebitda_simulado = ebitda_impacto + economia_simulada
+            margem_simulada = (ebitda_simulado / rec_liq_impacto * 100) if rec_liq_impacto else 0.0
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="ECONOMIA SIMULADA", value=formata_brl(economia_simulada),
+                         value_color=COLORS["positive"], subtext=f"{pct_corte_simulado}% dos custos do departamento", icon="✂️"),
+                    dict(label="EBITDA ATUAL → SIMULADO", value=f"{formata_m(ebitda_impacto)} → {formata_m(ebitda_simulado)}",
+                         value_color=COLORS["text"], subtext="No período selecionado", icon="📐"),
+                    dict(label="MARGEM EBITDA ATUAL → SIMULADA", value=f"{margem_atual_impacto:.1f}% → {margem_simulada:.1f}%",
+                         value_color=COLORS["positive"], subtext=f"+{margem_simulada - margem_atual_impacto:.1f} p.p. de margem", icon="📊"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            col_rank_dept, col_desvio_dept = st.columns(2)
+            with col_rank_dept:
+                st.markdown('<div class="section-title">🏆 Ranking de Contas (Maiores Custos)</div>', unsafe_allow_html=True)
+                valores_rank = [
+                    abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                    for l in linhas_departamento_resolvidas
+                ]
+                df_rank_dept = pd.DataFrame({
+                    "Conta": [_nome_sem_numero_dre(l) for l in linhas_departamento_resolvidas],
+                    "Valor": valores_rank,
+                }).sort_values("Valor", ascending=True).tail(8)
+                fig_rank_dept = go.Figure(data=[go.Bar(
+                    x=df_rank_dept["Valor"], y=df_rank_dept["Conta"], orientation="h",
+                    marker_color=COLORS["primary"], text=[formata_m(v) for v in df_rank_dept["Valor"]],
+                    textposition="outside", textfont=dict(color=COLORS["text_muted"], size=10),
+                )])
+                estilo_grafico(
+                    fig_rank_dept, height=340,
+                    xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+                    yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
+                    margin=dict(l=10, r=60, t=20, b=30),
+                )
+                st.plotly_chart(fig_rank_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            with col_desvio_dept:
+                st.markdown('<div class="section-title">📐 Desvio Mensal vs. Orçado (Ano Completo)</div>', unsafe_allow_html=True)
+                desvios_mensais = []
+                for m_col in m_map.values():
+                    v_r_mes = sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    v_o_mes = sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    # positivo = gastou menos que o orçado (favorável)
+                    desvios_mensais.append(abs(v_o_mes) - abs(v_r_mes))
+                cores_desvio = [COLORS["positive"] if v >= 0 else COLORS["negative"] for v in desvios_mensais]
+                fig_desvio_dept = go.Figure(data=[go.Bar(
+                    x=list(m_map.keys()), y=desvios_mensais, marker_color=cores_desvio,
+                )])
+                estilo_grafico(
+                    fig_desvio_dept, height=340,
+                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9)),
+                    yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+                )
+                st.plotly_chart(fig_desvio_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.caption("Barras verdes = departamento gastou menos que o orçado naquele mês. Vermelhas = gastou mais.")
+
+            # ---- Insight automático: melhor/pior mês, tendência ----
+            meses_com_valor = {
+                nome: abs(sum(get_valor_consolidado_multi(list_df_real, l, [col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas))
+                for nome, col in m_map.items()
+            }
+            meses_com_valor_positivo = {k: v for k, v in meses_com_valor.items() if v > 0}
+            if meses_com_valor_positivo:
+                mes_maior_gasto = max(meses_com_valor_positivo, key=meses_com_valor_positivo.get)
+                mes_menor_gasto = min(meses_com_valor_positivo, key=meses_com_valor_positivo.get)
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.info(
+                    f"📌 **Maior gasto do ano:** {mes_maior_gasto.capitalize()} ({formata_brl(meses_com_valor_positivo[mes_maior_gasto])}) · "
+                    f"**Menor gasto do ano:** {mes_menor_gasto.capitalize()} ({formata_brl(meses_com_valor_positivo[mes_menor_gasto])})"
+                )
 
 
 # ---------------------------------------------------------------------------
