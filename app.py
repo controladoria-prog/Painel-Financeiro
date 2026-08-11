@@ -2446,12 +2446,18 @@ def _rotulo_mes_pt_extenso(periodo):
 
 
 def _classificar_movimento_fin(nome_movimento):
-    """Separa o que é SALDO (posição de dinheiro parado: caixa, banco,
-    aplicação) do que é FLUXO (entradas e saídas do período). Somar os dois
-    juntos não faz sentido financeiro -- daria um "total" inflado que mistura
-    saldo com movimentação, que foi o que aconteceu na primeira versão."""
+    """Classifica cada Movimento em uma de quatro categorias:
+    - "aplicacao": aplicações financeiras -- ficam FORA de todos os totais,
+      somas e tabelas principais do painel (a pedido da área), aparecendo
+      só num bloco separado, para conhecimento.
+    - "saldo": posição de dinheiro disponível (caixa, banco).
+    - "entrada"/"saida": o fluxo de fato (a receber / a pagar).
+    Saldo e fluxo nunca são somados juntos: um é posição, o outro é
+    movimentação, e misturar os dois gera um total sem significado."""
     texto = str(nome_movimento).strip().lower()
-    if any(p in texto for p in ["caixa", "banco", "aplica"]):
+    if "aplica" in texto:
+        return "aplicacao"
+    if any(p in texto for p in ["caixa", "banco"]):
         return "saldo"
     if "receber" in texto:
         return "entrada"
@@ -2617,14 +2623,48 @@ if st.session_state["painel_escolhido"] == "financeiro":
     data_min_fin = df_fin["Data Efetiva"].min().date()
     data_max_fin = df_fin["Data Efetiva"].max().date()
 
+    # Padrão pedido: começa no 1º dia do MÊS ANTERIOR ao atual e vai até o
+    # último dia do ANO atual (limitado ao que existe de dado na planilha).
+    hoje_fin = datetime.now(FUSO_BR).date()
+    primeiro_dia_mes_anterior = (hoje_fin.replace(day=1) - pd.Timedelta(days=1)).replace(day=1)
+    ultimo_dia_ano_atual = hoje_fin.replace(month=12, day=31)
+    padrao_ini_fin = max(min(primeiro_dia_mes_anterior, data_max_fin), data_min_fin)
+    padrao_fim_fin = min(max(ultimo_dia_ano_atual, data_min_fin), data_max_fin)
+
+    # O calendário do date_input segue o idioma do navegador/servidor (por
+    # isso aparecia "December"). Esse CSS troca os rótulos por português do
+    # Brasil, sem depender da configuração de idioma da máquina.
+    st.markdown(
+        """
+        <style>
+            div[data-testid="stDateInput"] [aria-label="Sunday"], div[data-testid="stDateInput"] abbr[title="Sunday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Sunday"]::after { content: "Dom"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Monday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Monday"]::after { content: "Seg"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Tuesday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Tuesday"]::after { content: "Ter"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Wednesday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Wednesday"]::after { content: "Qua"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Thursday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Thursday"]::after { content: "Qui"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Friday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Friday"]::after { content: "Sex"; font-size: 12px; }
+            div[data-testid="stDateInput"] abbr[title="Saturday"] { font-size: 0; }
+            div[data-testid="stDateInput"] abbr[title="Saturday"]::after { content: "Sáb"; font-size: 12px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
     col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
     with col_f1:
         periodo_sel_fin = st.date_input(
             "Período (data inicial e final):",
-            value=(data_min_fin, data_max_fin),
+            value=(padrao_ini_fin, padrao_fim_fin),
             min_value=data_min_fin, max_value=data_max_fin,
             format="DD/MM/YYYY", key="fin_periodo",
+            help="Por padrão abre do 1º dia do mês anterior até o fim do ano atual.",
         )
     with col_f2:
         opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
@@ -2636,16 +2676,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
     if isinstance(periodo_sel_fin, (list, tuple)) and len(periodo_sel_fin) == 2:
         data_ini_fin, data_fim_fin = periodo_sel_fin
     else:
-        data_ini_fin, data_fim_fin = data_min_fin, data_max_fin
+        data_ini_fin, data_fim_fin = padrao_ini_fin, padrao_fim_fin
 
-    df_fin_view = df_fin[
+    df_fin_periodo = df_fin[
         (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
         & (df_fin["Data Efetiva"].dt.date <= data_fim_fin)
     ].copy()
     if canal_sel_fin != "Todos":
-        df_fin_view = df_fin_view[df_fin_view[COL_FIN_CANAL].astype(str) == canal_sel_fin]
+        df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_CANAL].astype(str) == canal_sel_fin]
     if modal_sel_fin != "Todas":
-        df_fin_view = df_fin_view[df_fin_view[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+        df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+
+    # As APLICAÇÕES ficam fora de tudo que é total/soma/tabela principal --
+    # são exibidas só num bloco à parte, no fim da aba mensal.
+    df_aplicacoes_fin = df_fin_periodo[df_fin_periodo["Tipo Movimento"] == "aplicacao"].copy()
+    df_fin_view = df_fin_periodo[df_fin_periodo["Tipo Movimento"] != "aplicacao"].copy()
 
     if df_fin_view.empty:
         st.warning("Nenhum lançamento encontrado para os filtros selecionados.")
@@ -2668,8 +2713,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
     st.markdown(
         render_kpi_row([
-            dict(label="SALDO EM CAIXA / BANCO / APLICAÇÃO", value=formata_brl(saldo_posicao_fin),
-                 value_color=cor_variacao(saldo_posicao_fin), subtext="Posição de dinheiro (não é fluxo)", icon="🏦"),
+            dict(label="SALDO EM CAIXA / BANCO", value=formata_brl(saldo_posicao_fin),
+                 value_color=cor_variacao(saldo_posicao_fin), subtext="Posição disponível (sem aplicações)", icon="🏦"),
             dict(label="ENTRADAS (A RECEBER)", value=formata_brl(entradas_fin),
                  value_color=COLORS["positive"], subtext="Realizado + projetado no período", icon="📥"),
             dict(label="SAÍDAS (A PAGAR)", value=formata_brl(saidas_fin),
@@ -2682,8 +2727,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
         unsafe_allow_html=True,
     )
     st.caption(
-        "ℹ️ Saldo (caixa/banco/aplicação) é **posição**, não movimento — por isso aparece separado das "
-        "entradas e saídas, e não entra no fluxo líquido. Somar os dois daria um número sem significado financeiro."
+        "ℹ️ **Aplicações não entram em nenhum número desta tela** — ficam num bloco separado no fim da aba "
+        "Fluxo Mensal, só para conhecimento. E saldo (caixa/banco) é **posição**, não movimento: por isso "
+        "aparece separado das entradas e saídas e não entra no fluxo líquido."
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2736,6 +2782,28 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
             st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
+        # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">💼 Aplicações (fora dos números acima)</div>', unsafe_allow_html=True)
+        if df_aplicacoes_fin.empty:
+            st.caption("Nenhum lançamento de aplicação no período/filtros selecionados.")
+        else:
+            st.caption(
+                "Estes valores **não entram** em nenhum KPI, tabela, total ou gráfico desta tela — "
+                "estão aqui apenas para acompanhamento da posição aplicada."
+            )
+            df_ap = df_aplicacoes_fin.copy()
+            df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
+            meses_ap = sorted(df_ap["PeriodoMes"].unique())
+            pivot_ap = df_ap.pivot_table(
+                index=COL_FIN_MOVIMENTO, columns="PeriodoMes", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+            )
+            pivot_ap = pivot_ap.reindex(columns=meses_ap, fill_value=0)
+            pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
+            pivot_ap["TOTAL"] = pivot_ap.sum(axis=1)
+            pivot_ap.index.name = "Movimento"
+            st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
+
     # ---------------- DIÁRIO ----------------
     with tab_fin_diario:
         meses_disp_d = sorted(df_fin_view["Data Efetiva"].dt.to_period("M").unique())
@@ -2743,9 +2811,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.info("Sem dados no período filtrado.")
         else:
             rotulos_d = [_rotulo_mes_pt_extenso(p) for p in meses_disp_d]
+            # Abre no mês ATUAL por padrão; se ele não estiver entre os meses
+            # disponíveis (pelo filtro de período), cai no mais recente.
+            periodo_mes_atual = pd.Period(datetime.now(FUSO_BR).strftime("%Y-%m"), freq="M")
+            idx_mes_padrao_d = (
+                meses_disp_d.index(periodo_mes_atual) if periodo_mes_atual in meses_disp_d
+                else len(rotulos_d) - 1
+            )
             mes_sel_d = st.selectbox(
-                "Mês:", rotulos_d, index=len(rotulos_d) - 1, key="fin_mes_sel",
-                help="Meses disponíveis dentro do período que você filtrou acima.",
+                "Mês:", rotulos_d, index=idx_mes_padrao_d, key="fin_mes_sel",
+                help="Abre no mês atual por padrão. Os meses listados são os que existem dentro do período filtrado acima.",
             )
             periodo_d = meses_disp_d[rotulos_d.index(mes_sel_d)]
             df_d = df_fin_view[df_fin_view["Data Efetiva"].dt.to_period("M") == periodo_d].copy()
