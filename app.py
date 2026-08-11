@@ -2324,25 +2324,24 @@ if eh_admin:
         )
         st.write(list(abas_disponiveis))
 
-# ---- Visão por Departamento (recurso em teste, só para administrador) ----
-# Troca o painel inteiro pra focar só nas linhas da DRE relevantes a um
-# departamento específico (reaproveita as linhas já definidas nos modelos
-# de relatório -- MKT, Compras, Suprimentos, RH -- como fonte da verdade de
-# "quais linhas pertencem a esse setor").
+# ---- Visão por Departamento -- troca o painel inteiro pra focar só nas
+# linhas da DRE relevantes a um departamento específico (reaproveita as
+# linhas já definidas nos modelos de relatório -- MKT, Compras,
+# Suprimentos, RH -- como fonte da verdade de "quais linhas pertencem a
+# esse setor"). Disponível para todos os perfis de acesso.
 departamento_ativo = None
 linhas_departamento_ativo = []
-if eh_admin:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**🧪 Visão por Departamento (teste)**")
-    st.sidebar.caption("Recurso em teste, visível só para administrador por enquanto.")
-    opcoes_departamento = ["Controladoria (Padrão)"] + list(MODELOS_RELATORIO.keys())
-    departamento_sel = st.sidebar.selectbox(
-        "Ver painel como:", opcoes_departamento, key="departamento_sel_admin",
-        format_func=_nome_departamento_curto,
-    )
-    if departamento_sel != "Controladoria (Padrão)":
-        departamento_ativo = departamento_sel
-        linhas_departamento_ativo = MODELOS_RELATORIO[departamento_sel]["linhas_dre"]
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🏢 Visão por Departamento**")
+st.sidebar.caption("Filtra o painel inteiro (visão, tabelas e relatório) para o departamento escolhido.")
+opcoes_departamento = ["Controladoria (Padrão)"] + list(MODELOS_RELATORIO.keys())
+departamento_sel = st.sidebar.selectbox(
+    "Ver painel como:", opcoes_departamento, key="departamento_sel",
+    format_func=_nome_departamento_curto,
+)
+if departamento_sel != "Controladoria (Padrão)":
+    departamento_ativo = departamento_sel
+    linhas_departamento_ativo = MODELOS_RELATORIO[departamento_sel]["linhas_dre"]
 
 modo_visao = st.sidebar.radio(
     "Modo de Visão:",
@@ -3305,17 +3304,18 @@ st.markdown(
 # 8. ABAS
 # ============================================================================
 if departamento_ativo:
-    # Modo Departamento (teste, admin) -- painel inteiro focado só no
-    # departamento escolhido: 3 abas próprias, sem Previsões, Emitir
-    # Relatório nem Usuários (que são conceitos de companhia toda, não de
-    # um departamento/centro de custo específico).
+    # Modo Departamento -- painel inteiro focado só no departamento
+    # escolhido: 4 abas próprias (inclusive Emitir Relatório, já filtrado
+    # pro modelo do departamento), sem Previsões nem Usuários (que são
+    # conceitos de companhia toda, não de um departamento específico).
     _nome_dept_abas = _nome_departamento_curto(departamento_ativo)
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab5 = st.tabs([
         f"📊 Visão Geral — {_nome_dept_abas}",
         f"📋 Detalhe por Conta — {_nome_dept_abas}",
         f"📅 Histórico Mensal — {_nome_dept_abas}",
+        f"📤 Emitir Relatório — {_nome_dept_abas}",
     ])
-    tab4 = tab5 = tab6 = None
+    tab4 = tab6 = None
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -3338,9 +3338,7 @@ with tab1:
     if departamento_ativo:
         nome_departamento_curto = _nome_departamento_curto(departamento_ativo)
         st.markdown(
-            f'<div class="section-title">🧪 Visão do Departamento — {nome_departamento_curto} '
-            f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
-            f'(recurso em teste, visível só para administrador)</span></div>',
+            f'<div class="section-title">🏢 Visão do Departamento — {nome_departamento_curto}</div>',
             unsafe_allow_html=True,
         )
         if not linhas_departamento_resolvidas:
@@ -3375,24 +3373,32 @@ with tab1:
                 ]),
                 unsafe_allow_html=True,
             )
+            st.markdown("<br>", unsafe_allow_html=True)
 
-            with st.expander(f"📋 Ver as {len(linhas_departamento_resolvidas)} linhas da DRE deste departamento (Real vs. Orçado)"):
-                linhas_tabela_dept = []
-                for l in linhas_departamento_resolvidas:
-                    v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                    v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
-                    linhas_tabela_dept.append({
-                        "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
-                    })
-                st.dataframe(
-                    pd.DataFrame(linhas_tabela_dept),
-                    use_container_width=True, hide_index=True,
-                    column_config={
-                        "Realizado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-                        "Orçado (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-                        "Desvio (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-                    },
-                )
+            st.markdown('<div class="section-title">📋 Linhas da DRE do Departamento</div>', unsafe_allow_html=True)
+            linhas_tabela_dept = []
+            for l in linhas_departamento_resolvidas:
+                v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                linhas_tabela_dept.append({
+                    "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
+                })
+            df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
+            cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
+            st.dataframe(
+                df_tabela_dept.style.format(
+                    {
+                        "Realizado (R$)": formata_brl,
+                        "Orçado (R$)": formata_brl,
+                        "Desvio (R$)": formata_brl,
+                    }
+                ).map(cor_valor, subset=cols_num_dept),
+                column_config={
+                    "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
 
     else:
         st.markdown(
@@ -4372,126 +4378,134 @@ if not departamento_ativo:
 # ABA 5: EMISSÃO DE RELATÓRIOS
 # ---------------------------------------------------------------------------
 
-if not departamento_ativo:
-    with tab5:
-        st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
-        st.caption(
-            "Escolha um modelo padrão ou selecione manualmente as linhas da DRE, e gere um relatório "
-            "formatado com 4 planilhas: Resumo (consolidado), Detalhe Mensal (contas x meses, por loja), "
-            "Plano de Contas (composição de cada linha, por loja, a partir do DIÁRIO) e Lançamentos "
-            "(cópia filtrada da DIÁRIO). Dentro do Excel, use o filtro (▾) da coluna \"Loja\" para escolher "
-            "qual visão ver sem precisar gerar o arquivo de novo."
+with tab5:
+    st.markdown('<div class="section-title">📤 Emissão de Relatórios em Excel</div>', unsafe_allow_html=True)
+    st.caption(
+        "Escolha um modelo padrão ou selecione manualmente as linhas da DRE, e gere um relatório "
+        "formatado com 4 planilhas: Resumo (consolidado), Detalhe Mensal (contas x meses, por loja), "
+        "Plano de Contas (composição de cada linha, por loja, a partir do DIÁRIO) e Lançamentos "
+        "(cópia filtrada da DIÁRIO). Dentro do Excel, use o filtro (▾) da coluna \"Loja\" para escolher "
+        "qual visão ver sem precisar gerar o arquivo de novo."
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
+
+    if departamento_ativo:
+        # No Modo Departamento, o relatório só oferece o modelo do próprio
+        # departamento -- já vem selecionado, sem precisar escolher.
+        opcoes_modelo = [departamento_ativo]
+        modelo_sel = st.selectbox(
+            "📁 Modelo de Relatório:", opcoes_modelo,
+            format_func=_nome_departamento_curto, disabled=True,
         )
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
-
+    else:
         opcoes_modelo = ["Seleção manual"] + list(MODELOS_RELATORIO.keys())
         modelo_sel = st.selectbox("📁 Modelo de Relatório:", opcoes_modelo)
 
-        default_contas = []
-        termos_nao_encontrados = []
-        if modelo_sel != "Seleção manual":
-            for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
-                termo_norm = termo.strip().lower()
-                encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
-                if encontrados:
-                    default_contas.extend(encontrados)
-                else:
-                    termos_nao_encontrados.append(termo)
-            default_contas = list(dict.fromkeys(default_contas))
-            if termos_nao_encontrados:
-                st.warning(
-                    "Não encontrei estas linhas do modelo na DRE atual (o texto pode estar um pouco diferente): "
-                    + "; ".join(termos_nao_encontrados)
-                    + ". Adicione-as manualmente no campo abaixo, se existirem."
-                )
-
-        contas_relatorio = st.multiselect(
-            "🔍 Linhas da DRE incluídas no relatório:",
-            options=linhas_relatorio,
-            default=default_contas,
-            key=f"contas_relatorio__{modelo_sel}",
-        )
-
-        opcoes_lojas_relatorio = list(abas_disponiveis)
-
-        lojas_relatorio_sel = st.multiselect(
-            "🏬 Lojas / Visões incluídas no relatório:",
-            options=opcoes_lojas_relatorio,
-            default=opcoes_lojas_relatorio,
-            help=(
-                "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
-                "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
-                "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
-                "seleção aqui se quiser um arquivo menor desde já."
-            ),
-        )
-
-        col_btn, col_info = st.columns([1, 2])
-        with col_btn:
-            gerar_clicado = st.button(
-                "📊 Gerar Relatório Excel",
-                use_container_width=True,
-                disabled=not contas_relatorio or not lojas_relatorio_sel,
-            )
-
-        if gerar_clicado and contas_relatorio:
-            with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
-                # Carrega só as lojas/visões escolhidas no filtro acima -- evita
-                # gerar um arquivo gigante com todas as 26 abas de uma vez.
-                dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
-                df_tabela_contas = carregar_tabela_contas(path_real)
-                mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
-                df_diario_rel = carregar_diario(path_real)
-                df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
-                mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
-
-            info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
-
-            with st.spinner("Montando o relatório em Excel..."):
-                excel_bytes = montar_relatorio_excel(
-                    contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
-                    dados_por_loja=dados_por_loja_rel,
-                    mapa_planos_dre=mapa_planos_dre_rel,
-                    df_diario=df_diario_rel,
-                    forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
-                    permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
-                    mapa_loja_centro_custo=mapa_loja_cc_rel,
-                )
-            st.session_state["relatorio_excel_bytes"] = excel_bytes
-
-            def _nome_arquivo_modelo(nome_modelo):
-                """Usa o nome completo do modelo (igual aparece no seletor, só
-                sem o emoji na frente) como base do nome do arquivo -- ex.:
-                "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
-                Compras". Só remove caracteres inválidos em nome de arquivo."""
-                texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
-                texto = re.sub(r'[\\/*?:"<>|]', "", texto)
-                return texto or "Relatório"
-
-            st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
-            st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
-
-            if df_diario_rel is None or df_diario_rel.empty:
-                st.warning(
-                    "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
-                    "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
-                )
+    default_contas = []
+    termos_nao_encontrados = []
+    if modelo_sel != "Seleção manual":
+        for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
+            termo_norm = termo.strip().lower()
+            encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
+            if encontrados:
+                default_contas.extend(encontrados)
             else:
-                st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
-
-        if not contas_relatorio:
-            st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
-
-        if st.session_state.get("relatorio_excel_bytes"):
-            st.download_button(
-                label="⬇️ Baixar Relatório (.xlsx)",
-                data=st.session_state["relatorio_excel_bytes"],
-                file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                termos_nao_encontrados.append(termo)
+        default_contas = list(dict.fromkeys(default_contas))
+        if termos_nao_encontrados:
+            st.warning(
+                "Não encontrei estas linhas do modelo na DRE atual (o texto pode estar um pouco diferente): "
+                + "; ".join(termos_nao_encontrados)
+                + ". Adicione-as manualmente no campo abaixo, se existirem."
             )
-            st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
+
+    contas_relatorio = st.multiselect(
+        "🔍 Linhas da DRE incluídas no relatório:",
+        options=linhas_relatorio,
+        default=default_contas,
+        key=f"contas_relatorio__{modelo_sel}",
+    )
+
+    opcoes_lojas_relatorio = list(abas_disponiveis)
+
+    lojas_relatorio_sel = st.multiselect(
+        "🏬 Lojas / Visões incluídas no relatório:",
+        options=opcoes_lojas_relatorio,
+        default=opcoes_lojas_relatorio,
+        help=(
+            "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
+            "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
+            "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
+            "seleção aqui se quiser um arquivo menor desde já."
+        ),
+    )
+
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        gerar_clicado = st.button(
+            "📊 Gerar Relatório Excel",
+            use_container_width=True,
+            disabled=not contas_relatorio or not lojas_relatorio_sel,
+        )
+
+    if gerar_clicado and contas_relatorio:
+        with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
+            # Carrega só as lojas/visões escolhidas no filtro acima -- evita
+            # gerar um arquivo gigante com todas as 26 abas de uma vez.
+            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
+            df_tabela_contas = carregar_tabela_contas(path_real)
+            mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
+            df_diario_rel = carregar_diario(path_real)
+            df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
+            mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
+
+        info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
+
+        with st.spinner("Montando o relatório em Excel..."):
+            excel_bytes = montar_relatorio_excel(
+                contas_relatorio, list_df_real, list_df_orc, m_map, colunas_validas, label_visao,
+                dados_por_loja=dados_por_loja_rel,
+                mapa_planos_dre=mapa_planos_dre_rel,
+                df_diario=df_diario_rel,
+                forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
+                permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
+                mapa_loja_centro_custo=mapa_loja_cc_rel,
+            )
+        st.session_state["relatorio_excel_bytes"] = excel_bytes
+
+        def _nome_arquivo_modelo(nome_modelo):
+            """Usa o nome completo do modelo (igual aparece no seletor, só
+            sem o emoji na frente) como base do nome do arquivo -- ex.:
+            "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
+            Compras". Só remove caracteres inválidos em nome de arquivo."""
+            texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
+            texto = re.sub(r'[\\/*?:"<>|]', "", texto)
+            return texto or "Relatório"
+
+        st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
+        st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
+
+        if df_diario_rel is None or df_diario_rel.empty:
+            st.warning(
+                "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
+                "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
+            )
+        else:
+            st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
+
+    if not contas_relatorio:
+        st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
+
+    if st.session_state.get("relatorio_excel_bytes"):
+        st.download_button(
+            label="⬇️ Baixar Relatório (.xlsx)",
+            data=st.session_state["relatorio_excel_bytes"],
+            file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)
