@@ -72,22 +72,6 @@ CONFIG_PLOTLY_TRAVADO = {
 }
 
 
-@st.cache_resource
-def _estado_compartilhado_painel():
-    """Pequeno dicionário mutável compartilhado entre TODAS as sessões deste
-    servidor (não é cache de dados pesados -- só guarda o escopo/período que
-    a pessoa tem selecionado no painel principal agora). É assim que o
-    Painel de TV (aberto numa aba separada, sem acesso ao session_state do
-    painel principal) consegue "ver" e acompanhar os filtros escolhidos lá,
-    inclusive quando eles mudam com o TV já aberto."""
-    return {
-        "abas_escolhidas": None,
-        "label_visao": None,
-        "cols_periodo": None,
-        "label_periodo": None,
-    }
-
-
 def cor_variacao(valor):
     """Retorna verde/vermelho conforme o sinal do valor (positivo/negativo)."""
     if pd.isna(valor):
@@ -1424,6 +1408,49 @@ def _nome_departamento_curto(nome_modelo):
     return texto or nome_modelo
 
 
+def _resolver_termo_departamento(termo, linhas_disponiveis):
+    """Resolve um termo do modelo de relatório contra as linhas REAIS da
+    DRE atual. Dois formatos de termo:
+    - Texto comum (ex.: "6.11 - Catálogos e Revistas"): casa por substring
+      de texto, como sempre funcionou.
+    - "PREFIXO:6.24.2": casa pela HIERARQUIA NUMÉRICA -- a própria linha
+      6.24.2 e QUALQUER linha abaixo dela (6.24.2.1, 6.24.2.3.5 etc.), sem
+      precisar listar cada sublinha manualmente. Útil quando um
+      departamento é dono de todo um ramo da árvore da DRE (ex.: MKT é
+      dono de 6.24.2 pra baixo, mas não de 6.24.1, que é de outra área)."""
+    termo = str(termo).strip()
+    if termo.startswith("PREFIXO:"):
+        prefixo = termo.split("PREFIXO:", 1)[1].strip()
+        return [l for l in linhas_disponiveis if _linha_pertence_ao_grupo(l, prefixo)]
+    termo_norm = termo.lower()
+    return [l for l in linhas_disponiveis if termo_norm in str(l).strip().lower()]
+
+
+def _linhas_raiz_do_conjunto(linhas):
+    """Dentro de um conjunto de linhas já resolvidas, devolve só as
+    "raízes" -- linhas que não têm nenhuma outra linha do MESMO conjunto
+    como ancestral. Necessário porque um modelo de departamento pode listar
+    uma linha de grupo e as sublinhas dela ao mesmo tempo (ex.: "8.3 -
+    Pessoal" e "8.3.1 - Salários"); como o valor da linha de grupo já
+    inclui o das sublinhas, somar todo mundo junto contaria o mesmo custo
+    mais de uma vez. Usado em qualquer total/soma/gráfico de composição do
+    Modo Departamento -- a tabela de detalhe (que lista linha por linha,
+    sem somar) continua usando o conjunto completo normalmente."""
+    numeros = {l: _numero_linha_dre(l) for l in linhas}
+    raizes = []
+    for l, num in numeros.items():
+        if num is None:
+            raizes.append(l)
+            continue
+        tem_ancestral_no_conjunto = any(
+            outro_num is not None and outro_l != l and _linha_pertence_ao_grupo(l, outro_num) and outro_num != num
+            for outro_l, outro_num in numeros.items()
+        )
+        if not tem_ancestral_no_conjunto:
+            raizes.append(l)
+    return raizes
+
+
 def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
     """Retorna a máscara (True/False por linha) de correspondência da coluna
     "Centro de Custos" do DIÁRIO contra um ou mais candidatos de loja.
@@ -1557,53 +1584,64 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO",
     ]
 
-    # ---- Segue o escopo/período do painel principal, se alguém já tiver
-    # aberto ele nesta sessão do servidor (ver _estado_compartilhado_painel).
-    # Se ainda não houver nenhum, cai no padrão de sempre: a primeira visão
-    # consolidada + acumulado até o mês atual. ----
-    _estado_tv = _estado_compartilhado_painel()
-    abas_escolhidas_compartilhadas = _estado_tv.get("abas_escolhidas")
-    seguindo_painel_principal = bool(
-        abas_escolhidas_compartilhadas
-        and all(a in abas_disponiveis for a in abas_escolhidas_compartilhadas)
-    )
+    aba_padrao_tv = _obter_aba_consolidada_padrao(abas_disponiveis)
+    if not aba_padrao_tv:
+        st.error("Não foi possível carregar dados para o Painel de TV.")
+        return
 
-    if seguindo_painel_principal:
-        abas_para_tv = abas_escolhidas_compartilhadas
-        aba_escolhida = _estado_tv.get("label_visao") or " + ".join(abas_para_tv)
-    else:
-        aba_padrao = _obter_aba_consolidada_padrao(abas_disponiveis)
-        if not aba_padrao:
-            st.error("Não foi possível carregar dados para o Painel de TV.")
-            return
-        abas_para_tv = [aba_padrao]
-        aba_escolhida = aba_padrao
+    agora = datetime.now(FUSO_BR)
+    idx_mes_atual = min(max(agora.month - 1, 0), len(nomes_meses_tv) - 1)
 
+    # ---- Seletores próprios do Painel de TV (visão e mês) -- minimalistas,
+    # ficam no espaço vazio do cabeçalho, ao lado do relógio. O Painel de TV
+    # NÃO acompanha mais os filtros do painel principal: a escolha é só
+    # daqui mesmo, e persiste entre os ciclos de atualização automática. ----
+    col_head_a, col_head_filtros, col_head_b = st.columns([2.4, 1.35, 1])
+    with col_head_filtros:
+        st.markdown(
+            f"""
+            <style>
+                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-baseweb="select"] {{
+                    min-height: 30px !important;
+                }}
+                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-baseweb="select"] > div {{
+                    min-height: 30px !important; font-size: 12px !important;
+                    background: {COLORS["surface_alt"]} !important; border-color: {COLORS["border"]} !important;
+                }}
+                div[data-testid="column"]:has(#tv-seletores-marcador) label {{
+                    font-size: 10px !important; color: {COLORS["text_muted"]} !important;
+                    margin-bottom: 0 !important; text-transform: uppercase; letter-spacing: 0.4px;
+                }}
+                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-testid="stVerticalBlock"] {{ gap: 0.15rem !important; }}
+            </style>
+            <span id="tv-seletores-marcador"></span>
+            """,
+            unsafe_allow_html=True,
+        )
+        aba_escolhida = st.selectbox(
+            "Visão", abas_disponiveis,
+            index=abas_disponiveis.index(aba_padrao_tv) if aba_padrao_tv in abas_disponiveis else 0,
+            key="tv_sel_visao",
+        )
+        mes_escolhido_tv = st.selectbox(
+            "Acumulado até", nomes_meses_tv, index=idx_mes_atual, key="tv_sel_mes",
+        )
+
+    abas_para_tv = [aba_escolhida]
     list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
 
     df_ref_tv = list_df_real_tv[0] if list_df_real_tv else pd.DataFrame()
     colunas_validas_tv = [m for m in meses_cols_tv if m in df_ref_tv.columns]
     m_map_tv = {n: c for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in colunas_validas_tv}
 
-    agora = datetime.now(FUSO_BR)
-    idx_mes_atual = min(max(agora.month - 1, 0), len(m_map_tv) - 1) if m_map_tv else 0
-
-    # Período: também segue o painel principal (Mês Selecionado, Múltiplos
-    # Meses ou ANO COMPLETO -- o que estiver escolhido lá), desde que as
-    # colunas continuem batendo com os dados atuais. Senão, volta ao YTD
-    # padrão até o mês corrente.
-    cols_periodo_compartilhado = _estado_tv.get("cols_periodo")
-    label_periodo_compartilhado = _estado_tv.get("label_periodo")
-    if (
-        seguindo_painel_principal
-        and cols_periodo_compartilhado
-        and all(c in colunas_validas_tv for c in cols_periodo_compartilhado)
-    ):
-        cols_ytd = cols_periodo_compartilhado
-        legenda_periodo_tv = label_periodo_compartilhado or "Período do painel principal"
-    else:
-        cols_ytd = list(m_map_tv.values())[: idx_mes_atual + 1]
-        legenda_periodo_tv = f"Acumulado até {nomes_meses_tv[idx_mes_atual].capitalize()}/{list(m_map_tv.values())[idx_mes_atual].split('/')[-1]}" if m_map_tv else "Sem dados"
+    # Acumula (YTD) até o mês escolhido no seletor -- se aquele mês ainda
+    # não tiver dado na planilha, cai pro último mês que realmente existe.
+    idx_mes_escolhido = min(nomes_meses_tv.index(mes_escolhido_tv), len(m_map_tv) - 1) if m_map_tv else 0
+    cols_ytd = list(m_map_tv.values())[: idx_mes_escolhido + 1]
+    legenda_periodo_tv = (
+        f"Acumulado até {nomes_meses_tv[idx_mes_escolhido].capitalize()}/{list(m_map_tv.values())[idx_mes_escolhido].split('/')[-1]}"
+        if m_map_tv else "Sem dados"
+    )
 
     # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
     st.markdown(
@@ -1719,7 +1757,6 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     total_saidas_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
     total_custos_desp_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi
 
-    col_head_a, col_head_b = st.columns([3, 1])
     with col_head_a:
         st.markdown(
             f"""
@@ -2179,25 +2216,19 @@ MODELOS_RELATORIO = {
     },
     "📣 Relatório de Custos - MKT": {
         "linhas_dre": [
-            "6.24 - Esforços de Marketing",
-            "6.24.1 - Marketing Regional - Gestão GB",
-            "6.24.1.1 - Mídia Regional / Local",
-            "6.24.1.1.1 - MKT-REG: 01. Mídia e Ativação (Gestão do GB)",
-            "6.24.2 - Marketing Regional - Gestão CP",
-            "6.24.2.1 - Eventos",
-            "6.24.2.1.1 - MKT-REG: 02. Evento e Patrocínio",
-            "6.24.2.2 - Produção e Propaganda",
-            "6.24.2.2.1 - MKT-REG: 03. Mídia Exterior",
-            "6.24.2.2.2 - MKT-REG: 04. Mídia e Ativação (Gestão do CP com agências locais)",
-            "6.24.2.2.3 - MKT-REG: 05. Mídia e Ativação (Gestão do CP com Opus ou Idea3)",
-            "6.24.2.3 - Material Promocional",
-            "6.24.2.3.1 - MKT-REG: 06. Impressão e Produção de Material",
-            "6.24.2.3.2 - MKT-REG: 07. Brinde, amostra, flaconete e PRM",
-            "6.24.2.4 - Mkt Digital",
-            "6.24.2.4.1 - MKT-REG: 08. Redes Sociais e Influenciador Digital",
-            "6.24.2.4.2 - MKT-REG: 09. Loja Digital e Mensagem SMS Turbo",
-            "6.24.2.5 - Encontro de Ciclo",
-            "6.24.2.6 - Outras Despesas de Marketing",
+            # PREFIXO:6.24.2 pega a linha "6.24.2 - Marketing Regional -
+            # Gestão CP" e TUDO abaixo dela na hierarquia (6.24.2.1,
+            # 6.24.2.1.1, etc.), automaticamente -- é o ramo que o
+            # coordenador de MKT de fato gerencia.
+            #
+            # Ficam de fora, de propósito:
+            # - "6.24 - Esforços de Marketing" (só consolida os dois ramos,
+            #   incluiria custo que não é do coordenador de MKT)
+            # - "6.24.1 - Marketing Regional - Gestão GB" e tudo abaixo dela
+            #   (gestão da indústria -- aparecem no painel só como
+            #   informação/monitoramento, não como algo sob controle do
+            #   coordenador de MKT)
+            "PREFIXO:6.24.2",
         ],
         "forcar_planos_contas": [],
         # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
@@ -2431,16 +2462,22 @@ m_map = {
 
 # ---- Resolve as linhas do Departamento ativo (se algum estiver selecionado)
 # contra as linhas REAIS da DRE atual -- mesma lógica de correspondência
-# tolerante (substring) usada na aba de Emitir Relatório.
+# usada na aba de Emitir Relatório (ver _resolver_termo_departamento).
 col_nome_dre_dept = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
 linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique()) if not df_ref.empty else []
 linhas_departamento_resolvidas = []
+linhas_departamento_raiz = []
 if departamento_ativo:
     for termo in linhas_departamento_ativo:
-        termo_norm_dept = termo.strip().lower()
-        encontrados_dept = [l for l in linhas_dre_todas_painel if termo_norm_dept in str(l).strip().lower()]
-        linhas_departamento_resolvidas.extend(encontrados_dept)
+        linhas_departamento_resolvidas.extend(_resolver_termo_departamento(termo, linhas_dre_todas_painel))
     linhas_departamento_resolvidas = list(dict.fromkeys(linhas_departamento_resolvidas))
+    # "Raiz" = só as linhas sem outro membro do mesmo conjunto como
+    # ancestral -- é essa lista que deve ser usada em qualquer SOMA/TOTAL
+    # (KPIs, gráficos), pra não contar o mesmo custo duas vezes quando o
+    # modelo lista uma linha de grupo e as sublinhas dela juntas. A tabela
+    # de detalhe (que lista linha por linha, sem somar) continua usando
+    # linhas_departamento_resolvidas normalmente.
+    linhas_departamento_raiz = _linhas_raiz_do_conjunto(linhas_departamento_resolvidas)
 
 tipo_periodo = st.sidebar.radio(
     "Modo do Período:",
@@ -2490,15 +2527,6 @@ else:
     cols_graficos = cols_kpi
     label_periodo_kpi = "Meses Selecionados"
     label_periodo_graf = "Meses Selecionados"
-
-# Publica o escopo/período atuais no estado compartilhado -- é isso que
-# permite o Painel de TV (aberto numa aba separada) mostrar a mesma visão
-# escolhida aqui, inclusive acompanhando mudanças feitas com o TV já aberto.
-_estado_compartilhado = _estado_compartilhado_painel()
-_estado_compartilhado["abas_escolhidas"] = abas_para_carregar
-_estado_compartilhado["label_visao"] = label_visao
-_estado_compartilhado["cols_periodo"] = cols_kpi
-_estado_compartilhado["label_periodo"] = label_periodo_kpi
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
@@ -3369,11 +3397,11 @@ with tab1:
         else:
             dept_real = sum(
                 get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)
-                for l in linhas_departamento_resolvidas
+                for l in linhas_departamento_raiz
             )
             dept_orc = sum(
                 get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True)
-                for l in linhas_departamento_resolvidas
+                for l in linhas_departamento_raiz
             )
             dept_real_abs = abs(dept_real)
             dept_orc_abs = abs(dept_orc)
@@ -3419,12 +3447,12 @@ with tab1:
                          value_color=COLORS["text"], subtext="Fatia do departamento no total de custos e despesas", icon="🧾"),
                     dict(label="MAIOR CONTA DO DEPARTAMENTO",
                          value=formata_m(max(
-                             (abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)) for l in linhas_departamento_resolvidas),
+                             (abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)) for l in linhas_departamento_raiz),
                              default=0,
                          )),
                          value_color=COLORS["negative"],
                          subtext=_nome_sem_numero_dre(max(
-                             linhas_departamento_resolvidas,
+                             linhas_departamento_raiz,
                              key=lambda l: abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)),
                          ))[:38],
                          icon="🔎"),
@@ -3436,25 +3464,39 @@ with tab1:
             col_donut_dept, col_evol_dept = st.columns(2)
             with col_donut_dept:
                 st.markdown('<div class="section-title">🍩 Composição do Departamento</div>', unsafe_allow_html=True)
-                valores_donut_dept = [
-                    abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                    for l in linhas_departamento_resolvidas
+                pares_donut_dept = [
+                    (l, abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)))
+                    for l in linhas_departamento_raiz
                 ]
-                labels_donut_dept = [_nome_sem_numero_dre(l) for l in linhas_departamento_resolvidas]
+                pares_donut_dept = [(l, v) for l, v in pares_donut_dept if v > 0]
+                pares_donut_dept.sort(key=lambda par: par[1], reverse=True)
+                # Com muitas contas, as fatias menores viram um amontoado de
+                # rótulos ilegíveis -- mostra só as maiores e agrupa o resto
+                # em "Outros", que ainda soma certinho no total do meio.
+                TOP_N_DONUT = 7
+                if len(pares_donut_dept) > TOP_N_DONUT:
+                    soma_outros_donut = sum(v for _, v in pares_donut_dept[TOP_N_DONUT:])
+                    pares_donut_dept = pares_donut_dept[:TOP_N_DONUT] + [("__outros__", soma_outros_donut)]
+                labels_donut_dept = [
+                    "Outros" if l == "__outros__" else _nome_sem_numero_dre(l) for l, _ in pares_donut_dept
+                ]
+                valores_donut_dept = [v for _, v in pares_donut_dept]
                 if sum(valores_donut_dept) > 0:
                     fig_donut_dept = go.Figure(data=[go.Pie(
                         labels=labels_donut_dept, values=valores_donut_dept, hole=0.55,
                         marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
-                                             COLORS["negative"], COLORS["secondary"], COLORS["muted_line"]]),
+                                             COLORS["negative"], COLORS["secondary"], COLORS["muted_line"], "#6B7280", "#94A3B8"]),
                         textinfo="percent", textfont=dict(color=COLORS["text"], size=11),
+                        texttemplate="%{percent:.1%}",
                     )])
                     fig_donut_dept.add_annotation(
                         text=f"<b>{formata_m(dept_real_abs)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Realizado</span>",
                         showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
                     )
                     estilo_grafico(
-                        fig_donut_dept, height=340,
-                        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=10)),
+                        fig_donut_dept, height=380,
+                        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=10)),
+                        margin=dict(l=10, r=10, t=20, b=10),
                     )
                     st.plotly_chart(fig_donut_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
                 else:
@@ -3463,11 +3505,11 @@ with tab1:
             with col_evol_dept:
                 st.markdown('<div class="section-title">📈 Evolução Mensal (Ano Completo)</div>', unsafe_allow_html=True)
                 meses_evol_real = [
-                    sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_raiz)
                     for m_col in m_map.values()
                 ]
                 meses_evol_orc = [
-                    sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_raiz)
                     for m_col in m_map.values()
                 ]
                 fig_evol_dept = go.Figure()
@@ -3480,10 +3522,10 @@ with tab1:
                     mode="lines+markers", line=dict(color=COLORS["muted_line"], width=2, dash="dot"),
                 ))
                 estilo_grafico(
-                    fig_evol_dept, height=340,
-                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True),
+                    fig_evol_dept, height=380,
+                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9)),
                     yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5),
                 )
                 st.plotly_chart(fig_evol_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
@@ -4202,7 +4244,7 @@ if departamento_ativo:
             ebitda_impacto = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
             dept_real_impacto = abs(sum(
                 get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)
-                for l in linhas_departamento_resolvidas
+                for l in linhas_departamento_raiz
             ))
             margem_atual_impacto = (ebitda_impacto / rec_liq_impacto * 100) if rec_liq_impacto else 0.0
 
@@ -4233,10 +4275,10 @@ if departamento_ativo:
                 st.markdown('<div class="section-title">🏆 Ranking de Contas (Maiores Custos)</div>', unsafe_allow_html=True)
                 valores_rank = [
                     abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                    for l in linhas_departamento_resolvidas
+                    for l in linhas_departamento_raiz
                 ]
                 df_rank_dept = pd.DataFrame({
-                    "Conta": [_nome_sem_numero_dre(l) for l in linhas_departamento_resolvidas],
+                    "Conta": [_nome_sem_numero_dre(l) for l in linhas_departamento_raiz],
                     "Valor": valores_rank,
                 }).sort_values("Valor", ascending=True).tail(8)
                 fig_rank_dept = go.Figure(data=[go.Bar(
@@ -4244,11 +4286,15 @@ if departamento_ativo:
                     marker_color=COLORS["primary"], text=[formata_m(v) for v in df_rank_dept["Valor"]],
                     textposition="outside", textfont=dict(color=COLORS["text_muted"], size=10),
                 )])
+                # Folga de 25% no eixo X pra o rótulo da maior barra (que
+                # quase encosta na borda) não ficar cortado.
+                maior_valor_rank = df_rank_dept["Valor"].max() if not df_rank_dept.empty else 0
                 estilo_grafico(
                     fig_rank_dept, height=340,
-                    xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
+                    xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True,
+                               range=[0, maior_valor_rank * 1.25 if maior_valor_rank else 1]),
                     yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
-                    margin=dict(l=10, r=60, t=20, b=30),
+                    margin=dict(l=10, r=20, t=20, b=30),
                 )
                 st.plotly_chart(fig_rank_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
@@ -4256,8 +4302,8 @@ if departamento_ativo:
                 st.markdown('<div class="section-title">📐 Desvio Mensal vs. Orçado (Ano Completo)</div>', unsafe_allow_html=True)
                 desvios_mensais = []
                 for m_col in m_map.values():
-                    v_r_mes = sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
-                    v_o_mes = sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas)
+                    v_r_mes = sum(get_valor_consolidado_multi(list_df_real, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_raiz)
+                    v_o_mes = sum(get_valor_consolidado_multi(list_df_orc, l, [m_col], exato_linha_sintetica=True) for l in linhas_departamento_raiz)
                     # positivo = gastou menos que o orçado (favorável)
                     desvios_mensais.append(abs(v_o_mes) - abs(v_r_mes))
                 cores_desvio = [COLORS["positive"] if v >= 0 else COLORS["negative"] for v in desvios_mensais]
@@ -4274,7 +4320,7 @@ if departamento_ativo:
 
             # ---- Insight automático: melhor/pior mês, tendência ----
             meses_com_valor = {
-                nome: abs(sum(get_valor_consolidado_multi(list_df_real, l, [col], exato_linha_sintetica=True) for l in linhas_departamento_resolvidas))
+                nome: abs(sum(get_valor_consolidado_multi(list_df_real, l, [col], exato_linha_sintetica=True) for l in linhas_departamento_raiz))
                 for nome, col in m_map.items()
             }
             meses_com_valor_positivo = {k: v for k, v in meses_com_valor.items() if v > 0}
@@ -4282,10 +4328,15 @@ if departamento_ativo:
                 mes_maior_gasto = max(meses_com_valor_positivo, key=meses_com_valor_positivo.get)
                 mes_menor_gasto = min(meses_com_valor_positivo, key=meses_com_valor_positivo.get)
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.info(
+                # Escapa o "$" antes de passar pro st.info -- dois "R$" na
+                # mesma string de markdown fazem o Streamlit tentar renderizar
+                # tudo entre eles como fórmula (LaTeX), comendo o cifrão e
+                # quebrando o **negrito** do meio.
+                texto_insight_meses = (
                     f"📌 **Maior gasto do ano:** {mes_maior_gasto.capitalize()} ({formata_brl(meses_com_valor_positivo[mes_maior_gasto])}) · "
                     f"**Menor gasto do ano:** {mes_menor_gasto.capitalize()} ({formata_brl(meses_com_valor_positivo[mes_menor_gasto])})"
-                )
+                ).replace("$", "\\$")
+                st.info(texto_insight_meses)
 
 
 # ---------------------------------------------------------------------------
@@ -4634,8 +4685,7 @@ with tab5:
     termos_nao_encontrados = []
     if modelo_sel != "Seleção manual":
         for termo in MODELOS_RELATORIO[modelo_sel]["linhas_dre"]:
-            termo_norm = termo.strip().lower()
-            encontrados = [l for l in linhas_relatorio if termo_norm in str(l).strip().lower()]
+            encontrados = _resolver_termo_departamento(termo, linhas_relatorio)
             if encontrados:
                 default_contas.extend(encontrados)
             else:
