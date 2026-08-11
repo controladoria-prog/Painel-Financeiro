@@ -4394,7 +4394,9 @@ with tab3:
 
     # ---- Linhas informativas (ex.: no MKT, a gestão GB da indústria) --
     # não fazem parte da gestão do departamento, mas ficam visíveis aqui só
-    # pra conhecimento dos valores (total do ano completo). ----
+    # pra conhecimento dos valores -- no mesmo formato mensal da tabela
+    # acima (colunas por mês + Total Acumulado), respeitando o mesmo
+    # Realizado/Orçado escolhido no toggle "Base de Dados". ----
     if departamento_ativo and linhas_departamento_informativas:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(
@@ -4403,21 +4405,26 @@ with tab3:
         )
         st.caption(
             "Essas linhas aparecem na DRE dentro do mesmo grupo, mas não são geridas por este "
-            "departamento -- estão aqui só para conhecimento dos valores (ano completo)."
+            "departamento -- estão aqui só para conhecimento dos valores."
         )
-        linhas_tabela_info_hist = []
-        for l in linhas_departamento_informativas:
-            v_r_info_hist = abs(get_valor_consolidado_multi(list_df_real, l, colunas_validas, exato_linha_sintetica=True))
-            v_o_info_hist = abs(get_valor_consolidado_multi(list_df_orc, l, colunas_validas, exato_linha_sintetica=True))
-            linhas_tabela_info_hist.append({
-                "Conta / Linha DRE": l, "Realizado (Ano) R$": v_r_info_hist, "Orçado (Ano) R$": v_o_info_hist,
-                "Desvio (R$)": v_o_info_hist - v_r_info_hist,
-            })
+        hist_data_info = []
+        for linha in linhas_departamento_informativas:
+            row_dict_info = {"Conta / Linha DRE": linha}
+            soma_linha_info = 0.0
+            for m_nome, m_col in m_map.items():
+                val_m_info = get_valor_consolidado_multi(target_dfs, linha, [m_col], exato_linha_sintetica=True)
+                row_dict_info[m_nome] = val_m_info
+                soma_linha_info += val_m_info
+            row_dict_info["Total Acumulado"] = soma_linha_info
+            hist_data_info.append(row_dict_info)
+
+        df_hist_info = pd.DataFrame(hist_data_info)
+        colunas_numericas_info = list(m_map.keys()) + ["Total Acumulado"]
         st.dataframe(
-            pd.DataFrame(linhas_tabela_info_hist).style.format(
-                {"Realizado (Ano) R$": formata_brl, "Orçado (Ano) R$": formata_brl, "Desvio (R$)": formata_brl}
-            ).map(cor_valor, subset=["Realizado (Ano) R$", "Orçado (Ano) R$", "Desvio (R$)"]),
-            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
+            df_hist_info.style.format({col: formata_brl for col in colunas_numericas_info}).map(
+                cor_valor, subset=colunas_numericas_info
+            ),
+            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large", pinned=True)},
             use_container_width=True,
             hide_index=True,
         )
