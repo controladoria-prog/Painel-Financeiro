@@ -1134,95 +1134,31 @@ def obter_caminhos_excel():
     return abas_validas, path_orc, path_real
 
 
-def _baixar_bytes_drive_com_confirmacao(id_arquivo):
-    """Baixa um arquivo do Google Drive tratando a tela de aviso de vírus
-    que aparece pra alguns arquivos (isso faz um download simples devolver
-    uma página HTML de aviso em vez do arquivo de verdade -- daí o pandas
-    reclamar que "não consegue determinar o formato do Excel", porque na
-    real ele recebeu HTML, não um .xlsx). Devolve os bytes do arquivo."""
-    url_base = f"https://drive.google.com/uc?export=download&id={id_arquivo}"
-    req = urllib.request.Request(url_base, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        conteudo = resp.read()
-        cookies = resp.headers.get_all("Set-Cookie") or []
-
-    inicio = conteudo[:200].lower()
-    if b"<!doctype" in inicio or b"<html" in inicio:
-        texto = conteudo.decode("utf-8", errors="ignore")
-        # A tela de aviso de vírus do Drive pode trazer o token de duas
-        # formas: direto num link ("confirm=XXX") ou como campo de
-        # formulário (name="confirm" value="XXX") -- tenta as duas.
-        m = re.search(r'confirm=([0-9A-Za-z_-]+)|name="confirm"\s+value="([0-9A-Za-z_-]+)"', texto)
-        if m:
-            token_confirmacao = m.group(1) or m.group(2)
-            url_confirmado = f"{url_base}&confirm={token_confirmacao}"
-            req2 = urllib.request.Request(
-                url_confirmado,
-                headers={"User-Agent": "Mozilla/5.0", "Cookie": "; ".join(c.split(";")[0] for c in cookies)},
-            )
-            with urllib.request.urlopen(req2, timeout=30) as resp2:
-                conteudo = resp2.read()
-    return conteudo
-
-
 @st.cache_resource
 def obter_dados_fluxo_caixa():
-    """Carrega a aba "Fluxo de Caixa 2026" da planilha do Painel Financeiro.
+    """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
 
-    Tenta alguns formatos de URL diferentes, na ordem, porque esse arquivo
-    específico pode estar guardado no Drive como um .xlsx de verdade (não
-    uma Planilha Google nativa) -- nesse caso o endpoint simples de
-    export?format=xlsx às vezes não funciona, e o de download direto do
-    Drive (com tratamento da tela de aviso de vírus) funciona melhor.
-    Retorna (df, erro); erro é None se carregou certo, ou o detalhe de cada
-    tentativa (incluindo uma prévia do conteúdo recebido, se não for um
-    Excel de verdade -- ajuda a diagnosticar o que está sendo devolvido)."""
-    ID_PLANILHA_FLUXO = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
-    NOME_ABA_FLUXO = "Fluxo de Caixa 2026"
-    nome_aba_url = urllib.parse.quote(NOME_ABA_FLUXO)
+    Lê o CSV PUBLICADO da aba (Arquivo > Compartilhar > Publicar na web >
+    aba "Fluxo de Caixa 2026" > CSV). Esse caminho é o que funciona pra
+    essa planilha: ela é grande demais (perto do limite de 10 milhões de
+    células do Google) pros endpoints normais de export/download, que
+    devolviam erro 432 ou estouravam o tempo. O CSV publicado é servido
+    pronto, sem o Google precisar converter nada na hora -- baixa leve e
+    rápido. Como está marcado "republicar automaticamente quando houver
+    alterações", ele reflete as atualizações da planilha sozinho.
 
-    erros = []
-
-    # Tentativa 1: export direto em xlsx (funciona bem pra Planilhas Google nativas)
+    Retorna (df, erro); erro é None se carregou certo."""
+    URL_CSV_FLUXO_PUBLICADO = (
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
+        "/pub?gid=474479631&single=true&output=csv"
+    )
     try:
-        df = pd.read_excel(
-            f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA_FLUXO}/export?format=xlsx",
-            sheet_name=NOME_ABA_FLUXO,
-        )
+        df = pd.read_csv(URL_CSV_FLUXO_PUBLICADO)
         df = df.dropna(how="all").dropna(axis=1, how="all")
+        df.columns = [str(c).strip() for c in df.columns]
         return df, None
     except Exception as e:
-        erros.append(f"[export xlsx] {e}")
-
-    # Tentativa 2: download direto via Drive, tratando a tela de aviso de
-    # vírus (ver _baixar_bytes_drive_com_confirmacao)
-    try:
-        conteudo_drive = _baixar_bytes_drive_com_confirmacao(ID_PLANILHA_FLUXO)
-        df = pd.read_excel(io.BytesIO(conteudo_drive), sheet_name=NOME_ABA_FLUXO)
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-        return df, None
-    except Exception as e:
-        detalhe_conteudo = ""
-        try:
-            previa = conteudo_drive[:200].decode("utf-8", errors="ignore")
-            detalhe_conteudo = f" -- início do que foi recebido: {previa!r}"
-        except Exception:
-            pass
-        erros.append(f"[download Drive] {e}{detalhe_conteudo}")
-
-    # Tentativa 3: exportação em CSV via gviz, específica da aba pelo nome
-    # (mecanismo diferente das duas primeiras -- às vezes funciona quando
-    # elas falham)
-    try:
-        df = pd.read_csv(
-            f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA_FLUXO}/gviz/tq?tqx=out:csv&sheet={nome_aba_url}"
-        )
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-        return df, None
-    except Exception as e:
-        erros.append(f"[gviz csv] {e}")
-
-    return None, "\n".join(erros)
+        return None, str(e)
 
 
 def _detectar_coluna(df, candidatos_nome, tipo_esperado=None):
@@ -2535,17 +2471,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
     if erro_fluxo:
         st.error(
-            "Não consegui carregar a aba \"Fluxo de Caixa 2026\" da planilha. "
-            "Confirme se o link de compartilhamento permite acesso a qualquer pessoa com o link "
-            "(\"Qualquer pessoa com o link pode visualizar\"), e se o nome da aba está escrito "
-            "exatamente assim."
+            "Não consegui carregar os dados do Fluxo de Caixa. O painel lê o CSV publicado da aba "
+            "\"Fluxo de Caixa 2026\" -- confirme na planilha, em Arquivo > Compartilhar > Publicar na web, "
+            "se a publicação continua ativa e se a opção \"Restringir acesso\" está DESMARCADA."
         )
         with st.expander("Detalhe técnico do erro"):
             st.code(erro_fluxo)
         st.stop()
 
     if df_fluxo is None or df_fluxo.empty:
-        st.warning("A aba \"Fluxo de Caixa 2026\" foi encontrada, mas não trouxe nenhuma linha de dado.")
+        st.warning("O CSV publicado foi lido, mas não trouxe nenhuma linha de dado.")
         st.stop()
 
     colunas_esperadas_fin = [
@@ -2564,9 +2499,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
         st.stop()
 
     df_fluxo_view = df_fluxo.copy()
-    df_fluxo_view[COL_FIN_VALOR] = pd.to_numeric(df_fluxo_view[COL_FIN_VALOR], errors="coerce").fillna(0)
-    df_fluxo_view[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(df_fluxo_view[COL_FIN_DATA_LIQUIDACAO], errors="coerce")
-    df_fluxo_view[COL_FIN_VENCIMENTO] = pd.to_datetime(df_fluxo_view[COL_FIN_VENCIMENTO], errors="coerce")
+
+    # O CSV publicado entrega tudo como TEXTO no formato brasileiro (valor
+    # com vírgula decimal e ponto de milhar, data dd/mm/aaaa) -- diferente
+    # do Excel, que já entregava os tipos prontos. Por isso a conversão
+    # abaixo precisa limpar o texto antes.
+    valores_texto = df_fluxo_view[COL_FIN_VALOR].astype(str).str.strip()
+    valores_texto = (
+        valores_texto
+        .str.replace(r"[R$\s]", "", regex=True)   # tira "R$" e espaços
+        .str.replace(".", "", regex=False)        # tira ponto de milhar
+        .str.replace(",", ".", regex=False)       # vírgula decimal -> ponto
+    )
+    df_fluxo_view[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
+
+    df_fluxo_view[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
+        df_fluxo_view[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+    )
+    df_fluxo_view[COL_FIN_VENCIMENTO] = pd.to_datetime(
+        df_fluxo_view[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
+    )
 
     # Fluxo de caixa usa a Data de Liquidação (quando o dinheiro de fato
     # entrou/saiu). Para lançamentos que ainda não liquidaram (ex.: "A
