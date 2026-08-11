@@ -12,6 +12,7 @@ import io
 import os
 import re
 import time
+import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -1136,19 +1137,54 @@ def obter_caminhos_excel():
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" da planilha do Painel Financeiro.
 
-    IMPORTANTE: ainda não temos como inspecionar a estrutura real dessa aba
-    (nomes exatos das colunas) -- por isso essa função é propositalmente
-    tolerante: carrega a aba inteira sem presumir nomes de coluna, e quem
-    for USAR o resultado (renderizar_painel_financeiro) que tenta detectar
-    de forma flexível qual coluna é a de data, canal, categoria e valor.
-    Retorna (df, erro); erro é None se carregou certo."""
-    url_fluxo = "https://docs.google.com/spreadsheets/d/1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH/export?format=xlsx"
+    Tenta alguns formatos de URL diferentes, na ordem, porque esse arquivo
+    específico pode estar guardado no Drive como um .xlsx de verdade (não
+    uma Planilha Google nativa) -- nesse caso o endpoint simples de
+    export?format=xlsx às vezes não funciona, e o de download direto do
+    Drive funciona melhor. Retorna (df, erro); erro é None se carregou
+    certo, ou uma lista com o que cada tentativa retornou."""
+    ID_PLANILHA_FLUXO = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
+    NOME_ABA_FLUXO = "Fluxo de Caixa 2026"
+    nome_aba_url = urllib.parse.quote(NOME_ABA_FLUXO)
+
+    erros = []
+
+    # Tentativa 1: export direto em xlsx (funciona bem pra Planilhas Google nativas)
     try:
-        df = pd.read_excel(url_fluxo, sheet_name="Fluxo de Caixa 2026")
+        df = pd.read_excel(
+            f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA_FLUXO}/export?format=xlsx",
+            sheet_name=NOME_ABA_FLUXO,
+        )
         df = df.dropna(how="all").dropna(axis=1, how="all")
         return df, None
     except Exception as e:
-        return None, str(e)
+        erros.append(f"[export xlsx] {e}")
+
+    # Tentativa 2: download direto via Drive (funciona melhor quando o arquivo
+    # é um .xlsx de verdade guardado no Drive, não uma Planilha Google nativa)
+    try:
+        df = pd.read_excel(
+            f"https://drive.google.com/uc?export=download&id={ID_PLANILHA_FLUXO}",
+            sheet_name=NOME_ABA_FLUXO,
+        )
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        return df, None
+    except Exception as e:
+        erros.append(f"[download Drive] {e}")
+
+    # Tentativa 3: exportação em CSV via gviz, específica da aba pelo nome
+    # (mecanismo diferente das duas primeiras -- às vezes funciona quando
+    # elas falham)
+    try:
+        df = pd.read_csv(
+            f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA_FLUXO}/gviz/tq?tqx=out:csv&sheet={nome_aba_url}"
+        )
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        return df, None
+    except Exception as e:
+        erros.append(f"[gviz csv] {e}")
+
+    return None, "\n".join(erros)
 
 
 def _detectar_coluna(df, candidatos_nome, tipo_esperado=None):
