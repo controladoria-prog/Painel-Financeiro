@@ -2428,6 +2428,38 @@ COL_FIN_HISTORICO = "Histórico"
 COL_FIN_GRUPO_DESPESA = "GRUPO DESPESA"
 COL_FIN_VENCIMENTO = "Vencimento.1"
 
+MESES_PT_FIN = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+MESES_PT_ABREV_FIN = ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
+
+
+def _rotulo_mes_pt(periodo):
+    """Converte um Period/Timestamp mensal em "AGO/2026" (em português --
+    o strftime do servidor devolveria "AUG", que confunde quem lê)."""
+    return f"{MESES_PT_ABREV_FIN[periodo.month - 1]}/{periodo.year}"
+
+
+def _rotulo_mes_pt_extenso(periodo):
+    return f"{MESES_PT_FIN[periodo.month - 1]}/{periodo.year}"
+
+
+def _classificar_movimento_fin(nome_movimento):
+    """Separa o que é SALDO (posição de dinheiro parado: caixa, banco,
+    aplicação) do que é FLUXO (entradas e saídas do período). Somar os dois
+    juntos não faz sentido financeiro -- daria um "total" inflado que mistura
+    saldo com movimentação, que foi o que aconteceu na primeira versão."""
+    texto = str(nome_movimento).strip().lower()
+    if any(p in texto for p in ["caixa", "banco", "aplica"]):
+        return "saldo"
+    if "receber" in texto:
+        return "entrada"
+    if "pagar" in texto:
+        return "saida"
+    return "outro"
+
+
 if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         """<style>[data-testid="stSidebar"], header[data-testid="stHeader"] { display: none !important; }</style>""",
@@ -2438,30 +2470,62 @@ if st.session_state["painel_escolhido"] == "financeiro":
     if email_atual_financeiro not in EMAILS_FINANCEIRO_PERMITIDOS:
         st.markdown(
             f"""
-            <div style="max-width:620px;margin:110px auto 0 auto;text-align:center;">
-                <div style="font-size:54px;">🔒</div>
-                <div style="font-size:23px;font-weight:800;color:{COLORS['text']};margin:14px 0 8px 0;">
-                    Acesso Restrito
-                </div>
-                <div style="font-size:14px;color:{COLORS['text_muted']};line-height:1.6;">
-                    O Painel Financeiro é restrito a um grupo específico de usuários.
-                    Se você acredita que deveria ter acesso, fale com o administrador da Controladoria.
+            <style>
+                .fin-bloqueio {{
+                    max-width: 520px; margin: 90px auto 0 auto; text-align: center;
+                    background: linear-gradient(160deg, {COLORS['surface']} 0%, {COLORS['surface_alt']} 100%);
+                    border: 1px solid {COLORS['border']}; border-radius: 18px;
+                    padding: 40px 34px 34px 34px;
+                    box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+                }}
+                .fin-bloqueio .selo {{
+                    width: 66px; height: 66px; margin: 0 auto 18px auto; border-radius: 50%;
+                    background: rgba(247,110,110,0.10); border: 1px solid rgba(247,110,110,0.35);
+                    display: flex; align-items: center; justify-content: center; font-size: 28px;
+                }}
+                .fin-bloqueio h2 {{
+                    color: {COLORS['text']}; font-size: 20px; font-weight: 800;
+                    margin: 0 0 10px 0; letter-spacing: 0.2px;
+                }}
+                .fin-bloqueio p {{
+                    color: {COLORS['text_muted']}; font-size: 13.5px; line-height: 1.65; margin: 0 0 6px 0;
+                }}
+                .fin-bloqueio .rodape {{
+                    margin-top: 22px; padding-top: 16px; border-top: 1px solid {COLORS['border']};
+                    color: {COLORS['text_muted']}; font-size: 11.5px;
+                }}
+                .fin-bloqueio .rodape b {{ color: {COLORS['text']}; }}
+            </style>
+            <div class="fin-bloqueio">
+                <div class="selo">🔒</div>
+                <h2>Painel Financeiro restrito</h2>
+                <p>
+                    Este painel contém informações de fluxo de caixa e está liberado apenas
+                    para a Controladoria e a área Financeira.
+                </p>
+                <p>
+                    Se você precisa desse acesso para o seu trabalho, fale com a Controladoria
+                    que a liberação pode ser avaliada.
+                </p>
+                <div class="rodape">
+                    Você está conectado como <b>{usuario_atual.get('email', '—')}</b>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1, 1])
+        col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1.2, 1])
         with col_voltar:
-            st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
             if st.button("← Ir para o Painel de Controladoria", use_container_width=True, type="primary"):
                 st.session_state["painel_escolhido"] = "controladoria"
                 st.rerun()
         st.stop()
 
     # ---- Usuário autorizado: carrega a planilha do Fluxo de Caixa ----
-    st.markdown('<div class="section-title">💰 Painel Financeiro — Fluxo de Caixa 2026</div>', unsafe_allow_html=True)
     col_topo_fin_a, col_topo_fin_b = st.columns([5, 1])
+    with col_topo_fin_a:
+        st.markdown('<div class="section-title">💰 Painel Financeiro — Fluxo de Caixa</div>', unsafe_allow_html=True)
     with col_topo_fin_b:
         if st.button("🔀 Trocar Painel", use_container_width=True):
             st.session_state["painel_escolhido"] = None
@@ -2498,124 +2562,259 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.code(", ".join(str(c) for c in df_fluxo.columns))
         st.stop()
 
-    df_fluxo_view = df_fluxo.copy()
+    df_fin = df_fluxo.copy()
 
     # O CSV publicado entrega tudo como TEXTO no formato brasileiro (valor
-    # com vírgula decimal e ponto de milhar, data dd/mm/aaaa) -- diferente
-    # do Excel, que já entregava os tipos prontos. Por isso a conversão
-    # abaixo precisa limpar o texto antes.
-    valores_texto = df_fluxo_view[COL_FIN_VALOR].astype(str).str.strip()
+    # com vírgula decimal e ponto de milhar, data dd/mm/aaaa).
+    valores_texto = df_fin[COL_FIN_VALOR].astype(str).str.strip()
     valores_texto = (
         valores_texto
-        .str.replace(r"[R$\s]", "", regex=True)   # tira "R$" e espaços
-        .str.replace(".", "", regex=False)        # tira ponto de milhar
-        .str.replace(",", ".", regex=False)       # vírgula decimal -> ponto
+        .str.replace(r"[R$\s]", "", regex=True)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
     )
-    df_fluxo_view[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
+    df_fin[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
 
-    df_fluxo_view[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
-        df_fluxo_view[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+    df_fin[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
+        df_fin[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
     )
-    df_fluxo_view[COL_FIN_VENCIMENTO] = pd.to_datetime(
-        df_fluxo_view[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
+    df_fin[COL_FIN_VENCIMENTO] = pd.to_datetime(
+        df_fin[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
     )
 
     # Fluxo de caixa usa a Data de Liquidação (quando o dinheiro de fato
-    # entrou/saiu). Para lançamentos que ainda não liquidaram (ex.: "A
-    # Receber Projetado"), não existe Data de Liquidação ainda -- nesse
-    # caso, usa o Vencimento como a data prevista.
-    df_fluxo_view["Data Efetiva"] = df_fluxo_view[COL_FIN_DATA_LIQUIDACAO].fillna(df_fluxo_view[COL_FIN_VENCIMENTO])
-    df_fluxo_view = df_fluxo_view.dropna(subset=["Data Efetiva"])
+    # entrou/saiu). Para o que ainda não liquidou (ex.: "A Receber
+    # Projetado"), usa o Vencimento como data prevista.
+    df_fin["Data Efetiva"] = df_fin[COL_FIN_DATA_LIQUIDACAO].fillna(df_fin[COL_FIN_VENCIMENTO])
+    total_linhas_lidas = len(df_fin)
+    df_fin = df_fin.dropna(subset=["Data Efetiva"])
+    linhas_sem_data = total_linhas_lidas - len(df_fin)
 
-    with st.expander("🔧 Diagnóstico da planilha"):
-        st.write(f"**Linhas carregadas:** {len(df_fluxo)} · **Linhas com data válida:** {len(df_fluxo_view)}")
-        st.write("**Valores únicos em Movimento:**")
-        st.code(", ".join(sorted(df_fluxo[COL_FIN_MOVIMENTO].dropna().astype(str).unique())))
-        st.write("**Valores únicos em Canal.1:**")
-        st.code(", ".join(sorted(df_fluxo[COL_FIN_CANAL].dropna().astype(str).unique())))
-        st.write("**Valores únicos em Modalidade:**")
-        st.code(", ".join(sorted(df_fluxo[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
-        st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
+    df_fin["Tipo Movimento"] = df_fin[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin)
+    df_fin["Liquidado"] = df_fin[COL_FIN_DATA_LIQUIDACAO].notna()
 
-    # ---- Filtros: Canal.1 (os 3 grupos da empresa) e Modalidade ----
-    col_filtro_canal_fin, col_filtro_modal_fin = st.columns(2)
-    with col_filtro_canal_fin:
-        opcoes_canal_fin = ["Todos"] + sorted(df_fluxo_view[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
-        canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
-        if canal_sel_fin != "Todos":
-            df_fluxo_view = df_fluxo_view[df_fluxo_view[COL_FIN_CANAL].astype(str) == canal_sel_fin]
-    with col_filtro_modal_fin:
-        opcoes_modal_fin = ["Todas"] + sorted(df_fluxo_view[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
-        modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
-        if modal_sel_fin != "Todas":
-            df_fluxo_view = df_fluxo_view[df_fluxo_view[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+    if eh_admin:
+        with st.expander("🔧 Diagnóstico da planilha (visível só para administrador)"):
+            st.write(
+                f"**Linhas lidas do CSV:** {total_linhas_lidas} · "
+                f"**Com data válida:** {len(df_fin)} · **Descartadas por falta de data:** {linhas_sem_data}"
+            )
+            data_min_diag = df_fin["Data Efetiva"].min()
+            data_max_diag = df_fin["Data Efetiva"].max()
+            st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
+            st.write("**Movimento → como o painel classificou:**")
+            st.dataframe(
+                df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"])[COL_FIN_VALOR]
+                .agg(["count", "sum"]).reset_index()
+                .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
+                use_container_width=True, hide_index=True,
+            )
+            st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
+            st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
+            st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
 
-    tab_fin_mensal, tab_fin_diario = st.tabs(["📅 Fluxo de Caixa Mensal", "🗓️ Fluxo de Caixa Diário"])
+    # ================= FILTROS =================
+    data_min_fin = df_fin["Data Efetiva"].min().date()
+    data_max_fin = df_fin["Data Efetiva"].max().date()
 
-    with tab_fin_mensal:
-        df_mensal_fluxo = df_fluxo_view.copy()
-        df_mensal_fluxo["Mês"] = df_mensal_fluxo["Data Efetiva"].dt.to_period("M").dt.to_timestamp()
-        pivot_mensal = df_mensal_fluxo.pivot_table(
-            index=COL_FIN_MOVIMENTO, columns="Mês", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+    st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
+    col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+    with col_f1:
+        periodo_sel_fin = st.date_input(
+            "Período (data inicial e final):",
+            value=(data_min_fin, data_max_fin),
+            min_value=data_min_fin, max_value=data_max_fin,
+            format="DD/MM/YYYY", key="fin_periodo",
         )
-        pivot_mensal.columns = [c.strftime("%b/%Y").upper() for c in pivot_mensal.columns]
-        pivot_mensal["Total"] = pivot_mensal.sum(axis=1)
-        pivot_mensal.loc["TOTAL GERAL"] = pivot_mensal.sum(axis=0)
+    with col_f2:
+        opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+        canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
+    with col_f3:
+        opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+        modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
+
+    if isinstance(periodo_sel_fin, (list, tuple)) and len(periodo_sel_fin) == 2:
+        data_ini_fin, data_fim_fin = periodo_sel_fin
+    else:
+        data_ini_fin, data_fim_fin = data_min_fin, data_max_fin
+
+    df_fin_view = df_fin[
+        (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
+        & (df_fin["Data Efetiva"].dt.date <= data_fim_fin)
+    ].copy()
+    if canal_sel_fin != "Todos":
+        df_fin_view = df_fin_view[df_fin_view[COL_FIN_CANAL].astype(str) == canal_sel_fin]
+    if modal_sel_fin != "Todas":
+        df_fin_view = df_fin_view[df_fin_view[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+
+    if df_fin_view.empty:
+        st.warning("Nenhum lançamento encontrado para os filtros selecionados.")
+        st.stop()
+
+    # ================= KPIs =================
+    saldo_posicao_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saldo", COL_FIN_VALOR].sum()
+    entradas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
+    saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
+    fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
+    a_receber_projetado_fin = df_fin_view.loc[
+        (df_fin_view["Tipo Movimento"] == "entrada") & (~df_fin_view["Liquidado"]), COL_FIN_VALOR
+    ].sum()
+
+    st.markdown(
+        f'<div class="section-title">📊 Resumo do Período '
+        f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+        f'({data_ini_fin:%d/%m/%Y} a {data_fim_fin:%d/%m/%Y})</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        render_kpi_row([
+            dict(label="SALDO EM CAIXA / BANCO / APLICAÇÃO", value=formata_brl(saldo_posicao_fin),
+                 value_color=cor_variacao(saldo_posicao_fin), subtext="Posição de dinheiro (não é fluxo)", icon="🏦"),
+            dict(label="ENTRADAS (A RECEBER)", value=formata_brl(entradas_fin),
+                 value_color=COLORS["positive"], subtext="Realizado + projetado no período", icon="📥"),
+            dict(label="SAÍDAS (A PAGAR)", value=formata_brl(saidas_fin),
+                 value_color=COLORS["negative"], subtext="Contas a pagar no período", icon="📤"),
+            dict(label="FLUXO LÍQUIDO DO PERÍODO", value=formata_brl(fluxo_liquido_fin),
+                 value_color=cor_variacao(fluxo_liquido_fin), subtext="Entradas − saídas", icon="⚖️"),
+            dict(label="AINDA A RECEBER (NÃO LIQUIDADO)", value=formata_brl(a_receber_projetado_fin),
+                 value_color=COLORS["warning"], subtext="Projetado, ainda não caiu", icon="⏳"),
+        ]),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "ℹ️ Saldo (caixa/banco/aplicação) é **posição**, não movimento — por isso aparece separado das "
+        "entradas e saídas, e não entra no fluxo líquido. Somar os dois daria um número sem significado financeiro."
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    tab_fin_mensal, tab_fin_diario, tab_fin_detalhe = st.tabs(
+        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🔍 Lançamentos"]
+    )
+
+    # ---------------- MENSAL ----------------
+    with tab_fin_mensal:
+        df_m = df_fin_view.copy()
+        df_m["PeriodoMes"] = df_m["Data Efetiva"].dt.to_period("M")
+        meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
+        rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
+
+        pivot_m = df_m.pivot_table(
+            index=COL_FIN_MOVIMENTO, columns="PeriodoMes", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+        )
+        pivot_m = pivot_m.reindex(columns=meses_ordenados_m, fill_value=0)
+        pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
+        pivot_m["TOTAL"] = pivot_m.sum(axis=1)
+        pivot_m.index.name = "Movimento"
+
+        st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
         st.dataframe(
-            pivot_mensal.style.format(formata_brl).map(cor_valor),
+            pivot_m.style.format(formata_brl).map(cor_valor),
             use_container_width=True,
         )
 
-        total_mensal_geral = df_mensal_fluxo[COL_FIN_VALOR].sum()
-        total_a_pagar_mensal = df_mensal_fluxo.loc[
-            df_mensal_fluxo[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False), COL_FIN_VALOR
-        ].sum()
-        st.markdown(
-            render_kpi_row([
-                dict(label="TOTAL GERAL NO PERÍODO", value=formata_brl(total_mensal_geral),
-                     value_color=cor_variacao(total_mensal_geral), subtext="Soma de todos os movimentos filtrados", icon="💰"),
-                dict(label="TOTAL CONTAS A PAGAR", value=formata_brl(total_a_pagar_mensal),
-                     value_color=COLORS["negative"], subtext="Movimentos com \"pagar\" no nome", icon="📤"),
-            ]),
-            unsafe_allow_html=True,
-        )
+        # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
+        df_fluxo_only = df_m[df_m["Tipo Movimento"].isin(["entrada", "saida"])]
+        if not df_fluxo_only.empty:
+            entradas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "entrada"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
+            saidas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "saida"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
+            entradas_mes = entradas_mes.reindex(meses_ordenados_m, fill_value=0)
+            saidas_mes = saidas_mes.reindex(meses_ordenados_m, fill_value=0)
+            rotulos_x_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
 
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="section-title">📊 Entradas x Saídas por Mês</div>', unsafe_allow_html=True)
+            fig_es = go.Figure(data=[
+                go.Bar(name="Entradas", x=rotulos_x_m, y=list(entradas_mes.values), marker_color=COLORS["positive"]),
+                go.Bar(name="Saídas", x=rotulos_x_m, y=[abs(v) for v in saidas_mes.values], marker_color=COLORS["negative"]),
+            ])
+            estilo_grafico(
+                fig_es, height=340, barmode="group",
+                xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickangle=-30, automargin=True, tickfont=dict(size=9)),
+                yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
+                margin=dict(l=50, r=20, t=20, b=80),
+            )
+            st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+    # ---------------- DIÁRIO ----------------
     with tab_fin_diario:
-        df_diario_fluxo = df_fluxo_view.copy()
-        meses_disponiveis_fluxo = sorted(df_diario_fluxo["Data Efetiva"].dt.to_period("M").unique())
-        if meses_disponiveis_fluxo:
-            opcoes_mes_fluxo = [m.strftime("%B/%Y").upper() for m in meses_disponiveis_fluxo]
-            mes_sel_fluxo = st.selectbox("Mês:", opcoes_mes_fluxo, index=len(opcoes_mes_fluxo) - 1, key="fin_mes_sel")
-            periodo_sel_fluxo = meses_disponiveis_fluxo[opcoes_mes_fluxo.index(mes_sel_fluxo)]
-            df_diario_fluxo = df_diario_fluxo[df_diario_fluxo["Data Efetiva"].dt.to_period("M") == periodo_sel_fluxo]
+        meses_disp_d = sorted(df_fin_view["Data Efetiva"].dt.to_period("M").unique())
+        if not meses_disp_d:
+            st.info("Sem dados no período filtrado.")
+        else:
+            rotulos_d = [_rotulo_mes_pt_extenso(p) for p in meses_disp_d]
+            mes_sel_d = st.selectbox(
+                "Mês:", rotulos_d, index=len(rotulos_d) - 1, key="fin_mes_sel",
+                help="Meses disponíveis dentro do período que você filtrou acima.",
+            )
+            periodo_d = meses_disp_d[rotulos_d.index(mes_sel_d)]
+            df_d = df_fin_view[df_fin_view["Data Efetiva"].dt.to_period("M") == periodo_d].copy()
 
-        df_diario_fluxo["Dia"] = df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m")
-        ordem_dias = sorted(df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m").unique(), key=lambda d: (d[3:], d[:2]))
-        pivot_diario = df_diario_fluxo.pivot_table(
-            index=COL_FIN_MOVIMENTO, columns="Dia", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+            if df_d.empty:
+                st.info("Nenhum lançamento nesse mês para os filtros selecionados.")
+            else:
+                df_d["DiaOrd"] = df_d["Data Efetiva"].dt.normalize()
+                dias_ordenados_d = sorted(df_d["DiaOrd"].unique())
+                rotulos_dias_d = {d: pd.Timestamp(d).strftime("%d/%m") for d in dias_ordenados_d}
+
+                pivot_d = df_d.pivot_table(
+                    index=COL_FIN_MOVIMENTO, columns="DiaOrd", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
+                )
+                pivot_d = pivot_d.reindex(columns=dias_ordenados_d, fill_value=0)
+                pivot_d.columns = [rotulos_dias_d[d] for d in pivot_d.columns]
+                pivot_d["TOTAL DO MÊS"] = pivot_d.sum(axis=1)
+                pivot_d.index.name = "Movimento"
+
+                st.markdown(
+                    f'<div class="section-title">📋 Movimentos por Dia — {mes_sel_d}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(pivot_d.style.format(formata_brl).map(cor_valor), use_container_width=True)
+
+                # Saldo acumulado: só do fluxo (entradas/saídas), sem saldo de posição
+                df_d_fluxo = df_d[df_d["Tipo Movimento"].isin(["entrada", "saida"])]
+                if not df_d_fluxo.empty:
+                    por_dia = df_d_fluxo.groupby("DiaOrd")[COL_FIN_VALOR].sum().reindex(dias_ordenados_d, fill_value=0)
+                    acumulado_d = por_dia.cumsum()
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">📈 Fluxo Acumulado no Mês (entradas − saídas)</div>', unsafe_allow_html=True)
+                    fig_ac = go.Figure(data=[go.Scatter(
+                        x=[rotulos_dias_d[d] for d in dias_ordenados_d], y=list(acumulado_d.values),
+                        mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
+                        fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
+                    )])
+                    estilo_grafico(
+                        fig_ac, height=320,
+                        xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9), tickangle=-45, automargin=True),
+                        yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+                        margin=dict(l=60, r=20, t=20, b=60),
+                    )
+                    st.plotly_chart(fig_ac, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+    # ---------------- LANÇAMENTOS ----------------
+    with tab_fin_detalhe:
+        st.caption(
+            "Lançamento a lançamento, exatamente como veio da planilha — para conferir qualquer "
+            "número das outras abas."
         )
-        pivot_diario = pivot_diario.reindex(columns=[d for d in ordem_dias if d in pivot_diario.columns])
-        pivot_diario["Total do Mês"] = pivot_diario.sum(axis=1)
-        pivot_diario.loc["TOTAL GERAL"] = pivot_diario.sum(axis=0)
-        # Saldo acumulado dia a dia (soma corrida de todos os movimentos)
-        saldo_diario = df_diario_fluxo.groupby(df_diario_fluxo["Data Efetiva"].dt.strftime("%d/%m"))[COL_FIN_VALOR].sum()
-        saldo_diario = saldo_diario.reindex([d for d in ordem_dias if d in saldo_diario.index]).cumsum()
-
-        st.dataframe(pivot_diario.style.format(formata_brl).map(cor_valor), use_container_width=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-title">📈 Saldo Acumulado no Mês</div>', unsafe_allow_html=True)
-        fig_saldo_fin = go.Figure(data=[go.Scatter(
-            x=list(saldo_diario.index), y=list(saldo_diario.values), mode="lines+markers",
-            line=dict(color=COLORS["primary"], width=2.5),
-        )])
-        estilo_grafico(
-            fig_saldo_fin, height=300,
-            xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9)),
-            yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-            margin=dict(l=20, r=20, t=20, b=30),
+        colunas_detalhe = [
+            c for c in [
+                "Data Efetiva", COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_MOVIMENTO,
+                COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_PLANO_CONTAS, COL_FIN_GRUPO_DESPESA,
+                COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_VALOR,
+            ] if c in df_fin_view.columns
+        ]
+        df_detalhe = df_fin_view[colunas_detalhe].sort_values("Data Efetiva", ascending=False).head(3000)
+        st.write(f"Mostrando {len(df_detalhe)} de {len(df_fin_view)} lançamentos do período filtrado.")
+        st.dataframe(
+            df_detalhe.style.format({
+                COL_FIN_VALOR: formata_brl,
+                "Data Efetiva": lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "",
+                COL_FIN_DATA_LIQUIDACAO: lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—",
+                COL_FIN_VENCIMENTO: lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—",
+            }).map(cor_valor, subset=[COL_FIN_VALOR]),
+            use_container_width=True, hide_index=True, height=520,
         )
-        st.plotly_chart(fig_saldo_fin, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
     st.stop()
 
