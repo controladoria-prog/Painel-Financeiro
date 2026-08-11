@@ -13,6 +13,7 @@ import os
 import re
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -1133,6 +1134,37 @@ def obter_caminhos_excel():
     return abas_validas, path_orc, path_real
 
 
+def _baixar_bytes_drive_com_confirmacao(id_arquivo):
+    """Baixa um arquivo do Google Drive tratando a tela de aviso de vírus
+    que aparece pra alguns arquivos (isso faz um download simples devolver
+    uma página HTML de aviso em vez do arquivo de verdade -- daí o pandas
+    reclamar que "não consegue determinar o formato do Excel", porque na
+    real ele recebeu HTML, não um .xlsx). Devolve os bytes do arquivo."""
+    url_base = f"https://drive.google.com/uc?export=download&id={id_arquivo}"
+    req = urllib.request.Request(url_base, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        conteudo = resp.read()
+        cookies = resp.headers.get_all("Set-Cookie") or []
+
+    inicio = conteudo[:200].lower()
+    if b"<!doctype" in inicio or b"<html" in inicio:
+        texto = conteudo.decode("utf-8", errors="ignore")
+        # A tela de aviso de vírus do Drive pode trazer o token de duas
+        # formas: direto num link ("confirm=XXX") ou como campo de
+        # formulário (name="confirm" value="XXX") -- tenta as duas.
+        m = re.search(r'confirm=([0-9A-Za-z_-]+)|name="confirm"\s+value="([0-9A-Za-z_-]+)"', texto)
+        if m:
+            token_confirmacao = m.group(1) or m.group(2)
+            url_confirmado = f"{url_base}&confirm={token_confirmacao}"
+            req2 = urllib.request.Request(
+                url_confirmado,
+                headers={"User-Agent": "Mozilla/5.0", "Cookie": "; ".join(c.split(";")[0] for c in cookies)},
+            )
+            with urllib.request.urlopen(req2, timeout=30) as resp2:
+                conteudo = resp2.read()
+    return conteudo
+
+
 @st.cache_resource
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" da planilha do Painel Financeiro.
@@ -1141,8 +1173,10 @@ def obter_dados_fluxo_caixa():
     específico pode estar guardado no Drive como um .xlsx de verdade (não
     uma Planilha Google nativa) -- nesse caso o endpoint simples de
     export?format=xlsx às vezes não funciona, e o de download direto do
-    Drive funciona melhor. Retorna (df, erro); erro é None se carregou
-    certo, ou uma lista com o que cada tentativa retornou."""
+    Drive (com tratamento da tela de aviso de vírus) funciona melhor.
+    Retorna (df, erro); erro é None se carregou certo, ou o detalhe de cada
+    tentativa (incluindo uma prévia do conteúdo recebido, se não for um
+    Excel de verdade -- ajuda a diagnosticar o que está sendo devolvido)."""
     ID_PLANILHA_FLUXO = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
     NOME_ABA_FLUXO = "Fluxo de Caixa 2026"
     nome_aba_url = urllib.parse.quote(NOME_ABA_FLUXO)
@@ -1160,17 +1194,21 @@ def obter_dados_fluxo_caixa():
     except Exception as e:
         erros.append(f"[export xlsx] {e}")
 
-    # Tentativa 2: download direto via Drive (funciona melhor quando o arquivo
-    # é um .xlsx de verdade guardado no Drive, não uma Planilha Google nativa)
+    # Tentativa 2: download direto via Drive, tratando a tela de aviso de
+    # vírus (ver _baixar_bytes_drive_com_confirmacao)
     try:
-        df = pd.read_excel(
-            f"https://drive.google.com/uc?export=download&id={ID_PLANILHA_FLUXO}",
-            sheet_name=NOME_ABA_FLUXO,
-        )
+        conteudo_drive = _baixar_bytes_drive_com_confirmacao(ID_PLANILHA_FLUXO)
+        df = pd.read_excel(io.BytesIO(conteudo_drive), sheet_name=NOME_ABA_FLUXO)
         df = df.dropna(how="all").dropna(axis=1, how="all")
         return df, None
     except Exception as e:
-        erros.append(f"[download Drive] {e}")
+        detalhe_conteudo = ""
+        try:
+            previa = conteudo_drive[:200].decode("utf-8", errors="ignore")
+            detalhe_conteudo = f" -- início do que foi recebido: {previa!r}"
+        except Exception:
+            pass
+        erros.append(f"[download Drive] {e}{detalhe_conteudo}")
 
     # Tentativa 3: exportação em CSV via gviz, específica da aba pelo nome
     # (mecanismo diferente das duas primeiras -- às vezes funciona quando
