@@ -1750,44 +1750,45 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # ---- Seletores próprios do Painel de TV (visão e mês) -- minimalistas,
     # ficam no espaço vazio do cabeçalho, ao lado do relógio. O Painel de TV
     # NÃO acompanha mais os filtros do painel principal: a escolha é só
-    # daqui mesmo, e persiste entre os ciclos de atualização automática. ----
-    col_head_a, col_head_filtros, col_head_b = st.columns([2.7, 1.55, 1])
-    with col_head_filtros:
-        st.markdown(
-            f"""
-            <style>
-                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-baseweb="select"] {{
-                    min-height: 22px !important;
-                }}
-                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-baseweb="select"] > div {{
-                    min-height: 22px !important; font-size: 10px !important; padding-top: 0 !important; padding-bottom: 0 !important;
-                    background: {COLORS["surface_alt"]}55 !important; border-color: {COLORS["border"]} !important;
-                }}
-                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-baseweb="select"] svg {{
-                    width: 12px !important; height: 12px !important;
-                }}
-                div[data-testid="column"]:has(#tv-seletores-marcador) label {{
-                    font-size: 8px !important; color: {COLORS["text_muted"]}99 !important;
-                    margin-bottom: -2px !important; text-transform: uppercase; letter-spacing: 0.3px;
-                }}
-                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-testid="stVerticalBlock"] {{ gap: 0.1rem !important; }}
-                div[data-testid="column"]:has(#tv-seletores-marcador) div[data-testid="column"] {{ padding: 0 3px !important; }}
-            </style>
-            <span id="tv-seletores-marcador"></span>
-            """,
-            unsafe_allow_html=True,
+    # daqui mesmo, e persiste entre os ciclos de atualização automática.
+    #
+    # O CSS abaixo é global de propósito: esta função renderiza a página
+    # inteira do modo TV e retorna antes do painel normal, então não há
+    # risco de afetar o painel principal -- e um seletor global funciona de
+    # forma bem mais confiável do que tentar mirar a coluna específica. ----
+    st.markdown(
+        f"""
+        <style>
+            div[data-baseweb="select"] > div {{
+                min-height: 26px !important; height: 26px !important;
+                font-size: 10.5px !important; letter-spacing: 0.2px;
+                padding: 0 6px !important;
+                background: transparent !important;
+                border: 1px solid {COLORS["border"]} !important;
+                border-radius: 6px !important;
+                color: {COLORS["text_muted"]} !important;
+            }}
+            div[data-baseweb="select"] svg {{ width: 13px !important; height: 13px !important; opacity: 0.5; }}
+            div[data-testid="stSelectbox"] {{ margin-bottom: 0 !important; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_head_a, col_head_filtro_visao, col_head_filtro_mes, col_head_b = st.columns(
+        [3.5, 1.15, 0.8, 1.1], vertical_alignment="center"
+    )
+    with col_head_filtro_visao:
+        aba_escolhida = st.selectbox(
+            "Visão", abas_disponiveis,
+            index=abas_disponiveis.index(aba_padrao_tv) if aba_padrao_tv in abas_disponiveis else 0,
+            key="tv_sel_visao", label_visibility="collapsed",
         )
-        col_filtro_visao, col_filtro_mes = st.columns(2)
-        with col_filtro_visao:
-            aba_escolhida = st.selectbox(
-                "Visão", abas_disponiveis,
-                index=abas_disponiveis.index(aba_padrao_tv) if aba_padrao_tv in abas_disponiveis else 0,
-                key="tv_sel_visao",
-            )
-        with col_filtro_mes:
-            mes_escolhido_tv = st.selectbox(
-                "Até", nomes_meses_tv, index=idx_mes_atual, key="tv_sel_mes",
-            )
+    with col_head_filtro_mes:
+        mes_escolhido_tv = st.selectbox(
+            "Mês", nomes_meses_tv, index=idx_mes_atual,
+            key="tv_sel_mes", label_visibility="collapsed",
+        )
 
     abas_para_tv = [aba_escolhida]
     list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
@@ -1927,7 +1928,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <div>
                         <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{aba_escolhida} · {legenda_periodo_tv} · Dados atualizados a cada 90 segundos</div>
+                        <div class="sub">{legenda_periodo_tv} · atualiza sozinho a cada 90s</div>
                     </div>
                 </div>
             </div>
