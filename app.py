@@ -1760,13 +1760,20 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         f"""
         <style>
             div[data-baseweb="select"] > div {{
-                min-height: 26px !important; height: 26px !important;
-                font-size: 10.5px !important; letter-spacing: 0.2px;
-                padding: 0 6px !important;
+                min-height: 30px !important;
+                font-size: 11px !important; letter-spacing: 0.2px;
+                padding: 2px 8px !important;
                 background: transparent !important;
                 border: 1px solid {COLORS["border"]} !important;
                 border-radius: 6px !important;
                 color: {COLORS["text_muted"]} !important;
+                display: flex !important; align-items: center !important;
+            }}
+            /* O texto do valor selecionado precisa de linha cheia, senão as
+               letras com descida (g, ç, p) ficam cortadas na borda de baixo. */
+            div[data-baseweb="select"] div[data-baseweb="select"] > div > div,
+            div[data-baseweb="select"] > div > div {{
+                line-height: 1.5 !important; overflow: visible !important;
             }}
             div[data-baseweb="select"] svg {{ width: 13px !important; height: 13px !important; opacity: 0.5; }}
             div[data-testid="stSelectbox"] {{ margin-bottom: 0 !important; }}
