@@ -2643,10 +2643,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         f"""
         <style>
-            section.main > div.block-container, .block-container {{
-                padding-top: 1.2rem !important;
-            }}
-            div[data-testid="stVerticalBlock"] {{ gap: 0.35rem !important; }}
+            /* Só o estilo do cabeçalho -- nada que mexa no espaçamento geral
+               dos blocos. A tentativa anterior de apertar o "gap" global fez
+               títulos e tabelas se sobreporem pelo painel inteiro. */
             .fin-topo {{ display: flex; align-items: center; gap: 11px; }}
             .fin-topo img.logo {{ width: 36px; height: 36px; border-radius: 50%; }}
             .fin-topo h1 {{
@@ -2665,18 +2664,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
             }}
             .fin-barra b {{ color: {COLORS['text']}; font-weight: 600; }}
             .fin-barra .sep {{ opacity: 0.4; }}
-            /* Radio da base de data: compacto e sem margem sobrando */
+            /* Radio da base de data: fonte menor, sem mexer em margens */
             div[data-testid="stRadio"] label p {{ font-size: 11.5px !important; }}
             div[data-testid="stRadio"] > label p {{
                 font-size: 10px !important; text-transform: uppercase;
                 letter-spacing: 0.4px; opacity: 0.65;
             }}
             div[data-testid="stRadio"] > div {{ gap: 0.6rem !important; }}
-            div[data-testid="stRadio"] {{ margin: -6px 0 0 0; }}
             /* Faixa divisória fina abaixo do cabeçalho */
             .fin-divisor {{
                 border-bottom: 1px solid {COLORS['border']};
-                margin: 6px 0 10px 0;
+                margin: 6px 0 12px 0;
             }}
         </style>
         """,
