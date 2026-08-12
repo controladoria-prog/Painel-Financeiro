@@ -2696,52 +2696,72 @@ if st.session_state["painel_escolhido"] == "financeiro":
     padrao_ini_fin = max(min(primeiro_dia_mes_anterior, data_max_fin), data_min_fin)
     padrao_fim_fin = min(max(ultimo_dia_ano_atual, data_min_fin), data_max_fin)
 
-    # O calendário do date_input segue o idioma do navegador/servidor (por
-    # isso aparecia "December"). Esse CSS troca os rótulos por português do
-    # Brasil, sem depender da configuração de idioma da máquina.
-    st.markdown(
-        """
-        <style>
-            div[data-testid="stDateInput"] [aria-label="Sunday"], div[data-testid="stDateInput"] abbr[title="Sunday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Sunday"]::after { content: "Dom"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Monday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Monday"]::after { content: "Seg"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Tuesday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Tuesday"]::after { content: "Ter"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Wednesday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Wednesday"]::after { content: "Qua"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Thursday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Thursday"]::after { content: "Qui"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Friday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Friday"]::after { content: "Sex"; font-size: 12px; }
-            div[data-testid="stDateInput"] abbr[title="Saturday"] { font-size: 0; }
-            div[data-testid="stDateInput"] abbr[title="Saturday"]::after { content: "Sáb"; font-size: 12px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # O calendário do st.date_input segue o idioma do servidor (por isso vinha
+    # "July", "Su/Mo/Tu") e não há como forçar português nele por
+    # configuração. Em vez de brigar com o componente, o período é escolhido
+    # por seletores de MÊS -- que ficam 100% em português e, para fluxo de
+    # caixa, são até mais práticos. O ajuste fino por dia fica disponível
+    # logo abaixo, para quem precisar de um recorte exato.
+    meses_disponiveis_fin = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
+    rotulos_meses_fin = [_rotulo_mes_pt_extenso(p) for p in meses_disponiveis_fin]
+
+    periodo_ini_padrao = pd.Period(padrao_ini_fin.strftime("%Y-%m"), freq="M")
+    periodo_fim_padrao = pd.Period(padrao_fim_fin.strftime("%Y-%m"), freq="M")
+    idx_ini_padrao = meses_disponiveis_fin.index(periodo_ini_padrao) if periodo_ini_padrao in meses_disponiveis_fin else 0
+    idx_fim_padrao = meses_disponiveis_fin.index(periodo_fim_padrao) if periodo_fim_padrao in meses_disponiveis_fin else len(meses_disponiveis_fin) - 1
 
     st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
-    col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+    col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.2, 1, 1])
     with col_f1:
-        periodo_sel_fin = st.date_input(
-            "Período (data inicial e final):",
-            value=(padrao_ini_fin, padrao_fim_fin),
-            min_value=data_min_fin, max_value=data_max_fin,
-            format="DD/MM/YYYY", key="fin_periodo",
-            help="Por padrão abre do 1º dia do mês anterior até o fim do ano atual.",
+        mes_ini_sel_fin = st.selectbox(
+            "Do mês:", rotulos_meses_fin, index=idx_ini_padrao, key="fin_mes_ini",
+            help="Por padrão começa no mês anterior ao atual.",
         )
     with col_f2:
+        mes_fim_sel_fin = st.selectbox(
+            "Até o mês:", rotulos_meses_fin, index=idx_fim_padrao, key="fin_mes_fim",
+            help="Por padrão vai até o fim do ano atual.",
+        )
+    with col_f3:
         opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
         canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
-    with col_f3:
+    with col_f4:
         opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
         modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
 
-    if isinstance(periodo_sel_fin, (list, tuple)) and len(periodo_sel_fin) == 2:
-        data_ini_fin, data_fim_fin = periodo_sel_fin
-    else:
-        data_ini_fin, data_fim_fin = padrao_ini_fin, padrao_fim_fin
+    periodo_ini_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_ini_sel_fin)]
+    periodo_fim_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_fim_sel_fin)]
+    if periodo_ini_fin > periodo_fim_fin:
+        st.warning("O mês inicial está depois do mês final — inverti os dois para continuar.")
+        periodo_ini_fin, periodo_fim_fin = periodo_fim_fin, periodo_ini_fin
+
+    data_ini_fin = periodo_ini_fin.start_time.date()
+    data_fim_fin = periodo_fim_fin.end_time.date()
+
+    with st.expander("📆 Ajuste fino por dia (opcional)"):
+        st.caption(
+            "Por padrão o período pega do primeiro ao último dia dos meses escolhidos acima. "
+            "Use aqui se precisar de um recorte exato dentro desses meses."
+        )
+        col_dia_a, col_dia_b = st.columns(2)
+        with col_dia_a:
+            dia_ini_fin = st.number_input(
+                f"Dia inicial (em {mes_ini_sel_fin})", min_value=1, max_value=31, value=1, step=1, key="fin_dia_ini",
+            )
+        with col_dia_b:
+            ultimo_dia_mes_fim = periodo_fim_fin.end_time.day
+            dia_fim_fin = st.number_input(
+                f"Dia final (em {mes_fim_sel_fin})", min_value=1, max_value=31,
+                value=ultimo_dia_mes_fim, step=1, key="fin_dia_fim",
+            )
+        # Se a pessoa digitar um dia que não existe naquele mês (ex.: 31 em
+        # fevereiro), ajusta pro último dia válido em vez de dar erro.
+        dia_ini_valido = min(int(dia_ini_fin), periodo_ini_fin.end_time.day)
+        dia_fim_valido = min(int(dia_fim_fin), periodo_fim_fin.end_time.day)
+        data_ini_fin = periodo_ini_fin.start_time.date().replace(day=dia_ini_valido)
+        data_fim_fin = periodo_fim_fin.start_time.date().replace(day=dia_fim_valido)
+
+    st.caption(f"📅 Período em análise: **{data_ini_fin:%d/%m/%Y}** a **{data_fim_fin:%d/%m/%Y}**")
 
     df_fin_periodo = df_fin[
         (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
