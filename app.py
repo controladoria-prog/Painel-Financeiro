@@ -2654,8 +2654,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             }}
             .fin-topo .sub {{ color: {COLORS['text_muted']}; font-size: 11px; margin-top: 1px; }}
             .fin-barra {{
-                display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
-                color: {COLORS['text_muted']}; font-size: 11.5px; margin: 0;
+                display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+                color: {COLORS['text_muted']}; font-size: 10.5px; margin: 3px 0 0 0;
             }}
             .fin-barra .chip {{
                 background: {COLORS['primary_soft']}; color: {COLORS['primary']};
@@ -2681,8 +2681,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
         unsafe_allow_html=True,
     )
 
-    col_marca_fin, col_atualizar_fin, col_trocar_fin = st.columns(
-        [6, 1.15, 1.15], vertical_alignment="center"
+    # Tudo numa linha só: marca à esquerda, base de data no meio e as ações
+    # à direita. Antes isso ocupava duas linhas com bastante espaço morto.
+    col_marca_fin, col_base_fin, col_atualizar_fin, col_trocar_fin = st.columns(
+        [3.2, 2.4, 1.1, 1.1], vertical_alignment="center"
     )
     with col_marca_fin:
         st.markdown(
@@ -2691,11 +2693,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
                 <div>
                     <h1>Painel Financeiro</h1>
-                    <div class="sub">Grupo B&amp;A · Controladoria</div>
+                    <div class="fin-barra">
+                        <span class="chip">FLUXO DE CAIXA 2026</span>
+                        <span class="sep">·</span>
+                        <span>{datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</span>
+                    </div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
+        )
+    with col_base_fin:
+        # A base de data define em que mês o lançamento cai. O padrão é
+        # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
+        # é o que faz o painel bater número a número com ela.
+        base_data_fin = st.radio(
+            "Base de data:",
+            ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
+            horizontal=True, key="fin_base_data",
+            help=(
+                "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica "
+                "da planilha. Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que "
+                "ainda não liquidou, usa o vencimento como previsão)."
+            ),
         )
     with col_atualizar_fin:
         if st.button("🔄 Atualizar", use_container_width=True, key="fin_btn_atualizar"):
@@ -2707,33 +2727,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.session_state["painel_escolhido"] = None
             st.rerun()
 
-    # ---- Contexto + base de data, também na mesma linha ----
-    # A base de data define em que mês o lançamento cai. O padrão é
-    # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
-    # é o que faz o painel bater número a número com ela.
-    col_ctx_fin, col_base_fin = st.columns([1.1, 1], vertical_alignment="center")
-    with col_ctx_fin:
-        st.markdown(
-            f"""
-            <div class="fin-barra">
-                <span class="chip">FLUXO DE CAIXA 2026</span>
-                <span class="sep">·</span>
-                <span>Atualizado em <b>{datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</b></span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col_base_fin:
-        base_data_fin = st.radio(
-            "Base de data:",
-            ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
-            horizontal=True, key="fin_base_data",
-            help=(
-                "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica "
-                "da planilha. Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que "
-                "ainda não liquidou, usa o vencimento como previsão)."
-            ),
-        )
     st.markdown('<div class="fin-divisor"></div>', unsafe_allow_html=True)
 
 
@@ -3172,11 +3165,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.info("Sem dados para montar o fluxo diário.")
         else:
             rotulos_d = [_rotulo_mes_pt_extenso(p) for p in meses_disp_d]
-            # Abre no mês ATUAL por padrão; se ele não existir nos dados,
-            # cai no mais recente disponível.
-            periodo_mes_atual = pd.Period(datetime.now(FUSO_BR).strftime("%Y-%m"), freq="M")
+            # Abre no mês do DIA ANTERIOR, não no de hoje: o movimento do dia
+            # corrente costuma estar incompleto, e no dia 1º do mês isso
+            # levaria a um mês praticamente vazio. Se esse mês não existir
+            # nos dados, cai no mais recente disponível.
+            data_ontem_d = datetime.now(FUSO_BR).date() - pd.Timedelta(days=1)
+            periodo_mes_ontem = pd.Period(data_ontem_d.strftime("%Y-%m"), freq="M")
             idx_mes_padrao_d = (
-                meses_disp_d.index(periodo_mes_atual) if periodo_mes_atual in meses_disp_d
+                meses_disp_d.index(periodo_mes_ontem) if periodo_mes_ontem in meses_disp_d
                 else len(rotulos_d) - 1
             )
 
@@ -3184,7 +3180,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             with col_d1:
                 mes_sel_d = st.selectbox(
                     "Mês:", rotulos_d, index=idx_mes_padrao_d, key="fin_mes_sel",
-                    help="Abre no mês atual por padrão.",
+                    help="Abre no mês do dia anterior, que é o último dia com movimento fechado.",
                 )
             with col_d2:
                 opcoes_canal_d = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
@@ -3210,6 +3206,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # Recorte de dias no mesmo estilo do "ajuste fino por dia":
                 # dia inicial e final, em vez de uma lista de etiquetas.
                 ultimo_dia_mes_d = periodo_d.end_time.day
+                # Se o mês escolhido é o do dia anterior, o padrão vai até
+                # ONTEM -- o dia de hoje normalmente ainda está incompleto.
+                # Nos demais meses, mostra o mês inteiro.
+                if periodo_d == periodo_mes_ontem:
+                    dia_fim_padrao_d = min(data_ontem_d.day, ultimo_dia_mes_d)
+                else:
+                    dia_fim_padrao_d = ultimo_dia_mes_d
                 with st.expander("📆 Recortar dias do mês (opcional)"):
                     col_dd1, col_dd2 = st.columns(2)
                     with col_dd1:
@@ -3220,7 +3223,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     with col_dd2:
                         dia_fim_d = st.number_input(
                             "Até o dia", min_value=1, max_value=ultimo_dia_mes_d,
-                            value=ultimo_dia_mes_d, step=1, key="fin_dia_fim_diario",
+                            value=dia_fim_padrao_d, step=1, key="fin_dia_fim_diario",
+                            help="Por padrão vai até o dia anterior, que é o último dia fechado.",
                         )
                 dia_ini_valido_d, dia_fim_valido_d = sorted([int(dia_ini_d), int(dia_fim_d)])
                 df_d = df_d[
