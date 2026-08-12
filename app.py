@@ -1542,6 +1542,72 @@ def _linhas_composicao_do_conjunto(linhas):
     return resultado
 
 
+def _linhas_folha_do_conjunto(linhas):
+    """Devolve apenas as linhas FOLHA -- as que não têm nenhuma sublinha
+    dentro do mesmo conjunto. É o nível mais analítico disponível.
+
+    Usado na Curva ABC e na detecção de anomalias: com as linhas de topo
+    (4 - Custo das Vendas, 6 - Despesas Variáveis, 8 - Despesas
+    Operacionais) a análise fica inútil, porque três contas gigantes
+    explicam tudo e não apontam onde agir. Nas folhas aparecem as contas
+    de verdade (Salários, Energia, Frete, Aluguel...)."""
+    numeros = {l: _numero_linha_dre(l) for l in linhas}
+    folhas = []
+    for linha, numero in numeros.items():
+        if numero is None:
+            folhas.append(linha)
+            continue
+        tem_filha = any(
+            outro_num is not None and outro_num != numero
+            and _linha_pertence_ao_grupo(outro_l, numero)
+            for outro_l, outro_num in numeros.items()
+        )
+        if not tem_filha:
+            folhas.append(linha)
+    return folhas
+
+
+def _fator_proporcional_mes_corrente(colunas_periodo, meses_cols_ref, data_hoje):
+    """Quando o período analisado inclui o MÊS CORRENTE, ele ainda não
+    terminou -- comparar o realizado parcial contra o orçamento inteiro do
+    mês faz o desvio parecer sempre péssimo.
+
+    Devolve (coluna_do_mes_corrente, fracao_decorrida, dias_decorridos,
+    dias_no_mes). Se o período não inclui o mês corrente, devolve
+    (None, 1.0, 0, 0) -- ou seja, sem ajuste."""
+    coluna_mes_atual = f"{data_hoje.month:02d}/{data_hoje.year}"
+    if coluna_mes_atual not in colunas_periodo or coluna_mes_atual not in meses_cols_ref:
+        return None, 1.0, 0, 0
+    dias_no_mes = pd.Period(f"{data_hoje.year}-{data_hoje.month:02d}", freq="M").days_in_month
+    dias_decorridos = data_hoje.day
+    return coluna_mes_atual, dias_decorridos / dias_no_mes, dias_decorridos, dias_no_mes
+
+
+def _orcado_proporcional(list_orc, termo, colunas_periodo, meses_cols_ref, data_hoje, exato=False):
+    """Orçado do período com o mês corrente ajustado pelos dias já
+    decorridos. Ex.: no dia 12 de um mês de 31 dias, entra 12/31 do
+    orçamento daquele mês, e os meses anteriores entram inteiros.
+
+    É esse número que deve ser comparado com o realizado até hoje --
+    comparar contra o orçamento cheio de um mês que ainda está correndo
+    superestima o desvio e faz qualquer alerta disparar sempre."""
+    coluna_atual, fracao, _, _ = _fator_proporcional_mes_corrente(
+        colunas_periodo, meses_cols_ref, data_hoje
+    )
+    if coluna_atual is None:
+        return get_valor_consolidado_multi(list_orc, termo, colunas_periodo, exato_linha_sintetica=exato)
+
+    colunas_fechadas = [c for c in colunas_periodo if c != coluna_atual]
+    valor_fechado = (
+        get_valor_consolidado_multi(list_orc, termo, colunas_fechadas, exato_linha_sintetica=exato)
+        if colunas_fechadas else 0.0
+    )
+    valor_mes_atual = get_valor_consolidado_multi(
+        list_orc, termo, [coluna_atual], exato_linha_sintetica=exato
+    )
+    return valor_fechado + valor_mes_atual * fracao
+
+
 def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
     """Retorna a máscara (True/False por linha) de correspondência da coluna
     "Centro de Custos" do DIÁRIO contra um ou mais candidatos de loja.
@@ -4041,206 +4107,215 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 valor_vencido_a = qtd_vencido_a = 0
                 valor_prazo_interno_a = qtd_prazo_interno_a = 0
 
-            st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
-            st.markdown(
-                render_kpi_row([
-                    dict(label="PRAZO MÉDIO DE PAGAMENTO",
-                         value=(f"{prazo_medio_pagto_a:+.1f} dias" if prazo_medio_pagto_a is not None else "—"),
-                         value_color=(COLORS["positive"] if (prazo_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
-                         subtext=(f"Entre os {len(saidas_prazo_a)} títulos já pagos"
-                                  if prazo_medio_pagto_a is not None else "Nenhum título pago no recorte"),
-                         icon="📤"),
-                    dict(label="PRAZO MÉDIO DE RECEBIMENTO",
-                         value=(f"{prazo_medio_receb_a:+.1f} dias" if prazo_medio_receb_a is not None else "—"),
-                         value_color=(COLORS["positive"] if (prazo_medio_receb_a or 0) <= 0 else COLORS["warning"]),
-                         subtext=(f"Entre os {len(entradas_prazo_a)} já recebidos"
-                                  if prazo_medio_receb_a is not None else "Nenhum recebimento liquidado"),
-                         icon="📥"),
-                    dict(label="PAGAMENTOS EM DIA",
-                         value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
-                         value_color=(COLORS["positive"] if (pct_pago_em_dia_a or 0) >= 90 else COLORS["warning"]),
-                         subtext="Pagos até o vencimento (dos já pagos)", icon="✅"),
-                    dict(label="DIAS DE CAIXA",
-                         value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
-                         value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
-                         subtext=f"Ao ritmo de {formata_m(saida_media_diaria_a)}/dia de saídas", icon="🛡️"),
-                    dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
-                         value=f"{formata_m(entrada_media_diaria_a)} / {formata_m(saida_media_diaria_a)}",
-                         value_color=COLORS["text"], subtext=f"Em {dias_com_mov_a} dias com movimento", icon="📊"),
-                    dict(label="CONCENTRAÇÃO DAS SAÍDAS", value=f"{pct_top3_a:.0f}%",
-                         value_color=(COLORS["negative"] if pct_top3_a >= 50 else COLORS["text"]),
-                         subtext=f"Nos 3 maiores dias · pico {rotulo_pico_a} ({formata_m(valor_pico_a)})", icon="🎯"),
-                ]),
-                unsafe_allow_html=True,
+            sub_prazos, sub_aberto, sub_estrutura = st.tabs(
+                ["⏱️ Prazos e Cobertura", "📌 Contas a Pagar", "🧾 Estrutura e Composição"]
             )
-            st.caption(
-                "**Prazo médio** considera só o que já foi liquidado, comparando a data de pagamento com a "
-                "de vencimento: negativo significa antecipar, positivo significa atrasar. **Dias de caixa** "
-                "estima por quantos dias o saldo atual cobriria as saídas no ritmo médio do período. "
-                "**Concentração** mostra o quanto do desembolso está espremido em poucos dias."
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
 
-            # ---- Contas a pagar em aberto ----
-            st.markdown(
-                '<div class="section-title">📌 Contas a Pagar em Aberto '
-                f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
-                f'(posição em {hoje_analise:%d/%m/%Y} · prazo interno de {PRAZO_INTERNO_DIAS} dias)</span></div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                render_kpi_row([
-                    dict(label="TOTAL A PAGAR NO RECORTE", value=formata_brl(total_pagar_a),
-                         value_color=COLORS["text"],
-                         subtext=f"{len(df_pagar_a)} títulos no período filtrado", icon="🧾"),
-                    dict(label="JÁ QUITADO", value=formata_brl(valor_quitado_a),
-                         value_color=COLORS["positive"],
-                         subtext=f"{pct_quitado_a:.0f}% do total · {len(df_pagar_quitado)} títulos", icon="✅"),
-                    dict(label="AINDA EM ABERTO", value=formata_brl(valor_aberto_a),
-                         value_color=COLORS["warning"],
-                         subtext=f"{len(df_pagar_aberto)} títulos sem liquidação", icon="⏳"),
-                    dict(label="VENCIDO E NÃO PAGO", value=formata_brl(valor_vencido_a),
-                         value_color=(COLORS["negative"] if valor_vencido_a else COLORS["positive"]),
-                         subtext=f"{qtd_vencido_a} títulos com vencimento passado", icon="🚨"),
-                    dict(label=f"A VENCER EM ATÉ {PRAZO_INTERNO_DIAS} DIAS",
-                         value=formata_brl(valor_prazo_interno_a),
-                         value_color=COLORS["text"],
-                         subtext=f"{qtd_prazo_interno_a} títulos dentro do prazo interno", icon="📆"),
-                ]),
-                unsafe_allow_html=True,
-            )
-            st.caption(
-                "Título **sem data de liquidação** é título ainda não pago — a previsão de desembolso é o "
-                "próprio vencimento. **Vencido e não pago** é o que passou da data e continua em aberto; "
-                f"**a vencer em até {PRAZO_INTERNO_DIAS} dias** é o desembolso que entra no prazo interno "
-                "combinado com fornecedores e já deve estar reservado no caixa."
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # ---- Estrutura e composição ----
-            qtd_lanc_a = len(df_a)
-            qtd_entradas_a = int((df_a["Tipo Movimento"] == "entrada").sum())
-            qtd_saidas_a = int((df_a["Tipo Movimento"] == "saida").sum())
-            ticket_entrada_a = entradas_a / qtd_entradas_a if qtd_entradas_a else 0
-            ticket_saida_a = abs(saidas_a) / qtd_saidas_a if qtd_saidas_a else 0
-            cobertura_a = (entradas_a / abs(saidas_a) * 100) if saidas_a else 0
-            liquidez_imediata_a = (saldo_a / abs(saidas_a) * 100) if saidas_a else 0
-
-            projetado_a = df_a.loc[
-                (df_a["Tipo Movimento"] == "entrada")
-                & df_a[COL_FIN_MOVIMENTO].astype(str).str.contains("projetad", case=False, na=False),
-                COL_FIN_VALOR,
-            ].sum()
-            realizado_a = entradas_a - projetado_a
-            pct_realizado_a = (realizado_a / entradas_a * 100) if entradas_a else 0
-
-            st.markdown('<div class="section-title">🧾 Estrutura das Movimentações</div>', unsafe_allow_html=True)
-            st.markdown(
-                render_kpi_row([
-                    dict(label="LANÇAMENTOS NO PERÍODO", value=f"{qtd_lanc_a:,}".replace(",", "."),
-                         value_color=COLORS["text"],
-                         subtext=f"{qtd_entradas_a} entradas · {qtd_saidas_a} saídas", icon="🧮"),
-                    dict(label="TICKET MÉDIO DE ENTRADA", value=formata_brl(ticket_entrada_a),
-                         value_color=COLORS["positive"], subtext="Valor médio por recebimento", icon="📥"),
-                    dict(label="TICKET MÉDIO DE SAÍDA", value=formata_brl(ticket_saida_a),
-                         value_color=COLORS["negative"], subtext="Valor médio por pagamento", icon="📤"),
-                    dict(label="COBERTURA ENTRADAS/SAÍDAS", value=f"{cobertura_a:.0f}%",
-                         value_color=(COLORS["positive"] if cobertura_a >= 100 else COLORS["negative"]),
-                         subtext="Acima de 100% = entra mais do que sai", icon="⚖️"),
-                    dict(label="LIQUIDEZ IMEDIATA", value=f"{liquidez_imediata_a:.0f}%",
-                         value_color=(COLORS["positive"] if liquidez_imediata_a >= 100 else COLORS["warning"]),
-                         subtext="Saldo em caixa ÷ contas a pagar", icon="💧"),
-                    dict(label="RECEBÍVEIS JÁ REALIZADOS", value=f"{pct_realizado_a:.0f}%",
-                         value_color=(COLORS["positive"] if pct_realizado_a >= 50 else COLORS["warning"]),
-                         subtext=f"Projetado: {formata_m(projetado_a)}", icon="⏳"),
-                ]),
-                unsafe_allow_html=True,
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # ---- Gráficos de composição ----
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                st.markdown('<div class="section-title">🏢 Saídas por Canal</div>', unsafe_allow_html=True)
-                saidas_canal_a = (
-                    df_a[df_a["Tipo Movimento"] == "saida"].groupby(COL_FIN_CANAL, observed=True)[COL_FIN_VALOR].sum().abs().sort_values()
+            with sub_prazos:
+                st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="PRAZO MÉDIO DE PAGAMENTO",
+                             value=(f"{prazo_medio_pagto_a:+.1f} dias" if prazo_medio_pagto_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (prazo_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
+                             subtext=(f"Entre os {len(saidas_prazo_a)} títulos já pagos"
+                                      if prazo_medio_pagto_a is not None else "Nenhum título pago no recorte"),
+                             icon="📤"),
+                        dict(label="PRAZO MÉDIO DE RECEBIMENTO",
+                             value=(f"{prazo_medio_receb_a:+.1f} dias" if prazo_medio_receb_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (prazo_medio_receb_a or 0) <= 0 else COLORS["warning"]),
+                             subtext=(f"Entre os {len(entradas_prazo_a)} já recebidos"
+                                      if prazo_medio_receb_a is not None else "Nenhum recebimento liquidado"),
+                             icon="📥"),
+                        dict(label="PAGAMENTOS EM DIA",
+                             value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (pct_pago_em_dia_a or 0) >= 90 else COLORS["warning"]),
+                             subtext="Pagos até o vencimento (dos já pagos)", icon="✅"),
+                        dict(label="DIAS DE CAIXA",
+                             value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
+                             subtext=f"Ao ritmo de {formata_m(saida_media_diaria_a)}/dia de saídas", icon="🛡️"),
+                        dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
+                             value=f"{formata_m(entrada_media_diaria_a)} / {formata_m(saida_media_diaria_a)}",
+                             value_color=COLORS["text"], subtext=f"Em {dias_com_mov_a} dias com movimento", icon="📊"),
+                        dict(label="CONCENTRAÇÃO DAS SAÍDAS", value=f"{pct_top3_a:.0f}%",
+                             value_color=(COLORS["negative"] if pct_top3_a >= 50 else COLORS["text"]),
+                             subtext=f"Nos 3 maiores dias · pico {rotulo_pico_a} ({formata_m(valor_pico_a)})", icon="🎯"),
+                    ]),
+                    unsafe_allow_html=True,
                 )
-                if not saidas_canal_a.empty and saidas_canal_a.sum():
-                    fig_canal = go.Figure(data=[go.Bar(
-                        x=list(saidas_canal_a.values), y=list(saidas_canal_a.index), orientation="h",
-                        marker=dict(color="rgba(247,110,110,0.35)", line=dict(color=COLORS["negative"], width=1.5)),
-                        text=[formata_m(v) for v in saidas_canal_a.values],
-                        textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
-                        hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>",
-                    )])
-                    estilo_grafico(
-                        fig_canal, height=300,
-                        xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True,
-                                   range=[0, saidas_canal_a.max() * 1.28]),
-                        yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
-                        margin=dict(l=10, r=20, t=20, b=30),
-                    )
-                    st.plotly_chart(fig_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-                else:
-                    st.caption("Sem saídas no recorte selecionado.")
-
-            with col_g2:
-                st.markdown('<div class="section-title">💳 Movimentação por Modalidade</div>', unsafe_allow_html=True)
-                modal_a = df_a.groupby(COL_FIN_MODALIDADE, observed=True)[COL_FIN_VALOR].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
-                modal_a = modal_a[modal_a > 0]
-                if not modal_a.empty:
-                    TOP_MODAL = 6
-                    if len(modal_a) > TOP_MODAL:
-                        outros_modal = modal_a.iloc[TOP_MODAL:].sum()
-                        modal_a = pd.concat([modal_a.iloc[:TOP_MODAL], pd.Series({"Outros": outros_modal})])
-                    fig_modal = go.Figure(data=[go.Pie(
-                        labels=list(modal_a.index), values=list(modal_a.values), hole=0.55,
-                        marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
-                                             COLORS["negative"], COLORS["secondary"], COLORS["muted_line"], "#6B7280"]),
-                        textinfo="percent", texttemplate="%{percent:.1%}",
-                        textfont=dict(color=COLORS["text"], size=11),
-                        hovertemplate="%{label}: R$ %{value:,.2f}<extra></extra>",
-                    )])
-                    fig_modal.add_annotation(
-                        text=f"<b>{formata_m(modal_a.sum())}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Volume total</span>",
-                        showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
-                    )
-                    estilo_grafico(
-                        fig_modal, height=300,
-                        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=9)),
-                        margin=dict(l=10, r=10, t=20, b=10),
-                    )
-                    st.plotly_chart(fig_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-                else:
-                    st.caption("Sem movimentação no recorte selecionado.")
-
-            # ---- Maiores despesas por grupo ----
-            if COL_FIN_GRUPO_DESPESA in df_a.columns:
-                # Mantém o sinal negativo: são saídas de caixa. Com abs() o
-                # valor virava positivo e a coloração pintava despesa de
-                # verde, como se fosse entrada.
-                grupo_a = (
-                    df_a[df_a["Tipo Movimento"] == "saida"]
-                    .groupby(COL_FIN_GRUPO_DESPESA, observed=True)[COL_FIN_VALOR].sum().sort_values()
+                st.caption(
+                    "**Prazo médio** considera só o que já foi liquidado, comparando a data de pagamento com a "
+                    "de vencimento: negativo significa antecipar, positivo significa atrasar. **Dias de caixa** "
+                    "estima por quantos dias o saldo atual cobriria as saídas no ritmo médio do período. "
+                    "**Concentração** mostra o quanto do desembolso está espremido em poucos dias."
                 )
-                grupo_a = grupo_a[grupo_a < 0].head(10)
-                if not grupo_a.empty:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>', unsafe_allow_html=True)
-                    total_saidas_grupo = abs(grupo_a.sum())
-                    df_grupo_a = pd.DataFrame({
-                        "Grupo de Despesa": grupo_a.index.astype(str),
-                        "Valor (R$)": grupo_a.values,
-                        "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
-                    })
-                    st.dataframe(
-                        df_grupo_a.style.format({
-                            "Valor (R$)": formata_brl,
-                            "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
-                        }).map(cor_valor, subset=["Valor (R$)"]),
-                        use_container_width=True, hide_index=True,
+                st.markdown("<br>", unsafe_allow_html=True)
+
+
+            with sub_aberto:
+                # ---- Contas a pagar em aberto ----
+                st.markdown(
+                    '<div class="section-title">📌 Contas a Pagar em Aberto '
+                    f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+                    f'(posição em {hoje_analise:%d/%m/%Y} · prazo interno de {PRAZO_INTERNO_DIAS} dias)</span></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="TOTAL A PAGAR NO RECORTE", value=formata_brl(total_pagar_a),
+                             value_color=COLORS["text"],
+                             subtext=f"{len(df_pagar_a)} títulos no período filtrado", icon="🧾"),
+                        dict(label="JÁ QUITADO", value=formata_brl(valor_quitado_a),
+                             value_color=COLORS["positive"],
+                             subtext=f"{pct_quitado_a:.0f}% do total · {len(df_pagar_quitado)} títulos", icon="✅"),
+                        dict(label="AINDA EM ABERTO", value=formata_brl(valor_aberto_a),
+                             value_color=COLORS["warning"],
+                             subtext=f"{len(df_pagar_aberto)} títulos sem liquidação", icon="⏳"),
+                        dict(label="VENCIDO E NÃO PAGO", value=formata_brl(valor_vencido_a),
+                             value_color=(COLORS["negative"] if valor_vencido_a else COLORS["positive"]),
+                             subtext=f"{qtd_vencido_a} títulos com vencimento passado", icon="🚨"),
+                        dict(label=f"A VENCER EM ATÉ {PRAZO_INTERNO_DIAS} DIAS",
+                             value=formata_brl(valor_prazo_interno_a),
+                             value_color=COLORS["text"],
+                             subtext=f"{qtd_prazo_interno_a} títulos dentro do prazo interno", icon="📆"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Título **sem data de liquidação** é título ainda não pago — a previsão de desembolso é o "
+                    "próprio vencimento. **Vencido e não pago** é o que passou da data e continua em aberto; "
+                    f"**a vencer em até {PRAZO_INTERNO_DIAS} dias** é o desembolso que entra no prazo interno "
+                    "combinado com fornecedores e já deve estar reservado no caixa."
+                )
+                st.markdown("<br>", unsafe_allow_html=True)
+
+
+            with sub_estrutura:
+                # ---- Estrutura e composição ----
+                qtd_lanc_a = len(df_a)
+                qtd_entradas_a = int((df_a["Tipo Movimento"] == "entrada").sum())
+                qtd_saidas_a = int((df_a["Tipo Movimento"] == "saida").sum())
+                ticket_entrada_a = entradas_a / qtd_entradas_a if qtd_entradas_a else 0
+                ticket_saida_a = abs(saidas_a) / qtd_saidas_a if qtd_saidas_a else 0
+                cobertura_a = (entradas_a / abs(saidas_a) * 100) if saidas_a else 0
+                liquidez_imediata_a = (saldo_a / abs(saidas_a) * 100) if saidas_a else 0
+
+                projetado_a = df_a.loc[
+                    (df_a["Tipo Movimento"] == "entrada")
+                    & df_a[COL_FIN_MOVIMENTO].astype(str).str.contains("projetad", case=False, na=False),
+                    COL_FIN_VALOR,
+                ].sum()
+                realizado_a = entradas_a - projetado_a
+                pct_realizado_a = (realizado_a / entradas_a * 100) if entradas_a else 0
+
+                st.markdown('<div class="section-title">🧾 Estrutura das Movimentações</div>', unsafe_allow_html=True)
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="LANÇAMENTOS NO PERÍODO", value=f"{qtd_lanc_a:,}".replace(",", "."),
+                             value_color=COLORS["text"],
+                             subtext=f"{qtd_entradas_a} entradas · {qtd_saidas_a} saídas", icon="🧮"),
+                        dict(label="TICKET MÉDIO DE ENTRADA", value=formata_brl(ticket_entrada_a),
+                             value_color=COLORS["positive"], subtext="Valor médio por recebimento", icon="📥"),
+                        dict(label="TICKET MÉDIO DE SAÍDA", value=formata_brl(ticket_saida_a),
+                             value_color=COLORS["negative"], subtext="Valor médio por pagamento", icon="📤"),
+                        dict(label="COBERTURA ENTRADAS/SAÍDAS", value=f"{cobertura_a:.0f}%",
+                             value_color=(COLORS["positive"] if cobertura_a >= 100 else COLORS["negative"]),
+                             subtext="Acima de 100% = entra mais do que sai", icon="⚖️"),
+                        dict(label="LIQUIDEZ IMEDIATA", value=f"{liquidez_imediata_a:.0f}%",
+                             value_color=(COLORS["positive"] if liquidez_imediata_a >= 100 else COLORS["warning"]),
+                             subtext="Saldo em caixa ÷ contas a pagar", icon="💧"),
+                        dict(label="RECEBÍVEIS JÁ REALIZADOS", value=f"{pct_realizado_a:.0f}%",
+                             value_color=(COLORS["positive"] if pct_realizado_a >= 50 else COLORS["warning"]),
+                             subtext=f"Projetado: {formata_m(projetado_a)}", icon="⏳"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ---- Gráficos de composição ----
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    st.markdown('<div class="section-title">🏢 Saídas por Canal</div>', unsafe_allow_html=True)
+                    saidas_canal_a = (
+                        df_a[df_a["Tipo Movimento"] == "saida"].groupby(COL_FIN_CANAL, observed=True)[COL_FIN_VALOR].sum().abs().sort_values()
                     )
-                    st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
+                    if not saidas_canal_a.empty and saidas_canal_a.sum():
+                        fig_canal = go.Figure(data=[go.Bar(
+                            x=list(saidas_canal_a.values), y=list(saidas_canal_a.index), orientation="h",
+                            marker=dict(color="rgba(247,110,110,0.35)", line=dict(color=COLORS["negative"], width=1.5)),
+                            text=[formata_m(v) for v in saidas_canal_a.values],
+                            textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
+                            hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>",
+                        )])
+                        estilo_grafico(
+                            fig_canal, height=300,
+                            xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True,
+                                       range=[0, saidas_canal_a.max() * 1.28]),
+                            yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
+                            margin=dict(l=10, r=20, t=20, b=30),
+                        )
+                        st.plotly_chart(fig_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                    else:
+                        st.caption("Sem saídas no recorte selecionado.")
+
+                with col_g2:
+                    st.markdown('<div class="section-title">💳 Movimentação por Modalidade</div>', unsafe_allow_html=True)
+                    modal_a = df_a.groupby(COL_FIN_MODALIDADE, observed=True)[COL_FIN_VALOR].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+                    modal_a = modal_a[modal_a > 0]
+                    if not modal_a.empty:
+                        TOP_MODAL = 6
+                        if len(modal_a) > TOP_MODAL:
+                            outros_modal = modal_a.iloc[TOP_MODAL:].sum()
+                            modal_a = pd.concat([modal_a.iloc[:TOP_MODAL], pd.Series({"Outros": outros_modal})])
+                        fig_modal = go.Figure(data=[go.Pie(
+                            labels=list(modal_a.index), values=list(modal_a.values), hole=0.55,
+                            marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
+                                                 COLORS["negative"], COLORS["secondary"], COLORS["muted_line"], "#6B7280"]),
+                            textinfo="percent", texttemplate="%{percent:.1%}",
+                            textfont=dict(color=COLORS["text"], size=11),
+                            hovertemplate="%{label}: R$ %{value:,.2f}<extra></extra>",
+                        )])
+                        fig_modal.add_annotation(
+                            text=f"<b>{formata_m(modal_a.sum())}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Volume total</span>",
+                            showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
+                        )
+                        estilo_grafico(
+                            fig_modal, height=300,
+                            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=9)),
+                            margin=dict(l=10, r=10, t=20, b=10),
+                        )
+                        st.plotly_chart(fig_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                    else:
+                        st.caption("Sem movimentação no recorte selecionado.")
+
+                # ---- Maiores despesas por grupo ----
+                if COL_FIN_GRUPO_DESPESA in df_a.columns:
+                    # Mantém o sinal negativo: são saídas de caixa. Com abs() o
+                    # valor virava positivo e a coloração pintava despesa de
+                    # verde, como se fosse entrada.
+                    grupo_a = (
+                        df_a[df_a["Tipo Movimento"] == "saida"]
+                        .groupby(COL_FIN_GRUPO_DESPESA, observed=True)[COL_FIN_VALOR].sum().sort_values()
+                    )
+                    grupo_a = grupo_a[grupo_a < 0].head(10)
+                    if not grupo_a.empty:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>', unsafe_allow_html=True)
+                        total_saidas_grupo = abs(grupo_a.sum())
+                        df_grupo_a = pd.DataFrame({
+                            "Grupo de Despesa": grupo_a.index.astype(str),
+                            "Valor (R$)": grupo_a.values,
+                            "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
+                        })
+                        st.dataframe(
+                            df_grupo_a.style.format({
+                                "Valor (R$)": formata_brl,
+                                "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
+                            }).map(cor_valor, subset=["Valor (R$)"]),
+                            use_container_width=True, hide_index=True,
+                        )
+                        st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
 
     st.stop()
 
@@ -5291,32 +5366,42 @@ def _avaliar_alertas_controladoria(
     Nível: 'critico' (vermelho), 'atencao' (amarelo) ou 'ok' (verde)."""
     alertas = []
 
-    # --- 1. Desvio de EBITDA contra o orçado ---
+    # --- 1. Desvio de EBITDA contra o orçado PROPORCIONAL ---
+    # Se o período inclui o mês corrente, o orçamento entra só na fração de
+    # dias já decorridos -- senão o alerta dispararia todo mês, sempre.
+    hoje_alerta = datetime.now(FUSO_BR).date()
     ebitda_real = get_valor_consolidado_multi(list_real, "11 - EBITDA", colunas_periodo)
-    ebitda_orc = get_valor_consolidado_multi(list_orc, "11 - EBITDA", colunas_periodo)
+    ebitda_orc = _orcado_proporcional(
+        list_orc, "11 - EBITDA", colunas_periodo, list(m_map_alertas.values()), hoje_alerta
+    )
     if ebitda_orc:
         desvio_pct = (ebitda_real - ebitda_orc) / abs(ebitda_orc) * 100
         if desvio_pct <= -limite_desvio_ebitda:
             alertas.append({
                 "nivel": "critico",
-                "titulo": f"EBITDA {abs(desvio_pct):.1f}% abaixo do orçado",
+                "titulo": f"EBITDA {abs(desvio_pct):.1f}% abaixo do ritmo orçado",
                 "detalhe": (
-                    f"Realizado {formata_brl(ebitda_real)} contra {formata_brl(ebitda_orc)} previstos "
-                    f"— diferença de {formata_brl(ebitda_real - ebitda_orc)}."
+                    f"Realizado {formata_brl(ebitda_real)} contra {formata_brl(ebitda_orc)} esperados "
+                    f"até hoje (orçamento ajustado aos dias decorridos) — diferença de "
+                    f"{formata_brl(ebitda_real - ebitda_orc)}."
                 ),
             })
 
     # --- 2. Receita abaixo da meta ---
     rec_real = get_valor_consolidado_multi(list_real, "3 - Receita Operacional Liquida", colunas_periodo)
-    rec_orc = get_valor_consolidado_multi(list_orc, "3 - Receita Operacional Liquida", colunas_periodo)
+    rec_orc = _orcado_proporcional(
+        list_orc, "3 - Receita Operacional Liquida", colunas_periodo,
+        list(m_map_alertas.values()), hoje_alerta
+    )
     if rec_orc:
         atingimento = rec_real / rec_orc * 100
         if atingimento < (100 - limite_desvio_ebitda):
             alertas.append({
                 "nivel": "atencao",
-                "titulo": f"Receita líquida em {atingimento:.1f}% da meta",
+                "titulo": f"Receita líquida em {atingimento:.1f}% do ritmo esperado",
                 "detalhe": (
-                    f"Faltam {formata_brl(rec_orc - rec_real)} para atingir o orçamento do período."
+                    f"Faltam {formata_brl(rec_orc - rec_real)} para acompanhar o orçamento "
+                    f"proporcional aos dias já decorridos."
                 ),
             })
 
@@ -5326,7 +5411,9 @@ def _avaliar_alertas_controladoria(
     estouros = []
     for linha in linhas_custo_raiz:
         v_real = abs(get_valor_consolidado_multi(list_real, linha, colunas_periodo, exato_linha_sintetica=True))
-        v_orc = abs(get_valor_consolidado_multi(list_orc, linha, colunas_periodo, exato_linha_sintetica=True))
+        v_orc = abs(_orcado_proporcional(
+            list_orc, linha, colunas_periodo, list(m_map_alertas.values()), hoje_alerta, exato=True
+        ))
         if v_orc <= 0 or v_real < valor_minimo_conta:
             continue
         excesso_pct = (v_real - v_orc) / v_orc * 100
@@ -5340,7 +5427,7 @@ def _avaliar_alertas_controladoria(
     for e in estouros[:5]:
         alertas.append({
             "nivel": "critico" if e["excesso_pct"] >= limite_estouro_conta * 2 else "atencao",
-            "titulo": f"{e['nome']}: {e['excesso_pct']:.0f}% acima do orçado",
+            "titulo": f"{e['nome']}: {e['excesso_pct']:.0f}% acima do ritmo orçado",
             "detalhe": f"Excesso de {formata_brl(e['excesso_valor'])} no período.",
         })
     if len(estouros) > 5:
@@ -5743,6 +5830,67 @@ with tab1:
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
+
+        # ---- Ritmo do mês corrente: orçado proporcional aos dias ----
+        # Comparar o realizado parcial de um mês em andamento contra o
+        # orçamento cheio faz o desvio parecer sempre catastrófico. Aqui o
+        # orçamento é ajustado aos dias já decorridos, que é a comparação
+        # justa enquanto o mês não fecha.
+        _hoje_ritmo = datetime.now(FUSO_BR).date()
+        _col_mes_atual, _frac_mes, _dias_corridos, _dias_mes = _fator_proporcional_mes_corrente(
+            cols_kpi, meses_cols, _hoje_ritmo
+        )
+        if _col_mes_atual is not None:
+            _nome_mes_atual = next(
+                (nome for nome, col in m_map.items() if col == _col_mes_atual), _col_mes_atual
+            )
+            rec_real_mes = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", [_col_mes_atual])
+            rec_orc_mes_cheio = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", [_col_mes_atual])
+            rec_orc_mes_prop = rec_orc_mes_cheio * _frac_mes
+            gap_rec_mes = rec_real_mes - rec_orc_mes_prop
+            ritmo_rec_pct = (rec_real_mes / rec_orc_mes_prop * 100) if rec_orc_mes_prop else 0
+
+            ebitda_real_mes = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [_col_mes_atual])
+            ebitda_orc_mes_prop = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", [_col_mes_atual]) * _frac_mes
+            ritmo_ebitda_pct = (ebitda_real_mes / ebitda_orc_mes_prop * 100) if ebitda_orc_mes_prop else 0
+
+            # Projeção simples do mês: mantido o ritmo diário atual
+            rec_projetada_mes = (rec_real_mes / _dias_corridos * _dias_mes) if _dias_corridos else 0
+
+            st.markdown(
+                f'<div class="section-title">⏱️ Ritmo de {_nome_mes_atual.capitalize()} '
+                f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+                f'(mês em andamento — {_dias_corridos} de {_dias_mes} dias, '
+                f'{_frac_mes * 100:.0f}% decorrido)</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                render_kpi_row([
+                    dict(label="RECEITA REALIZADA NO MÊS", value=formata_brl(rec_real_mes),
+                         value_color=COLORS["text"],
+                         subtext=f"Até o dia {_dias_corridos}", icon="💰"),
+                    dict(label="DEVERIA TER REALIZADO", value=formata_brl(rec_orc_mes_prop),
+                         value_color=COLORS["text_muted"],
+                         subtext=f"{_frac_mes * 100:.0f}% do orçado de {formata_m(rec_orc_mes_cheio)}", icon="🎯"),
+                    dict(label="DIFERENÇA DE RITMO", value=formata_brl(gap_rec_mes),
+                         value_color=cor_variacao(gap_rec_mes),
+                         subtext=f"{ritmo_rec_pct:.0f}% do esperado até aqui",
+                         subtext_color=cor_variacao(gap_rec_mes), icon="⚖️"),
+                    dict(label="RITMO DO EBITDA", value=f"{ritmo_ebitda_pct:.0f}%",
+                         value_color=cor_variacao(ritmo_ebitda_pct - 100),
+                         subtext=f"Realizado {formata_m(ebitda_real_mes)} de {formata_m(ebitda_orc_mes_prop)}", icon="📈"),
+                    dict(label="PROJEÇÃO DE FECHAMENTO", value=formata_brl(rec_projetada_mes),
+                         value_color=cor_variacao(rec_projetada_mes - rec_orc_mes_cheio),
+                         subtext=f"Mantido o ritmo diário · orçado {formata_m(rec_orc_mes_cheio)}", icon="🔮"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"O mês ainda não fechou, então o orçamento é ajustado à fração já decorrida "
+                f"({_dias_corridos}/{_dias_mes} dias). É essa a comparação justa enquanto o mês corre — "
+                "medir o parcial contra o orçamento cheio faria o resultado parecer sempre ruim."
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
 
         st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 
@@ -6636,6 +6784,11 @@ if not departamento_ativo and tab_diag is not None:
         linhas_diag = list(df_ref[col_nome_diag].dropna().astype(str).unique())
         linhas_custo_diag = [l for l in linhas_diag if eh_linha_custos_despesas(l)]
         linhas_custo_raiz_diag = _linhas_raiz_do_conjunto(linhas_custo_diag)
+        # Para ABC e anomalias, o nível de topo (Custo das Vendas, Despesas
+        # Operacionais, Despesas Variáveis) não serve: três contas gigantes
+        # explicam tudo e a análise não aponta onde agir. As FOLHAS trazem as
+        # contas de verdade (Salários, Energia, Frete...).
+        linhas_custo_folha_diag = _linhas_folha_do_conjunto(linhas_custo_diag)
 
         ofensores_diag = []
         for linha in linhas_custo_raiz_diag:
@@ -6685,6 +6838,45 @@ if not departamento_ativo and tab_diag is not None:
                 f"({formata_brl(sum(o['desvio'] for o in top_ofensores))} dos "
                 f"{formata_brl(-total_estouro)} totais)."
             )
+        # Contexto de ritmo do mês corrente e tendência recente
+        _hoje_narr = datetime.now(FUSO_BR).date()
+        _col_atual_narr, _frac_narr, _dias_corr_narr, _dias_mes_narr = _fator_proporcional_mes_corrente(
+            cols_kpi, meses_cols, _hoje_narr
+        )
+        if _col_atual_narr is not None:
+            ebitda_prop_narr = _orcado_proporcional(
+                list_df_orc, "11 - EBITDA", cols_kpi, meses_cols, _hoje_narr
+            )
+            if ebitda_prop_narr:
+                ritmo_narr = ebitda_diag / ebitda_prop_narr * 100
+                situacao_ritmo = "acima" if ritmo_narr >= 100 else "abaixo"
+                partes_narrativa.append(
+                    f"⏱️ Considerando que o mês corrente está {_frac_narr * 100:.0f}% decorrido "
+                    f"({_dias_corr_narr} de {_dias_mes_narr} dias), o **ritmo** está em "
+                    f"{ritmo_narr:.0f}% do esperado — {situacao_ritmo} do orçamento ajustado ao período."
+                )
+
+        # Tendência dos últimos 3 meses de EBITDA
+        _serie_ebitda_narr = [
+            (nome, get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [col]))
+            for nome, col in m_map.items()
+        ]
+        _com_dado_narr = [(n, v) for n, v in _serie_ebitda_narr if v != 0]
+        if len(_com_dado_narr) >= 3:
+            ultimos3 = _com_dado_narr[-3:]
+            valores3 = [v for _, v in ultimos3]
+            if valores3[0] > valores3[1] > valores3[2]:
+                partes_narrativa.append(
+                    f"📉 **Atenção à tendência:** o EBITDA cai há 3 meses seguidos "
+                    f"({ultimos3[0][0].capitalize()} → {ultimos3[2][0].capitalize()}), "
+                    f"de {formata_m(valores3[0])} para {formata_m(valores3[2])}."
+                )
+            elif valores3[0] < valores3[1] < valores3[2]:
+                partes_narrativa.append(
+                    f"📈 O EBITDA sobe há 3 meses seguidos, de {formata_m(valores3[0])} "
+                    f"para {formata_m(valores3[2])}."
+                )
+
         if not partes_narrativa:
             partes_narrativa.append("Não há dados suficientes no período selecionado para gerar a leitura.")
 
@@ -6743,23 +6935,103 @@ if not departamento_ativo and tab_diag is not None:
         )
 
         if ponto_equilibrio_diag > 0:
-            fig_be = go.Figure()
-            fig_be.add_trace(go.Bar(
-                name="Receita realizada", x=["Receita realizada", "Ponto de equilíbrio"],
-                y=[rec_liq_diag, ponto_equilibrio_diag],
-                marker=dict(color=[COLORS["primary"], COLORS["warning"]], opacity=0.75),
-                text=[formata_m(rec_liq_diag), formata_m(ponto_equilibrio_diag)],
-                textposition="outside", textfont=dict(size=11, color=COLORS["text_muted"]),
-                showlegend=False,
-            ))
-            estilo_grafico(
-                fig_be, height=280,
-                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=11)),
-                yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
-                           range=[0, max(rec_liq_diag, ponto_equilibrio_diag) * 1.2]),
-                margin=dict(l=70, r=20, t=25, b=30),
+            col_be1, col_be2 = st.columns([1.15, 1])
+
+            with col_be1:
+                # Como a receita se decompõe: o que paga custo variável, o que
+                # paga custo fixo e o que sobra de resultado.
+                lucro_operacional_diag = mc_valor_diag - custos_fixos_diag
+                fig_be = go.Figure()
+                fig_be.add_trace(go.Bar(
+                    name="Custos variáveis", y=["Receita"], x=[custos_variaveis_diag], orientation="h",
+                    marker=dict(color="rgba(247,110,110,0.55)", line=dict(color=COLORS["negative"], width=1.3)),
+                    text=[formata_m(custos_variaveis_diag)], textposition="inside",
+                    textfont=dict(size=11, color=COLORS["text"]),
+                    hovertemplate="Custos variáveis: R$ %{x:,.2f}<extra></extra>",
+                ))
+                fig_be.add_trace(go.Bar(
+                    name="Custos fixos", y=["Receita"], x=[custos_fixos_diag], orientation="h",
+                    marker=dict(color="rgba(245,166,35,0.55)", line=dict(color=COLORS["warning"], width=1.3)),
+                    text=[formata_m(custos_fixos_diag)], textposition="inside",
+                    textfont=dict(size=11, color=COLORS["text"]),
+                    hovertemplate="Custos fixos: R$ %{x:,.2f}<extra></extra>",
+                ))
+                fig_be.add_trace(go.Bar(
+                    name="Resultado", y=["Receita"], x=[max(lucro_operacional_diag, 0)], orientation="h",
+                    marker=dict(color="rgba(62,207,142,0.55)", line=dict(color=COLORS["positive"], width=1.3)),
+                    text=[formata_m(lucro_operacional_diag)], textposition="inside",
+                    textfont=dict(size=11, color=COLORS["text"]),
+                    hovertemplate="Resultado: R$ %{x:,.2f}<extra></extra>",
+                ))
+                fig_be.add_vline(
+                    x=ponto_equilibrio_diag,
+                    line=dict(color=COLORS["text"], width=2.5, dash="dash"),
+                    annotation_text=f"ponto de equilíbrio<br>{formata_m(ponto_equilibrio_diag)}",
+                    annotation_position="top",
+                    annotation_font=dict(size=10, color=COLORS["text"]),
+                )
+                estilo_grafico(
+                    fig_be, height=250, barmode="stack",
+                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                               title=dict(text="Composição da receita (R$)",
+                                          font=dict(size=10, color=COLORS["text_muted"]))),
+                    yaxis=dict(showticklabels=False, fixedrange=True),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="center", x=0.5,
+                                font=dict(size=10)),
+                    margin=dict(l=20, r=30, t=55, b=60),
+                )
+                st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            with col_be2:
+                # Quanto do mês/período já cobriu o ponto de equilíbrio
+                pct_cobertura_be = min(pct_atingido_be, 200)
+                fig_gauge_be = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=pct_cobertura_be,
+                    number={"suffix": "%", "font": {"size": 30, "color": COLORS["text"]}},
+                    gauge={
+                        "axis": {"range": [0, 200], "tickwidth": 1,
+                                 "tickcolor": COLORS["text_muted"],
+                                 "tickfont": {"size": 9, "color": COLORS["text_muted"]}},
+                        "bar": {"color": COLORS["primary"], "thickness": 0.7},
+                        "bgcolor": "rgba(0,0,0,0)",
+                        "borderwidth": 0,
+                        "steps": [
+                            {"range": [0, 100], "color": "rgba(247,110,110,0.18)"},
+                            {"range": [100, 140], "color": "rgba(245,166,35,0.15)"},
+                            {"range": [140, 200], "color": "rgba(62,207,142,0.15)"},
+                        ],
+                        "threshold": {"line": {"color": COLORS["text"], "width": 3},
+                                      "thickness": 0.8, "value": 100},
+                    },
+                ))
+                estilo_grafico(fig_gauge_be, height=250, margin=dict(l=25, r=25, t=45, b=10))
+                fig_gauge_be.add_annotation(
+                    text="Receita sobre o ponto de equilíbrio",
+                    x=0.5, y=1.22, showarrow=False, xref="paper", yref="paper",
+                    font=dict(size=11, color=COLORS["text_muted"]),
+                )
+                st.plotly_chart(fig_gauge_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            # Leitura prática: quanto cada real de venda gera e quanto falta
+            dias_periodo_be = max(len(cols_kpi), 1)
+            receita_diaria_be = rec_liq_diag / dias_periodo_be
+            st.markdown(
+                render_kpi_row([
+                    dict(label="CADA R$ 1,00 VENDIDO", value=f"R$ {mc_pct_diag:.2f}",
+                         value_color=COLORS["positive"],
+                         subtext="Sobra para pagar fixos e virar lucro", icon="🪙"),
+                    dict(label="RECEITA MENSAL DE EQUILÍBRIO",
+                         value=formata_brl(ponto_equilibrio_diag / dias_periodo_be),
+                         value_color=COLORS["warning"],
+                         subtext=f"Média por mês no período de {dias_periodo_be} meses", icon="📅"),
+                    dict(label="RESULTADO OPERACIONAL",
+                         value=formata_brl(mc_valor_diag - custos_fixos_diag),
+                         value_color=cor_variacao(mc_valor_diag - custos_fixos_diag),
+                         subtext="Margem de contribuição − custos fixos", icon="💵"),
+                ]),
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
             if margem_seguranca_pct > 0:
                 st.success(
@@ -6790,7 +7062,7 @@ if not departamento_ativo and tab_diag is not None:
         )
 
         dados_abc = []
-        for linha in linhas_custo_raiz_diag:
+        for linha in linhas_custo_folha_diag:
             valor = abs(get_valor_consolidado_multi(list_df_real, linha, cols_kpi, exato_linha_sintetica=True))
             if valor > 0:
                 dados_abc.append({"Conta": _nome_sem_numero_dre(linha), "Valor": valor})
@@ -6822,6 +7094,31 @@ if not departamento_ativo and tab_diag is not None:
                 ]),
                 unsafe_allow_html=True,
             )
+
+            # Resumo por classe, que é a leitura de gestão de verdade
+            resumo_classes = []
+            for classe, descricao in [("A", "Prioridade máxima"), ("B", "Acompanhamento"),
+                                       ("C", "Baixo impacto")]:
+                sub = df_abc[df_abc["Classe"] == classe]
+                if not sub.empty:
+                    resumo_classes.append({
+                        "Classe": classe,
+                        "O que significa": descricao,
+                        "Contas": len(sub),
+                        "% das contas": len(sub) / len(df_abc) * 100,
+                        "Valor": sub["Valor"].sum(),
+                        "% do gasto": sub["Valor"].sum() / total_abc * 100,
+                    })
+            if resumo_classes:
+                st.dataframe(
+                    pd.DataFrame(resumo_classes).style.format({
+                        "% das contas": lambda v: f"{v:.0f}%",
+                        "Valor": formata_brl,
+                        "% do gasto": lambda v: f"{v:.1f}%".replace(".", ","),
+                    }).map(cor_valor, subset=["Valor"]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.markdown("<br>", unsafe_allow_html=True)
 
             # Gráfico de Pareto: barras do valor + linha do acumulado
             top_abc_grafico = df_abc.head(15)
@@ -6858,6 +7155,16 @@ if not departamento_ativo and tab_diag is not None:
             )
             st.plotly_chart(fig_abc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
+            # Leitura acionável
+            if qtd_a:
+                economia_5pct = valor_a * 0.05
+                st.info(
+                    f"💡 **Onde agir:** as {qtd_a} contas da classe A concentram "
+                    f"{valor_a / total_abc * 100:.0f}% do gasto. Uma redução de apenas 5% só nelas já "
+                    f"representaria {formata_brl(economia_5pct)} no período — mais do que zerar "
+                    f"todas as contas da classe C.".replace("$", "\\$")
+                )
+
             with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
                 st.dataframe(
                     df_abc.style.format({
@@ -6893,7 +7200,7 @@ if not departamento_ativo and tab_diag is not None:
         colunas_hist_anom = list(m_map.values())
         anomalias = []
         if len(colunas_hist_anom) >= 4:
-            for linha in linhas_custo_raiz_diag:
+            for linha in linhas_custo_folha_diag:
                 serie_mensal = [
                     abs(get_valor_consolidado_multi(list_df_real, linha, [col], exato_linha_sintetica=True))
                     for col in colunas_hist_anom
@@ -6935,7 +7242,7 @@ if not departamento_ativo and tab_diag is not None:
                 render_kpi_row([
                     dict(label="ANOMALIAS ENCONTRADAS", value=str(len(df_anom)),
                          value_color=COLORS["warning"],
-                         subtext=f"Em {len(linhas_custo_raiz_diag)} contas analisadas", icon="🔍"),
+                         subtext=f"Em {len(linhas_custo_folha_diag)} contas analisadas", icon="🔍"),
                     dict(label="GASTOS ACIMA DO PADRÃO", value=str(n_altas),
                          value_color=COLORS["negative"], subtext="Contas que subiram fora da curva", icon="📈"),
                     dict(label="GASTOS ABAIXO DO PADRÃO", value=str(n_baixas),
@@ -6959,6 +7266,27 @@ if not departamento_ativo and tab_diag is not None:
                 "⚠️ Uma anomalia não é necessariamente um erro — pode ser um evento legítimo (compra "
                 "sazonal, rescisão, campanha). Ela apenas indica **onde vale olhar primeiro**."
             )
+            with st.expander("❓ O que significam a 'Média anterior' e o símbolo σ (sigma)"):
+                st.markdown(
+                    """
+**Média anterior** é quanto aquela conta costumava gastar por mês, considerando todos os meses
+com movimento *antes* do mês sinalizado. É o "normal" daquela conta — não uma meta, e sim o
+comportamento histórico dela.
+
+**σ (sigma)** é o desvio-padrão: mede o quanto os valores daquela conta costumam variar em torno
+da própria média. Contas estáveis têm sigma baixo; contas que oscilam muito têm sigma alto.
+
+O número na coluna **Desvios (σ)** diz a quantos desvios-padrão o mês está da média:
+
+- **±1σ** — variação comum, acontece na maioria dos meses
+- **±2σ** — fora do padrão, acontece em cerca de 5% dos casos
+- **±3σ ou mais** — bem improvável de ser só oscilação natural
+
+Por isso o mesmo aumento em reais pode ser anomalia numa conta e rotina em outra: o que importa
+é o quanto ele foge do comportamento *daquela* conta. Um sinal negativo significa gasto **abaixo**
+do habitual — o que pode ser economia real ou lançamento que ainda não entrou.
+                    """
+                )
         elif len(colunas_hist_anom) < 4:
             st.info(
                 "São necessários pelo menos 4 meses de histórico para detectar anomalias com alguma "
@@ -7119,6 +7447,28 @@ if not departamento_ativo and tab_diag is not None:
                 mode="lines", line=dict(color=COLORS["muted_line"], width=2, dash="dash"),
                 hovertemplate="Orçado: R$ %{y:,.2f}<extra></extra>",
             ))
+            # Faixa entre o pior e o melhor mês já realizado, aplicada aos
+            # meses futuros: mostra a incerteza da projeção em vez de fingir
+            # que o número é exato.
+            if realizados_ebitda and meses_restantes_fc > 0:
+                _validos_graf = [v for v in realizados_ebitda if v != 0]
+                if _validos_graf:
+                    _pior, _melhor = min(_validos_graf), max(_validos_graf)
+                    banda_inf = [None] * (meses_realizados_fc - 1) + \
+                        [realizados_ebitda[-1]] + [_pior] * meses_restantes_fc
+                    banda_sup = [None] * (meses_realizados_fc - 1) + \
+                        [realizados_ebitda[-1]] + [_melhor] * meses_restantes_fc
+                    fig_fc.add_trace(go.Scatter(
+                        name="Faixa de cenários", x=rotulos_meses_fc, y=banda_sup,
+                        mode="lines", line=dict(width=0), showlegend=False,
+                        hoverinfo="skip", connectgaps=False,
+                    ))
+                    fig_fc.add_trace(go.Scatter(
+                        name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
+                        mode="lines", line=dict(width=0), fill="tonexty",
+                        fillcolor="rgba(245,166,35,0.12)", connectgaps=False,
+                        hovertemplate="Faixa de cenários<extra></extra>",
+                    ))
             estilo_grafico(
                 fig_fc, height=380,
                 xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-35,
@@ -7130,6 +7480,59 @@ if not departamento_ativo and tab_diag is not None:
                 hovermode="x unified",
             )
             st.plotly_chart(fig_fc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            # Cenários: além da média, mostra o que aconteceria no melhor e
+            # no pior ritmo já observado -- uma projeção única passa falsa
+            # sensação de precisão.
+            if realizados_ebitda:
+                meses_validos_fc = [v for v in realizados_ebitda if v != 0]
+                if meses_validos_fc and meses_restantes_fc > 0:
+                    pior_mes_fc = min(meses_validos_fc)
+                    melhor_mes_fc = max(meses_validos_fc)
+                    fc_pessimista = fc_ebitda["Realizado até agora"] + pior_mes_fc * meses_restantes_fc
+                    fc_otimista = fc_ebitda["Realizado até agora"] + melhor_mes_fc * meses_restantes_fc
+                    orcado_ano_fc = fc_ebitda["Orçado do ano"]
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">🎲 Cenários de Fechamento do EBITDA</div>',
+                                unsafe_allow_html=True)
+                    st.markdown(
+                        render_kpi_row([
+                            dict(label="CENÁRIO PESSIMISTA", value=formata_m(fc_pessimista),
+                                 value_color=COLORS["negative"],
+                                 subtext=f"Repetindo o pior mês ({formata_m(pior_mes_fc)}/mês)", icon="🔻"),
+                            dict(label="CENÁRIO BASE", value=formata_m(fc_ebitda["Forecast do ano"]),
+                                 value_color=COLORS["primary"],
+                                 subtext=f"{base_forecast.lower()}", icon="🎯"),
+                            dict(label="CENÁRIO OTIMISTA", value=formata_m(fc_otimista),
+                                 value_color=COLORS["positive"],
+                                 subtext=f"Repetindo o melhor mês ({formata_m(melhor_mes_fc)}/mês)", icon="🔺"),
+                            dict(label="ORÇADO DO ANO", value=formata_m(orcado_ano_fc),
+                                 value_color=COLORS["text_muted"],
+                                 subtext=("Dentro da faixa de cenários"
+                                          if fc_pessimista <= orcado_ano_fc <= fc_otimista
+                                          else "Fora da faixa projetada"), icon="📋"),
+                        ]),
+                        unsafe_allow_html=True,
+                    )
+                    if orcado_ano_fc > fc_otimista:
+                        st.error(
+                            "🚨 O orçamento do ano está **acima do melhor mês já entregue** repetido até "
+                            "dezembro. Sem uma mudança relevante na operação, a meta não é alcançável — "
+                            "vale rediscutir o orçamento ou o plano de ação."
+                        )
+                    elif orcado_ano_fc > fc_ebitda["Forecast do ano"]:
+                        esforco_mensal = (orcado_ano_fc - fc_ebitda["Realizado até agora"]) / meses_restantes_fc
+                        media_atual_fc = media_ebitda_fc
+                        aumento_necessario = (
+                            (esforco_mensal / media_atual_fc - 1) * 100 if media_atual_fc else 0
+                        )
+                        st.warning(
+                            f"⚠️ Para bater a meta, seria preciso entregar {formata_brl(esforco_mensal)} "
+                            f"de EBITDA por mês nos {meses_restantes_fc} meses restantes — "
+                            f"{aumento_necessario:+.0f}% em relação à média atual de "
+                            f"{formata_brl(media_atual_fc)}.".replace("$", "\\$")
+                        )
 
             desvio_fc = fc_ebitda["Desvio vs. orçado"]
             if desvio_fc < 0:
