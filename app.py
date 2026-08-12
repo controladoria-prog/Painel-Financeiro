@@ -5500,29 +5500,144 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
             )
 
 
-# ---- Configuração dos limites (na barra lateral, só para administrador) ----
-if eh_admin:
-    with st.sidebar.expander("🔔 Regras de alerta"):
-        st.caption("Define a partir de que ponto o painel considera algo digno de atenção.")
-        limite_desvio_ebitda_cfg = st.slider(
-            "Desvio de EBITDA/receita que dispara alerta (%)",
-            min_value=1, max_value=30, value=10, step=1, key="cfg_limite_ebitda",
+# ---- Configuração dos limites de alerta (barra lateral) ----
+# Os limites valem tanto para a visão de Controladoria quanto para a de
+# departamento, então ficam disponíveis para todos os perfis.
+with st.sidebar.expander("🔔 Regras de alerta"):
+    st.caption("Define a partir de que ponto o painel considera algo digno de atenção.")
+    limite_desvio_ebitda_cfg = st.slider(
+        "Desvio de EBITDA/receita que dispara alerta (%)",
+        min_value=1, max_value=30, value=10, step=1, key="cfg_limite_ebitda",
+    )
+    limite_estouro_conta_cfg = st.slider(
+        "Estouro de conta que dispara alerta (%)",
+        min_value=5, max_value=100, value=20, step=5, key="cfg_limite_conta",
+    )
+    valor_minimo_conta_cfg = st.number_input(
+        "Ignorar contas abaixo de (R$)",
+        min_value=0, value=10_000, step=5_000, key="cfg_valor_minimo",
+        help="Evita alerta em conta pequena que estourou percentualmente mas é irrelevante em valor.",
+    )
+
+def _avaliar_alertas_departamento(
+    list_real, list_orc, colunas_periodo, m_map_alertas, linhas_dept, linhas_dept_raiz,
+    nome_dept, limite_estouro, valor_minimo,
+):
+    """Alertas pensados para quem gere UM departamento. Aqui não faz sentido
+    falar de EBITDA ou de receita da companhia -- o gestor responde pelo
+    gasto das linhas dele, pelo ritmo desse gasto e pela tendência dele."""
+    alertas = []
+    hoje_dep = datetime.now(FUSO_BR).date()
+    colunas_ano = list(m_map_alertas.values())
+
+    # --- 1. Gasto total do departamento contra o ritmo orçado ---
+    gasto_real = abs(sum(
+        get_valor_consolidado_multi(list_real, l, colunas_periodo, exato_linha_sintetica=True)
+        for l in linhas_dept_raiz
+    ))
+    gasto_orc_prop = abs(sum(
+        _orcado_proporcional(list_orc, l, colunas_periodo, colunas_ano, hoje_dep, exato=True)
+        for l in linhas_dept_raiz
+    ))
+    if gasto_orc_prop:
+        excesso_pct = (gasto_real - gasto_orc_prop) / gasto_orc_prop * 100
+        if excesso_pct >= limite_estouro:
+            alertas.append({
+                "nivel": "critico" if excesso_pct >= limite_estouro * 2 else "atencao",
+                "titulo": f"{nome_dept} está {excesso_pct:.0f}% acima do ritmo orçado",
+                "detalhe": (
+                    f"Gasto de {formata_brl(gasto_real)} contra {formata_brl(gasto_orc_prop)} "
+                    f"esperados até aqui — excesso de {formata_brl(gasto_real - gasto_orc_prop)}."
+                ),
+            })
+        elif excesso_pct <= -limite_estouro:
+            alertas.append({
+                "nivel": "atencao",
+                "titulo": f"{nome_dept} está {abs(excesso_pct):.0f}% abaixo do orçado",
+                "detalhe": (
+                    "Pode ser economia real ou lançamento que ainda não entrou — vale conferir "
+                    "se há notas pendentes de registro."
+                ),
+            })
+
+    # --- 2. Contas do departamento que estouraram ---
+    folhas_dept = _linhas_folha_do_conjunto(linhas_dept)
+    estouros_dept = []
+    for linha in folhas_dept:
+        v_real = abs(get_valor_consolidado_multi(list_real, linha, colunas_periodo, exato_linha_sintetica=True))
+        v_orc = abs(_orcado_proporcional(list_orc, linha, colunas_periodo, colunas_ano, hoje_dep, exato=True))
+        if v_orc <= 0 or v_real < valor_minimo:
+            continue
+        exc = (v_real - v_orc) / v_orc * 100
+        if exc >= limite_estouro:
+            estouros_dept.append((_nome_sem_numero_dre(linha), exc, v_real - v_orc))
+    estouros_dept.sort(key=lambda e: e[2], reverse=True)
+    for nome_conta, exc, valor_exc in estouros_dept[:4]:
+        alertas.append({
+            "nivel": "critico" if exc >= limite_estouro * 2 else "atencao",
+            "titulo": f"{nome_conta}: {exc:.0f}% acima do ritmo orçado",
+            "detalhe": f"Excesso de {formata_brl(valor_exc)} no período.",
+        })
+
+    # --- 3. Tendência: gasto subindo há 3 meses seguidos ---
+    serie_dept = []
+    for col in colunas_ano:
+        valor_mes = abs(sum(
+            get_valor_consolidado_multi(list_real, l, [col], exato_linha_sintetica=True)
+            for l in linhas_dept_raiz
+        ))
+        if valor_mes > 0:
+            serie_dept.append(valor_mes)
+    if len(serie_dept) >= 3 and serie_dept[-3] < serie_dept[-2] < serie_dept[-1]:
+        crescimento = (serie_dept[-1] / serie_dept[-3] - 1) * 100
+        alertas.append({
+            "nivel": "atencao",
+            "titulo": f"Gasto de {nome_dept} sobe há 3 meses seguidos",
+            "detalhe": (
+                f"De {formata_brl(serie_dept[-3])} para {formata_brl(serie_dept[-1])} "
+                f"({crescimento:+.0f}% no período)."
+            ),
+        })
+
+    # --- 4. Concentração: uma conta domina o gasto do departamento ---
+    if folhas_dept and gasto_real:
+        valores_folhas = [
+            (
+                _nome_sem_numero_dre(l),
+                abs(get_valor_consolidado_multi(list_real, l, colunas_periodo, exato_linha_sintetica=True)),
+            )
+            for l in folhas_dept
+        ]
+        valores_folhas = [(n, v) for n, v in valores_folhas if v > 0]
+        if valores_folhas:
+            valores_folhas.sort(key=lambda x: x[1], reverse=True)
+            maior_nome, maior_valor = valores_folhas[0]
+            peso = maior_valor / sum(v for _, v in valores_folhas) * 100
+            if peso >= 60 and len(valores_folhas) > 1:
+                alertas.append({
+                    "nivel": "atencao",
+                    "titulo": f"{peso:.0f}% do gasto está em uma única conta",
+                    "detalhe": (
+                        f"{maior_nome} responde por {formata_brl(maior_valor)} do total do "
+                        f"departamento — qualquer variação nela move o resultado inteiro."
+                    ),
+                })
+
+    return alertas
+
+
+if departamento_ativo:
+    if linhas_departamento_resolvidas:
+        _nome_dept_alerta = _nome_departamento_curto(departamento_ativo)
+        _alertas_dept = _avaliar_alertas_departamento(
+            list_df_real, list_df_orc, cols_kpi, m_map,
+            linhas_departamento_resolvidas, linhas_departamento_raiz,
+            _nome_dept_alerta, limite_estouro_conta_cfg, valor_minimo_conta_cfg,
         )
-        limite_estouro_conta_cfg = st.slider(
-            "Estouro de conta que dispara alerta (%)",
-            min_value=5, max_value=100, value=20, step=5, key="cfg_limite_conta",
-        )
-        valor_minimo_conta_cfg = st.number_input(
-            "Ignorar contas abaixo de (R$)",
-            min_value=0, value=10_000, step=5_000, key="cfg_valor_minimo",
-            help="Evita alerta em conta pequena que estourou percentualmente mas é irrelevante em valor.",
+        _renderizar_painel_alertas(
+            _alertas_dept, titulo=f"Alertas de {_nome_dept_alerta} · {label_periodo_kpi}"
         )
 else:
-    limite_desvio_ebitda_cfg = 10
-    limite_estouro_conta_cfg = 20
-    valor_minimo_conta_cfg = 10_000
-
-if not departamento_ativo:
     _col_nome_alerta = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
     _linhas_alerta = list(df_ref[_col_nome_alerta].dropna().astype(str).unique())
     _alertas_controladoria = _avaliar_alertas_controladoria(
@@ -5857,40 +5972,65 @@ with tab1:
             # Projeção simples do mês: mantido o ritmo diário atual
             rec_projetada_mes = (rec_real_mes / _dias_corridos * _dias_mes) if _dias_corridos else 0
 
+            # Faixa compacta em vez de uma fileira de cards: a informação é
+            # de acompanhamento, não merece o mesmo peso visual dos KPIs
+            # principais.
+            _cor_ritmo = COLORS["positive"] if ritmo_rec_pct >= 100 else (
+                COLORS["warning"] if ritmo_rec_pct >= 90 else COLORS["negative"]
+            )
+            _pct_barra = min(ritmo_rec_pct, 130)
+            _proj_vs_orc = rec_projetada_mes - rec_orc_mes_cheio
+            _cor_proj = COLORS["positive"] if _proj_vs_orc >= 0 else COLORS["negative"]
+
             st.markdown(
-                f'<div class="section-title">⏱️ Ritmo de {_nome_mes_atual.capitalize()} '
-                f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
-                f'(mês em andamento — {_dias_corridos} de {_dias_mes} dias, '
-                f'{_frac_mes * 100:.0f}% decorrido)</span></div>',
+                f"""
+                <div style="background:{COLORS['surface']}; border:1px solid {COLORS['border']};
+                            border-left:3px solid {_cor_ritmo}; border-radius:8px;
+                            padding:12px 16px; margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;
+                                flex-wrap:wrap; gap:14px;">
+                        <div style="min-width:210px;">
+                            <div style="font-size:11px; color:{COLORS['text_muted']};
+                                        text-transform:uppercase; letter-spacing:0.5px;">
+                                ⏱️ Ritmo de {_nome_mes_atual.capitalize()} · dia {_dias_corridos}/{_dias_mes}
+                            </div>
+                            <div style="font-size:19px; font-weight:800; color:{_cor_ritmo}; margin-top:2px;">
+                                {ritmo_rec_pct:.0f}% do esperado
+                            </div>
+                        </div>
+                        <div style="flex:1; min-width:240px;">
+                            <div style="height:8px; background:{COLORS['surface_alt']};
+                                        border-radius:4px; overflow:hidden; position:relative;">
+                                <div style="width:{_pct_barra / 1.3:.0f}%; height:100%;
+                                            background:{_cor_ritmo}; border-radius:4px;"></div>
+                                <div style="position:absolute; left:76.9%; top:-3px; width:2px; height:14px;
+                                            background:{COLORS['text_muted']};"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-top:5px;
+                                        font-size:11px; color:{COLORS['text_muted']};">
+                                <span>Realizado <b style="color:{COLORS['text']};">{formata_m(rec_real_mes)}</b></span>
+                                <span>Meta até hoje <b style="color:{COLORS['text']};">{formata_m(rec_orc_mes_prop)}</b></span>
+                            </div>
+                        </div>
+                        <div style="text-align:right; min-width:190px;">
+                            <div style="font-size:11px; color:{COLORS['text_muted']};">
+                                Projeção de fechamento
+                            </div>
+                            <div style="font-size:15px; font-weight:700; color:{_cor_proj}; margin-top:1px;">
+                                {formata_m(rec_projetada_mes)}
+                                <span style="font-size:11px; font-weight:400; color:{COLORS['text_muted']};">
+                                    vs. {formata_m(rec_orc_mes_cheio)} orçado
+                                </span>
+                            </div>
+                            <div style="font-size:11px; color:{COLORS['text_muted']}; margin-top:1px;">
+                                EBITDA em {ritmo_ebitda_pct:.0f}% do ritmo
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                render_kpi_row([
-                    dict(label="RECEITA REALIZADA NO MÊS", value=formata_brl(rec_real_mes),
-                         value_color=COLORS["text"],
-                         subtext=f"Até o dia {_dias_corridos}", icon="💰"),
-                    dict(label="DEVERIA TER REALIZADO", value=formata_brl(rec_orc_mes_prop),
-                         value_color=COLORS["text_muted"],
-                         subtext=f"{_frac_mes * 100:.0f}% do orçado de {formata_m(rec_orc_mes_cheio)}", icon="🎯"),
-                    dict(label="DIFERENÇA DE RITMO", value=formata_brl(gap_rec_mes),
-                         value_color=cor_variacao(gap_rec_mes),
-                         subtext=f"{ritmo_rec_pct:.0f}% do esperado até aqui",
-                         subtext_color=cor_variacao(gap_rec_mes), icon="⚖️"),
-                    dict(label="RITMO DO EBITDA", value=f"{ritmo_ebitda_pct:.0f}%",
-                         value_color=cor_variacao(ritmo_ebitda_pct - 100),
-                         subtext=f"Realizado {formata_m(ebitda_real_mes)} de {formata_m(ebitda_orc_mes_prop)}", icon="📈"),
-                    dict(label="PROJEÇÃO DE FECHAMENTO", value=formata_brl(rec_projetada_mes),
-                         value_color=cor_variacao(rec_projetada_mes - rec_orc_mes_cheio),
-                         subtext=f"Mantido o ritmo diário · orçado {formata_m(rec_orc_mes_cheio)}", icon="🔮"),
-                ]),
-                unsafe_allow_html=True,
-            )
-            st.caption(
-                f"O mês ainda não fechou, então o orçamento é ajustado à fração já decorrida "
-                f"({_dias_corridos}/{_dias_mes} dias). É essa a comparação justa enquanto o mês corre — "
-                "medir o parcial contra o orçamento cheio faria o resultado parecer sempre ruim."
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
 
         st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 
@@ -6881,11 +7021,45 @@ if not departamento_ativo and tab_diag is not None:
             partes_narrativa.append("Não há dados suficientes no período selecionado para gerar a leitura.")
 
         st.markdown('<div class="section-title">📝 Leitura Automática do Período</div>', unsafe_allow_html=True)
-        texto_narrativa = " ".join(partes_narrativa).replace("$", "\\$")
-        st.info(texto_narrativa)
+
+        # Destaque do veredito, em vez de enterrar o número principal no meio
+        # de um parágrafo corrido.
+        if ebitda_orc_diag:
+            _veredito_ok = desvio_ebitda_diag >= 0
+            _cor_ver = COLORS["positive"] if _veredito_ok else COLORS["negative"]
+            _palavra_ver = "acima" if _veredito_ok else "abaixo"
+            st.markdown(
+                f"""
+                <div style="background:linear-gradient(135deg, {COLORS['surface']} 0%, {COLORS['surface_alt']} 100%);
+                            border:1px solid {COLORS['border']}; border-left:4px solid {_cor_ver};
+                            border-radius:10px; padding:18px 22px; margin-bottom:14px;">
+                    <div style="font-size:11px; color:{COLORS['text_muted']};
+                                text-transform:uppercase; letter-spacing:0.6px;">
+                        Resultado do período · {label_periodo_kpi}
+                    </div>
+                    <div style="font-size:26px; font-weight:800; color:{_cor_ver}; margin:6px 0 2px 0;">
+                        EBITDA {abs(100 - pct_ebitda_diag):.1f}% {_palavra_ver} do orçado
+                    </div>
+                    <div style="font-size:13px; color:{COLORS['text_muted']};">
+                        {formata_brl(ebitda_diag).replace('$', '&#36;')} realizados contra
+                        {formata_brl(ebitda_orc_diag).replace('$', '&#36;')} previstos ·
+                        diferença de <b style="color:{_cor_ver};">
+                        {formata_brl(desvio_ebitda_diag).replace('$', '&#36;')}</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Os demais pontos em lista, para leitura rápida
+        if len(partes_narrativa) > 1:
+            itens_lista = partes_narrativa[1:] if ebitda_orc_diag else partes_narrativa
+            texto_lista = "\n".join(f"- {p}" for p in itens_lista).replace("$", "\\$")
+            st.markdown(texto_lista)
+
         st.caption(
-            "Texto gerado automaticamente a partir dos números do período selecionado — serve como "
-            "primeiro parágrafo de comentário de resultado, para você revisar e complementar."
+            "Texto gerado automaticamente a partir dos números do período — serve como rascunho do "
+            "comentário de resultado, para você revisar e complementar com o contexto do negócio."
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -6935,83 +7109,39 @@ if not departamento_ativo and tab_diag is not None:
         )
 
         if ponto_equilibrio_diag > 0:
-            col_be1, col_be2 = st.columns([1.15, 1])
-
-            with col_be1:
-                # Como a receita se decompõe: o que paga custo variável, o que
-                # paga custo fixo e o que sobra de resultado.
-                lucro_operacional_diag = mc_valor_diag - custos_fixos_diag
-                fig_be = go.Figure()
+            # Uma barra só, limpa: mostra como cada real de receita se
+            # reparte e onde fica o ponto de equilíbrio. Sem gauge e sem
+            # título de eixo competindo com a legenda.
+            lucro_operacional_diag = mc_valor_diag - custos_fixos_diag
+            fig_be = go.Figure()
+            for nome_faixa, valor_faixa, cor_faixa in [
+                ("Custos variáveis", custos_variaveis_diag, COLORS["negative"]),
+                ("Custos fixos", custos_fixos_diag, COLORS["warning"]),
+                ("Resultado", max(lucro_operacional_diag, 0), COLORS["positive"]),
+            ]:
+                pct_faixa = (valor_faixa / rec_liq_diag * 100) if rec_liq_diag else 0
                 fig_be.add_trace(go.Bar(
-                    name="Custos variáveis", y=["Receita"], x=[custos_variaveis_diag], orientation="h",
-                    marker=dict(color="rgba(247,110,110,0.55)", line=dict(color=COLORS["negative"], width=1.3)),
-                    text=[formata_m(custos_variaveis_diag)], textposition="inside",
-                    textfont=dict(size=11, color=COLORS["text"]),
-                    hovertemplate="Custos variáveis: R$ %{x:,.2f}<extra></extra>",
+                    name=nome_faixa, y=[""], x=[valor_faixa], orientation="h",
+                    marker=dict(color=cor_faixa, opacity=0.75),
+                    text=[f"{nome_faixa}<br><b>{formata_m(valor_faixa)}</b> · {pct_faixa:.0f}%"],
+                    textposition="inside", insidetextanchor="middle",
+                    textfont=dict(size=11, color="#0B0E14"),
+                    hovertemplate=f"{nome_faixa}: R$ %{{x:,.2f}}<extra></extra>",
                 ))
-                fig_be.add_trace(go.Bar(
-                    name="Custos fixos", y=["Receita"], x=[custos_fixos_diag], orientation="h",
-                    marker=dict(color="rgba(245,166,35,0.55)", line=dict(color=COLORS["warning"], width=1.3)),
-                    text=[formata_m(custos_fixos_diag)], textposition="inside",
-                    textfont=dict(size=11, color=COLORS["text"]),
-                    hovertemplate="Custos fixos: R$ %{x:,.2f}<extra></extra>",
-                ))
-                fig_be.add_trace(go.Bar(
-                    name="Resultado", y=["Receita"], x=[max(lucro_operacional_diag, 0)], orientation="h",
-                    marker=dict(color="rgba(62,207,142,0.55)", line=dict(color=COLORS["positive"], width=1.3)),
-                    text=[formata_m(lucro_operacional_diag)], textposition="inside",
-                    textfont=dict(size=11, color=COLORS["text"]),
-                    hovertemplate="Resultado: R$ %{x:,.2f}<extra></extra>",
-                ))
-                fig_be.add_vline(
-                    x=ponto_equilibrio_diag,
-                    line=dict(color=COLORS["text"], width=2.5, dash="dash"),
-                    annotation_text=f"ponto de equilíbrio<br>{formata_m(ponto_equilibrio_diag)}",
-                    annotation_position="top",
-                    annotation_font=dict(size=10, color=COLORS["text"]),
-                )
-                estilo_grafico(
-                    fig_be, height=250, barmode="stack",
-                    xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
-                               title=dict(text="Composição da receita (R$)",
-                                          font=dict(size=10, color=COLORS["text_muted"]))),
-                    yaxis=dict(showticklabels=False, fixedrange=True),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="center", x=0.5,
-                                font=dict(size=10)),
-                    margin=dict(l=20, r=30, t=55, b=60),
-                )
-                st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-
-            with col_be2:
-                # Quanto do mês/período já cobriu o ponto de equilíbrio
-                pct_cobertura_be = min(pct_atingido_be, 200)
-                fig_gauge_be = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=pct_cobertura_be,
-                    number={"suffix": "%", "font": {"size": 30, "color": COLORS["text"]}},
-                    gauge={
-                        "axis": {"range": [0, 200], "tickwidth": 1,
-                                 "tickcolor": COLORS["text_muted"],
-                                 "tickfont": {"size": 9, "color": COLORS["text_muted"]}},
-                        "bar": {"color": COLORS["primary"], "thickness": 0.7},
-                        "bgcolor": "rgba(0,0,0,0)",
-                        "borderwidth": 0,
-                        "steps": [
-                            {"range": [0, 100], "color": "rgba(247,110,110,0.18)"},
-                            {"range": [100, 140], "color": "rgba(245,166,35,0.15)"},
-                            {"range": [140, 200], "color": "rgba(62,207,142,0.15)"},
-                        ],
-                        "threshold": {"line": {"color": COLORS["text"], "width": 3},
-                                      "thickness": 0.8, "value": 100},
-                    },
-                ))
-                estilo_grafico(fig_gauge_be, height=250, margin=dict(l=25, r=25, t=45, b=10))
-                fig_gauge_be.add_annotation(
-                    text="Receita sobre o ponto de equilíbrio",
-                    x=0.5, y=1.22, showarrow=False, xref="paper", yref="paper",
-                    font=dict(size=11, color=COLORS["text_muted"]),
-                )
-                st.plotly_chart(fig_gauge_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            fig_be.add_vline(
+                x=ponto_equilibrio_diag,
+                line=dict(color=COLORS["text"], width=2, dash="dot"),
+                annotation_text=f"ponto de equilíbrio · {formata_m(ponto_equilibrio_diag)}",
+                annotation_position="top left",
+                annotation_font=dict(size=11, color=COLORS["text"]),
+            )
+            estilo_grafico(
+                fig_be, height=180, barmode="stack", showlegend=False,
+                xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
+                yaxis=dict(showticklabels=False, fixedrange=True, showgrid=False),
+                margin=dict(l=10, r=10, t=52, b=10),
+            )
+            st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
 
             # Leitura prática: quanto cada real de venda gera e quanto falta
             dias_periodo_be = max(len(cols_kpi), 1)
@@ -7070,6 +7200,9 @@ if not departamento_ativo and tab_diag is not None:
         if dados_abc:
             df_abc = pd.DataFrame(dados_abc).sort_values("Valor", ascending=False).reset_index(drop=True)
             total_abc = df_abc["Valor"].sum()
+            # Custo é saída de caixa: exibido com sinal negativo (e, por
+            # consequência, em vermelho na coloração padrão das tabelas).
+            df_abc["Valor (R$)"] = -df_abc["Valor"]
             df_abc["% do total"] = df_abc["Valor"] / total_abc * 100
             df_abc["% acumulado"] = df_abc["% do total"].cumsum()
             df_abc["Classe"] = df_abc["% acumulado"].apply(
@@ -7106,7 +7239,7 @@ if not departamento_ativo and tab_diag is not None:
                         "O que significa": descricao,
                         "Contas": len(sub),
                         "% das contas": len(sub) / len(df_abc) * 100,
-                        "Valor": sub["Valor"].sum(),
+                        "Valor": -sub["Valor"].sum(),
                         "% do gasto": sub["Valor"].sum() / total_abc * 100,
                     })
             if resumo_classes:
@@ -7121,39 +7254,49 @@ if not departamento_ativo and tab_diag is not None:
                 st.markdown("<br>", unsafe_allow_html=True)
 
             # Gráfico de Pareto: barras do valor + linha do acumulado
-            top_abc_grafico = df_abc.head(15)
-            fig_abc = go.Figure()
+            # Barras horizontais: nome de conta é longo e na vertical vira
+            # texto girado ilegível. A legenda saiu (as cores estão
+            # explicadas na legenda de texto logo abaixo do gráfico).
+            top_abc_grafico = df_abc.head(12).iloc[::-1]  # maior no topo
             cores_classe = {"A": COLORS["negative"], "B": COLORS["warning"], "C": COLORS["secondary"]}
+
+            def _nome_curto_abc(nome, limite=34):
+                return nome if len(nome) <= limite else nome[: limite - 1] + "…"
+
+            fig_abc = go.Figure()
             fig_abc.add_trace(go.Bar(
-                name="Valor", x=list(top_abc_grafico["Conta"]), y=list(top_abc_grafico["Valor"]),
-                marker=dict(color=[cores_classe[c] for c in top_abc_grafico["Classe"]], opacity=0.6),
-                hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+                x=list(top_abc_grafico["Valor"]),
+                y=[_nome_curto_abc(n) for n in top_abc_grafico["Conta"]],
+                orientation="h",
+                marker=dict(color=[cores_classe[cl] for cl in top_abc_grafico["Classe"]], opacity=0.7),
+                text=[f"{formata_m(v)} · {p:.0f}%" for v, p in
+                      zip(top_abc_grafico["Valor"], top_abc_grafico["% do total"])],
+                textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
+                customdata=list(top_abc_grafico["Classe"]),
+                hovertemplate="%{y}<br>R$ %{x:,.2f} · classe %{customdata}<extra></extra>",
+                showlegend=False,
             ))
-            fig_abc.add_trace(go.Scatter(
-                name="% acumulado", x=list(top_abc_grafico["Conta"]),
-                y=list(top_abc_grafico["% acumulado"]), yaxis="y2",
-                mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
-                marker=dict(size=7), hovertemplate="Acumulado: %{y:.1f}%<extra></extra>",
-            ))
-            fig_abc.add_hline(
-                y=80, yref="y2", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
-                annotation_text="80%", annotation_position="right",
-                annotation_font=dict(size=10, color=COLORS["text_muted"]),
-            )
+            maior_abc = float(top_abc_grafico["Valor"].max()) if not top_abc_grafico.empty else 1
             estilo_grafico(
-                fig_abc, height=420,
-                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-35,
-                           automargin=True, tickfont=dict(size=9)),
-                yaxis=dict(title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
-                           gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-                yaxis2=dict(title=dict(text="% acumulado", font=dict(size=10, color=COLORS["primary"])),
-                            overlaying="y", side="right", showgrid=False, fixedrange=True,
-                            range=[0, 105], ticksuffix="%",
-                            tickfont=dict(size=9, color=COLORS["primary"])),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.42, xanchor="center", x=0.5),
-                margin=dict(l=70, r=70, t=25, b=120),
+                fig_abc, height=max(340, 30 * len(top_abc_grafico) + 70),
+                xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
+                           range=[0, maior_abc * 1.30], zeroline=False),
+                yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=10.5)),
+                margin=dict(l=10, r=30, t=15, b=25),
             )
             st.plotly_chart(fig_abc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.markdown(
+                f"""
+                <div style="display:flex; gap:18px; font-size:11.5px; color:{COLORS['text_muted']};
+                            margin:-6px 0 10px 4px;">
+                    <span><span style="color:{COLORS['negative']};">■</span> Classe A — prioridade</span>
+                    <span><span style="color:{COLORS['warning']};">■</span> Classe B — acompanhar</span>
+                    <span><span style="color:{COLORS['secondary']};">■</span> Classe C — baixo impacto</span>
+                    <span style="opacity:0.7;">Mostrando as 12 maiores de {len(df_abc)} contas</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             # Leitura acionável
             if qtd_a:
@@ -7167,11 +7310,11 @@ if not departamento_ativo and tab_diag is not None:
 
             with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
                 st.dataframe(
-                    df_abc.style.format({
-                        "Valor": formata_brl,
+                    df_abc[["Conta", "Classe", "Valor (R$)", "% do total", "% acumulado"]].style.format({
+                        "Valor (R$)": formata_brl,
                         "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                         "% acumulado": lambda v: f"{v:.1f}%".replace(".", ","),
-                    }).map(cor_valor, subset=["Valor"]),
+                    }).map(cor_valor, subset=["Valor (R$)"]),
                     use_container_width=True, hide_index=True, height=420,
                 )
         else:
