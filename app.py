@@ -2786,9 +2786,19 @@ if st.session_state["painel_escolhido"] == "financeiro":
     entradas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
     saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
     fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
+
+    # "Ainda a receber" = o que está classificado como PROJETADO na coluna
+    # Movimento. Antes isso era deduzido da coluna "Data Liquidação" estar
+    # vazia, mas boa parte dos lançamentos marcados como "Realizado" vem sem
+    # essa data preenchida na planilha -- e assim eles entravam aqui por
+    # engano, inflando o número. O Movimento é a classificação confiável.
+    mascara_projetado_fin = df_fin_view[COL_FIN_MOVIMENTO].astype(str).str.contains(
+        "projetad", case=False, na=False
+    )
     a_receber_projetado_fin = df_fin_view.loc[
-        (df_fin_view["Tipo Movimento"] == "entrada") & (~df_fin_view["Liquidado"]), COL_FIN_VALOR
+        (df_fin_view["Tipo Movimento"] == "entrada") & mascara_projetado_fin, COL_FIN_VALOR
     ].sum()
+    a_receber_realizado_fin = entradas_fin - a_receber_projetado_fin
 
     st.markdown(
         f'<div class="section-title">📊 Resumo do Período '
@@ -2808,8 +2818,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                  value_color=COLORS["negative"], subtext="Contas a pagar no período", icon="📤"),
             dict(label="FLUXO LÍQUIDO DO PERÍODO", value=formata_brl(fluxo_liquido_fin),
                  value_color=cor_variacao(fluxo_liquido_fin), subtext="Entradas − saídas", icon="⚖️"),
-            dict(label="AINDA A RECEBER (NÃO LIQUIDADO)", value=formata_brl(a_receber_projetado_fin),
-                 value_color=COLORS["warning"], subtext="Projetado, ainda não caiu", icon="⏳"),
+            dict(label="A RECEBER PROJETADO", value=formata_brl(a_receber_projetado_fin),
+                 value_color=COLORS["warning"],
+                 subtext=f"Realizado no período: {formata_brl(a_receber_realizado_fin)}", icon="⏳"),
         ]),
         unsafe_allow_html=True,
     )
