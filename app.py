@@ -6891,7 +6891,7 @@ if departamento_ativo:
 
 
 # ---------------------------------------------------------------------------
-# ABA: DIAGNÓSTICO EXECUTIVO (break-even, curva ABC, anomalias, narrativa)
+# ABA: DIAGNÓSTICO EXECUTIVO (break-even, curva ABC, anomalias, forecast)
 # ---------------------------------------------------------------------------
 if not departamento_ativo and tab_diag is not None:
     with tab_diag:
@@ -6901,25 +6901,16 @@ if not departamento_ativo and tab_diag is not None:
         )
         st.caption(
             "Leituras que exigiriam cruzar várias abas na mão: onde está o ponto de equilíbrio, "
-            "quais contas concentram o gasto, o que fugiu do padrão e o resumo do período em texto."
+            "quais contas concentram o gasto, o que fugiu do padrão histórico e onde o ano deve fechar."
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # =====================================================================
-        # 1. NARRATIVA AUTOMÁTICA DO RESULTADO
-        # =====================================================================
+        # Bases usadas pelo ponto de equilíbrio e pelo forecast.
         rec_liq_diag = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
-        rec_liq_orc_diag = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
         ebitda_diag = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
-        ebitda_orc_diag = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
 
-        desvio_ebitda_diag = ebitda_diag - ebitda_orc_diag
-        pct_ebitda_diag = (ebitda_diag / ebitda_orc_diag * 100) if ebitda_orc_diag else 0
-        pct_receita_diag = (rec_liq_diag / rec_liq_orc_diag * 100) if rec_liq_orc_diag else 0
-        margem_real_diag = (ebitda_diag / rec_liq_diag * 100) if rec_liq_diag else 0
-        margem_orc_diag = (ebitda_orc_diag / rec_liq_orc_diag * 100) if rec_liq_orc_diag else 0
-
-        # Ofensores: linhas de custo/despesa com maior desvio desfavorável
+        # Universo de linhas de custo/despesa usado pela curva ABC e pela
+        # detecção de anomalias.
         col_nome_diag = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
         linhas_diag = list(df_ref[col_nome_diag].dropna().astype(str).unique())
         linhas_custo_diag = [l for l in linhas_diag if eh_linha_custos_despesas(l)]
@@ -6930,141 +6921,8 @@ if not departamento_ativo and tab_diag is not None:
         # contas de verdade (Salários, Energia, Frete...).
         linhas_custo_folha_diag = _linhas_folha_do_conjunto(linhas_custo_diag)
 
-        ofensores_diag = []
-        for linha in linhas_custo_raiz_diag:
-            v_real = abs(get_valor_consolidado_multi(list_df_real, linha, cols_kpi, exato_linha_sintetica=True))
-            v_orc = abs(get_valor_consolidado_multi(list_df_orc, linha, cols_kpi, exato_linha_sintetica=True))
-            if v_real == 0 and v_orc == 0:
-                continue
-            desvio = v_orc - v_real  # negativo = gastou mais que o orçado
-            if desvio < 0:
-                ofensores_diag.append({
-                    "linha": linha,
-                    "nome": _nome_sem_numero_dre(linha),
-                    "real": v_real,
-                    "orcado": v_orc,
-                    "desvio": desvio,
-                    "pct": (abs(desvio) / v_orc * 100) if v_orc else 0,
-                })
-        ofensores_diag.sort(key=lambda d: d["desvio"])
-        top_ofensores = ofensores_diag[:3]
-        total_estouro = sum(abs(o["desvio"]) for o in ofensores_diag)
-
-        partes_narrativa = []
-        if ebitda_orc_diag:
-            situacao = "acima" if desvio_ebitda_diag >= 0 else "abaixo"
-            partes_narrativa.append(
-                f"O **EBITDA** do período ({label_periodo_kpi}) fechou em **{formata_brl(ebitda_diag)}**, "
-                f"{abs(100 - pct_ebitda_diag):.1f}% **{situacao}** do orçado "
-                f"({formata_brl(ebitda_orc_diag)}), uma diferença de {formata_brl(desvio_ebitda_diag)}."
-            )
-        if rec_liq_orc_diag:
-            partes_narrativa.append(
-                f"A **receita líquida** atingiu {pct_receita_diag:.1f}% da meta "
-                f"({formata_brl(rec_liq_diag)} de {formata_brl(rec_liq_orc_diag)})."
-            )
-        if rec_liq_diag:
-            direcao_margem = "acima" if margem_real_diag >= margem_orc_diag else "abaixo"
-            partes_narrativa.append(
-                f"A **margem EBITDA** ficou em {margem_real_diag:.1f}%, {direcao_margem} da margem "
-                f"orçada de {margem_orc_diag:.1f}%."
-            )
-        if top_ofensores:
-            nomes_ofensores = ", ".join(o["nome"] for o in top_ofensores)
-            peso_top = (sum(abs(o["desvio"]) for o in top_ofensores) / total_estouro * 100) if total_estouro else 0
-            partes_narrativa.append(
-                f"Entre as linhas que estouraram o orçamento, as três maiores são **{nomes_ofensores}**, "
-                f"que concentram {peso_top:.0f}% de todo o excesso de gasto do período "
-                f"({formata_brl(sum(o['desvio'] for o in top_ofensores))} dos "
-                f"{formata_brl(-total_estouro)} totais)."
-            )
-        # Contexto de ritmo do mês corrente e tendência recente
-        _hoje_narr = datetime.now(FUSO_BR).date()
-        _col_atual_narr, _frac_narr, _dias_corr_narr, _dias_mes_narr = _fator_proporcional_mes_corrente(
-            cols_kpi, meses_cols, _hoje_narr
-        )
-        if _col_atual_narr is not None:
-            ebitda_prop_narr = _orcado_proporcional(
-                list_df_orc, "11 - EBITDA", cols_kpi, meses_cols, _hoje_narr
-            )
-            if ebitda_prop_narr:
-                ritmo_narr = ebitda_diag / ebitda_prop_narr * 100
-                situacao_ritmo = "acima" if ritmo_narr >= 100 else "abaixo"
-                partes_narrativa.append(
-                    f"⏱️ Considerando que o mês corrente está {_frac_narr * 100:.0f}% decorrido "
-                    f"({_dias_corr_narr} de {_dias_mes_narr} dias), o **ritmo** está em "
-                    f"{ritmo_narr:.0f}% do esperado — {situacao_ritmo} do orçamento ajustado ao período."
-                )
-
-        # Tendência dos últimos 3 meses de EBITDA
-        _serie_ebitda_narr = [
-            (nome, get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [col]))
-            for nome, col in m_map.items()
-        ]
-        _com_dado_narr = [(n, v) for n, v in _serie_ebitda_narr if v != 0]
-        if len(_com_dado_narr) >= 3:
-            ultimos3 = _com_dado_narr[-3:]
-            valores3 = [v for _, v in ultimos3]
-            if valores3[0] > valores3[1] > valores3[2]:
-                partes_narrativa.append(
-                    f"📉 **Atenção à tendência:** o EBITDA cai há 3 meses seguidos "
-                    f"({ultimos3[0][0].capitalize()} → {ultimos3[2][0].capitalize()}), "
-                    f"de {formata_m(valores3[0])} para {formata_m(valores3[2])}."
-                )
-            elif valores3[0] < valores3[1] < valores3[2]:
-                partes_narrativa.append(
-                    f"📈 O EBITDA sobe há 3 meses seguidos, de {formata_m(valores3[0])} "
-                    f"para {formata_m(valores3[2])}."
-                )
-
-        if not partes_narrativa:
-            partes_narrativa.append("Não há dados suficientes no período selecionado para gerar a leitura.")
-
-        st.markdown('<div class="section-title">📝 Leitura Automática do Período</div>', unsafe_allow_html=True)
-
-        # Destaque do veredito, em vez de enterrar o número principal no meio
-        # de um parágrafo corrido.
-        if ebitda_orc_diag:
-            _veredito_ok = desvio_ebitda_diag >= 0
-            _cor_ver = COLORS["positive"] if _veredito_ok else COLORS["negative"]
-            _palavra_ver = "acima" if _veredito_ok else "abaixo"
-            st.markdown(
-                f"""
-                <div style="background:linear-gradient(135deg, {COLORS['surface']} 0%, {COLORS['surface_alt']} 100%);
-                            border:1px solid {COLORS['border']}; border-left:4px solid {_cor_ver};
-                            border-radius:10px; padding:18px 22px; margin-bottom:14px;">
-                    <div style="font-size:11px; color:{COLORS['text_muted']};
-                                text-transform:uppercase; letter-spacing:0.6px;">
-                        Resultado do período · {label_periodo_kpi}
-                    </div>
-                    <div style="font-size:26px; font-weight:800; color:{_cor_ver}; margin:6px 0 2px 0;">
-                        EBITDA {abs(100 - pct_ebitda_diag):.1f}% {_palavra_ver} do orçado
-                    </div>
-                    <div style="font-size:13px; color:{COLORS['text_muted']};">
-                        {formata_brl(ebitda_diag).replace('$', '&#36;')} realizados contra
-                        {formata_brl(ebitda_orc_diag).replace('$', '&#36;')} previstos ·
-                        diferença de <b style="color:{_cor_ver};">
-                        {formata_brl(desvio_ebitda_diag).replace('$', '&#36;')}</b>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        # Os demais pontos em lista, para leitura rápida
-        if len(partes_narrativa) > 1:
-            itens_lista = partes_narrativa[1:] if ebitda_orc_diag else partes_narrativa
-            texto_lista = "\n".join(f"- {p}" for p in itens_lista).replace("$", "\\$")
-            st.markdown(texto_lista)
-
-        st.caption(
-            "Texto gerado automaticamente a partir dos números do período — serve como rascunho do "
-            "comentário de resultado, para você revisar e complementar com o contexto do negócio."
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-
         # =====================================================================
-        # 2. PONTO DE EQUILÍBRIO (BREAK-EVEN)
+        # 1. PONTO DE EQUILÍBRIO (BREAK-EVEN)
         # =====================================================================
         st.markdown('<div class="section-title">🎯 Ponto de Equilíbrio</div>', unsafe_allow_html=True)
         st.caption(
@@ -7183,7 +7041,7 @@ if not departamento_ativo and tab_diag is not None:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # =====================================================================
-        # 3. CURVA ABC DE DESPESAS
+        # 2. CURVA ABC DE DESPESAS
         # =====================================================================
         st.markdown('<div class="section-title">📊 Curva ABC de Custos e Despesas</div>', unsafe_allow_html=True)
         st.caption(
@@ -7322,7 +7180,7 @@ if not departamento_ativo and tab_diag is not None:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # =====================================================================
-        # 4. DETECÇÃO AUTOMÁTICA DE ANOMALIAS
+        # 3. DETECÇÃO AUTOMÁTICA DE ANOMALIAS
         # =====================================================================
         st.markdown('<div class="section-title">🚨 Anomalias Detectadas</div>', unsafe_allow_html=True)
         st.caption(
@@ -7444,7 +7302,7 @@ do habitual — o que pode ser economia real ou lançamento que ainda não entro
         st.markdown("<br>", unsafe_allow_html=True)
 
         # =====================================================================
-        # 5. FORECAST ROLLING — REPROJEÇÃO DO ANO
+        # 4. FORECAST ROLLING — REPROJEÇÃO DO ANO
         # =====================================================================
         st.markdown('<div class="section-title">🔄 Forecast Rolling do Ano</div>', unsafe_allow_html=True)
         st.caption(
