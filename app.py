@@ -2936,26 +2936,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
             use_container_width=True,
         )
 
-        # Alerta rápido dos meses fora da meta de 30%
-        meses_fora_meta = [
-            c for c in colunas_meses_m
-            if serie_disponivel_total[c] and serie_pct_sobra[c] < 30
-        ]
-        if meses_fora_meta:
-            st.warning(
-                "⚠️ Abaixo da meta de 30% de sobra em: " + ", ".join(meses_fora_meta)
-                + ". Nesses meses, pagando todas as contas, sobraria menos que a reserva desejada."
-            )
-        else:
-            st.success("✅ Em todos os meses do período a sobra fica igual ou acima da meta de 30%.")
-
         st.caption(
             "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
             "quanto sobra em caixa em proporção ao que havia disponível. É esse número que deve ficar em "
             "30% ou mais."
         )
 
-        # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
+        # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
         df_fluxo_only = df_m[df_m["Tipo Movimento"].isin(["entrada", "saida"])]
         if not df_fluxo_only.empty:
             entradas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "entrada"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
@@ -2964,20 +2951,81 @@ if st.session_state["painel_escolhido"] == "financeiro":
             saidas_mes = saidas_mes.reindex(meses_ordenados_m, fill_value=0)
             rotulos_x_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
 
+            valores_entrada = [float(v) for v in entradas_mes.values]
+            valores_saida = [abs(float(v)) for v in saidas_mes.values]
+            resultado_mes = [e - s for e, s in zip(valores_entrada, valores_saida)]
+            pct_sobra_grafico = [float(serie_pct_sobra[c]) for c in rotulos_x_m]
+
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div class="section-title">📊 Entradas x Saídas por Mês</div>', unsafe_allow_html=True)
-            fig_es = go.Figure(data=[
-                go.Bar(name="Entradas", x=rotulos_x_m, y=list(entradas_mes.values), marker_color=COLORS["positive"]),
-                go.Bar(name="Saídas", x=rotulos_x_m, y=[abs(v) for v in saidas_mes.values], marker_color=COLORS["negative"]),
-            ])
+            st.markdown(
+                '<div class="section-title">📊 Entradas x Saídas, Resultado e Reserva por Mês</div>',
+                unsafe_allow_html=True,
+            )
+
+            fig_es = go.Figure()
+            fig_es.add_trace(go.Bar(
+                name="Entradas", x=rotulos_x_m, y=valores_entrada,
+                marker_color=COLORS["positive"], opacity=0.9,
+                text=[formata_m(v) for v in valores_entrada],
+                textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
+                hovertemplate="<b>%{x}</b><br>Entradas: %{y:,.2f}<extra></extra>",
+            ))
+            fig_es.add_trace(go.Bar(
+                name="Saídas", x=rotulos_x_m, y=valores_saida,
+                marker_color=COLORS["negative"], opacity=0.9,
+                text=[formata_m(v) for v in valores_saida],
+                textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
+                hovertemplate="<b>%{x}</b><br>Saídas: %{y:,.2f}<extra></extra>",
+            ))
+            # Resultado do mês (entradas − saídas) como linha, na mesma escala
+            fig_es.add_trace(go.Scatter(
+                name="Resultado do mês", x=rotulos_x_m, y=resultado_mes,
+                mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
+                marker=dict(size=7),
+                hovertemplate="<b>%{x}</b><br>Resultado: %{y:,.2f}<extra></extra>",
+            ))
+            # % de sobra x meta de 30%, em eixo secundário
+            fig_es.add_trace(go.Scatter(
+                name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
+                mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2, dash="dot"),
+                marker=dict(size=6),
+                text=[f"{v:.0f}%" for v in pct_sobra_grafico],
+                textposition="top center", textfont=dict(size=9, color=COLORS["warning"]),
+                hovertemplate="<b>%{x}</b><br>Sobra: %{y:.1f}%<extra></extra>",
+            ))
+            fig_es.add_trace(go.Scatter(
+                name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m), yaxis="y2",
+                mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
+                hoverinfo="skip",
+            ))
+
+            teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
             estilo_grafico(
-                fig_es, height=340, barmode="group",
-                xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickangle=-30, automargin=True, tickfont=dict(size=9)),
-                yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
-                margin=dict(l=50, r=20, t=20, b=80),
+                fig_es, height=460, barmode="group", bargap=0.28, bargroupgap=0.08,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
+                           automargin=True, tickfont=dict(size=10)),
+                yaxis=dict(
+                    title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
+                    gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                    zerolinecolor=COLORS["border"], range=[min(0, min(resultado_mes) * 1.15), teto_barras * 1.22],
+                ),
+                yaxis2=dict(
+                    title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
+                    overlaying="y", side="right", showgrid=False, fixedrange=True,
+                    ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
+                    range=[0, max(60, max(pct_sobra_grafico) * 1.35 if pct_sobra_grafico else 60)],
+                ),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
+                            font=dict(size=10)),
+                margin=dict(l=70, r=70, t=30, b=90),
+                hovermode="x unified",
             )
             st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.caption(
+                "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
+                "(entradas − saídas). Linha pontilhada laranja = % de sobra, no eixo da direita, com a linha "
+                "tracejada cinza marcando a meta de 30%."
+            )
 
         # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
         st.markdown("<br>", unsafe_allow_html=True)
