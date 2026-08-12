@@ -2909,59 +2909,68 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "**Saldo Acumulado** = Total Geral sem o Contas a Pagar (o disponível antes de descontar o que se deve)."
         )
 
-        # ---- Reserva de caixa: o que a área quer de fato monitorar ----
-        # A meta é manter ~30% de caixa disponível para imprevistos. O
-        # indicador que responde isso é: quanto o dinheiro DISPONÍVEL
-        # (caixa + banco, que dá pra usar hoje) cobre das obrigações do mês.
-        movimentos_disponivel = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saldo"]
-        serie_disponivel = (
-            pivot_m.loc[movimentos_disponivel, colunas_meses_m].sum(axis=0)
-            if movimentos_disponivel else pd.Series(0.0, index=colunas_meses_m)
-        )
+        # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
+        # A regra da área: pagando todas as contas do mês, ainda tem que
+        # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
+        # os recebíveis (caixa + banco + a receber projetado + realizado),
+        # e o indicador é a SOBRA sobre esse disponível -- não o quanto o
+        # caixa já cobre das contas.
         serie_obrigacoes = serie_a_pagar.abs()
-        serie_cobertura = pd.Series(
+        serie_sobra = serie_total_geral  # já é disponível − a pagar
+        serie_pct_sobra = pd.Series(
             [
-                (d / o * 100) if o else 0.0
-                for d, o in zip(serie_disponivel.values, serie_obrigacoes.values)
+                (sobra / disp * 100) if disp else 0.0
+                for sobra, disp in zip(serie_sobra.values, serie_saldo_acumulado.values)
             ],
             index=colunas_meses_m,
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-title">🛡️ Reserva de Caixa (meta: 30%)</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">🛡️ Reserva de Caixa — sobra depois de pagar tudo (meta: 30%)</div>',
+            unsafe_allow_html=True,
+        )
 
         df_reserva_m = pd.DataFrame(
             {
                 c: [
-                    formata_brl(serie_disponivel[c]),
+                    formata_brl(serie_saldo_acumulado[c]),
                     formata_brl(serie_obrigacoes[c]),
-                    f"{serie_cobertura[c]:.1f}%",
+                    formata_brl(serie_sobra[c]),
+                    f"{serie_pct_sobra[c]:.1f}%",
                     f"{serie_referencia_planilha[c]:.0f}%",
                 ]
                 for c in colunas_meses_m
             },
             index=[
-                "Disponível (caixa + banco)",
-                "Obrigações do mês (a pagar)",
-                "% de cobertura (meta 30%)",
+                "Disponível (caixa + banco + a receber)",
+                "A pagar no mês",
+                "Sobra depois de pagar tudo",
+                "% de sobra (meta: 30%)",
                 "Referência de 30% (fórmula da planilha)",
             ],
         )
         st.dataframe(df_reserva_m, use_container_width=True)
 
         # Alerta rápido dos meses fora da meta de 30%
-        meses_fora_meta = [c for c in colunas_meses_m if serie_obrigacoes[c] and serie_cobertura[c] < 30]
+        meses_fora_meta = [
+            c for c in colunas_meses_m
+            if serie_saldo_acumulado[c] and serie_pct_sobra[c] < 30
+        ]
         if meses_fora_meta:
             st.warning(
-                "Abaixo da meta de 30% em: " + ", ".join(meses_fora_meta)
-                + ". (Meses sem saldo de caixa/banco lançado aparecem como 0% — confira se é falta de dado.)"
+                "⚠️ Abaixo da meta de 30% de sobra em: " + ", ".join(meses_fora_meta)
+                + ". Nesses meses, pagando todas as contas, sobraria menos que a reserva desejada."
             )
+        else:
+            st.success("✅ Em todos os meses do período a sobra fica igual ou acima da meta de 30%.")
+
         st.caption(
-            "**% de cobertura** = (caixa + banco) ÷ contas a pagar do mês. É o indicador que responde "
-            "diretamente à meta de manter 30% de caixa para imprevistos: acima de 30% está dentro do alvo. "
-            "A **Referência de 30% (fórmula da planilha)** está aqui para conferência contra o Excel — mas, "
-            "sendo transparente: ela mede outra coisa (a razão entre o saldo acumulado e o passivo, menos 100%), "
-            "e por isso devolve percentuais negativos de três dígitos, que não são comparáveis com uma meta de 30%."
+            "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
+            "quanto sobra em caixa, em proporção ao que havia disponível. É esse número que deve ficar em "
+            "30% ou mais. A **Referência de 30% (fórmula da planilha)** aparece ao lado só para conferência "
+            "com o Excel — ela é a mesma relação escrita ao contrário e com o sinal invertido, por isso "
+            "devolve percentuais negativos de três dígitos que não dá para comparar direto com a meta."
         )
 
         # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
