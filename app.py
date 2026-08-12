@@ -2866,61 +2866,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "fluxo e a posição mais recente para o saldo."
         )
 
-        # ---- Passivo e Saldo Acumulado (mesmo quadro da planilha) ----
+        # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
+        # A regra da área: pagando todas as contas do mês, ainda tem que
+        # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
+        # os recebíveis (caixa + banco + a receber projetado + realizado),
+        # e o indicador é a SOBRA sobre esse disponível.
         colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
         serie_total_geral = linha_total_geral_m[colunas_meses_m]
 
-        # Passivo = Total Geral com o sinal invertido.
-        serie_passivo = -serie_total_geral
-
-        # Saldo Acumulado = Total Geral SEM o Contas a Pagar, ou seja, tudo
-        # que a empresa tem/vai receber antes de descontar o que deve.
-        # (Fórmula conferida contra a planilha nos 6 meses do quadro.)
         movimentos_a_pagar = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saida"]
         serie_a_pagar = (
             pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
             if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
         )
-        serie_saldo_acumulado = serie_total_geral - serie_a_pagar
-
-        # "Referência de 30%" como está na planilha:
-        # (caixa + banco + a receber projetado + realizado) / passivo − 100%.
-        # O numerador é exatamente o Saldo Acumulado calculado acima.
-        serie_referencia_planilha = pd.Series(
-            [
-                (sa / p - 1) * 100 if p else 0.0
-                for sa, p in zip(serie_saldo_acumulado.values, serie_passivo.values)
-            ],
-            index=colunas_meses_m,
-        )
-
-        df_resumo_m = pd.DataFrame(
-            [serie_passivo, serie_saldo_acumulado],
-            index=["Passivo", "Saldo Acumulado"],
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-title">📐 Passivo · Saldo Acumulado</div>', unsafe_allow_html=True)
-        st.dataframe(
-            df_resumo_m.style.format(formata_brl).map(cor_valor),
-            use_container_width=True,
-        )
-        st.caption(
-            "**Passivo** = Total Geral do mês com o sinal invertido. "
-            "**Saldo Acumulado** = Total Geral sem o Contas a Pagar (o disponível antes de descontar o que se deve)."
-        )
-
-        # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
-        # A regra da área: pagando todas as contas do mês, ainda tem que
-        # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
-        # os recebíveis (caixa + banco + a receber projetado + realizado),
-        # e o indicador é a SOBRA sobre esse disponível -- não o quanto o
-        # caixa já cobre das contas.
         serie_obrigacoes = serie_a_pagar.abs()
+        # Disponível = tudo que há antes de descontar o que se deve
+        serie_disponivel_total = serie_total_geral - serie_a_pagar
         serie_sobra = serie_total_geral  # já é disponível − a pagar
         serie_pct_sobra = pd.Series(
             [
                 (sobra / disp * 100) if disp else 0.0
-                for sobra, disp in zip(serie_sobra.values, serie_saldo_acumulado.values)
+                for sobra, disp in zip(serie_sobra.values, serie_disponivel_total.values)
             ],
             index=colunas_meses_m,
         )
@@ -2932,30 +2898,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
         )
 
         df_reserva_m = pd.DataFrame(
-            {
-                c: [
-                    formata_brl(serie_saldo_acumulado[c]),
-                    formata_brl(serie_obrigacoes[c]),
-                    formata_brl(serie_sobra[c]),
-                    f"{serie_pct_sobra[c]:.1f}%",
-                    f"{serie_referencia_planilha[c]:.0f}%",
-                ]
-                for c in colunas_meses_m
-            },
+            [serie_disponivel_total, serie_obrigacoes, serie_sobra, serie_pct_sobra],
             index=[
                 "Disponível (caixa + banco + a receber)",
                 "A pagar no mês",
                 "Sobra depois de pagar tudo",
                 "% de sobra (meta: 30%)",
-                "Referência de 30% (fórmula da planilha)",
             ],
         )
-        st.dataframe(df_reserva_m, use_container_width=True)
+
+        st.dataframe(
+            df_reserva_m.style.format(
+                {c: formata_brl for c in colunas_meses_m}
+            ).format(
+                {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
+                subset=pd.IndexSlice[["% de sobra (meta: 30%)"], :],
+            ).map(cor_valor),
+            use_container_width=True,
+        )
 
         # Alerta rápido dos meses fora da meta de 30%
         meses_fora_meta = [
             c for c in colunas_meses_m
-            if serie_saldo_acumulado[c] and serie_pct_sobra[c] < 30
+            if serie_disponivel_total[c] and serie_pct_sobra[c] < 30
         ]
         if meses_fora_meta:
             st.warning(
@@ -2967,10 +2932,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
         st.caption(
             "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
-            "quanto sobra em caixa, em proporção ao que havia disponível. É esse número que deve ficar em "
-            "30% ou mais. A **Referência de 30% (fórmula da planilha)** aparece ao lado só para conferência "
-            "com o Excel — ela é a mesma relação escrita ao contrário e com o sinal invertido, por isso "
-            "devolve percentuais negativos de três dígitos que não dá para comparar direto com a meta."
+            "quanto sobra em caixa em proporção ao que havia disponível. É esse número que deve ficar em "
+            "30% ou mais."
         )
 
         # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
