@@ -7339,11 +7339,6 @@ if not departamento_ativo and tab_diag is not None:
         # 3. DETECÇÃO AUTOMÁTICA DE ANOMALIAS
         # =====================================================================
         st.markdown('<div class="section-title">🚨 Anomalias Detectadas</div>', unsafe_allow_html=True)
-        st.caption(
-            "Compara cada conta com o próprio histórico mensal: o mês mais recente é sinalizado quando "
-            "foge do padrão dela (mais de 2 desvios-padrão da média dos meses anteriores). "
-            "É uma forma de achar o que mudou sem varrer todas as contas na mão."
-        )
 
         col_sens_a, col_sens_b = st.columns([1, 3])
         with col_sens_a:
@@ -7356,18 +7351,21 @@ if not departamento_ativo and tab_diag is not None:
 
         colunas_hist_anom = list(m_map.values())
         anomalias = []
+        contas_avaliadas_anom = 0
         if len(colunas_hist_anom) >= 4:
             for linha in linhas_custo_folha_diag:
                 serie_mensal = [
-                    abs(get_valor_consolidado_multi(list_df_real, linha, [col], exato_linha_sintetica=True))
-                    for col in colunas_hist_anom
+                    (nome, abs(get_valor_consolidado_multi(
+                        list_df_real, linha, [col], exato_linha_sintetica=True)))
+                    for nome, col in m_map.items()
                 ]
-                serie_com_dado = [v for v in serie_mensal if v > 0]
+                serie_com_dado = [(n, v) for n, v in serie_mensal if v > 0]
                 if len(serie_com_dado) < 4:
                     continue
+                contas_avaliadas_anom += 1
                 # O último mês com movimento é comparado com os anteriores
-                ultimo_valor = serie_com_dado[-1]
-                anteriores = serie_com_dado[:-1]
+                mes_anom, ultimo_valor = serie_com_dado[-1]
+                anteriores = [v for _, v in serie_com_dado[:-1]]
                 media_ant = sum(anteriores) / len(anteriores)
                 variancia = sum((v - media_ant) ** 2 for v in anteriores) / len(anteriores)
                 desvio_padrao = variancia ** 0.5
@@ -7375,12 +7373,6 @@ if not departamento_ativo and tab_diag is not None:
                     continue
                 z = (ultimo_valor - media_ant) / desvio_padrao
                 if abs(z) >= limiar_sigma:
-                    idx_ultimo = len(serie_com_dado) - 1
-                    nomes_meses_com_dado = [
-                        nome for nome, col in m_map.items()
-                        if abs(get_valor_consolidado_multi(list_df_real, linha, [col], exato_linha_sintetica=True)) > 0
-                    ]
-                    mes_anom = nomes_meses_com_dado[idx_ultimo] if idx_ultimo < len(nomes_meses_com_dado) else "—"
                     anomalias.append({
                         "Conta": _nome_sem_numero_dre(linha),
                         "Mês": mes_anom.capitalize(),
@@ -7388,74 +7380,174 @@ if not departamento_ativo and tab_diag is not None:
                         "Média anterior": media_ant,
                         "Variação": ultimo_valor - media_ant,
                         "Var. %": ((ultimo_valor - media_ant) / media_ant * 100) if media_ant else 0,
-                        "Desvios (σ)": z,
+                        "Desvios": z,
+                        "Historico": [v for _, v in serie_com_dado],
                     })
 
-        if anomalias:
-            df_anom = pd.DataFrame(anomalias).sort_values("Desvios (σ)", key=abs, ascending=False)
-            n_altas = int((df_anom["Variação"] > 0).sum())
-            n_baixas = int((df_anom["Variação"] < 0).sum())
-            st.markdown(
-                render_kpi_row([
-                    dict(label="ANOMALIAS ENCONTRADAS", value=str(len(df_anom)),
-                         value_color=COLORS["warning"],
-                         subtext=f"Em {len(linhas_custo_folha_diag)} contas analisadas", icon="🔍"),
-                    dict(label="GASTOS ACIMA DO PADRÃO", value=str(n_altas),
-                         value_color=COLORS["negative"], subtext="Contas que subiram fora da curva", icon="📈"),
-                    dict(label="GASTOS ABAIXO DO PADRÃO", value=str(n_baixas),
-                         value_color=COLORS["positive"], subtext="Podem indicar economia ou falta de lançamento", icon="📉"),
-                ]),
-                unsafe_allow_html=True,
-            )
-            st.dataframe(
-                df_anom.style.format({
-                    "Valor do mês": formata_brl,
-                    "Média anterior": formata_brl,
-                    "Variação": formata_brl,
-                    "Var. %": lambda v: f"{v:+.1f}%".replace(".", ","),
-                    "Desvios (σ)": lambda v: f"{v:+.1f}σ".replace(".", ","),
-                }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
-                .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
-                     subset=["Variação", "Var. %"]),
-                use_container_width=True, hide_index=True, height=min(500, 60 + 35 * len(df_anom)),
-            )
-            st.caption(
-                "⚠️ Uma anomalia não é necessariamente um erro — pode ser um evento legítimo (compra "
-                "sazonal, rescisão, campanha). Ela apenas indica **onde vale olhar primeiro**."
-            )
-            with st.expander("❓ O que significam a 'Média anterior' e o símbolo σ (sigma)"):
-                st.markdown(
-                    """
-**Média anterior** é quanto aquela conta costumava gastar por mês, considerando todos os meses
-com movimento *antes* do mês sinalizado. É o "normal" daquela conta — não uma meta, e sim o
-comportamento histórico dela.
-
-**σ (sigma)** é o desvio-padrão: mede o quanto os valores daquela conta costumam variar em torno
-da própria média. Contas estáveis têm sigma baixo; contas que oscilam muito têm sigma alto.
-
-O número na coluna **Desvios (σ)** diz a quantos desvios-padrão o mês está da média:
-
-- **±1σ** — variação comum, acontece na maioria dos meses
-- **±2σ** — fora do padrão, acontece em cerca de 5% dos casos
-- **±3σ ou mais** — bem improvável de ser só oscilação natural
-
-Por isso o mesmo aumento em reais pode ser anomalia numa conta e rotina em outra: o que importa
-é o quanto ele foge do comportamento *daquela* conta. Um sinal negativo significa gasto **abaixo**
-do habitual — o que pode ser economia real ou lançamento que ainda não entrou.
-                    """
-                )
-        elif len(colunas_hist_anom) < 4:
+        if len(colunas_hist_anom) < 4:
             st.info(
                 "São necessários pelo menos 4 meses de histórico para detectar anomalias com alguma "
                 "confiança estatística. Com menos que isso, qualquer variação parece anormal."
             )
-        else:
+        elif not anomalias:
             st.success(
-                f"✅ Nenhuma conta fugiu do próprio padrão histórico na sensibilidade "
-                f"**{sensibilidade_anom}** — os gastos do último mês estão dentro do comportamento habitual."
+                f"✅ Nenhuma das {contas_avaliadas_anom} contas analisadas fugiu do próprio padrão "
+                f"histórico na sensibilidade **{sensibilidade_anom}** — os gastos do último mês estão "
+                "dentro do comportamento habitual."
+            )
+        else:
+            df_anom = pd.DataFrame(anomalias)
+            df_anom["Ordem"] = df_anom["Desvios"].abs()
+            df_anom = df_anom.sort_values("Ordem", ascending=False).drop(columns=["Ordem"])
+            n_altas = int((df_anom["Variação"] > 0).sum())
+            n_baixas = int((df_anom["Variação"] < 0).sum())
+            impacto_alta = df_anom.loc[df_anom["Variação"] > 0, "Variação"].sum()
+            impacto_baixa = df_anom.loc[df_anom["Variação"] < 0, "Variação"].sum()
+
+            # ---- Faixa de leitura, mesmo padrão das outras seções ----
+            _metricas_anom = [
+                ("Anomalias", str(len(df_anom)), COLORS["warning"],
+                 f"de {contas_avaliadas_anom} contas com histórico"),
+                ("Gastos acima do padrão", str(n_altas),
+                 COLORS["negative"] if n_altas else COLORS["text_muted"],
+                 f"{formata_m(impacto_alta)} acima da média" if n_altas else "nenhuma conta subiu fora da curva"),
+                ("Gastos abaixo do padrão", str(n_baixas),
+                 COLORS["positive"] if n_baixas else COLORS["text_muted"],
+                 f"{formata_m(abs(impacto_baixa))} abaixo da média" if n_baixas else "nenhuma conta caiu fora da curva"),
+                ("Efeito líquido", formata_m(impacto_alta + impacto_baixa),
+                 cor_variacao(-(impacto_alta + impacto_baixa)),
+                 "Soma dos desvios em relação ao normal"),
+            ]
+            _html_anom = "".join(
+                f'<div style="flex:1; min-width:175px; padding:0 18px; '
+                f'border-left:1px solid {COLORS["border"]};">'
+                f'<div style="font-size:10px; color:{COLORS["text_muted"]}; '
+                f'text-transform:uppercase; letter-spacing:0.5px;">{rotulo}</div>'
+                f'<div style="font-size:23px; font-weight:800; color:{cor}; '
+                f'margin-top:4px; line-height:1.15;">{valor}</div>'
+                f'<div style="font-size:11.5px; color:{COLORS["text_muted"]}; '
+                f'margin-top:4px;">{complemento}</div></div>'
+                for rotulo, valor, cor, complemento in _metricas_anom
+            )
+            st.markdown(
+                html_compacto(
+                    f'<div style="display:flex; flex-wrap:wrap; gap:6px 0; padding:14px 4px; '
+                    f'border-top:1px solid {COLORS["border"]}; '
+                    f'border-bottom:1px solid {COLORS["border"]}; margin-bottom:20px;">{_html_anom}</div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-        st.markdown("<br>", unsafe_allow_html=True)
+            # ---- Cada anomalia como um cartão com o histórico visível ----
+            # Ver a série mensal ao lado do número explica na hora se aquilo
+            # é um pico isolado ou uma mudança de patamar -- coisa que uma
+            # tabela de números não mostra.
+            _cartoes_anom = []
+            for _, linha_anom in df_anom.head(12).iterrows():
+                subiu = linha_anom["Variação"] > 0
+                cor_anom = COLORS["negative"] if subiu else COLORS["positive"]
+                seta = "▲" if subiu else "▼"
+                historico = linha_anom["Historico"]
+                maior_hist = max(historico) if historico else 1
+
+                # Mini-gráfico do histórico em barras, com o último mês em destaque
+                barras = "".join(
+                    f'<div style="flex:1; height:{max(3, v / maior_hist * 26):.0f}px; '
+                    f'background:{cor_anom if i == len(historico) - 1 else COLORS["secondary"]}; '
+                    f'opacity:{1 if i == len(historico) - 1 else 0.45}; border-radius:1px;"></div>'
+                    for i, v in enumerate(historico)
+                )
+
+                nome_conta_anom = linha_anom["Conta"]
+                nome_exibido_anom = (
+                    nome_conta_anom if len(nome_conta_anom) <= 38 else nome_conta_anom[:37] + "…"
+                )
+                _cartoes_anom.append(
+                    f'<div style="flex:1; min-width:330px; background:{COLORS["surface"]}; '
+                    f'border:1px solid {COLORS["border"]}; border-left:3px solid {cor_anom}; '
+                    f'border-radius:6px; padding:11px 14px;">'
+                    # cabeçalho: conta + mês
+                    f'<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
+                    f'<div style="font-size:12.5px; color:{COLORS["text"]}; font-weight:600; '
+                    f'white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" '
+                    f'title="{nome_conta_anom}">{nome_exibido_anom}</div>'
+                    f'<div style="font-size:10.5px; color:{COLORS["text_muted"]}; white-space:nowrap;">'
+                    f'{linha_anom["Mês"]}</div></div>'
+                    # variação em destaque
+                    f'<div style="display:flex; align-items:flex-end; gap:14px; margin-top:7px;">'
+                    f'<div><div style="font-size:19px; font-weight:800; color:{cor_anom}; line-height:1.1;">'
+                    f'{seta} {abs(linha_anom["Var. %"]):.0f}%</div>'
+                    f'<div style="font-size:10.5px; color:{COLORS["text_muted"]}; margin-top:2px;">'
+                    f'{formata_m(linha_anom["Valor do mês"])} vs. {formata_m(linha_anom["Média anterior"])} '
+                    f'de média</div></div>'
+                    # mini-histórico
+                    f'<div style="flex:1; display:flex; align-items:flex-end; gap:2px; height:28px;">'
+                    f'{barras}</div>'
+                    f'<div style="text-align:right;">'
+                    f'<div style="font-size:13px; font-weight:700; color:{cor_anom};">'
+                    f'{linha_anom["Desvios"]:+.1f}σ</div>'
+                    f'<div style="font-size:9.5px; color:{COLORS["text_muted"]};">do padrão</div>'
+                    f'</div></div></div>'
+                )
+
+            st.markdown(
+                html_compacto(
+                    f'<div style="display:flex; flex-wrap:wrap; gap:10px; margin:0 4px;">'
+                    f'{"".join(_cartoes_anom)}</div>'
+                ),
+                unsafe_allow_html=True,
+            )
+            if len(df_anom) > 12:
+                st.caption(f"Mostrando as 12 anomalias mais fortes de {len(df_anom)} encontradas.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander("📋 Ver todas as anomalias em tabela"):
+                st.dataframe(
+                    df_anom.drop(columns=["Historico"]).style.format({
+                        "Valor do mês": formata_brl,
+                        "Média anterior": formata_brl,
+                        "Variação": formata_brl,
+                        "Var. %": lambda v: f"{v:+.1f}%".replace(".", ","),
+                        "Desvios": lambda v: f"{v:+.1f}σ".replace(".", ","),
+                    }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
+                    .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
+                         subset=["Variação", "Var. %"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(500, 60 + 35 * len(df_anom)),
+                )
+
+            with st.expander("❓ Como ler estes números"):
+                st.markdown(
+                    """
+**A comparação é de cada conta consigo mesma**, não com o orçamento. O painel olha o histórico
+mensal daquela conta, calcula o comportamento típico dela e verifica se o último mês fugiu desse
+padrão.
+
+**Média anterior** é quanto a conta costumava gastar por mês, considerando os meses *antes* do mês
+sinalizado. É o "normal" dela — não uma meta.
+
+**σ (sigma)** é o desvio-padrão: mede o quanto os valores daquela conta costumam variar em torno
+da própria média. Conta estável tem sigma baixo; conta que oscila muito tem sigma alto. O número
+em **σ** diz a quantos desvios-padrão o mês está da média:
+
+- **±1σ** — variação comum, acontece na maioria dos meses
+- **±2σ** — fora do padrão, cerca de 5% dos casos
+- **±3σ ou mais** — bem improvável de ser só oscilação natural
+
+Por isso o mesmo aumento em reais pode ser anomalia numa conta e rotina em outra — o que importa é
+o quanto foge do comportamento *daquela* conta.
+
+**As barrinhas** mostram o histórico mensal: a última barra (colorida) é o mês sinalizado. Elas
+revelam se é um pico isolado ou uma mudança de patamar que vem se formando — e isso importa, porque
+o método estatístico é bom em achar **picos**, mas tende a não sinalizar uma subida **gradual**
+(os meses já elevados entram na média e "normalizam" o desvio). Nesses casos, o degrau aparece nas
+barrinhas mesmo com sigma baixo.
+
+⚠️ Anomalia não é sinônimo de erro — pode ser evento legítimo (compra sazonal, rescisão, campanha).
+Ela indica **onde vale olhar primeiro**. Valor abaixo do padrão pode ser economia real ou lançamento
+que ainda não entrou.
+                    """
+                )
 
         # =====================================================================
         # 4. FORECAST ROLLING — REPROJEÇÃO DO ANO
