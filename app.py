@@ -2684,567 +2684,655 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
             st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
 
-    # ================= FILTROS =================
-    data_min_fin = df_fin["Data Efetiva"].min().date()
-    data_max_fin = df_fin["Data Efetiva"].max().date()
-
-    # Padrão pedido: começa no 1º dia do MÊS ANTERIOR ao atual e vai até o
-    # último dia do ANO atual (limitado ao que existe de dado na planilha).
-    hoje_fin = datetime.now(FUSO_BR).date()
-    primeiro_dia_mes_anterior = (hoje_fin.replace(day=1) - pd.Timedelta(days=1)).replace(day=1)
-    ultimo_dia_ano_atual = hoje_fin.replace(month=12, day=31)
-    padrao_ini_fin = max(min(primeiro_dia_mes_anterior, data_max_fin), data_min_fin)
-    padrao_fim_fin = min(max(ultimo_dia_ano_atual, data_min_fin), data_max_fin)
-
-    # O calendário do st.date_input segue o idioma do servidor (por isso vinha
-    # "July", "Su/Mo/Tu") e não há como forçar português nele por
-    # configuração. Em vez de brigar com o componente, o período é escolhido
-    # por seletores de MÊS -- que ficam 100% em português e, para fluxo de
-    # caixa, são até mais práticos. O ajuste fino por dia fica disponível
-    # logo abaixo, para quem precisar de um recorte exato.
-    meses_disponiveis_fin = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
-    rotulos_meses_fin = [_rotulo_mes_pt_extenso(p) for p in meses_disponiveis_fin]
-
-    periodo_ini_padrao = pd.Period(padrao_ini_fin.strftime("%Y-%m"), freq="M")
-    periodo_fim_padrao = pd.Period(padrao_fim_fin.strftime("%Y-%m"), freq="M")
-    idx_ini_padrao = meses_disponiveis_fin.index(periodo_ini_padrao) if periodo_ini_padrao in meses_disponiveis_fin else 0
-    idx_fim_padrao = meses_disponiveis_fin.index(periodo_fim_padrao) if periodo_fim_padrao in meses_disponiveis_fin else len(meses_disponiveis_fin) - 1
-
-    st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
-    col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.2, 1, 1])
-    with col_f1:
-        mes_ini_sel_fin = st.selectbox(
-            "Do mês:", rotulos_meses_fin, index=idx_ini_padrao, key="fin_mes_ini",
-            help="Por padrão começa no mês anterior ao atual.",
-        )
-    with col_f2:
-        mes_fim_sel_fin = st.selectbox(
-            "Até o mês:", rotulos_meses_fin, index=idx_fim_padrao, key="fin_mes_fim",
-            help="Por padrão vai até o fim do ano atual.",
-        )
-    with col_f3:
-        opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
-        canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
-    with col_f4:
-        opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
-        modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
-
-    periodo_ini_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_ini_sel_fin)]
-    periodo_fim_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_fim_sel_fin)]
-    if periodo_ini_fin > periodo_fim_fin:
-        st.warning("O mês inicial está depois do mês final — inverti os dois para continuar.")
-        periodo_ini_fin, periodo_fim_fin = periodo_fim_fin, periodo_ini_fin
-
-    data_ini_fin = periodo_ini_fin.start_time.date()
-    data_fim_fin = periodo_fim_fin.end_time.date()
-
-    with st.expander("📆 Ajuste fino por dia (opcional)"):
-        st.caption(
-            "Por padrão o período pega do primeiro ao último dia dos meses escolhidos acima. "
-            "Use aqui se precisar de um recorte exato dentro desses meses."
-        )
-        col_dia_a, col_dia_b = st.columns(2)
-        with col_dia_a:
-            dia_ini_fin = st.number_input(
-                f"Dia inicial (em {mes_ini_sel_fin})", min_value=1, max_value=31, value=1, step=1, key="fin_dia_ini",
-            )
-        with col_dia_b:
-            ultimo_dia_mes_fim = periodo_fim_fin.end_time.day
-            dia_fim_fin = st.number_input(
-                f"Dia final (em {mes_fim_sel_fin})", min_value=1, max_value=31,
-                value=ultimo_dia_mes_fim, step=1, key="fin_dia_fim",
-            )
-        # Se a pessoa digitar um dia que não existe naquele mês (ex.: 31 em
-        # fevereiro), ajusta pro último dia válido em vez de dar erro.
-        dia_ini_valido = min(int(dia_ini_fin), periodo_ini_fin.end_time.day)
-        dia_fim_valido = min(int(dia_fim_fin), periodo_fim_fin.end_time.day)
-        data_ini_fin = periodo_ini_fin.start_time.date().replace(day=dia_ini_valido)
-        data_fim_fin = periodo_fim_fin.start_time.date().replace(day=dia_fim_valido)
-
-    st.caption(f"📅 Período em análise: **{data_ini_fin:%d/%m/%Y}** a **{data_fim_fin:%d/%m/%Y}**")
-
-    df_fin_periodo = df_fin[
-        (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
-        & (df_fin["Data Efetiva"].dt.date <= data_fim_fin)
-    ].copy()
-    if canal_sel_fin != "Todos":
-        df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_CANAL].astype(str) == canal_sel_fin]
-    if modal_sel_fin != "Todas":
-        df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
-
-    # As APLICAÇÕES ficam fora de tudo que é total/soma/tabela principal --
-    # são exibidas só num bloco à parte, no fim da aba mensal.
-    df_aplicacoes_fin = df_fin_periodo[df_fin_periodo["Tipo Movimento"] == "aplicacao"].copy()
-    df_fin_view = df_fin_periodo[df_fin_periodo["Tipo Movimento"] != "aplicacao"].copy()
-
-    if df_fin_view.empty:
-        st.warning("Nenhum lançamento encontrado para os filtros selecionados.")
-        st.stop()
-
-    # ================= KPIs =================
-    saldo_posicao_fin, data_saldo_fin = _saldo_posicao_atual_fin(df_fin_view, COL_FIN_VALOR)
-    entradas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
-    saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
-    fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
-
-    # "Ainda a receber" = o que está classificado como PROJETADO na coluna
-    # Movimento. Antes isso era deduzido da coluna "Data Liquidação" estar
-    # vazia, mas boa parte dos lançamentos marcados como "Realizado" vem sem
-    # essa data preenchida na planilha -- e assim eles entravam aqui por
-    # engano, inflando o número. O Movimento é a classificação confiável.
-    mascara_projetado_fin = df_fin_view[COL_FIN_MOVIMENTO].astype(str).str.contains(
-        "projetad", case=False, na=False
-    )
-    a_receber_projetado_fin = df_fin_view.loc[
-        (df_fin_view["Tipo Movimento"] == "entrada") & mascara_projetado_fin, COL_FIN_VALOR
-    ].sum()
-    a_receber_realizado_fin = entradas_fin - a_receber_projetado_fin
-
-    st.markdown(
-        f'<div class="section-title">📊 Resumo do Período '
-        f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
-        f'({data_ini_fin:%d/%m/%Y} a {data_fim_fin:%d/%m/%Y})</span></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        render_kpi_row([
-            dict(label="SALDO EM CAIXA / BANCO", value=formata_brl(saldo_posicao_fin),
-                 value_color=cor_variacao(saldo_posicao_fin),
-                 subtext=(f"Posição em {data_saldo_fin:%d/%m/%Y}" if data_saldo_fin is not None else "Sem posição no período"),
-                 icon="🏦"),
-            dict(label="ENTRADAS (A RECEBER)", value=formata_brl(entradas_fin),
-                 value_color=COLORS["positive"], subtext="Realizado + projetado no período", icon="📥"),
-            dict(label="SAÍDAS (A PAGAR)", value=formata_brl(saidas_fin),
-                 value_color=COLORS["negative"], subtext="Contas a pagar no período", icon="📤"),
-            dict(label="FLUXO LÍQUIDO DO PERÍODO", value=formata_brl(fluxo_liquido_fin),
-                 value_color=cor_variacao(fluxo_liquido_fin), subtext="Entradas − saídas", icon="⚖️"),
-            dict(label="A RECEBER PROJETADO", value=formata_brl(a_receber_projetado_fin),
-                 value_color=COLORS["warning"],
-                 subtext=f"Realizado no período: {formata_brl(a_receber_realizado_fin)}", icon="⏳"),
-        ]),
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "ℹ️ **Aplicações não entram em nenhum número desta tela** — ficam num bloco separado no fim da aba "
-        "Fluxo Mensal, só para conhecimento. E saldo (caixa/banco) é **posição**, não movimento: por isso "
-        "aparece separado das entradas e saídas e não entra no fluxo líquido."
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-
     tab_fin_mensal, tab_fin_diario, tab_fin_detalhe = st.tabs(
         ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🔍 Lançamentos"]
     )
 
     # ---------------- MENSAL ----------------
     with tab_fin_mensal:
-        df_m = df_fin_view.copy()
-        df_m["PeriodoMes"] = df_m["Data Efetiva"].dt.to_period("M")
-        meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
-        rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
+        # ================= FILTROS =================
+        data_min_fin = df_fin["Data Efetiva"].min().date()
+        data_max_fin = df_fin["Data Efetiva"].max().date()
 
-        pivot_m = _pivot_fluxo_fin(df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m)
+        # Padrão pedido: começa no 1º dia do MÊS ANTERIOR ao atual e vai até o
+        # último dia do ANO atual (limitado ao que existe de dado na planilha).
+        hoje_fin = datetime.now(FUSO_BR).date()
+        primeiro_dia_mes_anterior = (hoje_fin.replace(day=1) - pd.Timedelta(days=1)).replace(day=1)
+        ultimo_dia_ano_atual = hoje_fin.replace(month=12, day=31)
+        padrao_ini_fin = max(min(primeiro_dia_mes_anterior, data_max_fin), data_min_fin)
+        padrao_fim_fin = min(max(ultimo_dia_ano_atual, data_min_fin), data_max_fin)
 
-        # A coluna final tem significado diferente conforme o tipo de linha:
-        # para fluxo é a SOMA do período; para saldo é a ÚLTIMA posição
-        # (somar saldos de meses diferentes não faria sentido).
-        totais_finais_m = {}
-        for movimento in pivot_m.index:
-            if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
-                serie = pivot_m.loc[movimento]
-                nao_zerados = serie[serie != 0]
-                totais_finais_m[movimento] = nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0
-            else:
-                totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
+        # O calendário do st.date_input segue o idioma do servidor (por isso vinha
+        # "July", "Su/Mo/Tu") e não há como forçar português nele por
+        # configuração. Em vez de brigar com o componente, o período é escolhido
+        # por seletores de MÊS -- que ficam 100% em português e, para fluxo de
+        # caixa, são até mais práticos. O ajuste fino por dia fica disponível
+        # logo abaixo, para quem precisar de um recorte exato.
+        meses_disponiveis_fin = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
+        rotulos_meses_fin = [_rotulo_mes_pt_extenso(p) for p in meses_disponiveis_fin]
 
-        pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
-        pivot_m["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_m)
-        pivot_m.index.name = "Movimento"
+        periodo_ini_padrao = pd.Period(padrao_ini_fin.strftime("%Y-%m"), freq="M")
+        periodo_fim_padrao = pd.Period(padrao_fim_fin.strftime("%Y-%m"), freq="M")
+        idx_ini_padrao = meses_disponiveis_fin.index(periodo_ini_padrao) if periodo_ini_padrao in meses_disponiveis_fin else 0
+        idx_fim_padrao = meses_disponiveis_fin.index(periodo_fim_padrao) if periodo_fim_padrao in meses_disponiveis_fin else len(meses_disponiveis_fin) - 1
 
-        # TOTAL GERAL: soma de todas as linhas em cada mês -- mesmo cálculo
-        # do "Total Geral" da tabela dinâmica da planilha.
-        linha_total_geral_m = pivot_m.sum(axis=0)
-        pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
+        st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
+        col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.2, 1, 1])
+        with col_f1:
+            mes_ini_sel_fin = st.selectbox(
+                "Do mês:", rotulos_meses_fin, index=idx_ini_padrao, key="fin_mes_ini",
+                help="Por padrão começa no mês anterior ao atual.",
+            )
+        with col_f2:
+            mes_fim_sel_fin = st.selectbox(
+                "Até o mês:", rotulos_meses_fin, index=idx_fim_padrao, key="fin_mes_fim",
+                help="Por padrão vai até o fim do ano atual.",
+            )
+        with col_f3:
+            opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
+        with col_f4:
+            opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+            modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
 
-        st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
-        st.dataframe(
-            pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-            use_container_width=True,
-        )
-        st.caption(
-            "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
-            "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
-            "(são movimentações que se acumulam). Por isso a última coluna traz o total acumulado para o "
-            "fluxo e a posição mais recente para o saldo."
-        )
+        periodo_ini_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_ini_sel_fin)]
+        periodo_fim_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_fim_sel_fin)]
+        if periodo_ini_fin > periodo_fim_fin:
+            st.warning("O mês inicial está depois do mês final — inverti os dois para continuar.")
+            periodo_ini_fin, periodo_fim_fin = periodo_fim_fin, periodo_ini_fin
 
-        # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
-        # A regra da área: pagando todas as contas do mês, ainda tem que
-        # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
-        # os recebíveis (caixa + banco + a receber projetado + realizado),
-        # e o indicador é a SOBRA sobre esse disponível.
-        colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
-        serie_total_geral = linha_total_geral_m[colunas_meses_m]
+        data_ini_fin = periodo_ini_fin.start_time.date()
+        data_fim_fin = periodo_fim_fin.end_time.date()
 
-        movimentos_a_pagar = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saida"]
-        serie_a_pagar = (
-            pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
-            if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
-        )
-        # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
-        # padrão das tabelas já o marca em vermelho automaticamente.
-        serie_obrigacoes = -serie_a_pagar.abs()
-        # Disponível = tudo que há antes de descontar o que se deve
-        serie_disponivel_total = serie_total_geral - serie_a_pagar
-        serie_sobra = serie_total_geral  # já é disponível − a pagar
-        serie_pct_sobra = pd.Series(
-            [
-                (sobra / disp * 100) if disp else 0.0
-                for sobra, disp in zip(serie_sobra.values, serie_disponivel_total.values)
-            ],
-            index=colunas_meses_m,
-        )
+        with st.expander("📆 Ajuste fino por dia (opcional)"):
+            st.caption(
+                "Por padrão o período pega do primeiro ao último dia dos meses escolhidos acima. "
+                "Use aqui se precisar de um recorte exato dentro desses meses."
+            )
+            col_dia_a, col_dia_b = st.columns(2)
+            with col_dia_a:
+                dia_ini_fin = st.number_input(
+                    f"Dia inicial (em {mes_ini_sel_fin})", min_value=1, max_value=31, value=1, step=1, key="fin_dia_ini",
+                )
+            with col_dia_b:
+                ultimo_dia_mes_fim = periodo_fim_fin.end_time.day
+                dia_fim_fin = st.number_input(
+                    f"Dia final (em {mes_fim_sel_fin})", min_value=1, max_value=31,
+                    value=ultimo_dia_mes_fim, step=1, key="fin_dia_fim",
+                )
+            # Se a pessoa digitar um dia que não existe naquele mês (ex.: 31 em
+            # fevereiro), ajusta pro último dia válido em vez de dar erro.
+            dia_ini_valido = min(int(dia_ini_fin), periodo_ini_fin.end_time.day)
+            dia_fim_valido = min(int(dia_fim_fin), periodo_fim_fin.end_time.day)
+            data_ini_fin = periodo_ini_fin.start_time.date().replace(day=dia_ini_valido)
+            data_fim_fin = periodo_fim_fin.start_time.date().replace(day=dia_fim_valido)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(
-            '<div class="section-title">🛡️ Reserva de Caixa — sobra depois de pagar tudo (meta: 30%)</div>',
-            unsafe_allow_html=True,
-        )
+        st.caption(f"📅 Período em análise: **{data_ini_fin:%d/%m/%Y}** a **{data_fim_fin:%d/%m/%Y}**")
 
-        LINHA_PCT_SOBRA = "% de sobra"
-        df_reserva_m = pd.DataFrame(
-            [serie_disponivel_total, serie_obrigacoes, serie_sobra, serie_pct_sobra],
-            index=["Disponível", "A pagar no mês", "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
-        )
+        df_fin_periodo = df_fin[
+            (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
+            & (df_fin["Data Efetiva"].dt.date <= data_fim_fin)
+        ].copy()
+        if canal_sel_fin != "Todos":
+            df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_CANAL].astype(str) == canal_sel_fin]
+        if modal_sel_fin != "Todas":
+            df_fin_periodo = df_fin_periodo[df_fin_periodo[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
 
-        def _cor_pct_meta_fin(linha):
-            """Na linha de % de sobra a cor não segue o sinal (todos são
-            positivos), e sim a META: abaixo de 30% fica vermelho."""
-            if linha.name == LINHA_PCT_SOBRA:
-                return [
-                    f"color: {COLORS['positive'] if v >= 30 else COLORS['negative']}; font-weight: 600;"
-                    for v in linha
-                ]
-            return [cor_valor(v) for v in linha]
+        # As APLICAÇÕES ficam fora de tudo que é total/soma/tabela principal --
+        # são exibidas só num bloco à parte, no fim da aba mensal.
+        df_aplicacoes_fin = df_fin_periodo[df_fin_periodo["Tipo Movimento"] == "aplicacao"].copy()
+        df_fin_view = df_fin_periodo[df_fin_periodo["Tipo Movimento"] != "aplicacao"].copy()
 
-        st.dataframe(
-            df_reserva_m.style.format(
-                {c: formata_brl for c in colunas_meses_m}
-            ).format(
-                {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
-                subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
-            ).apply(_cor_pct_meta_fin, axis=1),
-            use_container_width=True,
-        )
+        if df_fin_view.empty:
+            st.warning("Nenhum lançamento encontrado para os filtros selecionados.")
+        else:
 
-        st.caption(
-            "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
-            "quanto sobra em caixa em proporção ao que havia disponível. É esse número que deve ficar em "
-            "30% ou mais."
-        )
+            # ================= KPIs =================
+            saldo_posicao_fin, data_saldo_fin = _saldo_posicao_atual_fin(df_fin_view, COL_FIN_VALOR)
+            entradas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
+            saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
+            fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
 
-        # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
-        df_fluxo_only = df_m[df_m["Tipo Movimento"].isin(["entrada", "saida"])]
-        if not df_fluxo_only.empty:
-            entradas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "entrada"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
-            saidas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "saida"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
-            entradas_mes = entradas_mes.reindex(meses_ordenados_m, fill_value=0)
-            saidas_mes = saidas_mes.reindex(meses_ordenados_m, fill_value=0)
-            rotulos_x_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
+            # "Ainda a receber" = o que está classificado como PROJETADO na coluna
+            # Movimento. Antes isso era deduzido da coluna "Data Liquidação" estar
+            # vazia, mas boa parte dos lançamentos marcados como "Realizado" vem sem
+            # essa data preenchida na planilha -- e assim eles entravam aqui por
+            # engano, inflando o número. O Movimento é a classificação confiável.
+            mascara_projetado_fin = df_fin_view[COL_FIN_MOVIMENTO].astype(str).str.contains(
+                "projetad", case=False, na=False
+            )
+            a_receber_projetado_fin = df_fin_view.loc[
+                (df_fin_view["Tipo Movimento"] == "entrada") & mascara_projetado_fin, COL_FIN_VALOR
+            ].sum()
+            a_receber_realizado_fin = entradas_fin - a_receber_projetado_fin
 
-            valores_entrada = [float(v) for v in entradas_mes.values]
-            valores_saida = [abs(float(v)) for v in saidas_mes.values]
-            resultado_mes = [e - s for e, s in zip(valores_entrada, valores_saida)]
-            pct_sobra_grafico = [float(serie_pct_sobra[c]) for c in rotulos_x_m]
+            st.markdown(
+                f'<div class="section-title">📊 Resumo do Período '
+                f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+                f'({data_ini_fin:%d/%m/%Y} a {data_fim_fin:%d/%m/%Y})</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                render_kpi_row([
+                    dict(label="SALDO EM CAIXA / BANCO", value=formata_brl(saldo_posicao_fin),
+                         value_color=cor_variacao(saldo_posicao_fin),
+                         subtext=(f"Posição em {data_saldo_fin:%d/%m/%Y}" if data_saldo_fin is not None else "Sem posição no período"),
+                         icon="🏦"),
+                    dict(label="ENTRADAS (A RECEBER)", value=formata_brl(entradas_fin),
+                         value_color=COLORS["positive"], subtext="Realizado + projetado no período", icon="📥"),
+                    dict(label="SAÍDAS (A PAGAR)", value=formata_brl(saidas_fin),
+                         value_color=COLORS["negative"], subtext="Contas a pagar no período", icon="📤"),
+                    dict(label="FLUXO LÍQUIDO DO PERÍODO", value=formata_brl(fluxo_liquido_fin),
+                         value_color=cor_variacao(fluxo_liquido_fin), subtext="Entradas − saídas", icon="⚖️"),
+                    dict(label="A RECEBER PROJETADO", value=formata_brl(a_receber_projetado_fin),
+                         value_color=COLORS["warning"],
+                         subtext=f"Realizado no período: {formata_brl(a_receber_realizado_fin)}", icon="⏳"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "ℹ️ **Aplicações não entram em nenhum número desta tela** — ficam num bloco separado no fim da aba "
+                "Fluxo Mensal, só para conhecimento. E saldo (caixa/banco) é **posição**, não movimento: por isso "
+                "aparece separado das entradas e saídas e não entra no fluxo líquido."
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            df_m = df_fin_view.copy()
+            df_m["PeriodoMes"] = df_m["Data Efetiva"].dt.to_period("M")
+            meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
+            rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
+
+            pivot_m = _pivot_fluxo_fin(df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m)
+
+            # A coluna final tem significado diferente conforme o tipo de linha:
+            # para fluxo é a SOMA do período; para saldo é a ÚLTIMA posição
+            # (somar saldos de meses diferentes não faria sentido).
+            totais_finais_m = {}
+            for movimento in pivot_m.index:
+                if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
+                    serie = pivot_m.loc[movimento]
+                    nao_zerados = serie[serie != 0]
+                    totais_finais_m[movimento] = nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0
+                else:
+                    totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
+
+            pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
+            pivot_m["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_m)
+            pivot_m.index.name = "Movimento"
+
+            # TOTAL GERAL: soma de todas as linhas em cada mês -- mesmo cálculo
+            # do "Total Geral" da tabela dinâmica da planilha.
+            linha_total_geral_m = pivot_m.sum(axis=0)
+            pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
+
+            st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
+            st.dataframe(
+                pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
+                use_container_width=True,
+            )
+            st.caption(
+                "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
+                "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
+                "(são movimentações que se acumulam). Por isso a última coluna traz o total acumulado para o "
+                "fluxo e a posição mais recente para o saldo."
+            )
+
+            # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
+            # A regra da área: pagando todas as contas do mês, ainda tem que
+            # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
+            # os recebíveis (caixa + banco + a receber projetado + realizado),
+            # e o indicador é a SOBRA sobre esse disponível.
+            colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
+            serie_total_geral = linha_total_geral_m[colunas_meses_m]
+
+            movimentos_a_pagar = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saida"]
+            serie_a_pagar = (
+                pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
+                if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
+            )
+            # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
+            # padrão das tabelas já o marca em vermelho automaticamente.
+            serie_obrigacoes = -serie_a_pagar.abs()
+            # Disponível = tudo que há antes de descontar o que se deve
+            serie_disponivel_total = serie_total_geral - serie_a_pagar
+            serie_sobra = serie_total_geral  # já é disponível − a pagar
+            serie_pct_sobra = pd.Series(
+                [
+                    (sobra / disp * 100) if disp else 0.0
+                    for sobra, disp in zip(serie_sobra.values, serie_disponivel_total.values)
+                ],
+                index=colunas_meses_m,
+            )
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(
-                '<div class="section-title">📊 Entradas x Saídas, Resultado e Reserva por Mês</div>',
+                '<div class="section-title">🛡️ Reserva de Caixa — sobra depois de pagar tudo (meta: 30%)</div>',
                 unsafe_allow_html=True,
             )
 
-            # Barras com preenchimento bem translúcido e contorno forte: a
-            # cor ainda identifica entrada/saída, mas dá pra enxergar as
-            # linhas que passam por cima delas (com barras sólidas, as
-            # linhas de resultado e de % sumiam atrás).
-            fig_es = go.Figure()
-            fig_es.add_trace(go.Bar(
-                name="Entradas", x=rotulos_x_m, y=valores_entrada,
-                marker=dict(color="rgba(62,207,142,0.28)",
-                            line=dict(color=COLORS["positive"], width=1.8)),
-                text=[formata_m(v) for v in valores_entrada],
-                textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
-                hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
-            ))
-            fig_es.add_trace(go.Bar(
-                name="Saídas", x=rotulos_x_m, y=valores_saida,
-                marker=dict(color="rgba(247,110,110,0.28)",
-                            line=dict(color=COLORS["negative"], width=1.8)),
-                text=[formata_m(v) for v in valores_saida],
-                textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
-                hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
-            ))
-            # Resultado do mês (entradas − saídas), na mesma escala das barras
-            fig_es.add_trace(go.Scatter(
-                name="Resultado do mês", x=rotulos_x_m, y=resultado_mes,
-                mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
-                marker=dict(size=9, line=dict(color=COLORS["bg"], width=2)),
-                hovertemplate="Resultado: R$ %{y:,.2f}<extra></extra>",
-            ))
-            # % de sobra x meta de 30%, no eixo da direita
-            cores_pontos_sobra = [
-                COLORS["positive"] if v >= 30 else COLORS["negative"] for v in pct_sobra_grafico
-            ]
-            fig_es.add_trace(go.Scatter(
-                name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
-                mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2.5),
-                marker=dict(size=10, color=cores_pontos_sobra,
-                            line=dict(color=COLORS["bg"], width=2)),
-                text=[f"{v:.0f}%" for v in pct_sobra_grafico],
-                textposition="top center", textfont=dict(size=10, color=COLORS["text"]),
-                hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
-            ))
-            fig_es.add_trace(go.Scatter(
-                name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m), yaxis="y2",
-                mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
-                hoverinfo="skip",
-            ))
-
-            teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
-            teto_pct = max(pct_sobra_grafico) if pct_sobra_grafico else 60
-            estilo_grafico(
-                fig_es, height=470, barmode="group", bargap=0.3, bargroupgap=0.08,
-                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
-                           automargin=True, tickfont=dict(size=10)),
-                yaxis=dict(
-                    title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
-                    gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
-                    zerolinecolor=COLORS["border"],
-                    range=[min(0, min(resultado_mes) * 1.15), teto_barras * 1.20],
-                ),
-                yaxis2=dict(
-                    title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
-                    overlaying="y", side="right", showgrid=False, fixedrange=True,
-                    ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
-                    range=[0, max(60, teto_pct * 1.4)],
-                ),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
-                            font=dict(size=10)),
-                margin=dict(l=70, r=70, t=30, b=90),
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-            st.caption(
-                "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
-                "(entradas − saídas). Linha laranja = % de sobra, no eixo da direita, com os pontos em verde "
-                "quando atingem a meta de 30% (tracejado cinza) e em vermelho quando ficam abaixo."
+            LINHA_PCT_SOBRA = "% de sobra"
+            df_reserva_m = pd.DataFrame(
+                [serie_disponivel_total, serie_obrigacoes, serie_sobra, serie_pct_sobra],
+                index=["Disponível", "A pagar no mês", "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
             )
 
-        # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-title">💼 Aplicações (fora dos números acima)</div>', unsafe_allow_html=True)
-        if df_aplicacoes_fin.empty:
-            st.caption("Nenhum lançamento de aplicação no período/filtros selecionados.")
-        else:
-            st.caption(
-                "Estes valores **não entram** em nenhum KPI, tabela, total ou gráfico desta tela — "
-                "estão aqui apenas para acompanhamento da posição aplicada."
+            def _cor_pct_meta_fin(linha):
+                """Na linha de % de sobra a cor não segue o sinal (todos são
+                positivos), e sim a META: abaixo de 30% fica vermelho."""
+                if linha.name == LINHA_PCT_SOBRA:
+                    return [
+                        f"color: {COLORS['positive'] if v >= 30 else COLORS['negative']}; font-weight: 600;"
+                        for v in linha
+                    ]
+                return [cor_valor(v) for v in linha]
+
+            st.dataframe(
+                df_reserva_m.style.format(
+                    {c: formata_brl for c in colunas_meses_m}
+                ).format(
+                    {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
+                    subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
+                ).apply(_cor_pct_meta_fin, axis=1),
+                use_container_width=True,
             )
-            df_ap = df_aplicacoes_fin.copy()
-            df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
-            meses_ap = sorted(df_ap["PeriodoMes"].unique())
-            pivot_ap = _pivot_fluxo_fin(df_ap, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ap)
-            ultimas_posicoes_ap = {}
-            for movimento in pivot_ap.index:
-                serie_ap = pivot_ap.loc[movimento]
-                nao_zerados_ap = serie_ap[serie_ap != 0]
-                ultimas_posicoes_ap[movimento] = nao_zerados_ap.iloc[-1] if not nao_zerados_ap.empty else 0.0
-            pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
-            pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
-            pivot_ap.index.name = "Movimento"
-            st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
-            st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
+
+            st.caption(
+                "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
+                "quanto sobra em caixa em proporção ao que havia disponível. É esse número que deve ficar em "
+                "30% ou mais."
+            )
+
+            # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
+            df_fluxo_only = df_m[df_m["Tipo Movimento"].isin(["entrada", "saida"])]
+            if not df_fluxo_only.empty:
+                entradas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "entrada"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
+                saidas_mes = df_fluxo_only[df_fluxo_only["Tipo Movimento"] == "saida"].groupby("PeriodoMes")[COL_FIN_VALOR].sum()
+                entradas_mes = entradas_mes.reindex(meses_ordenados_m, fill_value=0)
+                saidas_mes = saidas_mes.reindex(meses_ordenados_m, fill_value=0)
+                rotulos_x_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
+
+                valores_entrada = [float(v) for v in entradas_mes.values]
+                valores_saida = [abs(float(v)) for v in saidas_mes.values]
+                resultado_mes = [e - s for e, s in zip(valores_entrada, valores_saida)]
+                pct_sobra_grafico = [float(serie_pct_sobra[c]) for c in rotulos_x_m]
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="section-title">📊 Entradas x Saídas, Resultado e Reserva por Mês</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Barras com preenchimento bem translúcido e contorno forte: a
+                # cor ainda identifica entrada/saída, mas dá pra enxergar as
+                # linhas que passam por cima delas (com barras sólidas, as
+                # linhas de resultado e de % sumiam atrás).
+                fig_es = go.Figure()
+                fig_es.add_trace(go.Bar(
+                    name="Entradas", x=rotulos_x_m, y=valores_entrada,
+                    marker=dict(color="rgba(62,207,142,0.28)",
+                                line=dict(color=COLORS["positive"], width=1.8)),
+                    text=[formata_m(v) for v in valores_entrada],
+                    textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
+                    hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
+                ))
+                fig_es.add_trace(go.Bar(
+                    name="Saídas", x=rotulos_x_m, y=valores_saida,
+                    marker=dict(color="rgba(247,110,110,0.28)",
+                                line=dict(color=COLORS["negative"], width=1.8)),
+                    text=[formata_m(v) for v in valores_saida],
+                    textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
+                    hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
+                ))
+                # Resultado do mês (entradas − saídas), na mesma escala das barras
+                fig_es.add_trace(go.Scatter(
+                    name="Resultado do mês", x=rotulos_x_m, y=resultado_mes,
+                    mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
+                    marker=dict(size=9, line=dict(color=COLORS["bg"], width=2)),
+                    hovertemplate="Resultado: R$ %{y:,.2f}<extra></extra>",
+                ))
+                # % de sobra x meta de 30%, no eixo da direita
+                cores_pontos_sobra = [
+                    COLORS["positive"] if v >= 30 else COLORS["negative"] for v in pct_sobra_grafico
+                ]
+                fig_es.add_trace(go.Scatter(
+                    name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
+                    mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2.5),
+                    marker=dict(size=10, color=cores_pontos_sobra,
+                                line=dict(color=COLORS["bg"], width=2)),
+                    text=[f"{v:.0f}%" for v in pct_sobra_grafico],
+                    textposition="top center", textfont=dict(size=10, color=COLORS["text"]),
+                    hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
+                ))
+                fig_es.add_trace(go.Scatter(
+                    name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m), yaxis="y2",
+                    mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
+                    hoverinfo="skip",
+                ))
+
+                teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
+                teto_pct = max(pct_sobra_grafico) if pct_sobra_grafico else 60
+                estilo_grafico(
+                    fig_es, height=470, barmode="group", bargap=0.3, bargroupgap=0.08,
+                    xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
+                               automargin=True, tickfont=dict(size=10)),
+                    yaxis=dict(
+                        title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
+                        gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                        zerolinecolor=COLORS["border"],
+                        range=[min(0, min(resultado_mes) * 1.15), teto_barras * 1.20],
+                    ),
+                    yaxis2=dict(
+                        title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
+                        overlaying="y", side="right", showgrid=False, fixedrange=True,
+                        ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
+                        range=[0, max(60, teto_pct * 1.4)],
+                    ),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
+                                font=dict(size=10)),
+                    margin=dict(l=70, r=70, t=30, b=90),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.caption(
+                    "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
+                    "(entradas − saídas). Linha laranja = % de sobra, no eixo da direita, com os pontos em verde "
+                    "quando atingem a meta de 30% (tracejado cinza) e em vermelho quando ficam abaixo."
+                )
+
+            # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="section-title">💼 Aplicações (fora dos números acima)</div>', unsafe_allow_html=True)
+            if df_aplicacoes_fin.empty:
+                st.caption("Nenhum lançamento de aplicação no período/filtros selecionados.")
+            else:
+                st.caption(
+                    "Estes valores **não entram** em nenhum KPI, tabela, total ou gráfico desta tela — "
+                    "estão aqui apenas para acompanhamento da posição aplicada."
+                )
+                df_ap = df_aplicacoes_fin.copy()
+                df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
+                meses_ap = sorted(df_ap["PeriodoMes"].unique())
+                pivot_ap = _pivot_fluxo_fin(df_ap, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ap)
+                ultimas_posicoes_ap = {}
+                for movimento in pivot_ap.index:
+                    serie_ap = pivot_ap.loc[movimento]
+                    nao_zerados_ap = serie_ap[serie_ap != 0]
+                    ultimas_posicoes_ap[movimento] = nao_zerados_ap.iloc[-1] if not nao_zerados_ap.empty else 0.0
+                pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
+                pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
+                pivot_ap.index.name = "Movimento"
+                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
+                st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
     # ---------------- DIÁRIO ----------------
     with tab_fin_diario:
-        meses_disp_d = sorted(df_fin_view["Data Efetiva"].dt.to_period("M").unique())
+        # Esta aba tem os PRÓPRIOS filtros e cards -- ela olha o dia a dia de
+        # um mês, então faz pouco sentido herdar o recorte de vários meses da
+        # aba mensal.
+        st.markdown('<div class="section-title">🔎 Filtros do Fluxo Diário</div>', unsafe_allow_html=True)
+
+        meses_disp_d = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
         if not meses_disp_d:
-            st.info("Sem dados no período filtrado.")
+            st.info("Sem dados para montar o fluxo diário.")
         else:
             rotulos_d = [_rotulo_mes_pt_extenso(p) for p in meses_disp_d]
-            # Abre no mês ATUAL por padrão; se ele não estiver entre os meses
-            # disponíveis (pelo filtro de período), cai no mais recente.
+            # Abre no mês ATUAL por padrão; se ele não existir nos dados,
+            # cai no mais recente disponível.
             periodo_mes_atual = pd.Period(datetime.now(FUSO_BR).strftime("%Y-%m"), freq="M")
             idx_mes_padrao_d = (
                 meses_disp_d.index(periodo_mes_atual) if periodo_mes_atual in meses_disp_d
                 else len(rotulos_d) - 1
             )
-            mes_sel_d = st.selectbox(
-                "Mês:", rotulos_d, index=idx_mes_padrao_d, key="fin_mes_sel",
-                help="Abre no mês atual por padrão. Os meses listados são os que existem dentro do período filtrado acima.",
-            )
+
+            col_d1, col_d2, col_d3 = st.columns([1.3, 1, 1])
+            with col_d1:
+                mes_sel_d = st.selectbox(
+                    "Mês:", rotulos_d, index=idx_mes_padrao_d, key="fin_mes_sel",
+                    help="Abre no mês atual por padrão.",
+                )
+            with col_d2:
+                opcoes_canal_d = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+                canal_sel_d = st.selectbox("Canal:", opcoes_canal_d, key="fin_canal_sel_diario")
+            with col_d3:
+                opcoes_modal_d = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+                modal_sel_d = st.selectbox("Modalidade:", opcoes_modal_d, key="fin_modal_sel_diario")
+
             periodo_d = meses_disp_d[rotulos_d.index(mes_sel_d)]
-            df_d = df_fin_view[df_fin_view["Data Efetiva"].dt.to_period("M") == periodo_d].copy()
+            df_d = df_fin[df_fin["Data Efetiva"].dt.to_period("M") == periodo_d].copy()
+            if canal_sel_d != "Todos":
+                df_d = df_d[df_d[COL_FIN_CANAL].astype(str) == canal_sel_d]
+            if modal_sel_d != "Todas":
+                df_d = df_d[df_d[COL_FIN_MODALIDADE].astype(str) == modal_sel_d]
+            # Aplicações ficam fora, igual ao resto do painel
+            df_d = df_d[df_d["Tipo Movimento"] != "aplicacao"]
 
             if df_d.empty:
                 st.info("Nenhum lançamento nesse mês para os filtros selecionados.")
             else:
                 df_d["DiaOrd"] = df_d["Data Efetiva"].dt.normalize()
-                dias_do_mes_d = sorted(df_d["DiaOrd"].unique())
-                rotulos_todos_dias_d = {
-                    pd.Timestamp(d).strftime("%d/%m/%Y"): d for d in dias_do_mes_d
-                }
 
-                # Seletor de dias: por padrão mostra o mês inteiro, mas dá
-                # pra recortar dias específicos (útil quando o mês tem muitos
-                # dias e a tabela fica larga demais pra ler).
-                dias_sel_d = st.multiselect(
-                    "Dias exibidos:",
-                    options=list(rotulos_todos_dias_d.keys()),
-                    default=list(rotulos_todos_dias_d.keys()),
-                    key="fin_dias_sel",
-                    help="Deixe vazio para ver todos os dias do mês.",
-                )
-                if dias_sel_d:
-                    dias_ordenados_d = sorted(rotulos_todos_dias_d[r] for r in dias_sel_d)
-                    df_d = df_d[df_d["DiaOrd"].isin(dias_ordenados_d)]
+                # Recorte de dias no mesmo estilo do "ajuste fino por dia":
+                # dia inicial e final, em vez de uma lista de etiquetas.
+                ultimo_dia_mes_d = periodo_d.end_time.day
+                with st.expander("📆 Recortar dias do mês (opcional)"):
+                    col_dd1, col_dd2 = st.columns(2)
+                    with col_dd1:
+                        dia_ini_d = st.number_input(
+                            "Do dia", min_value=1, max_value=ultimo_dia_mes_d, value=1, step=1,
+                            key="fin_dia_ini_diario",
+                        )
+                    with col_dd2:
+                        dia_fim_d = st.number_input(
+                            "Até o dia", min_value=1, max_value=ultimo_dia_mes_d,
+                            value=ultimo_dia_mes_d, step=1, key="fin_dia_fim_diario",
+                        )
+                dia_ini_valido_d, dia_fim_valido_d = sorted([int(dia_ini_d), int(dia_fim_d)])
+                df_d = df_d[
+                    (df_d["DiaOrd"].dt.day >= dia_ini_valido_d)
+                    & (df_d["DiaOrd"].dt.day <= dia_fim_valido_d)
+                ]
+
+                if df_d.empty:
+                    st.info("Nenhum lançamento nos dias selecionados.")
                 else:
-                    dias_ordenados_d = dias_do_mes_d
+                    dias_ordenados_d = sorted(df_d["DiaOrd"].unique())
+                    rotulos_dias_d = [pd.Timestamp(d).strftime("%d/%m") for d in dias_ordenados_d]
 
-                rotulos_dias_d = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in dias_ordenados_d]
+                    # ---- KPIs próprios da visão diária ----
+                    entradas_d = df_d.loc[df_d["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
+                    saidas_d = df_d.loc[df_d["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
+                    fluxo_liquido_d = entradas_d + saidas_d
+                    saldo_final_d, data_saldo_final_d = _saldo_posicao_atual_fin(df_d, COL_FIN_VALOR)
 
-                # Estrutura igual à da planilha: os canais (HUB LOGÍSTICO,
-                # LOJA, VENDA DIRETA) como grupos, e dentro de cada um os
-                # movimentos (Caixa, Banco, A Receber, A Pagar). Cada canal
-                # tem sua linha de subtotal, e no fim vem o Total Geral.
-                def _agrega_por_dia(df_origem, movimento_nome=None):
-                    """Soma por dia. Para linhas de saldo (caixa/banco), o
-                    valor do dia já é a posição daquele dia -- somar os
-                    lançamentos do mesmo dia é o certo; o que não se pode é
-                    somar dias diferentes (por isso a coluna final trata
-                    saldo e fluxo de formas distintas)."""
-                    serie = df_origem.groupby("DiaOrd")[COL_FIN_VALOR].sum()
-                    return serie.reindex(dias_ordenados_d, fill_value=0.0)
-
-                linhas_tabela_d = []
-                indices_tabela_d = []
-                estilo_linhas_d = []  # marca quais linhas são de grupo/total
-
-                # O mesmo movimento (ex.: "4 - Contas a Pagar") aparece em
-                # vários canais, o que geraria rótulos repetidos no índice --
-                # e o Styler do pandas não aceita índice com valores
-                # duplicados. Por isso cada rótulo recebe um sufixo de
-                # espaços de largura zero (invisíveis na tela) só para
-                # garantir a unicidade.
-                def _rotulo_unico_d(texto, posicao):
-                    return texto + ("\u200b" * posicao)
-
-                canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
-                for canal in canais_ordenados_d:
-                    df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
-                    # linha do canal = soma de tudo que passou por ele no dia
-                    linhas_tabela_d.append(_agrega_por_dia(df_canal))
-                    indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
-                    estilo_linhas_d.append(("canal", canal))
-
-                    for movimento in sorted(df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()):
-                        df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
-                        linhas_tabela_d.append(_agrega_por_dia(df_mov))
-                        indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
-                        estilo_linhas_d.append(("movimento", movimento))
-
-                linhas_tabela_d.append(_agrega_por_dia(df_d))
-                indices_tabela_d.append(_rotulo_unico_d("TOTAL GERAL", len(indices_tabela_d)))
-                estilo_linhas_d.append(("total", "TOTAL GERAL"))
-
-                pivot_d = pd.DataFrame(linhas_tabela_d, index=indices_tabela_d)
-                pivot_d.columns = rotulos_dias_d
-
-                # Coluna final: soma do mês pro fluxo; última posição pras
-                # linhas de saldo (somar saldo de dias diferentes não faz
-                # sentido). Linhas de canal/total misturam os dois, então
-                # ali entra a soma do que é fluxo mais a última posição do
-                # que é saldo -- o mesmo critério da aba mensal.
-                totais_finais_d = []
-                for posicao, (tipo_linha, nome_limpo) in enumerate(estilo_linhas_d):
-                    if tipo_linha == "movimento":
-                        if _classificar_movimento_fin(nome_limpo) in ("saldo", "aplicacao"):
-                            serie_linha = pivot_d.iloc[posicao]
-                            nao_zerados = serie_linha[serie_linha != 0]
-                            totais_finais_d.append(nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
-                        else:
-                            totais_finais_d.append(pivot_d.iloc[posicao].sum())
-                    else:
-                        # canal ou total geral: recompõe pelo mesmo critério
-                        if tipo_linha == "canal":
-                            df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
-                        else:
-                            df_escopo = df_d
-                        fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
-                        saldo_escopo = 0.0
-                        df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["saldo", "aplicacao"])]
-                        if not df_saldo_escopo.empty:
-                            ultimo_dia_saldo = df_saldo_escopo["DiaOrd"].max()
-                            saldo_escopo = df_saldo_escopo.loc[
-                                df_saldo_escopo["DiaOrd"] == ultimo_dia_saldo, COL_FIN_VALOR
-                            ].sum()
-                        totais_finais_d.append(fluxo_escopo + saldo_escopo)
-
-                pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
-                pivot_d.index.name = "Canal / Movimento"
-
-                st.markdown(
-                    f'<div class="section-title">📋 Fluxo Diário por Canal — {mes_sel_d}</div>',
-                    unsafe_allow_html=True,
-                )
-
-                def _estilo_tabela_diaria(df_tabela):
-                    """Destaca as linhas de canal e a de total geral, para a
-                    hierarquia ficar visível como na planilha. Usa posição
-                    (não o nome da linha), então funciona mesmo com rótulos
-                    parecidos entre canais."""
-                    estilos = pd.DataFrame("", index=df_tabela.index, columns=df_tabela.columns)
-                    for posicao, (tipo_linha, _) in enumerate(estilo_linhas_d):
-                        for coluna in df_tabela.columns:
-                            valor = df_tabela.iloc[posicao][coluna]
-                            base = cor_valor(valor)
-                            if tipo_linha == "canal":
-                                base += f" background-color: {COLORS['surface_alt']}; font-weight: 700;"
-                            elif tipo_linha == "total":
-                                base += f" background-color: {COLORS['surface']}; font-weight: 700;"
-                            estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
-                    return estilos
-
-                st.dataframe(
-                    pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
-                    use_container_width=True,
-                    height=633,  # 17 linhas visíveis, mesmo padrão do resto do painel
-                )
-                st.caption(
-                    "Cada coluna é um dia do mês. As linhas em destaque são os canais (com o subtotal do "
-                    "canal) e, recuadas abaixo, aparecem os movimentos de cada um. Na última coluna, contas "
-                    "a receber/pagar trazem a **soma do mês** e caixa/banco trazem o **saldo do último dia** "
-                    "com movimento."
-                )
-
-                # Saldo acumulado: só do fluxo (entradas/saídas), sem saldo de posição
-                df_d_fluxo = df_d[df_d["Tipo Movimento"].isin(["entrada", "saida"])]
-                if not df_d_fluxo.empty:
-                    por_dia = df_d_fluxo.groupby("DiaOrd")[COL_FIN_VALOR].sum().reindex(dias_ordenados_d, fill_value=0)
-                    acumulado_d = por_dia.cumsum()
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">📈 Fluxo Acumulado no Mês (entradas − saídas)</div>', unsafe_allow_html=True)
-                    fig_ac = go.Figure(data=[go.Scatter(
-                        x=rotulos_dias_d, y=list(acumulado_d.values),
-                        mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
-                        fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
-                    )])
-                    estilo_grafico(
-                        fig_ac, height=320,
-                        xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9), tickangle=-45, automargin=True),
-                        yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-                        margin=dict(l=60, r=20, t=20, b=60),
+                    df_d_fluxo = df_d[df_d["Tipo Movimento"].isin(["entrada", "saida"])]
+                    por_dia_liquido_d = (
+                        df_d_fluxo.groupby("DiaOrd")[COL_FIN_VALOR].sum().reindex(dias_ordenados_d, fill_value=0)
+                        if not df_d_fluxo.empty else pd.Series(dtype=float)
                     )
-                    st.plotly_chart(fig_ac, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                    if not por_dia_liquido_d.empty:
+                        dia_melhor_d = por_dia_liquido_d.idxmax()
+                        dia_pior_d = por_dia_liquido_d.idxmin()
+                        rotulo_melhor_d = pd.Timestamp(dia_melhor_d).strftime("%d/%m")
+                        rotulo_pior_d = pd.Timestamp(dia_pior_d).strftime("%d/%m")
+                        valor_melhor_d = por_dia_liquido_d.max()
+                        valor_pior_d = por_dia_liquido_d.min()
+                    else:
+                        rotulo_melhor_d = rotulo_pior_d = "—"
+                        valor_melhor_d = valor_pior_d = 0.0
+
+                    dias_negativos_d = int((por_dia_liquido_d < 0).sum()) if not por_dia_liquido_d.empty else 0
+
+                    st.markdown(
+                        f'<div class="section-title">📊 Resumo de {mes_sel_d} '
+                        f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+                        f'(dias {dia_ini_valido_d} a {dia_fim_valido_d})</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        render_kpi_row([
+                            dict(label="SALDO EM CAIXA / BANCO", value=formata_brl(saldo_final_d),
+                                 value_color=cor_variacao(saldo_final_d),
+                                 subtext=(f"Posição em {data_saldo_final_d:%d/%m/%Y}"
+                                          if data_saldo_final_d is not None else "Sem posição no recorte"),
+                                 icon="🏦"),
+                            dict(label="ENTRADAS NO PERÍODO", value=formata_brl(entradas_d),
+                                 value_color=COLORS["positive"], subtext=f"{len(dias_ordenados_d)} dias com movimento", icon="📥"),
+                            dict(label="SAÍDAS NO PERÍODO", value=formata_brl(saidas_d),
+                                 value_color=COLORS["negative"], subtext="Contas a pagar dos dias", icon="📤"),
+                            dict(label="FLUXO LÍQUIDO", value=formata_brl(fluxo_liquido_d),
+                                 value_color=cor_variacao(fluxo_liquido_d), subtext="Entradas − saídas", icon="⚖️"),
+                            dict(label="MELHOR / PIOR DIA",
+                                 value=f"{rotulo_melhor_d} / {rotulo_pior_d}",
+                                 value_color=COLORS["text"],
+                                 subtext=f"{formata_m(valor_melhor_d)} · {formata_m(valor_pior_d)}", icon="📈"),
+                            dict(label="DIAS COM FLUXO NEGATIVO", value=str(dias_negativos_d),
+                                 value_color=COLORS["negative"] if dias_negativos_d else COLORS["positive"],
+                                 subtext=f"de {len(dias_ordenados_d)} dias com movimento", icon="⚠️"),
+                        ]),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                    # Estrutura igual à da planilha: os canais como grupos, e
+                    # dentro de cada um os movimentos, com subtotal por canal
+                    # e Total Geral no fim.
+                    def _agrega_por_dia(df_origem):
+                        serie = df_origem.groupby("DiaOrd")[COL_FIN_VALOR].sum()
+                        return serie.reindex(dias_ordenados_d, fill_value=0.0)
+
+                    linhas_tabela_d = []
+                    indices_tabela_d = []
+                    estilo_linhas_d = []
+
+                    # O mesmo movimento aparece em vários canais, o que geraria
+                    # rótulos repetidos -- e o Styler do pandas não aceita
+                    # índice duplicado. Daí o sufixo invisível.
+                    def _rotulo_unico_d(texto, posicao):
+                        return texto + ("\u200b" * posicao)
+
+                    canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
+                    for canal in canais_ordenados_d:
+                        df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
+                        linhas_tabela_d.append(_agrega_por_dia(df_canal))
+                        indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
+                        estilo_linhas_d.append(("canal", canal))
+
+                        for movimento in sorted(df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()):
+                            df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
+                            linhas_tabela_d.append(_agrega_por_dia(df_mov))
+                            indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
+                            estilo_linhas_d.append(("movimento", movimento))
+
+                    linhas_tabela_d.append(_agrega_por_dia(df_d))
+                    indices_tabela_d.append(_rotulo_unico_d("TOTAL GERAL", len(indices_tabela_d)))
+                    estilo_linhas_d.append(("total", "TOTAL GERAL"))
+
+                    pivot_d = pd.DataFrame(linhas_tabela_d, index=indices_tabela_d)
+                    pivot_d.columns = rotulos_dias_d
+
+                    # Coluna final: soma do período pro fluxo; última posição
+                    # pras linhas de saldo (somar saldo de dias diferentes não
+                    # faz sentido).
+                    totais_finais_d = []
+                    for posicao, (tipo_linha, nome_limpo) in enumerate(estilo_linhas_d):
+                        if tipo_linha == "movimento":
+                            if _classificar_movimento_fin(nome_limpo) in ("saldo", "aplicacao"):
+                                serie_linha = pivot_d.iloc[posicao]
+                                nao_zerados = serie_linha[serie_linha != 0]
+                                totais_finais_d.append(nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
+                            else:
+                                totais_finais_d.append(pivot_d.iloc[posicao].sum())
+                        else:
+                            if tipo_linha == "canal":
+                                df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
+                            else:
+                                df_escopo = df_d
+                            fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
+                            saldo_escopo = 0.0
+                            df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"] == "saldo"]
+                            if not df_saldo_escopo.empty:
+                                ultimo_dia_saldo = df_saldo_escopo["DiaOrd"].max()
+                                saldo_escopo = df_saldo_escopo.loc[
+                                    df_saldo_escopo["DiaOrd"] == ultimo_dia_saldo, COL_FIN_VALOR
+                                ].sum()
+                            totais_finais_d.append(fluxo_escopo + saldo_escopo)
+
+                    pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
+                    pivot_d.index.name = "Canal / Movimento"
+
+                    st.markdown(
+                        f'<div class="section-title">📋 Fluxo Diário por Canal — {mes_sel_d}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    def _estilo_tabela_diaria(df_tabela):
+                        """Destaca canais e total geral. Usa posição, não o
+                        nome da linha, então funciona mesmo com rótulos
+                        parecidos entre canais."""
+                        estilos = pd.DataFrame("", index=df_tabela.index, columns=df_tabela.columns)
+                        for posicao, (tipo_linha, _) in enumerate(estilo_linhas_d):
+                            for coluna in df_tabela.columns:
+                                valor = df_tabela.iloc[posicao][coluna]
+                                base = cor_valor(valor)
+                                if tipo_linha == "canal":
+                                    base += f" background-color: {COLORS['surface_alt']}; font-weight: 700;"
+                                elif tipo_linha == "total":
+                                    base += f" background-color: {COLORS['surface']}; font-weight: 700;"
+                                estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
+                        return estilos
+
+                    st.dataframe(
+                        pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
+                        use_container_width=True,
+                        height=633,  # 17 linhas visíveis, mesmo padrão do painel
+                    )
+                    st.caption(
+                        "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
+                        "e, recuadas abaixo, os movimentos de cada um. Na última coluna, contas a "
+                        "receber/pagar trazem a **soma do período** e caixa/banco trazem o **saldo do último "
+                        "dia** com movimento."
+                    )
+
+                    # ---- Gráfico: movimento do dia + fluxo acumulado ----
+                    if not df_d_fluxo.empty:
+                        acumulado_d = por_dia_liquido_d.cumsum()
+                        cores_barras_d = [
+                            COLORS["positive"] if v >= 0 else COLORS["negative"]
+                            for v in por_dia_liquido_d.values
+                        ]
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        st.markdown(
+                            '<div class="section-title">📈 Movimento do Dia e Fluxo Acumulado</div>',
+                            unsafe_allow_html=True,
+                        )
+                        fig_ac = go.Figure()
+                        fig_ac.add_trace(go.Bar(
+                            name="Fluxo do dia", x=rotulos_dias_d, y=list(por_dia_liquido_d.values),
+                            marker=dict(color=cores_barras_d, opacity=0.35,
+                                        line=dict(color=cores_barras_d, width=1.2)),
+                            hovertemplate="Fluxo do dia: R$ %{y:,.2f}<extra></extra>",
+                        ))
+                        fig_ac.add_trace(go.Scatter(
+                            name="Acumulado", x=rotulos_dias_d, y=list(acumulado_d.values),
+                            mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
+                            marker=dict(size=7, line=dict(color=COLORS["bg"], width=2)),
+                            hovertemplate="Acumulado: R$ %{y:,.2f}<extra></extra>",
+                        ))
+                        estilo_grafico(
+                            fig_ac, height=380,
+                            xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=9),
+                                       tickangle=-45, automargin=True),
+                            yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                                       zerolinecolor=COLORS["border"]),
+                            legend=dict(orientation="h", yanchor="bottom", y=-0.34, xanchor="center", x=0.5),
+                            margin=dict(l=70, r=20, t=20, b=90),
+                            hovermode="x unified",
+                        )
+                        st.plotly_chart(fig_ac, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.caption(
+                            "Barras = resultado de cada dia (verde quando entra mais do que sai, vermelho no "
+                            "contrário). Linha azul = fluxo acumulado ao longo do período."
+                        )
 
     # ---------------- LANÇAMENTOS ----------------
     with tab_fin_detalhe:
@@ -3252,15 +3340,37 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "Lançamento a lançamento, exatamente como veio da planilha — para conferir qualquer "
             "número das outras abas."
         )
+
+        col_l1, col_l2, col_l3 = st.columns(3)
+        meses_disp_l = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
+        rotulos_l = ["Todos os meses"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_l]
+        with col_l1:
+            mes_sel_l = st.selectbox("Mês:", rotulos_l, key="fin_mes_sel_lanc")
+        with col_l2:
+            opcoes_canal_l = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            canal_sel_l = st.selectbox("Canal:", opcoes_canal_l, key="fin_canal_sel_lanc")
+        with col_l3:
+            opcoes_modal_l = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+            modal_sel_l = st.selectbox("Modalidade:", opcoes_modal_l, key="fin_modal_sel_lanc")
+
+        df_lanc = df_fin.copy()
+        if mes_sel_l != "Todos os meses":
+            periodo_l = meses_disp_l[rotulos_l.index(mes_sel_l) - 1]
+            df_lanc = df_lanc[df_lanc["Data Efetiva"].dt.to_period("M") == periodo_l]
+        if canal_sel_l != "Todos":
+            df_lanc = df_lanc[df_lanc[COL_FIN_CANAL].astype(str) == canal_sel_l]
+        if modal_sel_l != "Todas":
+            df_lanc = df_lanc[df_lanc[COL_FIN_MODALIDADE].astype(str) == modal_sel_l]
+
         colunas_detalhe = [
             c for c in [
                 "Data Efetiva", COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_MOVIMENTO,
                 COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_PLANO_CONTAS, COL_FIN_GRUPO_DESPESA,
                 COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_VALOR,
-            ] if c in df_fin_view.columns
+            ] if c in df_lanc.columns
         ]
-        df_detalhe = df_fin_view[colunas_detalhe].sort_values("Data Efetiva", ascending=False).head(3000)
-        st.write(f"Mostrando {len(df_detalhe)} de {len(df_fin_view)} lançamentos do período filtrado.")
+        df_detalhe = df_lanc[colunas_detalhe].sort_values("Data Efetiva", ascending=False).head(3000)
+        st.write(f"Mostrando {len(df_detalhe)} de {len(df_lanc)} lançamentos do recorte selecionado.")
         st.dataframe(
             df_detalhe.style.format({
                 COL_FIN_VALOR: formata_brl,
