@@ -2637,50 +2637,46 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.rerun()
         st.stop()
 
-    # ---- Usuário autorizado: cabeçalho do painel ----
+    # ---- Cabeçalho enxuto: marca + ações numa linha só ----
     st.markdown(
         f"""
         <style>
-            .fin-header {{
-                display: flex; justify-content: space-between; align-items: center;
-                padding: 4px 2px 12px 2px; border-bottom: 1px solid {COLORS['border']};
-                margin-bottom: 14px;
+            .fin-topo {{ display: flex; align-items: center; gap: 11px; padding: 2px 0 0 0; }}
+            .fin-topo img.logo {{ width: 34px; height: 34px; border-radius: 50%; }}
+            .fin-topo h1 {{
+                font-size: 18px; font-weight: 800; color: {COLORS['text']};
+                margin: 0; letter-spacing: 0.2px; line-height: 1.25;
             }}
-            .fin-header .marca {{ display: flex; align-items: center; gap: 12px; }}
-            .fin-header img.logo {{
-                width: 40px; height: 40px; border-radius: 50%;
-                box-shadow: 0 0 14px rgba(76,141,255,0.30);
+            .fin-topo .sub {{ color: {COLORS['text_muted']}; font-size: 11.5px; margin-top: 1px; }}
+            .fin-barra {{
+                display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+                padding: 7px 0 9px 0; border-top: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']}; margin: 10px 0 12px 0;
+                color: {COLORS['text_muted']}; font-size: 11.5px;
             }}
-            .fin-header h1 {{
-                font-size: 21px; font-weight: 800; color: {COLORS['text']};
-                margin: 0; letter-spacing: 0.2px;
+            .fin-barra .chip {{
+                background: {COLORS['primary_soft']}; color: {COLORS['primary']};
+                border-radius: 5px; padding: 3px 9px; font-size: 10.5px;
+                font-weight: 700; letter-spacing: 0.5px;
             }}
-            .fin-header .sub {{ color: {COLORS['text_muted']}; font-size: 12px; margin-top: 3px; }}
-            .fin-header .selo {{
-                display: inline-flex; align-items: center; gap: 6px;
-                background: rgba(62,207,142,0.12); border: 1px solid {COLORS['positive']};
-                color: {COLORS['positive']}; border-radius: 20px; padding: 3px 11px;
-                font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; margin-left: 10px;
-            }}
+            .fin-barra b {{ color: {COLORS['text']}; font-weight: 600; }}
+            .fin-barra .sep {{ opacity: 0.4; }}
         </style>
-        <div class="fin-header">
-            <div class="marca">
-                <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
-                <div>
-                    <h1>Painel Financeiro · Fluxo de Caixa
-                        <span class="selo">● DADOS AO VIVO</span>
-                    </h1>
-                    <div class="sub">Grupo B&amp;A · Controladoria · atualizado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</div>
-                </div>
+        <div class="fin-topo">
+            <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
+            <div>
+                <h1>Painel Financeiro</h1>
+                <div class="sub">Grupo B&amp;A · Controladoria</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    col_acao_fin_a, col_acao_fin_b, col_acao_fin_c = st.columns([4, 1, 1])
+    # Ações do painel, alinhadas à direita do cabeçalho
+    col_vazio_fin, col_acao_fin_b, col_acao_fin_c = st.columns([6, 1.1, 1.1], vertical_alignment="center")
     with col_acao_fin_b:
-        if st.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
+        if st.button("🔄 Atualizar", use_container_width=True, key="fin_btn_atualizar"):
             st.cache_data.clear()
             st.cache_resource.clear()
             st.rerun()
@@ -2689,22 +2685,46 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.session_state["painel_escolhido"] = None
             st.rerun()
 
-    # ---- Base de data: qual coluna define em que mês o lançamento cai ----
-    # A tabela dinâmica da planilha (e a medida DAX que a área usa) tem o
-    # VENCIMENTO como eixo de data -- por isso é o padrão aqui: é o que faz
-    # o painel bater número a número com a planilha. A opção por Liquidação
-    # fica disponível pra quem quiser ver o caixa pela data em que o
-    # dinheiro efetivamente entrou ou saiu.
-    base_data_fin = st.radio(
-        "Base de data:",
-        ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
-        horizontal=True, key="fin_base_data",
-        help=(
-            "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica da planilha. "
-            "Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que ainda não liquidou, "
-            "usa o vencimento como previsão)."
-        ),
+    # ---- Barra de contexto + base de data, numa faixa fina só ----
+    # A base de data define em que mês o lançamento cai. O padrão é
+    # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
+    # é o que faz o painel bater número a número com ela.
+    st.markdown(
+        """
+        <style>
+            div[data-testid="stRadio"] label p { font-size: 11.5px !important; }
+            div[data-testid="stRadio"] > label p {
+                font-size: 10.5px !important; text-transform: uppercase;
+                letter-spacing: 0.4px; opacity: 0.7;
+            }
+            div[data-testid="stRadio"] { margin-top: -4px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+    col_ctx_fin, col_base_fin = st.columns([1.15, 1], vertical_alignment="center")
+    with col_ctx_fin:
+        st.markdown(
+            f"""
+            <div class="fin-barra">
+                <span class="chip">FLUXO DE CAIXA 2026</span>
+                <span class="sep">·</span>
+                <span>Atualizado em <b>{datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</b></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_base_fin:
+        base_data_fin = st.radio(
+            "Base de data:",
+            ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
+            horizontal=True, key="fin_base_data",
+            help=(
+                "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica "
+                "da planilha. Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que "
+                "ainda não liquidou, usa o vencimento como previsão)."
+            ),
+        )
 
     # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
     # em cache: só refaz se a base de data mudar ou se você clicar em
