@@ -7138,10 +7138,6 @@ if not departamento_ativo and tab_diag is not None:
         # 2. CURVA ABC DE DESPESAS
         # =====================================================================
         st.markdown('<div class="section-title">📊 Curva ABC de Custos e Despesas</div>', unsafe_allow_html=True)
-        st.caption(
-            "Classe **A** = as contas que somam os primeiros 80% do gasto (é onde a gestão deve focar). "
-            "Classe **B** = os 15% seguintes. Classe **C** = os últimos 5%, pulverizados em muitas contas."
-        )
 
         dados_abc = []
         for linha in linhas_custo_folha_diag:
@@ -7149,116 +7145,168 @@ if not departamento_ativo and tab_diag is not None:
             if valor > 0:
                 dados_abc.append({"Conta": _nome_sem_numero_dre(linha), "Valor": valor})
 
-        if dados_abc:
+        if not dados_abc:
+            st.info("Sem custos ou despesas no período selecionado para montar a curva ABC.")
+        else:
             df_abc = pd.DataFrame(dados_abc).sort_values("Valor", ascending=False).reset_index(drop=True)
             total_abc = df_abc["Valor"].sum()
-            # Custo é saída de caixa: exibido com sinal negativo (e, por
-            # consequência, em vermelho na coloração padrão das tabelas).
-            df_abc["Valor (R$)"] = -df_abc["Valor"]
             df_abc["% do total"] = df_abc["Valor"] / total_abc * 100
             df_abc["% acumulado"] = df_abc["% do total"].cumsum()
             df_abc["Classe"] = df_abc["% acumulado"].apply(
                 lambda p: "A" if p <= 80 else ("B" if p <= 95 else "C")
             )
+            # Custo é saída de caixa: na tabela detalhada aparece negativo.
+            df_abc["Valor (R$)"] = -df_abc["Valor"]
+
+            _cores_classe = {"A": COLORS["negative"], "B": COLORS["warning"], "C": COLORS["secondary"]}
+            _info_classe = {
+                "A": ("Prioridade", "Poucas contas, quase todo o gasto — é onde a gestão age"),
+                "B": ("Acompanhar", "Peso intermediário, revisão periódica"),
+                "C": ("Baixo impacto", "Muitas contas, pouco valor — não vale o esforço de gestão"),
+            }
 
             qtd_a = int((df_abc["Classe"] == "A").sum())
             valor_a = df_abc.loc[df_abc["Classe"] == "A", "Valor"].sum()
+            pct_valor_a = valor_a / total_abc * 100
             pct_contas_a = qtd_a / len(df_abc) * 100 if len(df_abc) else 0
+            maior_conta = df_abc.iloc[0]
 
-            st.markdown(
-                render_kpi_row([
-                    dict(label="CONTAS CLASSE A", value=str(qtd_a),
-                         value_color=COLORS["negative"],
-                         subtext=f"{pct_contas_a:.0f}% das contas · {formata_brl(valor_a)}", icon="🅰️"),
-                    dict(label="CONCENTRAÇÃO", value=f"{valor_a / total_abc * 100:.0f}%",
-                         value_color=COLORS["warning"],
-                         subtext="Do gasto total está na classe A", icon="🎯"),
-                    dict(label="TOTAL DE CONTAS ANALISADAS", value=str(len(df_abc)),
-                         value_color=COLORS["text"],
-                         subtext=f"Gasto total: {formata_brl(total_abc)}", icon="🧾"),
-                ]),
-                unsafe_allow_html=True,
+            # ---- Faixa de leitura, no mesmo padrão do ponto de equilíbrio ----
+            _metricas_abc = [
+                ("Concentração", f"{pct_valor_a:.0f}%", COLORS["negative"],
+                 f"do gasto em {qtd_a} de {len(df_abc)} contas"),
+                ("Maior conta", formata_m(maior_conta["Valor"]), COLORS["text"],
+                 f"{maior_conta['Conta'][:30]} · {maior_conta['% do total']:.0f}%"),
+                ("Gasto total analisado", formata_m(total_abc), COLORS["text"],
+                 f"{len(df_abc)} contas no período"),
+                ("Potencial de −5% na classe A", formata_m(valor_a * 0.05), COLORS["positive"],
+                 "Economia se cortar 5% só nas prioritárias"),
+            ]
+            _html_abc = "".join(
+                f"""
+                <div style="flex:1; min-width:175px; padding:0 18px;
+                            border-left:1px solid {COLORS['border']};">
+                    <div style="font-size:10px; color:{COLORS['text_muted']};
+                                text-transform:uppercase; letter-spacing:0.5px;">{rotulo}</div>
+                    <div style="font-size:23px; font-weight:800; color:{cor};
+                                margin-top:4px; line-height:1.15;">{valor}</div>
+                    <div style="font-size:11.5px; color:{COLORS['text_muted']};
+                                margin-top:4px;">{complemento}</div>
+                </div>
+                """
+                for rotulo, valor, cor, complemento in _metricas_abc
             )
-
-            # Resumo por classe, que é a leitura de gestão de verdade
-            resumo_classes = []
-            for classe, descricao in [("A", "Prioridade máxima"), ("B", "Acompanhamento"),
-                                       ("C", "Baixo impacto")]:
-                sub = df_abc[df_abc["Classe"] == classe]
-                if not sub.empty:
-                    resumo_classes.append({
-                        "Classe": classe,
-                        "O que significa": descricao,
-                        "Contas": len(sub),
-                        "% das contas": len(sub) / len(df_abc) * 100,
-                        "Valor": -sub["Valor"].sum(),
-                        "% do gasto": sub["Valor"].sum() / total_abc * 100,
-                    })
-            if resumo_classes:
-                st.dataframe(
-                    pd.DataFrame(resumo_classes).style.format({
-                        "% das contas": lambda v: f"{v:.0f}%",
-                        "Valor": formata_brl,
-                        "% do gasto": lambda v: f"{v:.1f}%".replace(".", ","),
-                    }).map(cor_valor, subset=["Valor"]),
-                    use_container_width=True, hide_index=True,
-                )
-                st.markdown("<br>", unsafe_allow_html=True)
-
-            # Gráfico de Pareto: barras do valor + linha do acumulado
-            # Barras horizontais: nome de conta é longo e na vertical vira
-            # texto girado ilegível. A legenda saiu (as cores estão
-            # explicadas na legenda de texto logo abaixo do gráfico).
-            top_abc_grafico = df_abc.head(12).iloc[::-1]  # maior no topo
-            cores_classe = {"A": COLORS["negative"], "B": COLORS["warning"], "C": COLORS["secondary"]}
-
-            def _nome_curto_abc(nome, limite=34):
-                return nome if len(nome) <= limite else nome[: limite - 1] + "…"
-
-            fig_abc = go.Figure()
-            fig_abc.add_trace(go.Bar(
-                x=list(top_abc_grafico["Valor"]),
-                y=[_nome_curto_abc(n) for n in top_abc_grafico["Conta"]],
-                orientation="h",
-                marker=dict(color=[cores_classe[cl] for cl in top_abc_grafico["Classe"]], opacity=0.7),
-                text=[f"{formata_m(v)} · {p:.0f}%" for v, p in
-                      zip(top_abc_grafico["Valor"], top_abc_grafico["% do total"])],
-                textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
-                customdata=list(top_abc_grafico["Classe"]),
-                hovertemplate="%{y}<br>R$ %{x:,.2f} · classe %{customdata}<extra></extra>",
-                showlegend=False,
-            ))
-            maior_abc = float(top_abc_grafico["Valor"].max()) if not top_abc_grafico.empty else 1
-            estilo_grafico(
-                fig_abc, height=max(340, 30 * len(top_abc_grafico) + 70),
-                xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
-                           range=[0, maior_abc * 1.30], zeroline=False),
-                yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=10.5)),
-                margin=dict(l=10, r=30, t=15, b=25),
-            )
-            st.plotly_chart(fig_abc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
             st.markdown(
                 f"""
-                <div style="display:flex; gap:18px; font-size:11.5px; color:{COLORS['text_muted']};
-                            margin:-6px 0 10px 4px;">
-                    <span><span style="color:{COLORS['negative']};">■</span> Classe A — prioridade</span>
-                    <span><span style="color:{COLORS['warning']};">■</span> Classe B — acompanhar</span>
-                    <span><span style="color:{COLORS['secondary']};">■</span> Classe C — baixo impacto</span>
-                    <span style="opacity:0.7;">Mostrando as 12 maiores de {len(df_abc)} contas</span>
+                <div style="display:flex; flex-wrap:wrap; gap:6px 0; padding:14px 4px;
+                            border-top:1px solid {COLORS['border']};
+                            border-bottom:1px solid {COLORS['border']}; margin-bottom:20px;">
+                    {_html_abc}
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # Leitura acionável
-            if qtd_a:
-                economia_5pct = valor_a * 0.05
-                st.info(
-                    f"💡 **Onde agir:** as {qtd_a} contas da classe A concentram "
-                    f"{valor_a / total_abc * 100:.0f}% do gasto. Uma redução de apenas 5% só nelas já "
-                    f"representaria {formata_brl(economia_5pct)} no período — mais do que zerar "
-                    f"todas as contas da classe C.".replace("$", "\\$")
+            # ---- Régua das classes: proporção de contas x proporção de gasto ----
+            # O contraste entre as duas réguas é a mensagem da curva ABC:
+            # poucas contas de um lado, quase todo o dinheiro do outro.
+            _larguras_contas, _larguras_valor, _legenda_classes = [], [], []
+            for classe in ["A", "B", "C"]:
+                sub = df_abc[df_abc["Classe"] == classe]
+                if sub.empty:
+                    continue
+                pct_qtd = len(sub) / len(df_abc) * 100
+                pct_val = sub["Valor"].sum() / total_abc * 100
+                cor_cl = _cores_classe[classe]
+                _larguras_contas.append(
+                    f'<div style="width:{pct_qtd:.2f}%; background:{cor_cl}; opacity:0.35;"></div>'
                 )
+                _larguras_valor.append(
+                    f'<div style="width:{pct_val:.2f}%; background:{cor_cl}; opacity:0.75;"></div>'
+                )
+                titulo_cl, descricao_cl = _info_classe[classe]
+                _legenda_classes.append(
+                    f"""
+                    <div style="flex:1; min-width:205px; background:{COLORS['surface']};
+                                border:1px solid {COLORS['border']};
+                                border-left:3px solid {cor_cl}; border-radius:6px; padding:9px 13px;">
+                        <div style="font-size:11px; color:{COLORS['text_muted']};">
+                            Classe {classe} · {titulo_cl}
+                        </div>
+                        <div style="font-size:15px; font-weight:700; color:{COLORS['text']}; margin-top:2px;">
+                            {len(sub)} contas
+                            <span style="font-size:11.5px; font-weight:500; color:{COLORS['text_muted']};">
+                                · {formata_m(sub['Valor'].sum())} · {pct_val:.0f}% do gasto</span>
+                        </div>
+                        <div style="font-size:10.5px; color:{COLORS['text_muted']}; margin-top:3px;">
+                            {descricao_cl}
+                        </div>
+                    </div>
+                    """
+                )
+
+            st.markdown(
+                f"""
+                <div style="margin:0 4px 4px 4px;">
+                    <div style="font-size:11px; color:{COLORS['text_muted']}; margin-bottom:5px;">
+                        Proporção de <b style="color:{COLORS['text']};">contas</b>
+                    </div>
+                    <div style="display:flex; height:16px; border-radius:4px; overflow:hidden;
+                                background:{COLORS['surface_alt']};">{''.join(_larguras_contas)}</div>
+                    <div style="font-size:11px; color:{COLORS['text_muted']}; margin:14px 0 5px 0;">
+                        Proporção do <b style="color:{COLORS['text']};">gasto</b>
+                    </div>
+                    <div style="display:flex; height:16px; border-radius:4px; overflow:hidden;
+                                background:{COLORS['surface_alt']};">{''.join(_larguras_valor)}</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
+                        {''.join(_legenda_classes)}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Ranking das maiores contas ----
+            st.markdown(
+                f'<div style="font-size:12.5px; color:{COLORS["text_muted"]}; margin-bottom:8px;">'
+                f'Maiores contas do período · a barra mostra o peso de cada uma no gasto total</div>',
+                unsafe_allow_html=True,
+            )
+            qtd_ranking = min(10, len(df_abc))
+            _linhas_ranking = []
+            maior_valor_abc = float(df_abc["Valor"].max())
+            for _, linha_abc in df_abc.head(qtd_ranking).iterrows():
+                largura = linha_abc["Valor"] / maior_valor_abc * 100 if maior_valor_abc else 0
+                cor_barra = _cores_classe[linha_abc["Classe"]]
+                nome_conta = linha_abc["Conta"]
+                nome_exibido = nome_conta if len(nome_conta) <= 42 else nome_conta[:41] + "…"
+                _linhas_ranking.append(
+                    f"""
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:7px;">
+                        <div style="width:16px; text-align:center; font-size:10px; font-weight:700;
+                                    color:{cor_barra};">{linha_abc['Classe']}</div>
+                        <div style="width:250px; font-size:12px; color:{COLORS['text']};
+                                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
+                             title="{nome_conta}">{nome_exibido}</div>
+                        <div style="flex:1; background:{COLORS['surface_alt']}; border-radius:3px;
+                                    height:16px; position:relative;">
+                            <div style="width:{largura:.1f}%; height:100%; background:{cor_barra};
+                                        opacity:0.6; border-radius:3px;"></div>
+                        </div>
+                        <div style="width:150px; text-align:right; font-size:12px;
+                                    color:{COLORS['text']}; font-weight:600;">
+                            {formata_m(linha_abc['Valor'])}
+                            <span style="font-weight:400; color:{COLORS['text_muted']};
+                                         font-size:11px;"> · {linha_abc['% do total']:.1f}%</span>
+                        </div>
+                    </div>
+                    """
+                )
+            st.markdown(
+                f'<div style="margin:0 4px;">{"".join(_linhas_ranking)}</div>',
+                unsafe_allow_html=True,
+            )
 
             with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
                 st.dataframe(
@@ -7269,8 +7317,11 @@ if not departamento_ativo and tab_diag is not None:
                     }).map(cor_valor, subset=["Valor (R$)"]),
                     use_container_width=True, hide_index=True, height=420,
                 )
-        else:
-            st.info("Sem custos ou despesas no período selecionado para montar a curva ABC.")
+            st.caption(
+                f"A classificação segue a regra 80/15/5: **classe A** são as contas que somam os "
+                f"primeiros 80% do gasto, **B** os 15% seguintes e **C** os últimos 5%. "
+                f"Aqui, {pct_contas_a:.0f}% das contas concentram {pct_valor_a:.0f}% do dinheiro."
+            )
         st.markdown("<br>", unsafe_allow_html=True)
 
         # =====================================================================
