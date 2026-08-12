@@ -2879,7 +2879,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
             if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
         )
-        serie_obrigacoes = serie_a_pagar.abs()
+        # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
+        # padrão das tabelas já o marca em vermelho automaticamente.
+        serie_obrigacoes = -serie_a_pagar.abs()
         # Disponível = tudo que há antes de descontar o que se deve
         serie_disponivel_total = serie_total_geral - serie_a_pagar
         serie_sobra = serie_total_geral  # já é disponível − a pagar
@@ -2897,23 +2899,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
             unsafe_allow_html=True,
         )
 
+        LINHA_PCT_SOBRA = "% de sobra"
         df_reserva_m = pd.DataFrame(
             [serie_disponivel_total, serie_obrigacoes, serie_sobra, serie_pct_sobra],
-            index=[
-                "Disponível (caixa + banco + a receber)",
-                "A pagar no mês",
-                "Sobra depois de pagar tudo",
-                "% de sobra (meta: 30%)",
-            ],
+            index=["Disponível", "A pagar no mês", "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
         )
+
+        def _cor_pct_meta_fin(linha):
+            """Na linha de % de sobra a cor não segue o sinal (todos são
+            positivos), e sim a META: abaixo de 30% fica vermelho."""
+            if linha.name == LINHA_PCT_SOBRA:
+                return [
+                    f"color: {COLORS['positive'] if v >= 30 else COLORS['negative']}; font-weight: 600;"
+                    for v in linha
+                ]
+            return [cor_valor(v) for v in linha]
 
         st.dataframe(
             df_reserva_m.style.format(
                 {c: formata_brl for c in colunas_meses_m}
             ).format(
                 {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
-                subset=pd.IndexSlice[["% de sobra (meta: 30%)"], :],
-            ).map(cor_valor),
+                subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
+            ).apply(_cor_pct_meta_fin, axis=1),
             use_container_width=True,
         )
 
