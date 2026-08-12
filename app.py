@@ -20,7 +20,6 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 from openpyxl import Workbook
@@ -2963,93 +2962,81 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 unsafe_allow_html=True,
             )
 
-            # Dois painéis empilhados: as barras ficam num gráfico e as
-            # linhas de percentual em outro. Com tudo sobreposto num único
-            # gráfico, as barras (que são grandes e coloridas) escondiam as
-            # linhas -- separar resolve isso sem perder a comparação, porque
-            # os dois painéis compartilham o mesmo eixo de meses.
-            fig_es = make_subplots(
-                rows=2, cols=1, shared_xaxes=True,
-                row_heights=[0.66, 0.34], vertical_spacing=0.09,
-            )
-
-            # --- Painel de cima: entradas, saídas e resultado (em R$) ---
+            # Barras com preenchimento bem translúcido e contorno forte: a
+            # cor ainda identifica entrada/saída, mas dá pra enxergar as
+            # linhas que passam por cima delas (com barras sólidas, as
+            # linhas de resultado e de % sumiam atrás).
+            fig_es = go.Figure()
             fig_es.add_trace(go.Bar(
                 name="Entradas", x=rotulos_x_m, y=valores_entrada,
-                marker=dict(color=COLORS["positive"], opacity=0.55,
-                            line=dict(color=COLORS["positive"], width=1.5)),
+                marker=dict(color="rgba(62,207,142,0.28)",
+                            line=dict(color=COLORS["positive"], width=1.8)),
                 text=[formata_m(v) for v in valores_entrada],
                 textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
                 hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
-            ), row=1, col=1)
+            ))
             fig_es.add_trace(go.Bar(
                 name="Saídas", x=rotulos_x_m, y=valores_saida,
-                marker=dict(color=COLORS["negative"], opacity=0.55,
-                            line=dict(color=COLORS["negative"], width=1.5)),
+                marker=dict(color="rgba(247,110,110,0.28)",
+                            line=dict(color=COLORS["negative"], width=1.8)),
                 text=[formata_m(v) for v in valores_saida],
                 textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
                 hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
-            ), row=1, col=1)
+            ))
+            # Resultado do mês (entradas − saídas), na mesma escala das barras
             fig_es.add_trace(go.Scatter(
                 name="Resultado do mês", x=rotulos_x_m, y=resultado_mes,
                 mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
                 marker=dict(size=9, line=dict(color=COLORS["bg"], width=2)),
                 hovertemplate="Resultado: R$ %{y:,.2f}<extra></extra>",
-            ), row=1, col=1)
-
-            # --- Painel de baixo: % de sobra contra a meta ---
+            ))
+            # % de sobra x meta de 30%, no eixo da direita
             cores_pontos_sobra = [
                 COLORS["positive"] if v >= 30 else COLORS["negative"] for v in pct_sobra_grafico
             ]
             fig_es.add_trace(go.Scatter(
-                name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m),
-                mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
-                hoverinfo="skip",
-            ), row=2, col=1)
-            fig_es.add_trace(go.Scatter(
-                name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico,
+                name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
                 mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2.5),
                 marker=dict(size=10, color=cores_pontos_sobra,
                             line=dict(color=COLORS["bg"], width=2)),
                 text=[f"{v:.0f}%" for v in pct_sobra_grafico],
                 textposition="top center", textfont=dict(size=10, color=COLORS["text"]),
                 hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
-            ), row=2, col=1)
+            ))
+            fig_es.add_trace(go.Scatter(
+                name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m), yaxis="y2",
+                mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
+                hoverinfo="skip",
+            ))
 
             teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
             teto_pct = max(pct_sobra_grafico) if pct_sobra_grafico else 60
             estilo_grafico(
-                fig_es, height=520, barmode="group", bargap=0.3, bargroupgap=0.08,
-                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5,
+                fig_es, height=470, barmode="group", bargap=0.3, bargroupgap=0.08,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
+                           automargin=True, tickfont=dict(size=10)),
+                yaxis=dict(
+                    title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
+                    gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                    zerolinecolor=COLORS["border"],
+                    range=[min(0, min(resultado_mes) * 1.15), teto_barras * 1.20],
+                ),
+                yaxis2=dict(
+                    title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
+                    overlaying="y", side="right", showgrid=False, fixedrange=True,
+                    ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
+                    range=[0, max(60, teto_pct * 1.4)],
+                ),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
                             font=dict(size=10)),
-                margin=dict(l=70, r=30, t=20, b=80),
+                margin=dict(l=70, r=70, t=30, b=90),
                 hovermode="x unified",
-            )
-            fig_es.update_xaxes(
-                showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True, row=1, col=1,
-            )
-            fig_es.update_xaxes(
-                gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
-                automargin=True, tickfont=dict(size=10), row=2, col=1,
-            )
-            fig_es.update_yaxes(
-                title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
-                gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
-                zerolinecolor=COLORS["border"],
-                range=[min(0, min(resultado_mes) * 1.15), teto_barras * 1.20],
-                row=1, col=1,
-            )
-            fig_es.update_yaxes(
-                title=dict(text="% de sobra", font=dict(size=10, color=COLORS["text_muted"])),
-                gridcolor=COLORS["border"], fixedrange=True, ticksuffix="%",
-                tickfont=dict(size=9), range=[0, max(60, teto_pct * 1.4)],
-                row=2, col=1,
             )
             st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
             st.caption(
-                "**Painel de cima:** entradas e saídas do mês (barras) e o resultado, entradas − saídas (linha azul). "
-                "**Painel de baixo:** a % de sobra em cada mês — os pontos ficam verdes quando atingem a meta de "
-                "30% (linha tracejada) e vermelhos quando ficam abaixo dela."
+                "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
+                "(entradas − saídas). Linha laranja = % de sobra, no eixo da direita, com os pontos em verde "
+                "quando atingem a meta de 30% (tracejado cinza) e em vermelho quando ficam abaixo."
             )
 
         # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
