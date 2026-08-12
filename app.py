@@ -3090,34 +3090,112 @@ if st.session_state["painel_escolhido"] == "financeiro":
             else:
                 df_d["DiaOrd"] = df_d["Data Efetiva"].dt.normalize()
                 dias_ordenados_d = sorted(df_d["DiaOrd"].unique())
-                rotulos_dias_d = {d: pd.Timestamp(d).strftime("%d/%m") for d in dias_ordenados_d}
+                rotulos_dias_d = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in dias_ordenados_d]
 
-                pivot_d = df_d.pivot_table(
-                    index=COL_FIN_MOVIMENTO, columns="DiaOrd", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
-                )
-                pivot_d = pivot_d.reindex(columns=dias_ordenados_d, fill_value=0)
-                # Coluna final: soma do mês pro fluxo; último saldo do mês
-                # pras linhas de posição (somar saldo diário não faz sentido).
-                totais_finais_d = {}
-                for movimento in pivot_d.index:
-                    if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
-                        serie_d = pivot_d.loc[movimento]
-                        nao_zerados_d = serie_d[serie_d != 0]
-                        totais_finais_d[movimento] = nao_zerados_d.iloc[-1] if not nao_zerados_d.empty else 0.0
+                # Estrutura igual à da planilha: os canais (HUB LOGÍSTICO,
+                # LOJA, VENDA DIRETA) como grupos, e dentro de cada um os
+                # movimentos (Caixa, Banco, A Receber, A Pagar). Cada canal
+                # tem sua linha de subtotal, e no fim vem o Total Geral.
+                def _agrega_por_dia(df_origem, movimento_nome=None):
+                    """Soma por dia. Para linhas de saldo (caixa/banco), o
+                    valor do dia já é a posição daquele dia -- somar os
+                    lançamentos do mesmo dia é o certo; o que não se pode é
+                    somar dias diferentes (por isso a coluna final trata
+                    saldo e fluxo de formas distintas)."""
+                    serie = df_origem.groupby("DiaOrd")[COL_FIN_VALOR].sum()
+                    return serie.reindex(dias_ordenados_d, fill_value=0.0)
+
+                linhas_tabela_d = []
+                indices_tabela_d = []
+                estilo_linhas_d = []  # marca quais linhas são de grupo/total
+
+                canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
+                for canal in canais_ordenados_d:
+                    df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
+                    # linha do canal = soma de tudo que passou por ele no dia
+                    linhas_tabela_d.append(_agrega_por_dia(df_canal))
+                    indices_tabela_d.append(canal)
+                    estilo_linhas_d.append("canal")
+
+                    for movimento in sorted(df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()):
+                        df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
+                        linhas_tabela_d.append(_agrega_por_dia(df_mov))
+                        indices_tabela_d.append(f"    {movimento}")
+                        estilo_linhas_d.append("movimento")
+
+                linhas_tabela_d.append(_agrega_por_dia(df_d))
+                indices_tabela_d.append("TOTAL GERAL")
+                estilo_linhas_d.append("total")
+
+                pivot_d = pd.DataFrame(linhas_tabela_d, index=indices_tabela_d)
+                pivot_d.columns = rotulos_dias_d
+
+                # Coluna final: soma do mês pro fluxo; última posição pras
+                # linhas de saldo (somar saldo de dias diferentes não faz
+                # sentido). Linhas de canal/total misturam os dois, então
+                # ali entra a soma do que é fluxo mais a última posição do
+                # que é saldo -- o mesmo critério da aba mensal.
+                totais_finais_d = []
+                for posicao, nome_linha in enumerate(indices_tabela_d):
+                    tipo_linha = estilo_linhas_d[posicao]
+                    if tipo_linha == "movimento":
+                        movimento_puro = nome_linha.strip()
+                        if _classificar_movimento_fin(movimento_puro) in ("saldo", "aplicacao"):
+                            serie_linha = pivot_d.iloc[posicao]
+                            nao_zerados = serie_linha[serie_linha != 0]
+                            totais_finais_d.append(nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
+                        else:
+                            totais_finais_d.append(pivot_d.iloc[posicao].sum())
                     else:
-                        totais_finais_d[movimento] = pivot_d.loc[movimento].sum()
-                pivot_d.columns = [rotulos_dias_d[d] for d in pivot_d.columns]
-                pivot_d["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_d)
-                pivot_d.index.name = "Movimento"
+                        # canal ou total geral: recompõe pelo mesmo critério
+                        if tipo_linha == "canal":
+                            df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_linha]
+                        else:
+                            df_escopo = df_d
+                        fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
+                        saldo_escopo = 0.0
+                        df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["saldo", "aplicacao"])]
+                        if not df_saldo_escopo.empty:
+                            ultimo_dia_saldo = df_saldo_escopo["DiaOrd"].max()
+                            saldo_escopo = df_saldo_escopo.loc[
+                                df_saldo_escopo["DiaOrd"] == ultimo_dia_saldo, COL_FIN_VALOR
+                            ].sum()
+                        totais_finais_d.append(fluxo_escopo + saldo_escopo)
+
+                pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
+                pivot_d.index.name = "Canal / Movimento"
 
                 st.markdown(
-                    f'<div class="section-title">📋 Movimentos por Dia — {mes_sel_d}</div>',
+                    f'<div class="section-title">📋 Fluxo Diário por Canal — {mes_sel_d}</div>',
                     unsafe_allow_html=True,
                 )
-                st.dataframe(pivot_d.style.format(formata_brl).map(cor_valor), use_container_width=True)
+
+                def _estilo_linha_diaria(linha):
+                    """Destaca as linhas de canal e a de total geral, para a
+                    hierarquia ficar visível como na planilha."""
+                    posicao = list(pivot_d.index).index(linha.name)
+                    tipo_linha = estilo_linhas_d[posicao]
+                    estilos = []
+                    for valor in linha:
+                        base = cor_valor(valor)
+                        if tipo_linha == "canal":
+                            estilos.append(base + f" background-color: {COLORS['surface_alt']}; font-weight: 700;")
+                        elif tipo_linha == "total":
+                            estilos.append(base + f" background-color: {COLORS['surface']}; font-weight: 700;")
+                        else:
+                            estilos.append(base)
+                    return estilos
+
+                st.dataframe(
+                    pivot_d.style.format(formata_brl).apply(_estilo_linha_diaria, axis=1),
+                    use_container_width=True,
+                    height=min(620, 45 + 35 * len(pivot_d)),
+                )
                 st.caption(
-                    "Cada coluna é um dia. Na última coluna, contas a receber/pagar trazem a **soma do mês** "
-                    "e caixa/banco trazem o **saldo do último dia** com movimento."
+                    "Cada coluna é um dia do mês. As linhas em destaque são os canais (com o subtotal do "
+                    "canal) e, recuadas abaixo, aparecem os movimentos de cada um. Na última coluna, contas "
+                    "a receber/pagar trazem a **soma do mês** e caixa/banco trazem o **saldo do último dia** "
+                    "com movimento."
                 )
 
                 # Saldo acumulado: só do fluxo (entradas/saídas), sem saldo de posição
