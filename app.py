@@ -3089,7 +3089,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.info("Nenhum lançamento nesse mês para os filtros selecionados.")
             else:
                 df_d["DiaOrd"] = df_d["Data Efetiva"].dt.normalize()
-                dias_ordenados_d = sorted(df_d["DiaOrd"].unique())
+                dias_do_mes_d = sorted(df_d["DiaOrd"].unique())
+                rotulos_todos_dias_d = {
+                    pd.Timestamp(d).strftime("%d/%m/%Y"): d for d in dias_do_mes_d
+                }
+
+                # Seletor de dias: por padrão mostra o mês inteiro, mas dá
+                # pra recortar dias específicos (útil quando o mês tem muitos
+                # dias e a tabela fica larga demais pra ler).
+                dias_sel_d = st.multiselect(
+                    "Dias exibidos:",
+                    options=list(rotulos_todos_dias_d.keys()),
+                    default=list(rotulos_todos_dias_d.keys()),
+                    key="fin_dias_sel",
+                    help="Deixe vazio para ver todos os dias do mês.",
+                )
+                if dias_sel_d:
+                    dias_ordenados_d = sorted(rotulos_todos_dias_d[r] for r in dias_sel_d)
+                    df_d = df_d[df_d["DiaOrd"].isin(dias_ordenados_d)]
+                else:
+                    dias_ordenados_d = dias_do_mes_d
+
                 rotulos_dias_d = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in dias_ordenados_d]
 
                 # Estrutura igual à da planilha: os canais (HUB LOGÍSTICO,
@@ -3197,7 +3217,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.dataframe(
                     pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
                     use_container_width=True,
-                    height=min(620, 45 + 35 * len(pivot_d)),
+                    height=633,  # 17 linhas visíveis, mesmo padrão do resto do painel
                 )
                 st.caption(
                     "Cada coluna é um dia do mês. As linhas em destaque são os canais (com o subtotal do "
