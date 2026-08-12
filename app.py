@@ -6953,11 +6953,6 @@ if not departamento_ativo and tab_diag is not None:
         # 1. PONTO DE EQUILÍBRIO (BREAK-EVEN)
         # =====================================================================
         st.markdown('<div class="section-title">🎯 Ponto de Equilíbrio</div>', unsafe_allow_html=True)
-        st.caption(
-            "Quanto precisa faturar para cobrir todos os custos. Custos **variáveis** acompanham a venda "
-            "(CMV e despesas variáveis); custos **fixos** existem independentemente dela (despesas "
-            "operacionais e fixas)."
-        )
 
         cmv_diag = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True)) \
             or abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi))
@@ -6973,98 +6968,127 @@ if not departamento_ativo and tab_diag is not None:
         ponto_equilibrio_diag = (custos_fixos_diag / mc_pct_diag) if mc_pct_diag > 0 else 0
         margem_seguranca_valor = rec_liq_diag - ponto_equilibrio_diag
         margem_seguranca_pct = (margem_seguranca_valor / rec_liq_diag * 100) if rec_liq_diag else 0
-        pct_atingido_be = (rec_liq_diag / ponto_equilibrio_diag * 100) if ponto_equilibrio_diag else 0
+        lucro_operacional_diag = mc_valor_diag - custos_fixos_diag
+        meses_periodo_be = max(len(cols_kpi), 1)
 
-        st.markdown(
-            render_kpi_row([
-                dict(label="MARGEM DE CONTRIBUIÇÃO", value=f"{mc_pct_diag * 100:.1f}%",
-                     value_color=COLORS["positive"] if mc_pct_diag > 0 else COLORS["negative"],
-                     subtext=f"{formata_brl(mc_valor_diag)} sobre a receita", icon="💹"),
-                dict(label="CUSTOS FIXOS DO PERÍODO", value=formata_brl(custos_fixos_diag),
-                     value_color=COLORS["text"], subtext="Despesas operacionais", icon="🏛️"),
-                dict(label="PONTO DE EQUILÍBRIO", value=formata_brl(ponto_equilibrio_diag),
-                     value_color=COLORS["warning"], subtext="Receita mínima para não ter prejuízo", icon="🎯"),
-                dict(label="RECEITA vs. PONTO DE EQUILÍBRIO", value=f"{pct_atingido_be:.0f}%",
-                     value_color=COLORS["positive"] if pct_atingido_be >= 100 else COLORS["negative"],
-                     subtext="Acima de 100% = operação lucrativa", icon="📊"),
-                dict(label="MARGEM DE SEGURANÇA", value=f"{margem_seguranca_pct:.1f}%",
-                     value_color=COLORS["positive"] if margem_seguranca_pct > 0 else COLORS["negative"],
-                     subtext=f"{formata_brl(margem_seguranca_valor)} acima do mínimo", icon="🛡️"),
-            ]),
-            unsafe_allow_html=True,
-        )
-
-        if ponto_equilibrio_diag > 0:
-            # Uma barra só, limpa: mostra como cada real de receita se
-            # reparte e onde fica o ponto de equilíbrio. Sem gauge e sem
-            # título de eixo competindo com a legenda.
-            lucro_operacional_diag = mc_valor_diag - custos_fixos_diag
-            fig_be = go.Figure()
-            for nome_faixa, valor_faixa, cor_faixa in [
-                ("Custos variáveis", custos_variaveis_diag, COLORS["negative"]),
-                ("Custos fixos", custos_fixos_diag, COLORS["warning"]),
-                ("Resultado", max(lucro_operacional_diag, 0), COLORS["positive"]),
-            ]:
-                pct_faixa = (valor_faixa / rec_liq_diag * 100) if rec_liq_diag else 0
-                fig_be.add_trace(go.Bar(
-                    name=nome_faixa, y=[""], x=[valor_faixa], orientation="h",
-                    marker=dict(color=cor_faixa, opacity=0.75),
-                    text=[f"{nome_faixa}<br><b>{formata_m(valor_faixa)}</b> · {pct_faixa:.0f}%"],
-                    textposition="inside", insidetextanchor="middle",
-                    textfont=dict(size=11, color="#0B0E14"),
-                    hovertemplate=f"{nome_faixa}: R$ %{{x:,.2f}}<extra></extra>",
-                ))
-            fig_be.add_vline(
-                x=ponto_equilibrio_diag,
-                line=dict(color=COLORS["text"], width=2, dash="dot"),
-                annotation_text=f"ponto de equilíbrio · {formata_m(ponto_equilibrio_diag)}",
-                annotation_position="top left",
-                annotation_font=dict(size=11, color=COLORS["text"]),
-            )
-            estilo_grafico(
-                fig_be, height=180, barmode="stack", showlegend=False,
-                xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
-                yaxis=dict(showticklabels=False, fixedrange=True, showgrid=False),
-                margin=dict(l=10, r=10, t=52, b=10),
-            )
-            st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
-
-            # Leitura prática: quanto cada real de venda gera e quanto falta
-            dias_periodo_be = max(len(cols_kpi), 1)
-            receita_diaria_be = rec_liq_diag / dias_periodo_be
-            st.markdown(
-                render_kpi_row([
-                    dict(label="CADA R$ 1,00 VENDIDO", value=f"R$ {mc_pct_diag:.2f}",
-                         value_color=COLORS["positive"],
-                         subtext="Sobra para pagar fixos e virar lucro", icon="🪙"),
-                    dict(label="RECEITA MENSAL DE EQUILÍBRIO",
-                         value=formata_brl(ponto_equilibrio_diag / dias_periodo_be),
-                         value_color=COLORS["warning"],
-                         subtext=f"Média por mês no período de {dias_periodo_be} meses", icon="📅"),
-                    dict(label="RESULTADO OPERACIONAL",
-                         value=formata_brl(mc_valor_diag - custos_fixos_diag),
-                         value_color=cor_variacao(mc_valor_diag - custos_fixos_diag),
-                         subtext="Margem de contribuição − custos fixos", icon="💵"),
-                ]),
-                unsafe_allow_html=True,
-            )
-
-            if margem_seguranca_pct > 0:
-                st.success(
-                    f"✅ A operação está **{margem_seguranca_pct:.1f}% acima** do ponto de equilíbrio. "
-                    f"A receita poderia cair até {formata_brl(margem_seguranca_valor)} antes de entrar em prejuízo."
-                    .replace("$", "\\$")
-                )
-            else:
-                st.error(
-                    f"⚠️ A receita está **abaixo** do ponto de equilíbrio. Faltam "
-                    f"{formata_brl(abs(margem_seguranca_valor))} de faturamento para cobrir os custos."
-                    .replace("$", "\\$")
-                )
-        else:
+        if ponto_equilibrio_diag <= 0:
             st.warning(
                 "Não foi possível calcular o ponto de equilíbrio: a margem de contribuição está zerada ou "
                 "negativa no período (os custos variáveis consomem toda a receita)."
+            )
+        else:
+            # ---- Números essenciais numa faixa enxuta ----
+            # Quatro leituras bastam; as demais eram derivadas e poluíam.
+            _cor_seg = COLORS["positive"] if margem_seguranca_pct > 0 else COLORS["negative"]
+            _metricas_be = [
+                ("Ponto de equilíbrio", formata_brl(ponto_equilibrio_diag), COLORS["text"],
+                 f"{formata_m(ponto_equilibrio_diag / meses_periodo_be)} por mês"),
+                ("Margem de contribuição", f"{mc_pct_diag * 100:.1f}%", COLORS["primary"],
+                 f"R$ {mc_pct_diag:.2f} sobram de cada R$ 1,00"),
+                ("Margem de segurança", f"{margem_seguranca_pct:.1f}%", _cor_seg,
+                 f"{formata_m(abs(margem_seguranca_valor))} de folga"),
+                ("Resultado operacional", formata_m(lucro_operacional_diag),
+                 cor_variacao(lucro_operacional_diag), "Depois de fixos e variáveis"),
+            ]
+            _html_metricas = "".join(
+                f"""
+                <div style="flex:1; min-width:170px; padding:0 18px;
+                            border-left:1px solid {COLORS['border']};">
+                    <div style="font-size:10px; color:{COLORS['text_muted']};
+                                text-transform:uppercase; letter-spacing:0.5px;">{rotulo}</div>
+                    <div style="font-size:21px; font-weight:800; color:{cor};
+                                margin-top:3px; line-height:1.15;">{valor}</div>
+                    <div style="font-size:10.5px; color:{COLORS['text_muted']};
+                                margin-top:2px;">{complemento}</div>
+                </div>
+                """
+                for rotulo, valor, cor, complemento in _metricas_be
+            )
+            st.markdown(
+                f"""
+                <div style="display:flex; flex-wrap:wrap; gap:6px 0; padding:14px 4px;
+                            border-top:1px solid {COLORS['border']};
+                            border-bottom:1px solid {COLORS['border']}; margin-bottom:20px;">
+                    {_html_metricas}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # ---- Régua da receita: onde o dinheiro vai e onde vira lucro ----
+            # Uma régua horizontal fina, com os marcos por fora do desenho.
+            # Sem eixos, sem legenda flutuante, sem rótulo dentro da barra.
+            pct_var = custos_variaveis_diag / rec_liq_diag * 100 if rec_liq_diag else 0
+            pct_fix = custos_fixos_diag / rec_liq_diag * 100 if rec_liq_diag else 0
+            pct_res = max(lucro_operacional_diag, 0) / rec_liq_diag * 100 if rec_liq_diag else 0
+            pos_pe = ponto_equilibrio_diag / rec_liq_diag * 100 if rec_liq_diag else 0
+
+            st.markdown(
+                f"""
+                <div style="margin:0 4px 6px 4px;">
+                    <!-- marcador do ponto de equilíbrio, acima da régua -->
+                    <div style="position:relative; height:26px;">
+                        <div style="position:absolute; left:{min(pos_pe, 92):.1f}%;
+                                    transform:translateX(-50%); text-align:center; white-space:nowrap;">
+                            <div style="font-size:10px; color:{COLORS['text_muted']};
+                                        text-transform:uppercase; letter-spacing:0.4px;">
+                                equilíbrio
+                            </div>
+                            <div style="font-size:11.5px; color:{COLORS['text']}; font-weight:600;">
+                                {formata_m(ponto_equilibrio_diag)}
+                            </div>
+                        </div>
+                    </div>
+                    <!-- régua -->
+                    <div style="position:relative; display:flex; height:34px;
+                                border-radius:6px; overflow:hidden;
+                                background:{COLORS['surface_alt']};">
+                        <div style="width:{pct_var:.2f}%; background:rgba(247,110,110,0.55);"></div>
+                        <div style="width:{pct_fix:.2f}%; background:rgba(245,166,35,0.55);"></div>
+                        <div style="width:{pct_res:.2f}%; background:rgba(62,207,142,0.55);"></div>
+                        <div style="position:absolute; left:{pos_pe:.2f}%; top:-4px; bottom:-4px;
+                                    width:2px; background:{COLORS['text']};"></div>
+                    </div>
+                    <!-- marcos: início e receita total -->
+                    <div style="display:flex; justify-content:space-between; margin-top:5px;
+                                font-size:10.5px; color:{COLORS['text_muted']};">
+                        <span>R$ 0</span>
+                        <span>receita realizada <b style="color:{COLORS['text']};">
+                            {formata_m(rec_liq_diag)}</b></span>
+                    </div>
+                    <!-- legenda em linha, fora do gráfico -->
+                    <div style="display:flex; flex-wrap:wrap; gap:20px; margin-top:12px;
+                                font-size:11.5px; color:{COLORS['text_muted']};">
+                        <span><span style="color:{COLORS['negative']};">■</span>
+                            Custos variáveis <b style="color:{COLORS['text']};">
+                            {formata_m(custos_variaveis_diag)}</b> · {pct_var:.0f}%</span>
+                        <span><span style="color:{COLORS['warning']};">■</span>
+                            Custos fixos <b style="color:{COLORS['text']};">
+                            {formata_m(custos_fixos_diag)}</b> · {pct_fix:.0f}%</span>
+                        <span><span style="color:{COLORS['positive']};">■</span>
+                            Resultado <b style="color:{COLORS['text']};">
+                            {formata_m(lucro_operacional_diag)}</b> · {pct_res:.0f}%</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # ---- Uma frase de conclusão, sem caixa colorida ----
+            if margem_seguranca_pct > 0:
+                _texto_conclusao = (
+                    f"A receita pode cair até **{formata_brl(margem_seguranca_valor)}** "
+                    f"({margem_seguranca_pct:.1f}%) antes da operação entrar em prejuízo."
+                )
+            else:
+                _texto_conclusao = (
+                    f"Faltam **{formata_brl(abs(margem_seguranca_valor))}** de receita para "
+                    "cobrir os custos do período."
+                )
+            st.caption(
+                _texto_conclusao.replace("$", "\\$")
+                + "  \n_Custos variáveis (CMV e despesas variáveis) acompanham a venda; "
+                "custos fixos (despesas operacionais) existem independentemente dela._"
             )
         st.markdown("<br>", unsafe_allow_html=True)
 
