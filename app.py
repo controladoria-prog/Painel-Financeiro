@@ -3176,10 +3176,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 else len(rotulos_d) - 1
             )
 
+            # Mesmo motivo do bloco de dias abaixo: com `key`, o `index` só
+            # vale se a sessão ainda não tiver um valor guardado. Grava o
+            # padrão na primeira abertura e deixa a escolha da pessoa mandar
+            # dali em diante.
+            if "fin_mes_sel" not in st.session_state:
+                st.session_state["fin_mes_sel"] = rotulos_d[idx_mes_padrao_d]
+
             col_d1, col_d2, col_d3 = st.columns([1.3, 1, 1])
             with col_d1:
                 mes_sel_d = st.selectbox(
-                    "Mês:", rotulos_d, index=idx_mes_padrao_d, key="fin_mes_sel",
+                    "Mês:", rotulos_d, key="fin_mes_sel",
                     help="Abre no mês do dia anterior, que é o último dia com movimento fechado.",
                 )
             with col_d2:
@@ -3213,17 +3220,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     dia_fim_padrao_d = min(data_ontem_d.day, ultimo_dia_mes_d)
                 else:
                     dia_fim_padrao_d = ultimo_dia_mes_d
+
+                # IMPORTANTE: quando um campo tem `key`, o Streamlit ignora o
+                # `value` e usa o que já está guardado na sessão. Por isso o
+                # padrão precisa ser gravado direto no session_state -- senão
+                # um valor antigo (ex.: 31) fica preso e o padrão nunca
+                # aparece. Refaz também quando a pessoa troca de mês, porque
+                # o dia final válido muda de um mês pro outro.
+                if st.session_state.get("_fin_mes_dias_ref") != mes_sel_d:
+                    st.session_state["fin_dia_ini_diario"] = 1
+                    st.session_state["fin_dia_fim_diario"] = dia_fim_padrao_d
+                    st.session_state["_fin_mes_dias_ref"] = mes_sel_d
+
                 with st.expander("📆 Recortar dias do mês (opcional)"):
                     col_dd1, col_dd2 = st.columns(2)
                     with col_dd1:
                         dia_ini_d = st.number_input(
-                            "Do dia", min_value=1, max_value=ultimo_dia_mes_d, value=1, step=1,
+                            "Do dia", min_value=1, max_value=ultimo_dia_mes_d, step=1,
                             key="fin_dia_ini_diario",
                         )
                     with col_dd2:
                         dia_fim_d = st.number_input(
-                            "Até o dia", min_value=1, max_value=ultimo_dia_mes_d,
-                            value=dia_fim_padrao_d, step=1, key="fin_dia_fim_diario",
+                            "Até o dia", min_value=1, max_value=ultimo_dia_mes_d, step=1,
+                            key="fin_dia_fim_diario",
                             help="Por padrão vai até o dia anterior, que é o último dia fechado.",
                         )
                 dia_ini_valido_d, dia_fim_valido_d = sorted([int(dia_ini_d), int(dia_fim_d)])
