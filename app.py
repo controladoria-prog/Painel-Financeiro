@@ -2637,22 +2637,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.rerun()
         st.stop()
 
-    # ---- Cabeçalho enxuto: marca + ações numa linha só ----
+    # ---- Cabeçalho compacto: marca e ações na MESMA linha ----
+    # O Streamlit deixa uma folga generosa entre blocos; num cabeçalho isso
+    # vira espaço morto. O CSS abaixo aperta esses espaçamentos só aqui.
     st.markdown(
         f"""
         <style>
-            .fin-topo {{ display: flex; align-items: center; gap: 11px; padding: 2px 0 0 0; }}
-            .fin-topo img.logo {{ width: 34px; height: 34px; border-radius: 50%; }}
+            section.main > div.block-container, .block-container {{
+                padding-top: 1.2rem !important;
+            }}
+            div[data-testid="stVerticalBlock"] {{ gap: 0.35rem !important; }}
+            .fin-topo {{ display: flex; align-items: center; gap: 11px; }}
+            .fin-topo img.logo {{ width: 36px; height: 36px; border-radius: 50%; }}
             .fin-topo h1 {{
                 font-size: 18px; font-weight: 800; color: {COLORS['text']};
-                margin: 0; letter-spacing: 0.2px; line-height: 1.25;
+                margin: 0; letter-spacing: 0.2px; line-height: 1.2;
             }}
-            .fin-topo .sub {{ color: {COLORS['text_muted']}; font-size: 11.5px; margin-top: 1px; }}
+            .fin-topo .sub {{ color: {COLORS['text_muted']}; font-size: 11px; margin-top: 1px; }}
             .fin-barra {{
                 display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
-                padding: 7px 0 9px 0; border-top: 1px solid {COLORS['border']};
-                border-bottom: 1px solid {COLORS['border']}; margin: 10px 0 12px 0;
-                color: {COLORS['text_muted']}; font-size: 11.5px;
+                color: {COLORS['text_muted']}; font-size: 11.5px; margin: 0;
             }}
             .fin-barra .chip {{
                 background: {COLORS['primary_soft']}; color: {COLORS['primary']};
@@ -2661,48 +2665,55 @@ if st.session_state["painel_escolhido"] == "financeiro":
             }}
             .fin-barra b {{ color: {COLORS['text']}; font-weight: 600; }}
             .fin-barra .sep {{ opacity: 0.4; }}
+            /* Radio da base de data: compacto e sem margem sobrando */
+            div[data-testid="stRadio"] label p {{ font-size: 11.5px !important; }}
+            div[data-testid="stRadio"] > label p {{
+                font-size: 10px !important; text-transform: uppercase;
+                letter-spacing: 0.4px; opacity: 0.65;
+            }}
+            div[data-testid="stRadio"] > div {{ gap: 0.6rem !important; }}
+            div[data-testid="stRadio"] {{ margin: -6px 0 0 0; }}
+            /* Faixa divisória fina abaixo do cabeçalho */
+            .fin-divisor {{
+                border-bottom: 1px solid {COLORS['border']};
+                margin: 6px 0 10px 0;
+            }}
         </style>
-        <div class="fin-topo">
-            <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
-            <div>
-                <h1>Painel Financeiro</h1>
-                <div class="sub">Grupo B&amp;A · Controladoria</div>
-            </div>
-        </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Ações do painel, alinhadas à direita do cabeçalho
-    col_vazio_fin, col_acao_fin_b, col_acao_fin_c = st.columns([6, 1.1, 1.1], vertical_alignment="center")
-    with col_acao_fin_b:
+    col_marca_fin, col_atualizar_fin, col_trocar_fin = st.columns(
+        [6, 1.15, 1.15], vertical_alignment="center"
+    )
+    with col_marca_fin:
+        st.markdown(
+            f"""
+            <div class="fin-topo">
+                <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
+                <div>
+                    <h1>Painel Financeiro</h1>
+                    <div class="sub">Grupo B&amp;A · Controladoria</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_atualizar_fin:
         if st.button("🔄 Atualizar", use_container_width=True, key="fin_btn_atualizar"):
             st.cache_data.clear()
             st.cache_resource.clear()
             st.rerun()
-    with col_acao_fin_c:
+    with col_trocar_fin:
         if st.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
             st.session_state["painel_escolhido"] = None
             st.rerun()
 
-    # ---- Barra de contexto + base de data, numa faixa fina só ----
+    # ---- Contexto + base de data, também na mesma linha ----
     # A base de data define em que mês o lançamento cai. O padrão é
     # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
     # é o que faz o painel bater número a número com ela.
-    st.markdown(
-        """
-        <style>
-            div[data-testid="stRadio"] label p { font-size: 11.5px !important; }
-            div[data-testid="stRadio"] > label p {
-                font-size: 10.5px !important; text-transform: uppercase;
-                letter-spacing: 0.4px; opacity: 0.7;
-            }
-            div[data-testid="stRadio"] { margin-top: -4px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    col_ctx_fin, col_base_fin = st.columns([1.15, 1], vertical_alignment="center")
+    col_ctx_fin, col_base_fin = st.columns([1.1, 1], vertical_alignment="center")
     with col_ctx_fin:
         st.markdown(
             f"""
@@ -2725,6 +2736,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "ainda não liquidou, usa o vencimento como previsão)."
             ),
         )
+    st.markdown('<div class="fin-divisor"></div>', unsafe_allow_html=True)
+
 
     # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
     # em cache: só refaz se a base de data mudar ou se você clicar em
@@ -2805,7 +2818,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
         idx_ini_padrao = meses_disponiveis_fin.index(periodo_ini_padrao) if periodo_ini_padrao in meses_disponiveis_fin else 0
         idx_fim_padrao = meses_disponiveis_fin.index(periodo_fim_padrao) if periodo_fim_padrao in meses_disponiveis_fin else len(meses_disponiveis_fin) - 1
 
-        st.markdown('<div class="section-title">🔎 Filtros</div>', unsafe_allow_html=True)
         col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.2, 1, 1])
         with col_f1:
             mes_ini_sel_fin = st.selectbox(
@@ -2855,8 +2867,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
             dia_fim_valido = min(int(dia_fim_fin), periodo_fim_fin.end_time.day)
             data_ini_fin = periodo_ini_fin.start_time.date().replace(day=dia_ini_valido)
             data_fim_fin = periodo_fim_fin.start_time.date().replace(day=dia_fim_valido)
-
-        st.caption(f"📅 Período em análise: **{data_ini_fin:%d/%m/%Y}** a **{data_fim_fin:%d/%m/%Y}**")
 
         df_fin_periodo = df_fin[
             (df_fin["Data Efetiva"].dt.date >= data_ini_fin)
@@ -3158,7 +3168,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
         # Esta aba tem os PRÓPRIOS filtros e cards -- ela olha o dia a dia de
         # um mês, então faz pouco sentido herdar o recorte de vários meses da
         # aba mensal.
-        st.markdown('<div class="section-title">🔎 Filtros do Fluxo Diário</div>', unsafe_allow_html=True)
 
         meses_disp_d = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
         if not meses_disp_d:
@@ -3519,7 +3528,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
     # ---------------- ANÁLISES ----------------
     with tab_fin_analises:
-        st.markdown('<div class="section-title">🔎 Filtros das Análises</div>', unsafe_allow_html=True)
 
         meses_disp_a = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
         rotulos_a = ["Todo o período"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_a]
