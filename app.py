@@ -6996,10 +6996,10 @@ if not departamento_ativo and tab_diag is not None:
                             border-left:1px solid {COLORS['border']};">
                     <div style="font-size:10px; color:{COLORS['text_muted']};
                                 text-transform:uppercase; letter-spacing:0.5px;">{rotulo}</div>
-                    <div style="font-size:21px; font-weight:800; color:{cor};
-                                margin-top:3px; line-height:1.15;">{valor}</div>
-                    <div style="font-size:10.5px; color:{COLORS['text_muted']};
-                                margin-top:2px;">{complemento}</div>
+                    <div style="font-size:23px; font-weight:800; color:{cor};
+                                margin-top:4px; line-height:1.15;">{valor}</div>
+                    <div style="font-size:11.5px; color:{COLORS['text_muted']};
+                                margin-top:4px;">{complemento}</div>
                 </div>
                 """
                 for rotulo, valor, cor, complemento in _metricas_be
@@ -7026,48 +7026,77 @@ if not departamento_ativo and tab_diag is not None:
             st.markdown(
                 f"""
                 <div style="margin:0 4px 6px 4px;">
-                    <!-- marcador do ponto de equilíbrio, acima da régua -->
-                    <div style="position:relative; height:26px;">
-                        <div style="position:absolute; left:{min(pos_pe, 92):.1f}%;
+                    <!-- marcador do ponto de equilíbrio: rótulo bem acima da
+                         régua, com uma haste ligando os dois -->
+                    <div style="position:relative; height:52px;">
+                        <div style="position:absolute; left:{min(max(pos_pe, 8), 92):.1f}%;
                                     transform:translateX(-50%); text-align:center; white-space:nowrap;">
                             <div style="font-size:10px; color:{COLORS['text_muted']};
-                                        text-transform:uppercase; letter-spacing:0.4px;">
-                                equilíbrio
+                                        text-transform:uppercase; letter-spacing:0.6px;">
+                                ponto de equilíbrio
                             </div>
-                            <div style="font-size:11.5px; color:{COLORS['text']}; font-weight:600;">
+                            <div style="font-size:14px; color:{COLORS['text']}; font-weight:700;
+                                        margin-top:1px;">
                                 {formata_m(ponto_equilibrio_diag)}
                             </div>
                         </div>
+                        <!-- haste vertical descendo até a régua -->
+                        <div style="position:absolute; left:{pos_pe:.2f}%; bottom:0; width:1px; height:10px;
+                                    background:{COLORS['text_muted']};"></div>
                     </div>
                     <!-- régua -->
-                    <div style="position:relative; display:flex; height:34px;
+                    <div style="position:relative; display:flex; height:38px;
                                 border-radius:6px; overflow:hidden;
                                 background:{COLORS['surface_alt']};">
                         <div style="width:{pct_var:.2f}%; background:rgba(247,110,110,0.55);"></div>
                         <div style="width:{pct_fix:.2f}%; background:rgba(245,166,35,0.55);"></div>
                         <div style="width:{pct_res:.2f}%; background:rgba(62,207,142,0.55);"></div>
-                        <div style="position:absolute; left:{pos_pe:.2f}%; top:-4px; bottom:-4px;
-                                    width:2px; background:{COLORS['text']};"></div>
+                        <div style="position:absolute; left:{pos_pe:.2f}%; top:-5px; bottom:-5px;
+                                    width:3px; background:{COLORS['text']};
+                                    box-shadow:0 0 6px rgba(0,0,0,0.7);"></div>
                     </div>
                     <!-- marcos: início e receita total -->
-                    <div style="display:flex; justify-content:space-between; margin-top:5px;
-                                font-size:10.5px; color:{COLORS['text_muted']};">
+                    <div style="display:flex; justify-content:space-between; margin-top:7px;
+                                font-size:11px; color:{COLORS['text_muted']};">
                         <span>R$ 0</span>
                         <span>receita realizada <b style="color:{COLORS['text']};">
                             {formata_m(rec_liq_diag)}</b></span>
                     </div>
-                    <!-- legenda em linha, fora do gráfico -->
-                    <div style="display:flex; flex-wrap:wrap; gap:20px; margin-top:12px;
-                                font-size:11.5px; color:{COLORS['text_muted']};">
-                        <span><span style="color:{COLORS['negative']};">■</span>
-                            Custos variáveis <b style="color:{COLORS['text']};">
-                            {formata_m(custos_variaveis_diag)}</b> · {pct_var:.0f}%</span>
-                        <span><span style="color:{COLORS['warning']};">■</span>
-                            Custos fixos <b style="color:{COLORS['text']};">
-                            {formata_m(custos_fixos_diag)}</b> · {pct_fix:.0f}%</span>
-                        <span><span style="color:{COLORS['positive']};">■</span>
-                            Resultado <b style="color:{COLORS['text']};">
-                            {formata_m(lucro_operacional_diag)}</b> · {pct_res:.0f}%</span>
+                    <!-- legenda: cada item num bloco próprio, com respiro -->
+                    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
+                        <div style="flex:1; min-width:190px; background:{COLORS['surface']};
+                                    border:1px solid {COLORS['border']};
+                                    border-left:3px solid {COLORS['negative']};
+                                    border-radius:6px; padding:9px 13px;">
+                            <div style="font-size:11px; color:{COLORS['text_muted']};">Custos variáveis</div>
+                            <div style="font-size:15px; font-weight:700; color:{COLORS['text']}; margin-top:2px;">
+                                {formata_m(custos_variaveis_diag)}
+                                <span style="font-size:11.5px; font-weight:500;
+                                             color:{COLORS['text_muted']};"> · {pct_var:.0f}% da receita</span>
+                            </div>
+                        </div>
+                        <div style="flex:1; min-width:190px; background:{COLORS['surface']};
+                                    border:1px solid {COLORS['border']};
+                                    border-left:3px solid {COLORS['warning']};
+                                    border-radius:6px; padding:9px 13px;">
+                            <div style="font-size:11px; color:{COLORS['text_muted']};">Custos fixos</div>
+                            <div style="font-size:15px; font-weight:700; color:{COLORS['text']}; margin-top:2px;">
+                                {formata_m(custos_fixos_diag)}
+                                <span style="font-size:11.5px; font-weight:500;
+                                             color:{COLORS['text_muted']};"> · {pct_fix:.0f}% da receita</span>
+                            </div>
+                        </div>
+                        <div style="flex:1; min-width:190px; background:{COLORS['surface']};
+                                    border:1px solid {COLORS['border']};
+                                    border-left:3px solid {COLORS['positive']};
+                                    border-radius:6px; padding:9px 13px;">
+                            <div style="font-size:11px; color:{COLORS['text_muted']};">Resultado</div>
+                            <div style="font-size:15px; font-weight:700; color:{COLORS['text']}; margin-top:2px;">
+                                {formata_m(lucro_operacional_diag)}
+                                <span style="font-size:11.5px; font-weight:500;
+                                             color:{COLORS['text_muted']};"> · {pct_res:.0f}% da receita</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 """,
@@ -7075,20 +7104,33 @@ if not departamento_ativo and tab_diag is not None:
             )
 
             # ---- Uma frase de conclusão, sem caixa colorida ----
+            _b_ini = f'<b style="color:{_cor_seg};">'
             if margem_seguranca_pct > 0:
-                _texto_conclusao = (
-                    f"A receita pode cair até **{formata_brl(margem_seguranca_valor)}** "
+                _texto_conclusao_html = (
+                    f"A receita pode cair até {_b_ini}"
+                    f"{formata_brl(margem_seguranca_valor).replace('$', '&#36;')}</b> "
                     f"({margem_seguranca_pct:.1f}%) antes da operação entrar em prejuízo."
                 )
             else:
-                _texto_conclusao = (
-                    f"Faltam **{formata_brl(abs(margem_seguranca_valor))}** de receita para "
-                    "cobrir os custos do período."
+                _texto_conclusao_html = (
+                    f"Faltam {_b_ini}"
+                    f"{formata_brl(abs(margem_seguranca_valor)).replace('$', '&#36;')}</b> "
+                    "de receita para cobrir os custos do período."
                 )
+            st.markdown(
+                f"""
+                <div style="margin-top:16px; padding:11px 15px; border-radius:6px;
+                            background:{COLORS['surface']};
+                            border-left:3px solid {_cor_seg};
+                            font-size:13px; color:{COLORS['text']};">
+                    {_texto_conclusao_html}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             st.caption(
-                _texto_conclusao.replace("$", "\\$")
-                + "  \n_Custos variáveis (CMV e despesas variáveis) acompanham a venda; "
-                "custos fixos (despesas operacionais) existem independentemente dela._"
+                "Custos variáveis (CMV e despesas variáveis) acompanham a venda; custos fixos "
+                "(despesas operacionais) existem independentemente dela."
             )
         st.markdown("<br>", unsafe_allow_html=True)
 
