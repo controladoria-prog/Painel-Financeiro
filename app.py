@@ -2684,8 +2684,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
             st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
 
-    tab_fin_mensal, tab_fin_diario = st.tabs(
-        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário"]
+    tab_fin_mensal, tab_fin_diario, tab_fin_analises = st.tabs(
+        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "📊 Análises"]
     )
 
     # ---------------- MENSAL ----------------
@@ -3193,92 +3193,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
                     st.markdown("<br>", unsafe_allow_html=True)
 
-                    # ---- Indicadores operacionais de prazo e cobertura ----
-                    # Estes olham a relação entre VENCIMENTO e LIQUIDAÇÃO, que
-                    # é o que mostra se a empresa paga/recebe no prazo, e por
-                    # quantos dias o caixa aguenta as saídas.
-                    df_prazo_d = df_d[
-                        df_d[COL_FIN_DATA_LIQUIDACAO].notna() & df_d[COL_FIN_VENCIMENTO].notna()
-                    ].copy()
-                    if not df_prazo_d.empty:
-                        df_prazo_d["DiasAteLiquidar"] = (
-                            df_prazo_d[COL_FIN_DATA_LIQUIDACAO] - df_prazo_d[COL_FIN_VENCIMENTO]
-                        ).dt.days
-
-                    saidas_prazo = df_prazo_d[df_prazo_d["Tipo Movimento"] == "saida"] if not df_prazo_d.empty else pd.DataFrame()
-                    entradas_prazo = df_prazo_d[df_prazo_d["Tipo Movimento"] == "entrada"] if not df_prazo_d.empty else pd.DataFrame()
-
-                    prazo_medio_pagto = saidas_prazo["DiasAteLiquidar"].mean() if not saidas_prazo.empty else None
-                    prazo_medio_receb = entradas_prazo["DiasAteLiquidar"].mean() if not entradas_prazo.empty else None
-                    pct_pago_em_dia = (
-                        (saidas_prazo["DiasAteLiquidar"] <= 0).mean() * 100 if not saidas_prazo.empty else None
-                    )
-
-                    # Cobertura: quantos dias o saldo atual banca, ao ritmo
-                    # médio de saídas do período.
-                    qtd_dias_periodo_d = max(len(dias_ordenados_d), 1)
-                    saida_media_diaria = abs(saidas_d) / qtd_dias_periodo_d if qtd_dias_periodo_d else 0
-                    dias_de_caixa = (saldo_final_d / saida_media_diaria) if saida_media_diaria else None
-                    entrada_media_diaria = entradas_d / qtd_dias_periodo_d if qtd_dias_periodo_d else 0
-
-                    # Concentração: quanto das saídas está nos 3 dias de maior
-                    # desembolso (risco de aperto pontual de caixa).
-                    saidas_por_dia = (
-                        df_d[df_d["Tipo Movimento"] == "saida"].groupby("DiaOrd")[COL_FIN_VALOR].sum().abs()
-                    )
-                    if not saidas_por_dia.empty and saidas_por_dia.sum():
-                        pct_top3_saidas = saidas_por_dia.nlargest(3).sum() / saidas_por_dia.sum() * 100
-                        dia_maior_saida = saidas_por_dia.idxmax()
-                        rotulo_maior_saida = pd.Timestamp(dia_maior_saida).strftime("%d/%m")
-                        valor_maior_saida = saidas_por_dia.max()
-                    else:
-                        pct_top3_saidas = 0.0
-                        rotulo_maior_saida = "—"
-                        valor_maior_saida = 0.0
-
-                    st.markdown(
-                        '<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        render_kpi_row([
-                            dict(label="PRAZO MÉDIO DE PAGAMENTO",
-                                 value=(f"{prazo_medio_pagto:+.1f} dias" if prazo_medio_pagto is not None else "—"),
-                                 value_color=(COLORS["positive"] if (prazo_medio_pagto or 0) <= 0 else COLORS["negative"]),
-                                 subtext="Negativo = paga antes do vencimento", icon="📤"),
-                            dict(label="PRAZO MÉDIO DE RECEBIMENTO",
-                                 value=(f"{prazo_medio_receb:+.1f} dias" if prazo_medio_receb is not None else "—"),
-                                 value_color=(COLORS["positive"] if (prazo_medio_receb or 0) <= 0 else COLORS["warning"]),
-                                 subtext="Positivo = recebe depois do vencido", icon="📥"),
-                            dict(label="PAGAMENTOS EM DIA",
-                                 value=(f"{pct_pago_em_dia:.0f}%" if pct_pago_em_dia is not None else "—"),
-                                 value_color=(COLORS["positive"] if (pct_pago_em_dia or 0) >= 90 else COLORS["warning"]),
-                                 subtext="Liquidados até a data de vencimento", icon="✅"),
-                            dict(label="DIAS DE CAIXA",
-                                 value=(f"{dias_de_caixa:.1f} dias" if dias_de_caixa is not None else "—"),
-                                 value_color=(COLORS["positive"] if (dias_de_caixa or 0) >= 30 else COLORS["negative"]),
-                                 subtext=f"Ao ritmo de {formata_m(saida_media_diaria)}/dia de saídas", icon="🛡️"),
-                            dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
-                                 value=f"{formata_m(entrada_media_diaria)} / {formata_m(saida_media_diaria)}",
-                                 value_color=COLORS["text"],
-                                 subtext=f"Em {qtd_dias_periodo_d} dias com movimento", icon="📊"),
-                            dict(label="CONCENTRAÇÃO DAS SAÍDAS",
-                                 value=f"{pct_top3_saidas:.0f}%",
-                                 value_color=(COLORS["negative"] if pct_top3_saidas >= 50 else COLORS["text"]),
-                                 subtext=f"Nos 3 maiores dias · pico {rotulo_maior_saida} ({formata_m(valor_maior_saida)})",
-                                 icon="🎯"),
-                        ]),
-                        unsafe_allow_html=True,
-                    )
-                    st.caption(
-                        "**Prazo médio** compara a data de liquidação com a de vencimento: negativo significa "
-                        "antecipar, positivo significa atrasar. **Dias de caixa** estima por quantos dias o "
-                        "saldo atual cobriria as saídas no ritmo médio do período. **Concentração** mostra o "
-                        "quanto do desembolso está espremido em poucos dias — quanto maior, mais o caixa "
-                        "depende de datas específicas."
-                    )
-                    st.markdown("<br>", unsafe_allow_html=True)
-
                     # Estrutura igual à da planilha: os canais como grupos, e
                     # dentro de cada um os movimentos, com subtotal por canal
                     # e Total Geral no fim.
@@ -3346,6 +3260,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
                     pivot_d.index.name = "Canal / Movimento"
 
+                    # ---- Linha SALDO: igual à da planilha ----
+                    # Cada dia soma o Total Geral daquele dia com o saldo do
+                    # dia anterior, ou seja, é o Total Geral acumulado. É essa
+                    # linha que mostra a posição real de caixa ao longo do mês.
+                    total_geral_por_dia = pivot_d.iloc[-1][rotulos_dias_d]
+                    saldo_acumulado_dia = total_geral_por_dia.cumsum()
+                    linha_saldo_d = list(saldo_acumulado_dia.values) + [saldo_acumulado_dia.iloc[-1]]
+                    pivot_d.loc[_rotulo_unico_d("SALDO (acumulado)", len(pivot_d))] = linha_saldo_d
+                    estilo_linhas_d.append(("saldo_acumulado", "SALDO (acumulado)"))
+
                     st.markdown(
                         f'<div class="section-title">📋 Fluxo Diário por Canal — {mes_sel_d}</div>',
                         unsafe_allow_html=True,
@@ -3364,6 +3288,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                     base += f" background-color: {COLORS['surface_alt']}; font-weight: 700;"
                                 elif tipo_linha == "total":
                                     base += f" background-color: {COLORS['surface']}; font-weight: 700;"
+                                elif tipo_linha == "saldo_acumulado":
+                                    base += " background-color: rgba(76,141,255,0.12); font-weight: 700;"
                                 estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                         return estilos
 
@@ -3374,9 +3300,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
                     st.caption(
                         "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
-                        "e, recuadas abaixo, os movimentos de cada um. Na última coluna, contas a "
-                        "receber/pagar trazem a **soma do período** e caixa/banco trazem o **saldo do último "
-                        "dia** com movimento."
+                        "e, recuadas abaixo, os movimentos de cada um. A linha **SALDO (acumulado)** soma o "
+                        "Total Geral do dia com o saldo do dia anterior — é a posição de caixa ao longo do "
+                        "mês. Na última coluna, contas a receber/pagar trazem a **soma do período** e "
+                        "caixa/banco trazem o **saldo do último dia** com movimento."
                     )
 
                     # ---- Gráfico: movimento do dia + fluxo acumulado ----
@@ -3478,6 +3405,226 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "Linha pontilhada laranja = resultado líquido do dia. Linha azul cheia = fluxo "
                             "acumulado no eixo da direita. A linha tracejada marca a média diária do período."
                         )
+
+    # ---------------- ANÁLISES ----------------
+    with tab_fin_analises:
+        st.markdown('<div class="section-title">🔎 Filtros das Análises</div>', unsafe_allow_html=True)
+
+        meses_disp_a = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
+        rotulos_a = ["Todo o período"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_a]
+        col_a1, col_a2, col_a3 = st.columns(3)
+        with col_a1:
+            mes_sel_a = st.selectbox("Mês:", rotulos_a, key="fin_mes_sel_analise")
+        with col_a2:
+            opcoes_canal_a = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            canal_sel_a = st.selectbox("Canal:", opcoes_canal_a, key="fin_canal_sel_analise")
+        with col_a3:
+            opcoes_modal_a = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+            modal_sel_a = st.selectbox("Modalidade:", opcoes_modal_a, key="fin_modal_sel_analise")
+
+        df_a = df_fin[df_fin["Tipo Movimento"] != "aplicacao"].copy()
+        if mes_sel_a != "Todo o período":
+            periodo_a = meses_disp_a[rotulos_a.index(mes_sel_a) - 1]
+            df_a = df_a[df_a["Data Efetiva"].dt.to_period("M") == periodo_a]
+        if canal_sel_a != "Todos":
+            df_a = df_a[df_a[COL_FIN_CANAL].astype(str) == canal_sel_a]
+        if modal_sel_a != "Todas":
+            df_a = df_a[df_a[COL_FIN_MODALIDADE].astype(str) == modal_sel_a]
+
+        if df_a.empty:
+            st.info("Nenhum lançamento para os filtros selecionados.")
+        else:
+            df_a["DiaOrd"] = df_a["Data Efetiva"].dt.normalize()
+            entradas_a = df_a.loc[df_a["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
+            saidas_a = df_a.loc[df_a["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
+            saldo_a, data_saldo_a = _saldo_posicao_atual_fin(df_a, COL_FIN_VALOR)
+            dias_com_mov_a = max(df_a["DiaOrd"].nunique(), 1)
+
+            # ---- Prazos e cobertura ----
+            df_prazo_a = df_a[
+                df_a[COL_FIN_DATA_LIQUIDACAO].notna() & df_a[COL_FIN_VENCIMENTO].notna()
+            ].copy()
+            if not df_prazo_a.empty:
+                df_prazo_a["DiasAteLiquidar"] = (
+                    df_prazo_a[COL_FIN_DATA_LIQUIDACAO] - df_prazo_a[COL_FIN_VENCIMENTO]
+                ).dt.days
+            saidas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "saida"] if not df_prazo_a.empty else pd.DataFrame()
+            entradas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "entrada"] if not df_prazo_a.empty else pd.DataFrame()
+
+            prazo_medio_pagto_a = saidas_prazo_a["DiasAteLiquidar"].mean() if not saidas_prazo_a.empty else None
+            prazo_medio_receb_a = entradas_prazo_a["DiasAteLiquidar"].mean() if not entradas_prazo_a.empty else None
+            pct_pago_em_dia_a = (
+                (saidas_prazo_a["DiasAteLiquidar"] <= 0).mean() * 100 if not saidas_prazo_a.empty else None
+            )
+            saida_media_diaria_a = abs(saidas_a) / dias_com_mov_a
+            entrada_media_diaria_a = entradas_a / dias_com_mov_a
+            dias_de_caixa_a = (saldo_a / saida_media_diaria_a) if saida_media_diaria_a else None
+
+            saidas_por_dia_a = df_a[df_a["Tipo Movimento"] == "saida"].groupby("DiaOrd")[COL_FIN_VALOR].sum().abs()
+            if not saidas_por_dia_a.empty and saidas_por_dia_a.sum():
+                pct_top3_a = saidas_por_dia_a.nlargest(3).sum() / saidas_por_dia_a.sum() * 100
+                rotulo_pico_a = pd.Timestamp(saidas_por_dia_a.idxmax()).strftime("%d/%m/%Y")
+                valor_pico_a = saidas_por_dia_a.max()
+            else:
+                pct_top3_a, rotulo_pico_a, valor_pico_a = 0.0, "—", 0.0
+
+            st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
+            st.markdown(
+                render_kpi_row([
+                    dict(label="PRAZO MÉDIO DE PAGAMENTO",
+                         value=(f"{prazo_medio_pagto_a:+.1f} dias" if prazo_medio_pagto_a is not None else "—"),
+                         value_color=(COLORS["positive"] if (prazo_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
+                         subtext="Negativo = paga antes do vencimento", icon="📤"),
+                    dict(label="PRAZO MÉDIO DE RECEBIMENTO",
+                         value=(f"{prazo_medio_receb_a:+.1f} dias" if prazo_medio_receb_a is not None else "—"),
+                         value_color=(COLORS["positive"] if (prazo_medio_receb_a or 0) <= 0 else COLORS["warning"]),
+                         subtext="Positivo = recebe depois do vencido", icon="📥"),
+                    dict(label="PAGAMENTOS EM DIA",
+                         value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
+                         value_color=(COLORS["positive"] if (pct_pago_em_dia_a or 0) >= 90 else COLORS["warning"]),
+                         subtext="Liquidados até a data de vencimento", icon="✅"),
+                    dict(label="DIAS DE CAIXA",
+                         value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
+                         value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
+                         subtext=f"Ao ritmo de {formata_m(saida_media_diaria_a)}/dia de saídas", icon="🛡️"),
+                    dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
+                         value=f"{formata_m(entrada_media_diaria_a)} / {formata_m(saida_media_diaria_a)}",
+                         value_color=COLORS["text"], subtext=f"Em {dias_com_mov_a} dias com movimento", icon="📊"),
+                    dict(label="CONCENTRAÇÃO DAS SAÍDAS", value=f"{pct_top3_a:.0f}%",
+                         value_color=(COLORS["negative"] if pct_top3_a >= 50 else COLORS["text"]),
+                         subtext=f"Nos 3 maiores dias · pico {rotulo_pico_a} ({formata_m(valor_pico_a)})", icon="🎯"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "**Prazo médio** compara a data de liquidação com a de vencimento: negativo significa "
+                "antecipar, positivo significa atrasar. **Dias de caixa** estima por quantos dias o saldo "
+                "atual cobriria as saídas no ritmo médio do período. **Concentração** mostra o quanto do "
+                "desembolso está espremido em poucos dias."
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Estrutura e composição ----
+            qtd_lanc_a = len(df_a)
+            qtd_entradas_a = int((df_a["Tipo Movimento"] == "entrada").sum())
+            qtd_saidas_a = int((df_a["Tipo Movimento"] == "saida").sum())
+            ticket_entrada_a = entradas_a / qtd_entradas_a if qtd_entradas_a else 0
+            ticket_saida_a = abs(saidas_a) / qtd_saidas_a if qtd_saidas_a else 0
+            cobertura_a = (entradas_a / abs(saidas_a) * 100) if saidas_a else 0
+            liquidez_imediata_a = (saldo_a / abs(saidas_a) * 100) if saidas_a else 0
+
+            projetado_a = df_a.loc[
+                (df_a["Tipo Movimento"] == "entrada")
+                & df_a[COL_FIN_MOVIMENTO].astype(str).str.contains("projetad", case=False, na=False),
+                COL_FIN_VALOR,
+            ].sum()
+            realizado_a = entradas_a - projetado_a
+            pct_realizado_a = (realizado_a / entradas_a * 100) if entradas_a else 0
+
+            st.markdown('<div class="section-title">🧾 Estrutura das Movimentações</div>', unsafe_allow_html=True)
+            st.markdown(
+                render_kpi_row([
+                    dict(label="LANÇAMENTOS NO PERÍODO", value=f"{qtd_lanc_a:,}".replace(",", "."),
+                         value_color=COLORS["text"],
+                         subtext=f"{qtd_entradas_a} entradas · {qtd_saidas_a} saídas", icon="🧮"),
+                    dict(label="TICKET MÉDIO DE ENTRADA", value=formata_brl(ticket_entrada_a),
+                         value_color=COLORS["positive"], subtext="Valor médio por recebimento", icon="📥"),
+                    dict(label="TICKET MÉDIO DE SAÍDA", value=formata_brl(ticket_saida_a),
+                         value_color=COLORS["negative"], subtext="Valor médio por pagamento", icon="📤"),
+                    dict(label="COBERTURA ENTRADAS/SAÍDAS", value=f"{cobertura_a:.0f}%",
+                         value_color=(COLORS["positive"] if cobertura_a >= 100 else COLORS["negative"]),
+                         subtext="Acima de 100% = entra mais do que sai", icon="⚖️"),
+                    dict(label="LIQUIDEZ IMEDIATA", value=f"{liquidez_imediata_a:.0f}%",
+                         value_color=(COLORS["positive"] if liquidez_imediata_a >= 100 else COLORS["warning"]),
+                         subtext="Saldo em caixa ÷ contas a pagar", icon="💧"),
+                    dict(label="RECEBÍVEIS JÁ REALIZADOS", value=f"{pct_realizado_a:.0f}%",
+                         value_color=(COLORS["positive"] if pct_realizado_a >= 50 else COLORS["warning"]),
+                         subtext=f"Projetado: {formata_m(projetado_a)}", icon="⏳"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Gráficos de composição ----
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.markdown('<div class="section-title">🏢 Saídas por Canal</div>', unsafe_allow_html=True)
+                saidas_canal_a = (
+                    df_a[df_a["Tipo Movimento"] == "saida"].groupby(COL_FIN_CANAL)[COL_FIN_VALOR].sum().abs().sort_values()
+                )
+                if not saidas_canal_a.empty and saidas_canal_a.sum():
+                    fig_canal = go.Figure(data=[go.Bar(
+                        x=list(saidas_canal_a.values), y=list(saidas_canal_a.index), orientation="h",
+                        marker=dict(color="rgba(247,110,110,0.35)", line=dict(color=COLORS["negative"], width=1.5)),
+                        text=[formata_m(v) for v in saidas_canal_a.values],
+                        textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
+                        hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>",
+                    )])
+                    estilo_grafico(
+                        fig_canal, height=300,
+                        xaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True,
+                                   range=[0, saidas_canal_a.max() * 1.28]),
+                        yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
+                        margin=dict(l=10, r=20, t=20, b=30),
+                    )
+                    st.plotly_chart(fig_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                else:
+                    st.caption("Sem saídas no recorte selecionado.")
+
+            with col_g2:
+                st.markdown('<div class="section-title">💳 Movimentação por Modalidade</div>', unsafe_allow_html=True)
+                modal_a = df_a.groupby(COL_FIN_MODALIDADE)[COL_FIN_VALOR].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+                modal_a = modal_a[modal_a > 0]
+                if not modal_a.empty:
+                    TOP_MODAL = 6
+                    if len(modal_a) > TOP_MODAL:
+                        outros_modal = modal_a.iloc[TOP_MODAL:].sum()
+                        modal_a = pd.concat([modal_a.iloc[:TOP_MODAL], pd.Series({"Outros": outros_modal})])
+                    fig_modal = go.Figure(data=[go.Pie(
+                        labels=list(modal_a.index), values=list(modal_a.values), hole=0.55,
+                        marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
+                                             COLORS["negative"], COLORS["secondary"], COLORS["muted_line"], "#6B7280"]),
+                        textinfo="percent", texttemplate="%{percent:.1%}",
+                        textfont=dict(color=COLORS["text"], size=11),
+                        hovertemplate="%{label}: R$ %{value:,.2f}<extra></extra>",
+                    )])
+                    fig_modal.add_annotation(
+                        text=f"<b>{formata_m(modal_a.sum())}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Volume total</span>",
+                        showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
+                    )
+                    estilo_grafico(
+                        fig_modal, height=300,
+                        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=9)),
+                        margin=dict(l=10, r=10, t=20, b=10),
+                    )
+                    st.plotly_chart(fig_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                else:
+                    st.caption("Sem movimentação no recorte selecionado.")
+
+            # ---- Maiores despesas por grupo ----
+            if COL_FIN_GRUPO_DESPESA in df_a.columns:
+                grupo_a = (
+                    df_a[df_a["Tipo Movimento"] == "saida"]
+                    .groupby(COL_FIN_GRUPO_DESPESA)[COL_FIN_VALOR].sum().abs().sort_values(ascending=False)
+                )
+                grupo_a = grupo_a[grupo_a > 0].head(10)
+                if not grupo_a.empty:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>', unsafe_allow_html=True)
+                    total_saidas_grupo = grupo_a.sum()
+                    df_grupo_a = pd.DataFrame({
+                        "Grupo de Despesa": grupo_a.index,
+                        "Valor (R$)": grupo_a.values,
+                        "% do total": [v / total_saidas_grupo * 100 for v in grupo_a.values],
+                    })
+                    st.dataframe(
+                        df_grupo_a.style.format({
+                            "Valor (R$)": formata_brl,
+                            "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
+                        }).map(cor_valor, subset=["Valor (R$)"]),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
 
     st.stop()
 
