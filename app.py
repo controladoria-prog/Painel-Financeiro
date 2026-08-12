@@ -3109,23 +3109,32 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 indices_tabela_d = []
                 estilo_linhas_d = []  # marca quais linhas são de grupo/total
 
+                # O mesmo movimento (ex.: "4 - Contas a Pagar") aparece em
+                # vários canais, o que geraria rótulos repetidos no índice --
+                # e o Styler do pandas não aceita índice com valores
+                # duplicados. Por isso cada rótulo recebe um sufixo de
+                # espaços de largura zero (invisíveis na tela) só para
+                # garantir a unicidade.
+                def _rotulo_unico_d(texto, posicao):
+                    return texto + ("\u200b" * posicao)
+
                 canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
                 for canal in canais_ordenados_d:
                     df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
                     # linha do canal = soma de tudo que passou por ele no dia
                     linhas_tabela_d.append(_agrega_por_dia(df_canal))
-                    indices_tabela_d.append(canal)
-                    estilo_linhas_d.append("canal")
+                    indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
+                    estilo_linhas_d.append(("canal", canal))
 
                     for movimento in sorted(df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()):
                         df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
                         linhas_tabela_d.append(_agrega_por_dia(df_mov))
-                        indices_tabela_d.append(f"    {movimento}")
-                        estilo_linhas_d.append("movimento")
+                        indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
+                        estilo_linhas_d.append(("movimento", movimento))
 
                 linhas_tabela_d.append(_agrega_por_dia(df_d))
-                indices_tabela_d.append("TOTAL GERAL")
-                estilo_linhas_d.append("total")
+                indices_tabela_d.append(_rotulo_unico_d("TOTAL GERAL", len(indices_tabela_d)))
+                estilo_linhas_d.append(("total", "TOTAL GERAL"))
 
                 pivot_d = pd.DataFrame(linhas_tabela_d, index=indices_tabela_d)
                 pivot_d.columns = rotulos_dias_d
@@ -3136,11 +3145,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # ali entra a soma do que é fluxo mais a última posição do
                 # que é saldo -- o mesmo critério da aba mensal.
                 totais_finais_d = []
-                for posicao, nome_linha in enumerate(indices_tabela_d):
-                    tipo_linha = estilo_linhas_d[posicao]
+                for posicao, (tipo_linha, nome_limpo) in enumerate(estilo_linhas_d):
                     if tipo_linha == "movimento":
-                        movimento_puro = nome_linha.strip()
-                        if _classificar_movimento_fin(movimento_puro) in ("saldo", "aplicacao"):
+                        if _classificar_movimento_fin(nome_limpo) in ("saldo", "aplicacao"):
                             serie_linha = pivot_d.iloc[posicao]
                             nao_zerados = serie_linha[serie_linha != 0]
                             totais_finais_d.append(nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
@@ -3149,7 +3156,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     else:
                         # canal ou total geral: recompõe pelo mesmo critério
                         if tipo_linha == "canal":
-                            df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_linha]
+                            df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
                         else:
                             df_escopo = df_d
                         fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
@@ -3170,24 +3177,25 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     unsafe_allow_html=True,
                 )
 
-                def _estilo_linha_diaria(linha):
+                def _estilo_tabela_diaria(df_tabela):
                     """Destaca as linhas de canal e a de total geral, para a
-                    hierarquia ficar visível como na planilha."""
-                    posicao = list(pivot_d.index).index(linha.name)
-                    tipo_linha = estilo_linhas_d[posicao]
-                    estilos = []
-                    for valor in linha:
-                        base = cor_valor(valor)
-                        if tipo_linha == "canal":
-                            estilos.append(base + f" background-color: {COLORS['surface_alt']}; font-weight: 700;")
-                        elif tipo_linha == "total":
-                            estilos.append(base + f" background-color: {COLORS['surface']}; font-weight: 700;")
-                        else:
-                            estilos.append(base)
+                    hierarquia ficar visível como na planilha. Usa posição
+                    (não o nome da linha), então funciona mesmo com rótulos
+                    parecidos entre canais."""
+                    estilos = pd.DataFrame("", index=df_tabela.index, columns=df_tabela.columns)
+                    for posicao, (tipo_linha, _) in enumerate(estilo_linhas_d):
+                        for coluna in df_tabela.columns:
+                            valor = df_tabela.iloc[posicao][coluna]
+                            base = cor_valor(valor)
+                            if tipo_linha == "canal":
+                                base += f" background-color: {COLORS['surface_alt']}; font-weight: 700;"
+                            elif tipo_linha == "total":
+                                base += f" background-color: {COLORS['surface']}; font-weight: 700;"
+                            estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                     return estilos
 
                 st.dataframe(
-                    pivot_d.style.format(formata_brl).apply(_estilo_linha_diaria, axis=1),
+                    pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
                     use_container_width=True,
                     height=min(620, 45 + 35 * len(pivot_d)),
                 )
