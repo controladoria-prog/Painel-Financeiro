@@ -3276,27 +3276,49 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
 
                     def _estilo_tabela_diaria(df_tabela):
-                        """Destaca canais e total geral. Usa posição, não o
-                        nome da linha, então funciona mesmo com rótulos
-                        parecidos entre canais."""
+                        """Destaca canais, total geral e saldo acumulado. Usa
+                        posição, não o nome da linha, então funciona mesmo com
+                        rótulos parecidos entre canais."""
                         estilos = pd.DataFrame("", index=df_tabela.index, columns=df_tabela.columns)
                         for posicao, (tipo_linha, _) in enumerate(estilo_linhas_d):
                             for coluna in df_tabela.columns:
                                 valor = df_tabela.iloc[posicao][coluna]
                                 base = cor_valor(valor)
                                 if tipo_linha == "canal":
-                                    base += f" background-color: {COLORS['surface_alt']}; font-weight: 700;"
+                                    base += (
+                                        f" background-color: {COLORS['surface_alt']};"
+                                        " font-weight: 700; border-top: 1px solid rgba(139,149,165,0.35);"
+                                    )
                                 elif tipo_linha == "total":
-                                    base += f" background-color: {COLORS['surface']}; font-weight: 700;"
+                                    # Total Geral: faixa mais clara e borda
+                                    # grossa em cima, pra fechar visualmente o
+                                    # bloco dos canais.
+                                    base += (
+                                        " background-color: rgba(139,149,165,0.20);"
+                                        " font-weight: 800; border-top: 2px solid rgba(139,149,165,0.75);"
+                                    )
                                 elif tipo_linha == "saldo_acumulado":
-                                    base += " background-color: rgba(76,141,255,0.12); font-weight: 700;"
+                                    # Saldo: destaque azul mais forte, é a
+                                    # linha mais consultada da tabela.
+                                    base += (
+                                        " background-color: rgba(76,141,255,0.26);"
+                                        " font-weight: 800; border-top: 2px solid rgba(76,141,255,0.85);"
+                                    )
                                 estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                         return estilos
 
+                    # Largura confortável em todas as colunas de valor -- sem
+                    # isso o Streamlit espreme as colunas quando o mês tem
+                    # muitos dias, e os números ficam ilegíveis.
+                    config_colunas_d = {
+                        coluna: st.column_config.NumberColumn(coluna, width="medium")
+                        for coluna in pivot_d.columns
+                    }
                     st.dataframe(
                         pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
                         use_container_width=True,
-                        height=633,  # 17 linhas visíveis, mesmo padrão do painel
+                        column_config=config_colunas_d,
+                        height=668,  # 18 linhas visíveis, sem precisar rolar
                     )
                     st.caption(
                         "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
@@ -3468,21 +3490,56 @@ if st.session_state["painel_escolhido"] == "financeiro":
             else:
                 pct_top3_a, rotulo_pico_a, valor_pico_a = 0.0, "—", 0.0
 
+            # ---- Contas a pagar EM ABERTO ----
+            # Data de Liquidação em branco significa que ainda NÃO foi pago
+            # (não é dado faltando). A previsão de pagamento é o próprio
+            # vencimento, e a política interna é quitar em até 10 dias.
+            PRAZO_INTERNO_DIAS = 10
+            hoje_analise = pd.Timestamp(datetime.now(FUSO_BR).date())
+            df_pagar_a = df_a[df_a["Tipo Movimento"] == "saida"].copy()
+            df_pagar_aberto = df_pagar_a[df_pagar_a[COL_FIN_DATA_LIQUIDACAO].isna()].copy()
+            df_pagar_quitado = df_pagar_a[df_pagar_a[COL_FIN_DATA_LIQUIDACAO].notna()].copy()
+
+            valor_aberto_a = abs(df_pagar_aberto[COL_FIN_VALOR].sum())
+            valor_quitado_a = abs(df_pagar_quitado[COL_FIN_VALOR].sum())
+            total_pagar_a = valor_aberto_a + valor_quitado_a
+            pct_quitado_a = (valor_quitado_a / total_pagar_a * 100) if total_pagar_a else 0
+
+            if not df_pagar_aberto.empty:
+                venc_aberto = df_pagar_aberto[COL_FIN_VENCIMENTO]
+                mask_vencido = venc_aberto < hoje_analise
+                valor_vencido_a = abs(df_pagar_aberto.loc[mask_vencido, COL_FIN_VALOR].sum())
+                qtd_vencido_a = int(mask_vencido.sum())
+                # A vencer dentro do prazo interno de 10 dias
+                mask_prazo_interno = (
+                    (venc_aberto >= hoje_analise)
+                    & (venc_aberto <= hoje_analise + pd.Timedelta(days=PRAZO_INTERNO_DIAS))
+                )
+                valor_prazo_interno_a = abs(df_pagar_aberto.loc[mask_prazo_interno, COL_FIN_VALOR].sum())
+                qtd_prazo_interno_a = int(mask_prazo_interno.sum())
+            else:
+                valor_vencido_a = qtd_vencido_a = 0
+                valor_prazo_interno_a = qtd_prazo_interno_a = 0
+
             st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
             st.markdown(
                 render_kpi_row([
                     dict(label="PRAZO MÉDIO DE PAGAMENTO",
                          value=(f"{prazo_medio_pagto_a:+.1f} dias" if prazo_medio_pagto_a is not None else "—"),
                          value_color=(COLORS["positive"] if (prazo_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
-                         subtext="Negativo = paga antes do vencimento", icon="📤"),
+                         subtext=(f"Entre os {len(saidas_prazo_a)} títulos já pagos"
+                                  if prazo_medio_pagto_a is not None else "Nenhum título pago no recorte"),
+                         icon="📤"),
                     dict(label="PRAZO MÉDIO DE RECEBIMENTO",
                          value=(f"{prazo_medio_receb_a:+.1f} dias" if prazo_medio_receb_a is not None else "—"),
                          value_color=(COLORS["positive"] if (prazo_medio_receb_a or 0) <= 0 else COLORS["warning"]),
-                         subtext="Positivo = recebe depois do vencido", icon="📥"),
+                         subtext=(f"Entre os {len(entradas_prazo_a)} já recebidos"
+                                  if prazo_medio_receb_a is not None else "Nenhum recebimento liquidado"),
+                         icon="📥"),
                     dict(label="PAGAMENTOS EM DIA",
                          value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
                          value_color=(COLORS["positive"] if (pct_pago_em_dia_a or 0) >= 90 else COLORS["warning"]),
-                         subtext="Liquidados até a data de vencimento", icon="✅"),
+                         subtext="Pagos até o vencimento (dos já pagos)", icon="✅"),
                     dict(label="DIAS DE CAIXA",
                          value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
                          value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
@@ -3497,10 +3554,46 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 unsafe_allow_html=True,
             )
             st.caption(
-                "**Prazo médio** compara a data de liquidação com a de vencimento: negativo significa "
-                "antecipar, positivo significa atrasar. **Dias de caixa** estima por quantos dias o saldo "
-                "atual cobriria as saídas no ritmo médio do período. **Concentração** mostra o quanto do "
-                "desembolso está espremido em poucos dias."
+                "**Prazo médio** considera só o que já foi liquidado, comparando a data de pagamento com a "
+                "de vencimento: negativo significa antecipar, positivo significa atrasar. **Dias de caixa** "
+                "estima por quantos dias o saldo atual cobriria as saídas no ritmo médio do período. "
+                "**Concentração** mostra o quanto do desembolso está espremido em poucos dias."
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Contas a pagar em aberto ----
+            st.markdown(
+                '<div class="section-title">📌 Contas a Pagar em Aberto '
+                f'<span style="font-weight:400;font-size:12px;color:{COLORS["text_muted"]};">'
+                f'(posição em {hoje_analise:%d/%m/%Y} · prazo interno de {PRAZO_INTERNO_DIAS} dias)</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                render_kpi_row([
+                    dict(label="TOTAL A PAGAR NO RECORTE", value=formata_brl(total_pagar_a),
+                         value_color=COLORS["text"],
+                         subtext=f"{len(df_pagar_a)} títulos no período filtrado", icon="🧾"),
+                    dict(label="JÁ QUITADO", value=formata_brl(valor_quitado_a),
+                         value_color=COLORS["positive"],
+                         subtext=f"{pct_quitado_a:.0f}% do total · {len(df_pagar_quitado)} títulos", icon="✅"),
+                    dict(label="AINDA EM ABERTO", value=formata_brl(valor_aberto_a),
+                         value_color=COLORS["warning"],
+                         subtext=f"{len(df_pagar_aberto)} títulos sem liquidação", icon="⏳"),
+                    dict(label="VENCIDO E NÃO PAGO", value=formata_brl(valor_vencido_a),
+                         value_color=(COLORS["negative"] if valor_vencido_a else COLORS["positive"]),
+                         subtext=f"{qtd_vencido_a} títulos com vencimento passado", icon="🚨"),
+                    dict(label=f"A VENCER EM ATÉ {PRAZO_INTERNO_DIAS} DIAS",
+                         value=formata_brl(valor_prazo_interno_a),
+                         value_color=COLORS["text"],
+                         subtext=f"{qtd_prazo_interno_a} títulos dentro do prazo interno", icon="📆"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Título **sem data de liquidação** é título ainda não pago — a previsão de desembolso é o "
+                "próprio vencimento. **Vencido e não pago** é o que passou da data e continua em aberto; "
+                f"**a vencer em até {PRAZO_INTERNO_DIAS} dias** é o desembolso que entra no prazo interno "
+                "combinado com fornecedores e já deve estar reservado no caixa."
             )
             st.markdown("<br>", unsafe_allow_html=True)
 
