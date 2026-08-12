@@ -5981,6 +5981,9 @@ with tab1:
             _pct_barra = min(ritmo_rec_pct, 130)
             _proj_vs_orc = rec_projetada_mes - rec_orc_mes_cheio
             _cor_proj = COLORS["positive"] if _proj_vs_orc >= 0 else COLORS["negative"]
+            _cor_ritmo_ebitda = COLORS["positive"] if ritmo_ebitda_pct >= 100 else (
+                COLORS["warning"] if ritmo_ebitda_pct >= 90 else COLORS["negative"]
+            )
 
             st.markdown(
                 f"""
@@ -5989,16 +5992,26 @@ with tab1:
                             padding:12px 16px; margin-bottom:14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;
                                 flex-wrap:wrap; gap:14px;">
-                        <div style="min-width:210px;">
-                            <div style="font-size:11px; color:{COLORS['text_muted']};
+                        <div style="min-width:190px; padding-right:20px;
+                                    border-right:1px solid {COLORS['border']};">
+                            <div style="font-size:10px; color:{COLORS['text_muted']};
                                         text-transform:uppercase; letter-spacing:0.5px;">
-                                ⏱️ Ritmo de {_nome_mes_atual.capitalize()} · dia {_dias_corridos}/{_dias_mes}
+                                ⏱️ Ritmo de {_nome_mes_atual.capitalize()}
                             </div>
-                            <div style="font-size:19px; font-weight:800; color:{_cor_ritmo}; margin-top:2px;">
-                                {ritmo_rec_pct:.0f}% do esperado
+                            <div style="font-size:22px; font-weight:800; color:{_cor_ritmo};
+                                        margin-top:3px; line-height:1.1;">
+                                {ritmo_rec_pct:.0f}%
+                            </div>
+                            <div style="font-size:10.5px; color:{COLORS['text_muted']}; margin-top:2px;">
+                                do esperado · dia {_dias_corridos} de {_dias_mes}
                             </div>
                         </div>
-                        <div style="flex:1; min-width:240px;">
+                        <div style="flex:1; min-width:250px;">
+                            <div style="font-size:10px; color:{COLORS['text_muted']};
+                                        text-transform:uppercase; letter-spacing:0.5px;
+                                        margin-bottom:6px;">
+                                Receita do mês · realizado vs. meta
+                            </div>
                             <div style="height:8px; background:{COLORS['surface_alt']};
                                         border-radius:4px; overflow:hidden; position:relative;">
                                 <div style="width:{_pct_barra / 1.3:.0f}%; height:100%;
@@ -6012,18 +6025,33 @@ with tab1:
                                 <span>Meta até hoje <b style="color:{COLORS['text']};">{formata_m(rec_orc_mes_prop)}</b></span>
                             </div>
                         </div>
-                        <div style="text-align:right; min-width:190px;">
-                            <div style="font-size:11px; color:{COLORS['text_muted']};">
-                                Projeção de fechamento
+                        <div style="display:flex; align-items:stretch; gap:20px;
+                                    padding-left:20px; border-left:1px solid {COLORS['border']};">
+                            <div style="text-align:right;">
+                                <div style="font-size:10px; color:{COLORS['text_muted']};
+                                            text-transform:uppercase; letter-spacing:0.5px;">
+                                    Projeção do mês
+                                </div>
+                                <div style="font-size:17px; font-weight:800; color:{_cor_proj};
+                                            margin-top:3px; line-height:1.1;">
+                                    {formata_m(rec_projetada_mes)}
+                                </div>
+                                <div style="font-size:10.5px; color:{COLORS['text_muted']}; margin-top:2px;">
+                                    orçado {formata_m(rec_orc_mes_cheio)}
+                                </div>
                             </div>
-                            <div style="font-size:15px; font-weight:700; color:{_cor_proj}; margin-top:1px;">
-                                {formata_m(rec_projetada_mes)}
-                                <span style="font-size:11px; font-weight:400; color:{COLORS['text_muted']};">
-                                    vs. {formata_m(rec_orc_mes_cheio)} orçado
-                                </span>
-                            </div>
-                            <div style="font-size:11px; color:{COLORS['text_muted']}; margin-top:1px;">
-                                EBITDA em {ritmo_ebitda_pct:.0f}% do ritmo
+                            <div style="text-align:right;">
+                                <div style="font-size:10px; color:{COLORS['text_muted']};
+                                            text-transform:uppercase; letter-spacing:0.5px;">
+                                    Ritmo EBITDA
+                                </div>
+                                <div style="font-size:17px; font-weight:800; color:{_cor_ritmo_ebitda};
+                                            margin-top:3px; line-height:1.1;">
+                                    {ritmo_ebitda_pct:.0f}%
+                                </div>
+                                <div style="font-size:10.5px; color:{COLORS['text_muted']}; margin-top:2px;">
+                                    do esperado
+                                </div>
                             </div>
                         </div>
                     </div>
