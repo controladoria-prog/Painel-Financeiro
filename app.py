@@ -2684,8 +2684,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
             st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
 
-    tab_fin_mensal, tab_fin_diario, tab_fin_detalhe = st.tabs(
-        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🔍 Lançamentos"]
+    tab_fin_mensal, tab_fin_diario = st.tabs(
+        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário"]
     )
 
     # ---------------- MENSAL ----------------
@@ -3193,6 +3193,92 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
                     st.markdown("<br>", unsafe_allow_html=True)
 
+                    # ---- Indicadores operacionais de prazo e cobertura ----
+                    # Estes olham a relação entre VENCIMENTO e LIQUIDAÇÃO, que
+                    # é o que mostra se a empresa paga/recebe no prazo, e por
+                    # quantos dias o caixa aguenta as saídas.
+                    df_prazo_d = df_d[
+                        df_d[COL_FIN_DATA_LIQUIDACAO].notna() & df_d[COL_FIN_VENCIMENTO].notna()
+                    ].copy()
+                    if not df_prazo_d.empty:
+                        df_prazo_d["DiasAteLiquidar"] = (
+                            df_prazo_d[COL_FIN_DATA_LIQUIDACAO] - df_prazo_d[COL_FIN_VENCIMENTO]
+                        ).dt.days
+
+                    saidas_prazo = df_prazo_d[df_prazo_d["Tipo Movimento"] == "saida"] if not df_prazo_d.empty else pd.DataFrame()
+                    entradas_prazo = df_prazo_d[df_prazo_d["Tipo Movimento"] == "entrada"] if not df_prazo_d.empty else pd.DataFrame()
+
+                    prazo_medio_pagto = saidas_prazo["DiasAteLiquidar"].mean() if not saidas_prazo.empty else None
+                    prazo_medio_receb = entradas_prazo["DiasAteLiquidar"].mean() if not entradas_prazo.empty else None
+                    pct_pago_em_dia = (
+                        (saidas_prazo["DiasAteLiquidar"] <= 0).mean() * 100 if not saidas_prazo.empty else None
+                    )
+
+                    # Cobertura: quantos dias o saldo atual banca, ao ritmo
+                    # médio de saídas do período.
+                    qtd_dias_periodo_d = max(len(dias_ordenados_d), 1)
+                    saida_media_diaria = abs(saidas_d) / qtd_dias_periodo_d if qtd_dias_periodo_d else 0
+                    dias_de_caixa = (saldo_final_d / saida_media_diaria) if saida_media_diaria else None
+                    entrada_media_diaria = entradas_d / qtd_dias_periodo_d if qtd_dias_periodo_d else 0
+
+                    # Concentração: quanto das saídas está nos 3 dias de maior
+                    # desembolso (risco de aperto pontual de caixa).
+                    saidas_por_dia = (
+                        df_d[df_d["Tipo Movimento"] == "saida"].groupby("DiaOrd")[COL_FIN_VALOR].sum().abs()
+                    )
+                    if not saidas_por_dia.empty and saidas_por_dia.sum():
+                        pct_top3_saidas = saidas_por_dia.nlargest(3).sum() / saidas_por_dia.sum() * 100
+                        dia_maior_saida = saidas_por_dia.idxmax()
+                        rotulo_maior_saida = pd.Timestamp(dia_maior_saida).strftime("%d/%m")
+                        valor_maior_saida = saidas_por_dia.max()
+                    else:
+                        pct_top3_saidas = 0.0
+                        rotulo_maior_saida = "—"
+                        valor_maior_saida = 0.0
+
+                    st.markdown(
+                        '<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        render_kpi_row([
+                            dict(label="PRAZO MÉDIO DE PAGAMENTO",
+                                 value=(f"{prazo_medio_pagto:+.1f} dias" if prazo_medio_pagto is not None else "—"),
+                                 value_color=(COLORS["positive"] if (prazo_medio_pagto or 0) <= 0 else COLORS["negative"]),
+                                 subtext="Negativo = paga antes do vencimento", icon="📤"),
+                            dict(label="PRAZO MÉDIO DE RECEBIMENTO",
+                                 value=(f"{prazo_medio_receb:+.1f} dias" if prazo_medio_receb is not None else "—"),
+                                 value_color=(COLORS["positive"] if (prazo_medio_receb or 0) <= 0 else COLORS["warning"]),
+                                 subtext="Positivo = recebe depois do vencido", icon="📥"),
+                            dict(label="PAGAMENTOS EM DIA",
+                                 value=(f"{pct_pago_em_dia:.0f}%" if pct_pago_em_dia is not None else "—"),
+                                 value_color=(COLORS["positive"] if (pct_pago_em_dia or 0) >= 90 else COLORS["warning"]),
+                                 subtext="Liquidados até a data de vencimento", icon="✅"),
+                            dict(label="DIAS DE CAIXA",
+                                 value=(f"{dias_de_caixa:.1f} dias" if dias_de_caixa is not None else "—"),
+                                 value_color=(COLORS["positive"] if (dias_de_caixa or 0) >= 30 else COLORS["negative"]),
+                                 subtext=f"Ao ritmo de {formata_m(saida_media_diaria)}/dia de saídas", icon="🛡️"),
+                            dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
+                                 value=f"{formata_m(entrada_media_diaria)} / {formata_m(saida_media_diaria)}",
+                                 value_color=COLORS["text"],
+                                 subtext=f"Em {qtd_dias_periodo_d} dias com movimento", icon="📊"),
+                            dict(label="CONCENTRAÇÃO DAS SAÍDAS",
+                                 value=f"{pct_top3_saidas:.0f}%",
+                                 value_color=(COLORS["negative"] if pct_top3_saidas >= 50 else COLORS["text"]),
+                                 subtext=f"Nos 3 maiores dias · pico {rotulo_maior_saida} ({formata_m(valor_maior_saida)})",
+                                 icon="🎯"),
+                        ]),
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        "**Prazo médio** compara a data de liquidação com a de vencimento: negativo significa "
+                        "antecipar, positivo significa atrasar. **Dias de caixa** estima por quantos dias o "
+                        "saldo atual cobriria as saídas no ritmo médio do período. **Concentração** mostra o "
+                        "quanto do desembolso está espremido em poucos dias — quanto maior, mais o caixa "
+                        "depende de datas específicas."
+                    )
+                    st.markdown("<br>", unsafe_allow_html=True)
+
                     # Estrutura igual à da planilha: os canais como grupos, e
                     # dentro de cada um os movimentos, com subtotal por canal
                     # e Total Geral no fim.
@@ -3296,90 +3382,102 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # ---- Gráfico: movimento do dia + fluxo acumulado ----
                     if not df_d_fluxo.empty:
                         acumulado_d = por_dia_liquido_d.cumsum()
-                        cores_barras_d = [
-                            COLORS["positive"] if v >= 0 else COLORS["negative"]
-                            for v in por_dia_liquido_d.values
-                        ]
+
+                        # Entradas e saídas separadas por dia: mostra o
+                        # volume bruto que passou, não só o líquido -- dois
+                        # dias podem ter o mesmo resultado com movimentações
+                        # de tamanhos bem diferentes.
+                        entradas_por_dia_d = (
+                            df_d[df_d["Tipo Movimento"] == "entrada"]
+                            .groupby("DiaOrd")[COL_FIN_VALOR].sum()
+                            .reindex(dias_ordenados_d, fill_value=0)
+                        )
+                        saidas_por_dia_graf = (
+                            df_d[df_d["Tipo Movimento"] == "saida"]
+                            .groupby("DiaOrd")[COL_FIN_VALOR].sum().abs()
+                            .reindex(dias_ordenados_d, fill_value=0)
+                        )
+                        media_liquida_d = por_dia_liquido_d.mean()
+
                         st.markdown("<br>", unsafe_allow_html=True)
                         st.markdown(
-                            '<div class="section-title">📈 Movimento do Dia e Fluxo Acumulado</div>',
+                            '<div class="section-title">📈 Movimento Diário — Entradas, Saídas e Fluxo Acumulado</div>',
                             unsafe_allow_html=True,
                         )
                         fig_ac = go.Figure()
+                        # Entradas para cima, saídas para baixo: o eixo zero
+                        # separa visualmente o que entra do que sai.
                         fig_ac.add_trace(go.Bar(
-                            name="Fluxo do dia", x=rotulos_dias_d, y=list(por_dia_liquido_d.values),
-                            marker=dict(color=cores_barras_d, opacity=0.35,
-                                        line=dict(color=cores_barras_d, width=1.2)),
-                            hovertemplate="Fluxo do dia: R$ %{y:,.2f}<extra></extra>",
+                            name="Entradas", x=rotulos_dias_d, y=list(entradas_por_dia_d.values),
+                            marker=dict(color="rgba(62,207,142,0.30)",
+                                        line=dict(color=COLORS["positive"], width=1.3)),
+                            hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                         ))
+                        fig_ac.add_trace(go.Bar(
+                            name="Saídas", x=rotulos_dias_d, y=[-v for v in saidas_por_dia_graf.values],
+                            marker=dict(color="rgba(247,110,110,0.30)",
+                                        line=dict(color=COLORS["negative"], width=1.3)),
+                            hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
+                        ))
+                        # Resultado líquido de cada dia
                         fig_ac.add_trace(go.Scatter(
-                            name="Acumulado", x=rotulos_dias_d, y=list(acumulado_d.values),
-                            mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
-                            marker=dict(size=7, line=dict(color=COLORS["bg"], width=2)),
+                            name="Resultado do dia", x=rotulos_dias_d, y=list(por_dia_liquido_d.values),
+                            mode="lines+markers", line=dict(color=COLORS["warning"], width=2, dash="dot"),
+                            marker=dict(size=6, line=dict(color=COLORS["bg"], width=1.5)),
+                            hovertemplate="Resultado: R$ %{y:,.2f}<extra></extra>",
+                        ))
+                        # Acumulado no eixo da direita: a curva do caixa ao
+                        # longo do mês, que é a leitura mais importante aqui.
+                        fig_ac.add_trace(go.Scatter(
+                            name="Acumulado", x=rotulos_dias_d, y=list(acumulado_d.values), yaxis="y2",
+                            mode="lines", line=dict(color=COLORS["primary"], width=3.5),
+                            fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
                             hovertemplate="Acumulado: R$ %{y:,.2f}<extra></extra>",
                         ))
+                        # Referência: média diária do resultado
+                        fig_ac.add_hline(
+                            y=media_liquida_d, line=dict(color=COLORS["muted_line"], width=1.2, dash="dash"),
+                            annotation_text=f"média/dia {formata_m(media_liquida_d)}",
+                            annotation_position="top left",
+                            annotation_font=dict(size=9, color=COLORS["text_muted"]),
+                        )
+                        # Marca o pior dia, que costuma ser o ponto de atenção
+                        if not por_dia_liquido_d.empty:
+                            idx_pior = list(por_dia_liquido_d.values).index(por_dia_liquido_d.min())
+                            fig_ac.add_annotation(
+                                x=rotulos_dias_d[idx_pior], y=por_dia_liquido_d.min(),
+                                text=f"pior dia<br>{formata_m(por_dia_liquido_d.min())}",
+                                showarrow=True, arrowhead=2, arrowsize=0.8,
+                                arrowcolor=COLORS["negative"], ax=0, ay=38,
+                                font=dict(size=9, color=COLORS["negative"]),
+                                bgcolor="rgba(11,14,20,0.85)", bordercolor=COLORS["negative"], borderwidth=1,
+                            )
+
                         estilo_grafico(
-                            fig_ac, height=380,
+                            fig_ac, height=460, barmode="relative", bargap=0.25,
                             xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=9),
                                        tickangle=-45, automargin=True),
-                            yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
-                                       zerolinecolor=COLORS["border"]),
-                            legend=dict(orientation="h", yanchor="bottom", y=-0.34, xanchor="center", x=0.5),
-                            margin=dict(l=70, r=20, t=20, b=90),
+                            yaxis=dict(
+                                title=dict(text="Movimento do dia (R$)", font=dict(size=10, color=COLORS["text_muted"])),
+                                gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                                zerolinecolor=COLORS["text_muted"], zerolinewidth=1.5,
+                            ),
+                            yaxis2=dict(
+                                title=dict(text="Acumulado (R$)", font=dict(size=10, color=COLORS["primary"])),
+                                overlaying="y", side="right", showgrid=False, fixedrange=True,
+                                tickformat=",.0f", tickfont=dict(size=9, color=COLORS["primary"]),
+                            ),
+                            legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5,
+                                        font=dict(size=10)),
+                            margin=dict(l=80, r=80, t=30, b=95),
                             hovermode="x unified",
                         )
                         st.plotly_chart(fig_ac, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
                         st.caption(
-                            "Barras = resultado de cada dia (verde quando entra mais do que sai, vermelho no "
-                            "contrário). Linha azul = fluxo acumulado ao longo do período."
+                            "Barras verdes (para cima) = entradas do dia; barras vermelhas (para baixo) = saídas. "
+                            "Linha pontilhada laranja = resultado líquido do dia. Linha azul cheia = fluxo "
+                            "acumulado no eixo da direita. A linha tracejada marca a média diária do período."
                         )
-
-    # ---------------- LANÇAMENTOS ----------------
-    with tab_fin_detalhe:
-        st.caption(
-            "Lançamento a lançamento, exatamente como veio da planilha — para conferir qualquer "
-            "número das outras abas."
-        )
-
-        col_l1, col_l2, col_l3 = st.columns(3)
-        meses_disp_l = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
-        rotulos_l = ["Todos os meses"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_l]
-        with col_l1:
-            mes_sel_l = st.selectbox("Mês:", rotulos_l, key="fin_mes_sel_lanc")
-        with col_l2:
-            opcoes_canal_l = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
-            canal_sel_l = st.selectbox("Canal:", opcoes_canal_l, key="fin_canal_sel_lanc")
-        with col_l3:
-            opcoes_modal_l = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
-            modal_sel_l = st.selectbox("Modalidade:", opcoes_modal_l, key="fin_modal_sel_lanc")
-
-        df_lanc = df_fin.copy()
-        if mes_sel_l != "Todos os meses":
-            periodo_l = meses_disp_l[rotulos_l.index(mes_sel_l) - 1]
-            df_lanc = df_lanc[df_lanc["Data Efetiva"].dt.to_period("M") == periodo_l]
-        if canal_sel_l != "Todos":
-            df_lanc = df_lanc[df_lanc[COL_FIN_CANAL].astype(str) == canal_sel_l]
-        if modal_sel_l != "Todas":
-            df_lanc = df_lanc[df_lanc[COL_FIN_MODALIDADE].astype(str) == modal_sel_l]
-
-        colunas_detalhe = [
-            c for c in [
-                "Data Efetiva", COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_MOVIMENTO,
-                COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_PLANO_CONTAS, COL_FIN_GRUPO_DESPESA,
-                COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_VALOR,
-            ] if c in df_lanc.columns
-        ]
-        df_detalhe = df_lanc[colunas_detalhe].sort_values("Data Efetiva", ascending=False).head(3000)
-        st.write(f"Mostrando {len(df_detalhe)} de {len(df_lanc)} lançamentos do recorte selecionado.")
-        st.dataframe(
-            df_detalhe.style.format({
-                COL_FIN_VALOR: formata_brl,
-                "Data Efetiva": lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "",
-                COL_FIN_DATA_LIQUIDACAO: lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—",
-                COL_FIN_VENCIMENTO: lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—",
-            }).map(cor_valor, subset=[COL_FIN_VALOR]),
-            use_container_width=True, hide_index=True, height=520,
-        )
 
     st.stop()
 
