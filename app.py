@@ -3187,7 +3187,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             with col_d1:
                 mes_sel_d = st.selectbox(
                     "Mês:", rotulos_d, key="fin_mes_sel",
-                    help="Abre no mês do dia anterior, que é o último dia com movimento fechado.",
+                    help="Abre no mês do dia anterior; a tabela começa a partir de ontem.",
                 )
             with col_d2:
                 opcoes_canal_d = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
@@ -3213,22 +3213,24 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # Recorte de dias no mesmo estilo do "ajuste fino por dia":
                 # dia inicial e final, em vez de uma lista de etiquetas.
                 ultimo_dia_mes_d = periodo_d.end_time.day
-                # Se o mês escolhido é o do dia anterior, o padrão vai até
-                # ONTEM -- o dia de hoje normalmente ainda está incompleto.
-                # Nos demais meses, mostra o mês inteiro.
+                # No mês do dia anterior, a visão abre a partir de ONTEM e vai
+                # até o fim do mês -- é a leitura de quem quer ver o que vem
+                # pela frente (o que já passou está fechado). Nos demais
+                # meses, mostra o mês inteiro.
                 if periodo_d == periodo_mes_ontem:
-                    dia_fim_padrao_d = min(data_ontem_d.day, ultimo_dia_mes_d)
+                    dia_ini_padrao_d = min(data_ontem_d.day, ultimo_dia_mes_d)
                 else:
-                    dia_fim_padrao_d = ultimo_dia_mes_d
+                    dia_ini_padrao_d = 1
+                dia_fim_padrao_d = ultimo_dia_mes_d
 
                 # IMPORTANTE: quando um campo tem `key`, o Streamlit ignora o
                 # `value` e usa o que já está guardado na sessão. Por isso o
                 # padrão precisa ser gravado direto no session_state -- senão
-                # um valor antigo (ex.: 31) fica preso e o padrão nunca
-                # aparece. Refaz também quando a pessoa troca de mês, porque
-                # o dia final válido muda de um mês pro outro.
+                # um valor antigo fica preso e o padrão nunca aparece. Refaz
+                # também quando a pessoa troca de mês, porque o dia inicial e
+                # o final válidos mudam de um mês pro outro.
                 if st.session_state.get("_fin_mes_dias_ref") != mes_sel_d:
-                    st.session_state["fin_dia_ini_diario"] = 1
+                    st.session_state["fin_dia_ini_diario"] = dia_ini_padrao_d
                     st.session_state["fin_dia_fim_diario"] = dia_fim_padrao_d
                     st.session_state["_fin_mes_dias_ref"] = mes_sel_d
 
@@ -3238,12 +3240,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         dia_ini_d = st.number_input(
                             "Do dia", min_value=1, max_value=ultimo_dia_mes_d, step=1,
                             key="fin_dia_ini_diario",
+                            help="No mês corrente, começa no dia anterior — o que já passou está fechado.",
                         )
                     with col_dd2:
                         dia_fim_d = st.number_input(
                             "Até o dia", min_value=1, max_value=ultimo_dia_mes_d, step=1,
                             key="fin_dia_fim_diario",
-                            help="Por padrão vai até o dia anterior, que é o último dia fechado.",
+                            help="Por padrão vai até o último dia do mês.",
                         )
                 dia_ini_valido_d, dia_fim_valido_d = sorted([int(dia_ini_d), int(dia_fim_d)])
                 df_d = df_d[
