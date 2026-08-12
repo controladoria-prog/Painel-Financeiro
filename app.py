@@ -129,6 +129,17 @@ def kpi_card_html(label, value, value_color, subtext="", subtext_color=None,
     )
 
 
+def html_compacto(html):
+    """Tira quebras de linha e indentação do HTML antes de mandar pro
+    Streamlit.
+
+    Sem isso, blocos de HTML escritos de forma indentada (que é como se
+    escreve pra ficar legível no código) são interpretados pelo Markdown
+    como BLOCO DE CÓDIGO -- e a tela mostra as tags cruas em vez do
+    resultado renderizado. Compactar resolve de forma definitiva."""
+    return re.sub(r">\s+<", "><", " ".join(str(html).split()))
+
+
 def render_kpi_row(cards):
     """Renderiza uma linha de cartões de KPI em flexbox — usada no cabeçalho fixo (sticky)."""
     html = "".join(kpi_card_html(**c) for c in cards)
@@ -1030,7 +1041,7 @@ def checar_login():
     col_form, col_visual = st.columns([1, 1.05])
     with col_form:
         st.markdown(
-            f"""
+            html_compacto(f"""
             <div class="login-split-left">
                 <div class="login-badge">
                     <img src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
@@ -1039,7 +1050,7 @@ def checar_login():
                 <div class="login-hero-title">Faça seu Login<span class="dot">.</span></div>
                 <div class="login-hero-sub">Acesso restrito à Controladoria — Painel Financeiro</div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True,
         )
         st.markdown('<div class="login-field-label">E-mail</div>', unsafe_allow_html=True)
@@ -1931,7 +1942,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
 
     with col_head_a:
         st.markdown(
-            f"""
+            html_compacto(f"""
             <div class="tv-header">
                 <div class="brand">
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
@@ -1941,7 +1952,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     </div>
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True,
         )
     with col_head_b:
@@ -2268,12 +2279,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     )
 
     st.markdown(
-        f"""
+        html_compacto(f"""
         <div style="text-align:center;margin-top:2px;color:{COLORS['text_muted']};font-size:11px;">
             Painel para exibição (somente leitura) · Atualiza automaticamente a cada 90 segundos (acompanha os filtros do painel principal) ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
-        """,
+        """),
         unsafe_allow_html=True,
     )
 
@@ -2431,7 +2442,7 @@ if "painel_escolhido" not in st.session_state:
 
 if st.session_state["painel_escolhido"] is None:
     st.markdown(
-        f"""
+        html_compacto(f"""
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
             .hub-wrap {{ max-width: 760px; margin: 64px auto 0 auto; text-align: center; }}
@@ -2450,7 +2461,7 @@ if st.session_state["painel_escolhido"] is None:
             <div class="hub-title">👋 Bem-vindo(a) de volta</div>
             <div class="hub-sub">Escolha qual painel você quer acessar</div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True,
     )
 
@@ -2650,7 +2661,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
     email_atual_financeiro = str(usuario_atual.get("email", "")).strip().lower()
     if email_atual_financeiro not in EMAILS_FINANCEIRO_PERMITIDOS:
         st.markdown(
-            f"""
+            html_compacto(f"""
             <style>
                 .fin-bloqueio {{
                     max-width: 520px; margin: 90px auto 0 auto; text-align: center;
@@ -2692,7 +2703,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     Você está conectado como <b>{usuario_atual.get('email', '—')}</b>
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True,
         )
         col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1.2, 1])
@@ -2754,7 +2765,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
     with col_marca_fin:
         st.markdown(
-            f"""
+            html_compacto(f"""
             <div class="fin-topo">
                 <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
                 <div>
@@ -2766,7 +2777,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     </div>
                 </div>
             </div>
-            """,
+            """),
             unsafe_allow_html=True,
         )
     with col_base_fin:
@@ -5337,7 +5348,7 @@ def montar_relatorio_excel(
 # 7. FAIXA DE CONTEXTO (fina — não repete um bloco grande em toda aba)
 # ============================================================================
 st.markdown(
-    f"""
+    html_compacto(f"""
     <div class="top-status-strip">
         <span class="chip">{label_visao}</span>
         <span class="sep">·</span>
@@ -5345,7 +5356,7 @@ st.markdown(
         <span class="sep">·</span>
         <span>Controladoria B&amp;A · Painel Financeiro</span>
     </div>
-    """,
+    """),
     unsafe_allow_html=True,
 )
 
@@ -5485,7 +5496,7 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
                 cor_borda, icone = COLORS["warning"], "⚠️"
                 fundo = "rgba(245,166,35,0.08)"
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="border-left: 3px solid {cor_borda}; background: {fundo};
                             padding: 8px 12px; border-radius: 4px; margin-bottom: 7px;">
                     <div style="color:{COLORS['text']}; font-size:13px; font-weight:600;">
@@ -5495,7 +5506,7 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
                         {alerta['detalhe']}
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -5986,7 +5997,7 @@ with tab1:
             )
 
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="background:{COLORS['surface']}; border:1px solid {COLORS['border']};
                             border-left:3px solid {_cor_ritmo}; border-radius:8px;
                             padding:12px 16px; margin-bottom:14px;">
@@ -6056,7 +6067,7 @@ with tab1:
                         </div>
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -7005,13 +7016,13 @@ if not departamento_ativo and tab_diag is not None:
                 for rotulo, valor, cor, complemento in _metricas_be
             )
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="display:flex; flex-wrap:wrap; gap:6px 0; padding:14px 4px;
                             border-top:1px solid {COLORS['border']};
                             border-bottom:1px solid {COLORS['border']}; margin-bottom:20px;">
                     {_html_metricas}
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -7024,7 +7035,7 @@ if not departamento_ativo and tab_diag is not None:
             pos_pe = ponto_equilibrio_diag / rec_liq_diag * 100 if rec_liq_diag else 0
 
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="margin:0 4px 6px 4px;">
                     <!-- marcador do ponto de equilíbrio: rótulo bem acima da
                          régua, com uma haste ligando os dois -->
@@ -7099,7 +7110,7 @@ if not departamento_ativo and tab_diag is not None:
                         </div>
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -7118,14 +7129,14 @@ if not departamento_ativo and tab_diag is not None:
                     "de receita para cobrir os custos do período."
                 )
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="margin-top:16px; padding:11px 15px; border-radius:6px;
                             background:{COLORS['surface']};
                             border-left:3px solid {_cor_seg};
                             font-size:13px; color:{COLORS['text']};">
                     {_texto_conclusao_html}
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
             st.caption(
@@ -7197,13 +7208,13 @@ if not departamento_ativo and tab_diag is not None:
                 for rotulo, valor, cor, complemento in _metricas_abc
             )
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="display:flex; flex-wrap:wrap; gap:6px 0; padding:14px 4px;
                             border-top:1px solid {COLORS['border']};
                             border-bottom:1px solid {COLORS['border']}; margin-bottom:20px;">
                     {_html_abc}
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
 
@@ -7246,7 +7257,7 @@ if not departamento_ativo and tab_diag is not None:
                 )
 
             st.markdown(
-                f"""
+                html_compacto(f"""
                 <div style="margin:0 4px 4px 4px;">
                     <div style="font-size:11px; color:{COLORS['text_muted']}; margin-bottom:5px;">
                         Proporção de <b style="color:{COLORS['text']};">contas</b>
@@ -7262,7 +7273,7 @@ if not departamento_ativo and tab_diag is not None:
                         {''.join(_legenda_classes)}
                     </div>
                 </div>
-                """,
+                """),
                 unsafe_allow_html=True,
             )
             st.markdown("<br>", unsafe_allow_html=True)
@@ -7304,7 +7315,7 @@ if not departamento_ativo and tab_diag is not None:
                     """
                 )
             st.markdown(
-                f'<div style="margin:0 4px;">{"".join(_linhas_ranking)}</div>',
+                html_compacto(f'<div style="margin:0 4px;">{"".join(_linhas_ranking)}</div>'),
                 unsafe_allow_html=True,
             )
 
@@ -8208,10 +8219,10 @@ if eh_admin and not departamento_ativo:
 # 9. RODAPÉ
 # ============================================================================
 st.markdown(
-    f"""
+    html_compacto(f"""
     <div class="footer-note">
         Controladoria B&A · Painel Financeiro · Dados atualizados automaticamente a cada 60s
     </div>
-    """,
+    """),
     unsafe_allow_html=True,
 )
