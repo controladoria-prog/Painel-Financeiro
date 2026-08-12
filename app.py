@@ -2466,6 +2466,53 @@ def _classificar_movimento_fin(nome_movimento):
     return "outro"
 
 
+def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos):
+    """Monta a tabela Movimento x Período com a agregação CORRETA para cada
+    tipo de linha:
+
+    - Linhas de FLUXO (a receber / a pagar): SOMA do período. Faz sentido --
+      são movimentações que se acumulam ao longo dos dias.
+    - Linhas de SALDO (caixa, banco, aplicação): pega a POSIÇÃO DO ÚLTIMO
+      DIA com movimento dentro daquele período, NÃO a soma. Saldo é uma
+      foto do momento: somar o saldo de todos os dias do mês daria um
+      número gigante e sem sentido (era o que acontecia antes -- o saldo
+      aparecia inflado porque cada dia era somado ao anterior).
+    """
+    resultado = {}
+    for movimento, grupo in df.groupby(coluna_movimento):
+        tipo = _classificar_movimento_fin(movimento)
+        linha = {}
+        for periodo in ordem_periodos:
+            do_periodo = grupo[grupo[coluna_periodo] == periodo]
+            if do_periodo.empty:
+                linha[periodo] = 0.0
+            elif tipo in ("saldo", "aplicacao"):
+                # posição do último dia com movimento dentro do período
+                ultima_data = do_periodo["Data Efetiva"].max()
+                linha[periodo] = do_periodo.loc[
+                    do_periodo["Data Efetiva"] == ultima_data, coluna_valor
+                ].sum()
+            else:
+                linha[periodo] = do_periodo[coluna_valor].sum()
+        resultado[movimento] = linha
+
+    pivot = pd.DataFrame.from_dict(resultado, orient="index")
+    pivot = pivot.reindex(columns=ordem_periodos, fill_value=0.0)
+    return pivot
+
+
+def _saldo_posicao_atual_fin(df, coluna_valor):
+    """Saldo disponível = posição do ÚLTIMO DIA com movimento no recorte
+    filtrado (não a soma de todos os dias). Se houver mais de um canal, soma
+    os canais NAQUELE dia, que é o saldo total da empresa naquela data."""
+    linhas_saldo = df[df["Tipo Movimento"] == "saldo"]
+    if linhas_saldo.empty:
+        return 0.0, None
+    ultima_data = linhas_saldo["Data Efetiva"].max()
+    valor = linhas_saldo.loc[linhas_saldo["Data Efetiva"] == ultima_data, coluna_valor].sum()
+    return valor, ultima_data
+
+
 if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         """<style>[data-testid="stSidebar"], header[data-testid="stHeader"] { display: none !important; }</style>""",
@@ -2697,7 +2744,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
         st.stop()
 
     # ================= KPIs =================
-    saldo_posicao_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saldo", COL_FIN_VALOR].sum()
+    saldo_posicao_fin, data_saldo_fin = _saldo_posicao_atual_fin(df_fin_view, COL_FIN_VALOR)
     entradas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
     saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
     fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
@@ -2714,7 +2761,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         render_kpi_row([
             dict(label="SALDO EM CAIXA / BANCO", value=formata_brl(saldo_posicao_fin),
-                 value_color=cor_variacao(saldo_posicao_fin), subtext="Posição disponível (sem aplicações)", icon="🏦"),
+                 value_color=cor_variacao(saldo_posicao_fin),
+                 subtext=(f"Posição em {data_saldo_fin:%d/%m/%Y}" if data_saldo_fin is not None else "Sem posição no período"),
+                 icon="🏦"),
             dict(label="ENTRADAS (A RECEBER)", value=formata_brl(entradas_fin),
                  value_color=COLORS["positive"], subtext="Realizado + projetado no período", icon="📥"),
             dict(label="SAÍDAS (A PAGAR)", value=formata_brl(saidas_fin),
@@ -2744,18 +2793,34 @@ if st.session_state["painel_escolhido"] == "financeiro":
         meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
         rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
 
-        pivot_m = df_m.pivot_table(
-            index=COL_FIN_MOVIMENTO, columns="PeriodoMes", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
-        )
-        pivot_m = pivot_m.reindex(columns=meses_ordenados_m, fill_value=0)
+        pivot_m = _pivot_fluxo_fin(df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m)
+
+        # A coluna final tem significado diferente conforme o tipo de linha:
+        # para fluxo é a SOMA do período; para saldo é a ÚLTIMA posição
+        # (somar saldos de meses diferentes não faria sentido).
+        totais_finais_m = {}
+        for movimento in pivot_m.index:
+            if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
+                serie = pivot_m.loc[movimento]
+                nao_zerados = serie[serie != 0]
+                totais_finais_m[movimento] = nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0
+            else:
+                totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
+
         pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
-        pivot_m["TOTAL"] = pivot_m.sum(axis=1)
+        pivot_m["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_m)
         pivot_m.index.name = "Movimento"
 
         st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
         st.dataframe(
             pivot_m.style.format(formata_brl).map(cor_valor),
             use_container_width=True,
+        )
+        st.caption(
+            "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
+            "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
+            "(são movimentações que se acumulam). Por isso a última coluna traz o total acumulado para o "
+            "fluxo e a posição mais recente para o saldo."
         )
 
         # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
@@ -2795,14 +2860,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
             df_ap = df_aplicacoes_fin.copy()
             df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
             meses_ap = sorted(df_ap["PeriodoMes"].unique())
-            pivot_ap = df_ap.pivot_table(
-                index=COL_FIN_MOVIMENTO, columns="PeriodoMes", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
-            )
-            pivot_ap = pivot_ap.reindex(columns=meses_ap, fill_value=0)
+            pivot_ap = _pivot_fluxo_fin(df_ap, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ap)
+            ultimas_posicoes_ap = {}
+            for movimento in pivot_ap.index:
+                serie_ap = pivot_ap.loc[movimento]
+                nao_zerados_ap = serie_ap[serie_ap != 0]
+                ultimas_posicoes_ap[movimento] = nao_zerados_ap.iloc[-1] if not nao_zerados_ap.empty else 0.0
             pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
-            pivot_ap["TOTAL"] = pivot_ap.sum(axis=1)
+            pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
             pivot_ap.index.name = "Movimento"
             st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
+            st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
     # ---------------- DIÁRIO ----------------
     with tab_fin_diario:
@@ -2836,8 +2904,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     index=COL_FIN_MOVIMENTO, columns="DiaOrd", values=COL_FIN_VALOR, aggfunc="sum", fill_value=0,
                 )
                 pivot_d = pivot_d.reindex(columns=dias_ordenados_d, fill_value=0)
+                # Coluna final: soma do mês pro fluxo; último saldo do mês
+                # pras linhas de posição (somar saldo diário não faz sentido).
+                totais_finais_d = {}
+                for movimento in pivot_d.index:
+                    if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
+                        serie_d = pivot_d.loc[movimento]
+                        nao_zerados_d = serie_d[serie_d != 0]
+                        totais_finais_d[movimento] = nao_zerados_d.iloc[-1] if not nao_zerados_d.empty else 0.0
+                    else:
+                        totais_finais_d[movimento] = pivot_d.loc[movimento].sum()
                 pivot_d.columns = [rotulos_dias_d[d] for d in pivot_d.columns]
-                pivot_d["TOTAL DO MÊS"] = pivot_d.sum(axis=1)
+                pivot_d["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_d)
                 pivot_d.index.name = "Movimento"
 
                 st.markdown(
@@ -2845,6 +2923,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     unsafe_allow_html=True,
                 )
                 st.dataframe(pivot_d.style.format(formata_brl).map(cor_valor), use_container_width=True)
+                st.caption(
+                    "Cada coluna é um dia. Na última coluna, contas a receber/pagar trazem a **soma do mês** "
+                    "e caixa/banco trazem o **saldo do último dia** com movimento."
+                )
 
                 # Saldo acumulado: só do fluxo (entradas/saídas), sem saldo de posição
                 df_d_fluxo = df_d[df_d["Tipo Movimento"].isin(["entrada", "saida"])]
