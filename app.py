@@ -3214,7 +3214,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown('<div class="section-title">📈 Fluxo Acumulado no Mês (entradas − saídas)</div>', unsafe_allow_html=True)
                     fig_ac = go.Figure(data=[go.Scatter(
-                        x=[rotulos_dias_d[d] for d in dias_ordenados_d], y=list(acumulado_d.values),
+                        x=rotulos_dias_d, y=list(acumulado_d.values),
                         mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
                         fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
                     )])
