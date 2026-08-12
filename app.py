@@ -2635,10 +2635,28 @@ if st.session_state["painel_escolhido"] == "financeiro":
         df_fin[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
     )
 
-    # Fluxo de caixa usa a Data de Liquidação (quando o dinheiro de fato
-    # entrou/saiu). Para o que ainda não liquidou (ex.: "A Receber
-    # Projetado"), usa o Vencimento como data prevista.
-    df_fin["Data Efetiva"] = df_fin[COL_FIN_DATA_LIQUIDACAO].fillna(df_fin[COL_FIN_VENCIMENTO])
+    # ---- Base de data: qual coluna define em que mês o lançamento cai ----
+    # A tabela dinâmica da planilha (e a medida DAX que a área usa) tem o
+    # VENCIMENTO como eixo de data -- inclusive o LASTDATE do saldo de
+    # Caixa/Banco é sobre Vencimento.1. Por isso o padrão aqui é Vencimento:
+    # é o que faz o painel bater número a número com a planilha.
+    # A opção por Liquidação fica disponível para quem quiser ver o caixa
+    # pela data em que o dinheiro efetivamente entrou/saiu.
+    base_data_fin = st.radio(
+        "Base de data:",
+        ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
+        horizontal=True, key="fin_base_data",
+        help=(
+            "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica da planilha. "
+            "Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que ainda não liquidou, "
+            "usa o vencimento como previsão)."
+        ),
+    )
+    if base_data_fin.startswith("Vencimento"):
+        df_fin["Data Efetiva"] = df_fin[COL_FIN_VENCIMENTO].fillna(df_fin[COL_FIN_DATA_LIQUIDACAO])
+    else:
+        df_fin["Data Efetiva"] = df_fin[COL_FIN_DATA_LIQUIDACAO].fillna(df_fin[COL_FIN_VENCIMENTO])
+
     total_linhas_lidas = len(df_fin)
     df_fin = df_fin.dropna(subset=["Data Efetiva"])
     linhas_sem_data = total_linhas_lidas - len(df_fin)
@@ -2811,9 +2829,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
         pivot_m["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_m)
         pivot_m.index.name = "Movimento"
 
+        # TOTAL GERAL: soma de todas as linhas em cada mês -- mesmo cálculo
+        # do "Total Geral" da tabela dinâmica da planilha.
+        linha_total_geral_m = pivot_m.sum(axis=0)
+        pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
+
         st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
         st.dataframe(
-            pivot_m.style.format(formata_brl).map(cor_valor),
+            pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
             use_container_width=True,
         )
         st.caption(
@@ -2821,6 +2844,41 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
             "(são movimentações que se acumulam). Por isso a última coluna traz o total acumulado para o "
             "fluxo e a posição mais recente para o saldo."
+        )
+
+        # ---- Passivo e Saldo Acumulado (mesmo quadro da planilha) ----
+        colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
+        serie_total_geral = linha_total_geral_m[colunas_meses_m]
+
+        # Passivo = Total Geral com o sinal invertido.
+        serie_passivo = -serie_total_geral
+
+        # Saldo Acumulado = Total Geral SEM o Contas a Pagar, ou seja, tudo
+        # que a empresa tem/vai receber antes de descontar o que deve.
+        # (Fórmula conferida contra a planilha nos 6 meses do quadro.)
+        movimentos_a_pagar = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saida"]
+        serie_a_pagar = (
+            pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
+            if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
+        )
+        serie_saldo_acumulado = serie_total_geral - serie_a_pagar
+
+        df_resumo_m = pd.DataFrame(
+            [serie_passivo, serie_saldo_acumulado],
+            index=["Passivo", "Saldo Acumulado"],
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📐 Passivo · Saldo Acumulado</div>', unsafe_allow_html=True)
+        st.dataframe(
+            df_resumo_m.style.format(formata_brl).map(cor_valor),
+            use_container_width=True,
+        )
+        st.caption(
+            "**Passivo** = Total Geral do mês com o sinal invertido. "
+            "**Saldo Acumulado** = Total Geral sem o Contas a Pagar (o que há disponível antes de descontar "
+            "o que se deve). Ambas as fórmulas foram conferidas contra a planilha. "
+            "A linha *Referência de 30%* ainda não está aqui porque não consegui deduzir o cálculo dela a "
+            "partir dos números — me diga como ela é calculada que eu incluo."
         )
 
         # Entradas x Saídas por mês (só fluxo, sem misturar saldo)
