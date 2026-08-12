@@ -3249,6 +3249,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             help="Por padrão vai até o último dia do mês.",
                         )
                 dia_ini_valido_d, dia_fim_valido_d = sorted([int(dia_ini_d), int(dia_fim_d)])
+                # Guarda o MÊS INTEIRO antes de cortar os dias: é dele que sai
+                # o saldo acumulado dos dias anteriores ao recorte (senão o
+                # saldo do primeiro dia exibido começaria do zero) e é ele que
+                # alimenta o gráfico, que mostra sempre o mês completo.
+                df_d_mes = df_d.copy()
                 df_d = df_d[
                     (df_d["DiaOrd"].dt.day >= dia_ini_valido_d)
                     & (df_d["DiaOrd"].dt.day <= dia_fim_valido_d)
@@ -3384,11 +3389,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
                     # ---- Linha SALDO: igual à da planilha ----
                     # Cada dia soma o Total Geral daquele dia com o saldo do
-                    # dia anterior, ou seja, é o Total Geral acumulado. É essa
-                    # linha que mostra a posição real de caixa ao longo do mês.
-                    total_geral_por_dia = pivot_d.iloc[-1][rotulos_dias_d]
-                    saldo_acumulado_dia = total_geral_por_dia.cumsum()
-                    linha_saldo_d = list(saldo_acumulado_dia.values) + [saldo_acumulado_dia.iloc[-1]]
+                    # dia anterior. IMPORTANTE: o acúmulo parte do INÍCIO DO
+                    # MÊS, não do primeiro dia exibido -- se você recorta a
+                    # partir do dia 11, o saldo do dia 11 já tem que trazer
+                    # tudo que veio dos dias 1 a 10. Por isso o cálculo usa o
+                    # mês inteiro e só depois recorta as colunas visíveis.
+                    total_geral_mes_dia = (
+                        df_d_mes.groupby("DiaOrd")[COL_FIN_VALOR].sum().sort_index()
+                    )
+                    saldo_acumulado_mes = total_geral_mes_dia.cumsum()
+                    saldo_dias_exibidos = [
+                        float(saldo_acumulado_mes.get(dia, 0.0)) for dia in dias_ordenados_d
+                    ]
+                    linha_saldo_d = saldo_dias_exibidos + [
+                        saldo_dias_exibidos[-1] if saldo_dias_exibidos else 0.0
+                    ]
                     pivot_d.loc[_rotulo_unico_d("SALDO (acumulado)", len(pivot_d))] = linha_saldo_d
                     estilo_linhas_d.append(("saldo_acumulado", "SALDO (acumulado)"))
 
@@ -3451,48 +3466,60 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
 
                     # ---- Gráfico: movimento do dia + fluxo acumulado ----
-                    if not df_d_fluxo.empty:
-                        acumulado_d = por_dia_liquido_d.cumsum()
+                    # O gráfico mostra sempre o MÊS INTEIRO, mesmo quando a
+                    # tabela acima está recortada em alguns dias -- a curva do
+                    # mês só faz sentido completa. Ao trocar de mês, ele passa
+                    # a mostrar todos os dias do novo mês.
+                    df_mes_fluxo_graf = df_d_mes[df_d_mes["Tipo Movimento"].isin(["entrada", "saida"])]
+                    if not df_mes_fluxo_graf.empty:
+                        dias_grafico_d = sorted(df_d_mes["DiaOrd"].unique())
+                        rotulos_grafico_d = [pd.Timestamp(d).strftime("%d/%m") for d in dias_grafico_d]
+
+                        por_dia_liquido_graf = (
+                            df_mes_fluxo_graf.groupby("DiaOrd")[COL_FIN_VALOR].sum()
+                            .reindex(dias_grafico_d, fill_value=0)
+                        )
+                        acumulado_d = por_dia_liquido_graf.cumsum()
 
                         # Entradas e saídas separadas por dia: mostra o
                         # volume bruto que passou, não só o líquido -- dois
                         # dias podem ter o mesmo resultado com movimentações
                         # de tamanhos bem diferentes.
                         entradas_por_dia_d = (
-                            df_d[df_d["Tipo Movimento"] == "entrada"]
+                            df_d_mes[df_d_mes["Tipo Movimento"] == "entrada"]
                             .groupby("DiaOrd")[COL_FIN_VALOR].sum()
-                            .reindex(dias_ordenados_d, fill_value=0)
+                            .reindex(dias_grafico_d, fill_value=0)
                         )
                         saidas_por_dia_graf = (
-                            df_d[df_d["Tipo Movimento"] == "saida"]
+                            df_d_mes[df_d_mes["Tipo Movimento"] == "saida"]
                             .groupby("DiaOrd")[COL_FIN_VALOR].sum().abs()
-                            .reindex(dias_ordenados_d, fill_value=0)
+                            .reindex(dias_grafico_d, fill_value=0)
                         )
-                        media_liquida_d = por_dia_liquido_d.mean()
+                        media_liquida_d = por_dia_liquido_graf.mean()
 
                         st.markdown("<br>", unsafe_allow_html=True)
                         st.markdown(
-                            '<div class="section-title">📈 Movimento Diário — Entradas, Saídas e Fluxo Acumulado</div>',
+                            f'<div class="section-title">📈 Movimento Diário — {mes_sel_d} (mês completo)</div>',
                             unsafe_allow_html=True,
                         )
                         fig_ac = go.Figure()
                         # Entradas para cima, saídas para baixo: o eixo zero
                         # separa visualmente o que entra do que sai.
                         fig_ac.add_trace(go.Bar(
-                            name="Entradas", x=rotulos_dias_d, y=list(entradas_por_dia_d.values),
+                            name="Entradas", x=rotulos_grafico_d, y=list(entradas_por_dia_d.values),
                             marker=dict(color="rgba(62,207,142,0.30)",
                                         line=dict(color=COLORS["positive"], width=1.3)),
                             hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                         ))
                         fig_ac.add_trace(go.Bar(
-                            name="Saídas", x=rotulos_dias_d, y=[-v for v in saidas_por_dia_graf.values],
+                            name="Saídas", x=rotulos_grafico_d, y=[-v for v in saidas_por_dia_graf.values],
                             marker=dict(color="rgba(247,110,110,0.30)",
                                         line=dict(color=COLORS["negative"], width=1.3)),
                             hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
                         ))
                         # Resultado líquido de cada dia
                         fig_ac.add_trace(go.Scatter(
-                            name="Resultado do dia", x=rotulos_dias_d, y=list(por_dia_liquido_d.values),
+                            name="Resultado do dia", x=rotulos_grafico_d, y=list(por_dia_liquido_graf.values),
                             mode="lines+markers", line=dict(color=COLORS["warning"], width=2, dash="dot"),
                             marker=dict(size=6, line=dict(color=COLORS["bg"], width=1.5)),
                             hovertemplate="Resultado: R$ %{y:,.2f}<extra></extra>",
@@ -3500,7 +3527,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         # Acumulado no eixo da direita: a curva do caixa ao
                         # longo do mês, que é a leitura mais importante aqui.
                         fig_ac.add_trace(go.Scatter(
-                            name="Acumulado", x=rotulos_dias_d, y=list(acumulado_d.values), yaxis="y2",
+                            name="Acumulado", x=rotulos_grafico_d, y=list(acumulado_d.values), yaxis="y2",
                             mode="lines", line=dict(color=COLORS["primary"], width=3.5),
                             fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
                             hovertemplate="Acumulado: R$ %{y:,.2f}<extra></extra>",
@@ -3513,11 +3540,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             annotation_font=dict(size=9, color=COLORS["text_muted"]),
                         )
                         # Marca o pior dia, que costuma ser o ponto de atenção
-                        if not por_dia_liquido_d.empty:
-                            idx_pior = list(por_dia_liquido_d.values).index(por_dia_liquido_d.min())
+                        if not por_dia_liquido_graf.empty:
+                            idx_pior = list(por_dia_liquido_graf.values).index(por_dia_liquido_graf.min())
                             fig_ac.add_annotation(
-                                x=rotulos_dias_d[idx_pior], y=por_dia_liquido_d.min(),
-                                text=f"pior dia<br>{formata_m(por_dia_liquido_d.min())}",
+                                x=rotulos_grafico_d[idx_pior], y=por_dia_liquido_graf.min(),
+                                text=f"pior dia<br>{formata_m(por_dia_liquido_graf.min())}",
                                 showarrow=True, arrowhead=2, arrowsize=0.8,
                                 arrowcolor=COLORS["negative"], ax=0, ay=38,
                                 font=dict(size=9, color=COLORS["negative"]),
@@ -3547,7 +3574,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         st.caption(
                             "Barras verdes (para cima) = entradas do dia; barras vermelhas (para baixo) = saídas. "
                             "Linha pontilhada laranja = resultado líquido do dia. Linha azul cheia = fluxo "
-                            "acumulado no eixo da direita. A linha tracejada marca a média diária do período."
+                            "acumulado no eixo da direita. A linha tracejada marca a média diária. "
+                            "O gráfico mostra sempre o **mês inteiro**, mesmo quando a tabela acima está "
+                            "recortada em alguns dias."
                         )
 
     # ---------------- ANÁLISES ----------------
