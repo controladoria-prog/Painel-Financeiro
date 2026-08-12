@@ -2777,8 +2777,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
             st.dataframe(df_fin.head(15), use_container_width=True, hide_index=True)
 
-    tab_fin_mensal, tab_fin_diario, tab_fin_analises = st.tabs(
-        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "📊 Análises"]
+    tab_fin_mensal, tab_fin_diario, tab_fin_tesouraria, tab_fin_analises = st.tabs(
+        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🏦 Tesouraria", "📊 Análises"]
     )
 
     # ---------------- MENSAL ----------------
@@ -3578,6 +3578,376 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "O gráfico mostra sempre o **mês inteiro**, mesmo quando a tabela acima está "
                             "recortada em alguns dias."
                         )
+
+    # ---------------- TESOURARIA ----------------
+    with tab_fin_tesouraria:
+        st.caption(
+            "Visão de tesouraria: para onde o caixa caminha nas próximas semanas, quanto de capital "
+            "a operação exige e o risco de depender de poucos pagadores."
+        )
+
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            opcoes_canal_t = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            canal_sel_t = st.selectbox("Canal:", opcoes_canal_t, key="fin_canal_sel_tesouraria")
+        with col_t2:
+            semanas_horizonte_t = st.slider(
+                "Semanas à frente:", min_value=4, max_value=26, value=13, step=1,
+                key="fin_semanas_tesouraria",
+                help="13 semanas é o padrão de mercado em tesouraria (um trimestre).",
+            )
+
+        df_t = df_fin[df_fin["Tipo Movimento"] != "aplicacao"].copy()
+        if canal_sel_t != "Todos":
+            df_t = df_t[df_t[COL_FIN_CANAL].astype(str) == canal_sel_t]
+
+        if df_t.empty:
+            st.info("Nenhum lançamento para o canal selecionado.")
+        else:
+            hoje_t = pd.Timestamp(datetime.now(FUSO_BR).date())
+
+            # =============================================================
+            # 1. PREVISÃO DE CAIXA — PRÓXIMAS SEMANAS
+            # =============================================================
+            st.markdown(
+                f'<div class="section-title">📆 Previsão de Caixa — próximas {semanas_horizonte_t} semanas</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Saldo de partida: posição de caixa/banco mais recente
+            saldo_inicial_t, data_saldo_inicial_t = _saldo_posicao_atual_fin(df_t, COL_FIN_VALOR)
+
+            # A projeção olha só o que está À FRENTE e ainda não liquidou --
+            # é o compromisso futuro, que é o que a tesouraria precisa cobrir.
+            fim_horizonte_t = hoje_t + pd.Timedelta(weeks=semanas_horizonte_t)
+            df_futuro_t = df_t[
+                (df_t["Tipo Movimento"].isin(["entrada", "saida"]))
+                & (df_t["Data Efetiva"] >= hoje_t)
+                & (df_t["Data Efetiva"] < fim_horizonte_t)
+            ].copy()
+
+            if df_futuro_t.empty:
+                st.info(
+                    "Não há lançamentos futuros dentro do horizonte escolhido. "
+                    "Aumente o número de semanas ou verifique se há contas a receber/pagar lançadas à frente."
+                )
+            else:
+                # Agrupa por semana (segunda-feira como início)
+                df_futuro_t["InicioSemana"] = (
+                    df_futuro_t["Data Efetiva"] - pd.to_timedelta(df_futuro_t["Data Efetiva"].dt.weekday, unit="D")
+                ).dt.normalize()
+
+                semanas_t = []
+                inicio_semana_atual = (hoje_t - pd.Timedelta(days=hoje_t.weekday())).normalize()
+                for i in range(semanas_horizonte_t):
+                    semanas_t.append(inicio_semana_atual + pd.Timedelta(weeks=i))
+
+                entradas_sem = (
+                    df_futuro_t[df_futuro_t["Tipo Movimento"] == "entrada"]
+                    .groupby("InicioSemana")[COL_FIN_VALOR].sum().reindex(semanas_t, fill_value=0)
+                )
+                saidas_sem = (
+                    df_futuro_t[df_futuro_t["Tipo Movimento"] == "saida"]
+                    .groupby("InicioSemana")[COL_FIN_VALOR].sum().reindex(semanas_t, fill_value=0)
+                )
+                liquido_sem = entradas_sem + saidas_sem
+                saldo_projetado_sem = saldo_inicial_t + liquido_sem.cumsum()
+
+                rotulos_sem = [
+                    f"S{i + 1}\n{pd.Timestamp(s).strftime('%d/%m')}" for i, s in enumerate(semanas_t)
+                ]
+
+                # KPIs da projeção
+                menor_saldo_t = saldo_projetado_sem.min()
+                idx_menor_t = int(saldo_projetado_sem.values.argmin())
+                semana_critica_t = pd.Timestamp(semanas_t[idx_menor_t]).strftime("%d/%m/%Y")
+                semanas_negativas_t = int((saldo_projetado_sem < 0).sum())
+                saldo_final_t = saldo_projetado_sem.iloc[-1]
+
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="SALDO DE PARTIDA", value=formata_brl(saldo_inicial_t),
+                             value_color=cor_variacao(saldo_inicial_t),
+                             subtext=(f"Posição em {data_saldo_inicial_t:%d/%m/%Y}"
+                                      if data_saldo_inicial_t is not None else "Sem posição registrada"),
+                             icon="🏦"),
+                        dict(label="ENTRADAS PREVISTAS", value=formata_brl(entradas_sem.sum()),
+                             value_color=COLORS["positive"],
+                             subtext=f"Nas próximas {semanas_horizonte_t} semanas", icon="📥"),
+                        dict(label="SAÍDAS PREVISTAS", value=formata_brl(saidas_sem.sum()),
+                             value_color=COLORS["negative"],
+                             subtext=f"Nas próximas {semanas_horizonte_t} semanas", icon="📤"),
+                        dict(label="SALDO AO FIM DO HORIZONTE", value=formata_brl(saldo_final_t),
+                             value_color=cor_variacao(saldo_final_t),
+                             subtext="Partida + entradas − saídas", icon="🎯"),
+                        dict(label="MENOR SALDO PROJETADO", value=formata_brl(menor_saldo_t),
+                             value_color=cor_variacao(menor_saldo_t),
+                             subtext=f"Na semana de {semana_critica_t}", icon="⚠️"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+
+                if semanas_negativas_t:
+                    st.error(
+                        f"🚨 **{semanas_negativas_t} semana(s) com saldo projetado negativo.** "
+                        f"O ponto mais crítico é a semana de {semana_critica_t}, com "
+                        f"{formata_brl(menor_saldo_t)}. Vale antecipar recebimentos ou renegociar "
+                        "vencimentos antes disso.".replace("$", "\\$")
+                    )
+                else:
+                    st.success(
+                        f"✅ Nenhuma semana com saldo negativo no horizonte. O menor ponto é "
+                        f"{formata_brl(menor_saldo_t)}, na semana de {semana_critica_t}."
+                        .replace("$", "\\$")
+                    )
+
+                # Gráfico: barras de entradas/saídas + linha do saldo projetado
+                fig_t = go.Figure()
+                fig_t.add_trace(go.Bar(
+                    name="Entradas", x=rotulos_sem, y=list(entradas_sem.values),
+                    marker=dict(color="rgba(62,207,142,0.30)",
+                                line=dict(color=COLORS["positive"], width=1.3)),
+                    hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
+                ))
+                fig_t.add_trace(go.Bar(
+                    name="Saídas", x=rotulos_sem, y=list(saidas_sem.values),
+                    marker=dict(color="rgba(247,110,110,0.30)",
+                                line=dict(color=COLORS["negative"], width=1.3)),
+                    hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
+                ))
+                cores_saldo_t = [
+                    COLORS["negative"] if v < 0 else COLORS["primary"] for v in saldo_projetado_sem.values
+                ]
+                fig_t.add_trace(go.Scatter(
+                    name="Saldo projetado", x=rotulos_sem, y=list(saldo_projetado_sem.values), yaxis="y2",
+                    mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
+                    marker=dict(size=9, color=cores_saldo_t, line=dict(color=COLORS["bg"], width=2)),
+                    hovertemplate="Saldo: R$ %{y:,.2f}<extra></extra>",
+                ))
+                fig_t.add_hline(
+                    y=0, yref="y2", line=dict(color=COLORS["negative"], width=1.5, dash="dash"),
+                    annotation_text="saldo zero", annotation_position="right",
+                    annotation_font=dict(size=9, color=COLORS["negative"]),
+                )
+                estilo_grafico(
+                    fig_t, height=460, barmode="relative", bargap=0.28,
+                    xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=9)),
+                    yaxis=dict(title=dict(text="Movimento da semana (R$)",
+                                          font=dict(size=10, color=COLORS["text_muted"])),
+                               gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                               zerolinecolor=COLORS["text_muted"]),
+                    yaxis2=dict(title=dict(text="Saldo projetado (R$)",
+                                           font=dict(size=10, color=COLORS["primary"])),
+                                overlaying="y", side="right", showgrid=False, fixedrange=True,
+                                tickformat=",.0f", tickfont=dict(size=9, color=COLORS["primary"])),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5),
+                    margin=dict(l=80, r=80, t=25, b=90),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_t, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+                with st.expander("📋 Ver a projeção semana a semana"):
+                    df_proj_t = pd.DataFrame({
+                        "Semana": [f"S{i + 1} — {pd.Timestamp(s).strftime('%d/%m/%Y')}"
+                                   for i, s in enumerate(semanas_t)],
+                        "Entradas": entradas_sem.values,
+                        "Saídas": saidas_sem.values,
+                        "Líquido": liquido_sem.values,
+                        "Saldo projetado": saldo_projetado_sem.values,
+                    })
+                    st.dataframe(
+                        df_proj_t.style.format({
+                            "Entradas": formata_brl, "Saídas": formata_brl,
+                            "Líquido": formata_brl, "Saldo projetado": formata_brl,
+                        }).map(cor_valor, subset=["Entradas", "Saídas", "Líquido", "Saldo projetado"]),
+                        use_container_width=True, hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
+                    )
+                st.caption(
+                    "A projeção parte do saldo de caixa/banco mais recente e acumula os lançamentos "
+                    "com vencimento em cada semana. Considera apenas o que ainda está à frente de hoje."
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # =============================================================
+            # 2. NECESSIDADE DE CAPITAL DE GIRO
+            # =============================================================
+            st.markdown('<div class="section-title">⚙️ Necessidade de Capital de Giro (NCG)</div>', unsafe_allow_html=True)
+            st.caption(
+                "NCG = o que a operação tem a receber menos o que tem a pagar. Quando é positiva, a empresa "
+                "precisa bancar essa diferença com capital próprio ou crédito enquanto o dinheiro não entra."
+            )
+
+            # Direitos e obrigações em aberto (não liquidados)
+            df_aberto_t = df_t[df_t[COL_FIN_DATA_LIQUIDACAO].isna()]
+            a_receber_ncg = df_aberto_t.loc[df_aberto_t["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
+            a_pagar_ncg = abs(df_aberto_t.loc[df_aberto_t["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum())
+            ncg_t = a_receber_ncg - a_pagar_ncg
+            capital_disponivel_t = saldo_inicial_t
+            folga_t = capital_disponivel_t - max(ncg_t, 0)
+            cobertura_ncg = (capital_disponivel_t / ncg_t * 100) if ncg_t > 0 else None
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="A RECEBER EM ABERTO", value=formata_brl(a_receber_ncg),
+                         value_color=COLORS["positive"], subtext="Direitos ainda não liquidados", icon="📥"),
+                    dict(label="A PAGAR EM ABERTO", value=formata_brl(-a_pagar_ncg),
+                         value_color=COLORS["negative"], subtext="Obrigações ainda não quitadas", icon="📤"),
+                    dict(label="NCG", value=formata_brl(ncg_t),
+                         value_color=COLORS["warning"] if ncg_t > 0 else COLORS["positive"],
+                         subtext="Positiva = a operação consome caixa", icon="⚙️"),
+                    dict(label="CAPITAL DISPONÍVEL", value=formata_brl(capital_disponivel_t),
+                         value_color=cor_variacao(capital_disponivel_t),
+                         subtext="Saldo em caixa e banco", icon="🏦"),
+                    dict(label="COBERTURA DA NCG",
+                         value=(f"{cobertura_ncg:.0f}%" if cobertura_ncg is not None else "n/a"),
+                         value_color=(COLORS["positive"] if (cobertura_ncg or 0) >= 100 else COLORS["negative"]),
+                         subtext=(f"Folga de {formata_brl(folga_t)}" if ncg_t > 0
+                                  else "NCG negativa: a operação se financia sozinha"),
+                         icon="🛡️"),
+                ]),
+                unsafe_allow_html=True,
+            )
+
+            if ncg_t > 0 and capital_disponivel_t < ncg_t:
+                st.warning(
+                    f"⚠️ O capital disponível cobre apenas {cobertura_ncg:.0f}% da necessidade de capital "
+                    f"de giro. Faltam {formata_brl(ncg_t - capital_disponivel_t)} para bancar o ciclo "
+                    "operacional sem recorrer a crédito.".replace("$", "\\$")
+                )
+            elif ncg_t <= 0:
+                st.success(
+                    "✅ A NCG está negativa: as obrigações em aberto superam os direitos, ou seja, a "
+                    "operação está sendo financiada pelos próprios fornecedores — situação confortável "
+                    "para o caixa, desde que os prazos sejam honrados."
+                )
+            else:
+                st.success(
+                    f"✅ O capital disponível cobre a NCG com folga de {formata_brl(folga_t)}."
+                    .replace("$", "\\$")
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # =============================================================
+            # 3. CONCENTRAÇÃO DE RECEBIMENTO
+            # =============================================================
+            st.markdown('<div class="section-title">🎯 Concentração de Recebimento</div>', unsafe_allow_html=True)
+            st.caption(
+                "Quanto do que a empresa recebe depende de poucas fontes. Concentração alta significa que "
+                "a falha de um único pagador ou canal derruba o caixa do período."
+            )
+
+            df_entradas_t = df_t[df_t["Tipo Movimento"] == "entrada"]
+            if df_entradas_t.empty:
+                st.info("Sem recebimentos no recorte selecionado.")
+            else:
+                col_conc_a, col_conc_b = st.columns(2)
+
+                # --- Por canal ---
+                with col_conc_a:
+                    st.markdown("**Por canal**")
+                    receb_canal = (
+                        df_entradas_t.groupby(COL_FIN_CANAL, observed=True)[COL_FIN_VALOR]
+                        .sum().sort_values(ascending=False)
+                    )
+                    receb_canal = receb_canal[receb_canal > 0]
+                    if not receb_canal.empty:
+                        total_canal = receb_canal.sum()
+                        maior_canal_pct = receb_canal.iloc[0] / total_canal * 100
+                        fig_conc_canal = go.Figure(data=[go.Pie(
+                            labels=[str(i) for i in receb_canal.index], values=list(receb_canal.values),
+                            hole=0.55,
+                            marker=dict(colors=[COLORS["primary"], COLORS["positive"], COLORS["warning"],
+                                                 COLORS["secondary"], COLORS["muted_line"]]),
+                            textinfo="percent", texttemplate="%{percent:.1%}",
+                            textfont=dict(color=COLORS["text"], size=11),
+                            hovertemplate="%{label}: R$ %{value:,.2f}<extra></extra>",
+                        )])
+                        fig_conc_canal.add_annotation(
+                            text=f"<b>{maior_canal_pct:.0f}%</b><br>"
+                                 f"<span style='font-size:9px;color:{COLORS['text_muted']}'>no maior canal</span>",
+                            showarrow=False, font=dict(color=COLORS["text"], size=14, family=FONT_STACK),
+                        )
+                        estilo_grafico(
+                            fig_conc_canal, height=300,
+                            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center",
+                                        x=0.5, font=dict(size=9)),
+                            margin=dict(l=10, r=10, t=15, b=10),
+                        )
+                        st.plotly_chart(fig_conc_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+                # --- Por modalidade ---
+                with col_conc_b:
+                    st.markdown("**Por modalidade de recebimento**")
+                    receb_modal = (
+                        df_entradas_t.groupby(COL_FIN_MODALIDADE, observed=True)[COL_FIN_VALOR]
+                        .sum().sort_values(ascending=False)
+                    )
+                    receb_modal = receb_modal[receb_modal > 0]
+                    if not receb_modal.empty:
+                        TOP_MODAL_T = 6
+                        if len(receb_modal) > TOP_MODAL_T:
+                            outros_t = receb_modal.iloc[TOP_MODAL_T:].sum()
+                            receb_modal = pd.concat([receb_modal.iloc[:TOP_MODAL_T],
+                                                     pd.Series({"Outros": outros_t})])
+                        total_modal = receb_modal.sum()
+                        maior_modal_pct = receb_modal.iloc[0] / total_modal * 100
+                        fig_conc_modal = go.Figure(data=[go.Pie(
+                            labels=[str(i) for i in receb_modal.index], values=list(receb_modal.values),
+                            hole=0.55,
+                            marker=dict(colors=[COLORS["positive"], COLORS["primary"], COLORS["warning"],
+                                                 COLORS["negative"], COLORS["secondary"],
+                                                 COLORS["muted_line"], "#6B7280"]),
+                            textinfo="percent", texttemplate="%{percent:.1%}",
+                            textfont=dict(color=COLORS["text"], size=11),
+                            hovertemplate="%{label}: R$ %{value:,.2f}<extra></extra>",
+                        )])
+                        fig_conc_modal.add_annotation(
+                            text=f"<b>{maior_modal_pct:.0f}%</b><br>"
+                                 f"<span style='font-size:9px;color:{COLORS['text_muted']}'>na maior modalidade</span>",
+                            showarrow=False, font=dict(color=COLORS["text"], size=14, family=FONT_STACK),
+                        )
+                        estilo_grafico(
+                            fig_conc_modal, height=300,
+                            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center",
+                                        x=0.5, font=dict(size=9)),
+                            margin=dict(l=10, r=10, t=15, b=10),
+                        )
+                        st.plotly_chart(fig_conc_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+                # Índice de concentração (HHI simplificado) por canal
+                if not receb_canal.empty:
+                    participacoes = (receb_canal / receb_canal.sum() * 100)
+                    hhi = float((participacoes ** 2).sum())
+                    if hhi >= 5000:
+                        nivel_conc, cor_conc = "ALTA", COLORS["negative"]
+                    elif hhi >= 2500:
+                        nivel_conc, cor_conc = "MODERADA", COLORS["warning"]
+                    else:
+                        nivel_conc, cor_conc = "BAIXA", COLORS["positive"]
+
+                    st.markdown(
+                        render_kpi_row([
+                            dict(label="MAIOR CANAL", value=f"{participacoes.iloc[0]:.0f}%",
+                                 value_color=cor_conc,
+                                 subtext=f"{participacoes.index[0]} · {formata_brl(receb_canal.iloc[0])}",
+                                 icon="🥇"),
+                            dict(label="DOIS MAIORES JUNTOS",
+                                 value=f"{participacoes.iloc[:2].sum():.0f}%",
+                                 value_color=cor_conc, subtext="Do total recebido", icon="🥈"),
+                            dict(label="NÍVEL DE CONCENTRAÇÃO", value=nivel_conc,
+                                 value_color=cor_conc,
+                                 subtext=f"Índice HHI: {hhi:,.0f}".replace(",", "."), icon="⚖️"),
+                        ]),
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        "O índice HHI mede concentração: acima de 5.000 indica dependência alta de poucas "
+                        "fontes; abaixo de 2.500, receita bem distribuída. Quanto mais concentrado, maior o "
+                        "impacto no caixa se um canal falhar."
+                    )
+
 
     # ---------------- ANÁLISES ----------------
     with tab_fin_analises:
@@ -4904,6 +5274,179 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# ============================================================================
+# 7.5 MOTOR DE ALERTAS (Controladoria)
+# ============================================================================
+# Em vez de esperar alguém abrir cada aba e comparar números, o painel avalia
+# um conjunto de regras a cada carregamento e mostra o que exige atenção.
+# Os limites ficam configuráveis porque o que é "grave" muda de empresa para
+# empresa -- e um alerta que dispara sempre vira ruído e passa a ser ignorado.
+
+def _avaliar_alertas_controladoria(
+    list_real, list_orc, colunas_periodo, m_map_alertas, linhas_disponiveis,
+    limite_desvio_ebitda, limite_estouro_conta, valor_minimo_conta,
+):
+    """Devolve uma lista de alertas, cada um com nível, título e detalhe.
+    Nível: 'critico' (vermelho), 'atencao' (amarelo) ou 'ok' (verde)."""
+    alertas = []
+
+    # --- 1. Desvio de EBITDA contra o orçado ---
+    ebitda_real = get_valor_consolidado_multi(list_real, "11 - EBITDA", colunas_periodo)
+    ebitda_orc = get_valor_consolidado_multi(list_orc, "11 - EBITDA", colunas_periodo)
+    if ebitda_orc:
+        desvio_pct = (ebitda_real - ebitda_orc) / abs(ebitda_orc) * 100
+        if desvio_pct <= -limite_desvio_ebitda:
+            alertas.append({
+                "nivel": "critico",
+                "titulo": f"EBITDA {abs(desvio_pct):.1f}% abaixo do orçado",
+                "detalhe": (
+                    f"Realizado {formata_brl(ebitda_real)} contra {formata_brl(ebitda_orc)} previstos "
+                    f"— diferença de {formata_brl(ebitda_real - ebitda_orc)}."
+                ),
+            })
+
+    # --- 2. Receita abaixo da meta ---
+    rec_real = get_valor_consolidado_multi(list_real, "3 - Receita Operacional Liquida", colunas_periodo)
+    rec_orc = get_valor_consolidado_multi(list_orc, "3 - Receita Operacional Liquida", colunas_periodo)
+    if rec_orc:
+        atingimento = rec_real / rec_orc * 100
+        if atingimento < (100 - limite_desvio_ebitda):
+            alertas.append({
+                "nivel": "atencao",
+                "titulo": f"Receita líquida em {atingimento:.1f}% da meta",
+                "detalhe": (
+                    f"Faltam {formata_brl(rec_orc - rec_real)} para atingir o orçamento do período."
+                ),
+            })
+
+    # --- 3. Contas que estouraram o orçamento ---
+    linhas_custo = [l for l in linhas_disponiveis if eh_linha_custos_despesas(l)]
+    linhas_custo_raiz = _linhas_raiz_do_conjunto(linhas_custo)
+    estouros = []
+    for linha in linhas_custo_raiz:
+        v_real = abs(get_valor_consolidado_multi(list_real, linha, colunas_periodo, exato_linha_sintetica=True))
+        v_orc = abs(get_valor_consolidado_multi(list_orc, linha, colunas_periodo, exato_linha_sintetica=True))
+        if v_orc <= 0 or v_real < valor_minimo_conta:
+            continue
+        excesso_pct = (v_real - v_orc) / v_orc * 100
+        if excesso_pct >= limite_estouro_conta:
+            estouros.append({
+                "nome": _nome_sem_numero_dre(linha),
+                "excesso_pct": excesso_pct,
+                "excesso_valor": v_real - v_orc,
+            })
+    estouros.sort(key=lambda e: e["excesso_valor"], reverse=True)
+    for e in estouros[:5]:
+        alertas.append({
+            "nivel": "critico" if e["excesso_pct"] >= limite_estouro_conta * 2 else "atencao",
+            "titulo": f"{e['nome']}: {e['excesso_pct']:.0f}% acima do orçado",
+            "detalhe": f"Excesso de {formata_brl(e['excesso_valor'])} no período.",
+        })
+    if len(estouros) > 5:
+        alertas.append({
+            "nivel": "atencao",
+            "titulo": f"Mais {len(estouros) - 5} conta(s) acima do orçamento",
+            "detalhe": "Veja a lista completa na aba DRE Orçado X Realizado.",
+        })
+
+    # --- 4. Margem EBITDA em queda por 3 meses seguidos ---
+    colunas_mes = list(m_map_alertas.values())
+    margens = []
+    for col in colunas_mes:
+        rec_mes = get_valor_consolidado_multi(list_real, "3 - Receita Operacional Liquida", [col])
+        ebitda_mes = get_valor_consolidado_multi(list_real, "11 - EBITDA", [col])
+        if rec_mes:
+            margens.append((col, ebitda_mes / rec_mes * 100))
+    if len(margens) >= 3:
+        ultimas = [m for _, m in margens[-3:]]
+        if ultimas[0] > ultimas[1] > ultimas[2]:
+            alertas.append({
+                "nivel": "atencao",
+                "titulo": "Margem EBITDA em queda há 3 meses seguidos",
+                "detalhe": (
+                    f"Caiu de {ultimas[0]:.1f}% para {ultimas[2]:.1f}% "
+                    f"({ultimas[2] - ultimas[0]:+.1f} p.p. no período)."
+                ),
+            })
+
+    return alertas
+
+
+def _renderizar_painel_alertas(alertas, titulo="Alertas"):
+    """Mostra os alertas em cartões compactos, ordenados por gravidade."""
+    if not alertas:
+        st.success(f"✅ {titulo}: nenhum ponto de atenção nas regras configuradas.")
+        return
+
+    criticos = [a for a in alertas if a["nivel"] == "critico"]
+    atencoes = [a for a in alertas if a["nivel"] == "atencao"]
+
+    resumo = []
+    if criticos:
+        resumo.append(f"{len(criticos)} crítico(s)")
+    if atencoes:
+        resumo.append(f"{len(atencoes)} de atenção")
+    rotulo_expander = f"🔔 {titulo} — {' · '.join(resumo)}"
+
+    with st.expander(rotulo_expander, expanded=bool(criticos)):
+        for alerta in criticos + atencoes:
+            if alerta["nivel"] == "critico":
+                cor_borda, icone = COLORS["negative"], "🚨"
+                fundo = "rgba(247,110,110,0.08)"
+            else:
+                cor_borda, icone = COLORS["warning"], "⚠️"
+                fundo = "rgba(245,166,35,0.08)"
+            st.markdown(
+                f"""
+                <div style="border-left: 3px solid {cor_borda}; background: {fundo};
+                            padding: 8px 12px; border-radius: 4px; margin-bottom: 7px;">
+                    <div style="color:{COLORS['text']}; font-size:13px; font-weight:600;">
+                        {icone} {alerta['titulo']}
+                    </div>
+                    <div style="color:{COLORS['text_muted']}; font-size:11.5px; margin-top:2px;">
+                        {alerta['detalhe']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+# ---- Configuração dos limites (na barra lateral, só para administrador) ----
+if eh_admin:
+    with st.sidebar.expander("🔔 Regras de alerta"):
+        st.caption("Define a partir de que ponto o painel considera algo digno de atenção.")
+        limite_desvio_ebitda_cfg = st.slider(
+            "Desvio de EBITDA/receita que dispara alerta (%)",
+            min_value=1, max_value=30, value=10, step=1, key="cfg_limite_ebitda",
+        )
+        limite_estouro_conta_cfg = st.slider(
+            "Estouro de conta que dispara alerta (%)",
+            min_value=5, max_value=100, value=20, step=5, key="cfg_limite_conta",
+        )
+        valor_minimo_conta_cfg = st.number_input(
+            "Ignorar contas abaixo de (R$)",
+            min_value=0, value=10_000, step=5_000, key="cfg_valor_minimo",
+            help="Evita alerta em conta pequena que estourou percentualmente mas é irrelevante em valor.",
+        )
+else:
+    limite_desvio_ebitda_cfg = 10
+    limite_estouro_conta_cfg = 20
+    valor_minimo_conta_cfg = 10_000
+
+if not departamento_ativo:
+    _col_nome_alerta = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
+    _linhas_alerta = list(df_ref[_col_nome_alerta].dropna().astype(str).unique())
+    _alertas_controladoria = _avaliar_alertas_controladoria(
+        list_df_real, list_df_orc, cols_kpi, m_map, _linhas_alerta,
+        limite_desvio_ebitda_cfg, limite_estouro_conta_cfg, valor_minimo_conta_cfg,
+    )
+    _renderizar_painel_alertas(
+        _alertas_controladoria, titulo=f"Alertas de {label_visao} · {label_periodo_kpi}"
+    )
+
+
 # ============================================================================
 # 8. ABAS
 # ============================================================================
@@ -4922,19 +5465,21 @@ if departamento_ativo:
         f"📤 Emitir Relatório — {_nome_dept_abas}",
     ])
     tab6 = None
+    tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
         "📋 DRE Orçado X Realizado",
         "📅 Histórico Mensal",
+        "🔬 Diagnóstico Executivo",
         "🔮 Previsões & Trends",
         "📤 Emitir Relatório",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5 = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -6055,6 +6600,555 @@ if departamento_ativo:
                     f"**Menor gasto do ano:** {mes_menor_gasto.capitalize()} ({formata_brl(meses_com_valor_positivo[mes_menor_gasto])})"
                 ).replace("$", "\\$")
                 st.info(texto_insight_meses)
+
+
+# ---------------------------------------------------------------------------
+# ABA: DIAGNÓSTICO EXECUTIVO (break-even, curva ABC, anomalias, narrativa)
+# ---------------------------------------------------------------------------
+if not departamento_ativo and tab_diag is not None:
+    with tab_diag:
+        st.markdown(
+            f'<div class="section-title">🔬 Diagnóstico Executivo — {label_visao} · {label_periodo_kpi}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Leituras que exigiriam cruzar várias abas na mão: onde está o ponto de equilíbrio, "
+            "quais contas concentram o gasto, o que fugiu do padrão e o resumo do período em texto."
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # =====================================================================
+        # 1. NARRATIVA AUTOMÁTICA DO RESULTADO
+        # =====================================================================
+        rec_liq_diag = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
+        rec_liq_orc_diag = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_kpi)
+        ebitda_diag = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", cols_kpi)
+        ebitda_orc_diag = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", cols_kpi)
+
+        desvio_ebitda_diag = ebitda_diag - ebitda_orc_diag
+        pct_ebitda_diag = (ebitda_diag / ebitda_orc_diag * 100) if ebitda_orc_diag else 0
+        pct_receita_diag = (rec_liq_diag / rec_liq_orc_diag * 100) if rec_liq_orc_diag else 0
+        margem_real_diag = (ebitda_diag / rec_liq_diag * 100) if rec_liq_diag else 0
+        margem_orc_diag = (ebitda_orc_diag / rec_liq_orc_diag * 100) if rec_liq_orc_diag else 0
+
+        # Ofensores: linhas de custo/despesa com maior desvio desfavorável
+        col_nome_diag = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
+        linhas_diag = list(df_ref[col_nome_diag].dropna().astype(str).unique())
+        linhas_custo_diag = [l for l in linhas_diag if eh_linha_custos_despesas(l)]
+        linhas_custo_raiz_diag = _linhas_raiz_do_conjunto(linhas_custo_diag)
+
+        ofensores_diag = []
+        for linha in linhas_custo_raiz_diag:
+            v_real = abs(get_valor_consolidado_multi(list_df_real, linha, cols_kpi, exato_linha_sintetica=True))
+            v_orc = abs(get_valor_consolidado_multi(list_df_orc, linha, cols_kpi, exato_linha_sintetica=True))
+            if v_real == 0 and v_orc == 0:
+                continue
+            desvio = v_orc - v_real  # negativo = gastou mais que o orçado
+            if desvio < 0:
+                ofensores_diag.append({
+                    "linha": linha,
+                    "nome": _nome_sem_numero_dre(linha),
+                    "real": v_real,
+                    "orcado": v_orc,
+                    "desvio": desvio,
+                    "pct": (abs(desvio) / v_orc * 100) if v_orc else 0,
+                })
+        ofensores_diag.sort(key=lambda d: d["desvio"])
+        top_ofensores = ofensores_diag[:3]
+        total_estouro = sum(abs(o["desvio"]) for o in ofensores_diag)
+
+        partes_narrativa = []
+        if ebitda_orc_diag:
+            situacao = "acima" if desvio_ebitda_diag >= 0 else "abaixo"
+            partes_narrativa.append(
+                f"O **EBITDA** do período ({label_periodo_kpi}) fechou em **{formata_brl(ebitda_diag)}**, "
+                f"{abs(100 - pct_ebitda_diag):.1f}% **{situacao}** do orçado "
+                f"({formata_brl(ebitda_orc_diag)}), uma diferença de {formata_brl(desvio_ebitda_diag)}."
+            )
+        if rec_liq_orc_diag:
+            partes_narrativa.append(
+                f"A **receita líquida** atingiu {pct_receita_diag:.1f}% da meta "
+                f"({formata_brl(rec_liq_diag)} de {formata_brl(rec_liq_orc_diag)})."
+            )
+        if rec_liq_diag:
+            direcao_margem = "acima" if margem_real_diag >= margem_orc_diag else "abaixo"
+            partes_narrativa.append(
+                f"A **margem EBITDA** ficou em {margem_real_diag:.1f}%, {direcao_margem} da margem "
+                f"orçada de {margem_orc_diag:.1f}%."
+            )
+        if top_ofensores:
+            nomes_ofensores = ", ".join(o["nome"] for o in top_ofensores)
+            peso_top = (sum(abs(o["desvio"]) for o in top_ofensores) / total_estouro * 100) if total_estouro else 0
+            partes_narrativa.append(
+                f"Entre as linhas que estouraram o orçamento, as três maiores são **{nomes_ofensores}**, "
+                f"que concentram {peso_top:.0f}% de todo o excesso de gasto do período "
+                f"({formata_brl(sum(o['desvio'] for o in top_ofensores))} dos "
+                f"{formata_brl(-total_estouro)} totais)."
+            )
+        if not partes_narrativa:
+            partes_narrativa.append("Não há dados suficientes no período selecionado para gerar a leitura.")
+
+        st.markdown('<div class="section-title">📝 Leitura Automática do Período</div>', unsafe_allow_html=True)
+        texto_narrativa = " ".join(partes_narrativa).replace("$", "\\$")
+        st.info(texto_narrativa)
+        st.caption(
+            "Texto gerado automaticamente a partir dos números do período selecionado — serve como "
+            "primeiro parágrafo de comentário de resultado, para você revisar e complementar."
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # =====================================================================
+        # 2. PONTO DE EQUILÍBRIO (BREAK-EVEN)
+        # =====================================================================
+        st.markdown('<div class="section-title">🎯 Ponto de Equilíbrio</div>', unsafe_allow_html=True)
+        st.caption(
+            "Quanto precisa faturar para cobrir todos os custos. Custos **variáveis** acompanham a venda "
+            "(CMV e despesas variáveis); custos **fixos** existem independentemente dela (despesas "
+            "operacionais e fixas)."
+        )
+
+        cmv_diag = abs(get_valor_consolidado_multi(list_df_real, "4 - ", cols_kpi, exato_linha_sintetica=True)) \
+            or abs(get_valor_consolidado_multi(list_df_real, "4 - Custo das Vendas", cols_kpi))
+        desp_var_diag = abs(get_valor_consolidado_multi(list_df_real, "6 - Despesas Variáveis", cols_kpi))
+        desp_op_diag = abs(get_valor_consolidado_multi(list_df_real, "8 - Despesas Operacionais", cols_kpi))
+
+        custos_variaveis_diag = cmv_diag + desp_var_diag
+        custos_fixos_diag = desp_op_diag
+        # Margem de contribuição = quanto sobra de cada real vendido depois
+        # de pagar o que varia com a venda.
+        mc_valor_diag = rec_liq_diag - custos_variaveis_diag
+        mc_pct_diag = (mc_valor_diag / rec_liq_diag) if rec_liq_diag else 0
+        ponto_equilibrio_diag = (custos_fixos_diag / mc_pct_diag) if mc_pct_diag > 0 else 0
+        margem_seguranca_valor = rec_liq_diag - ponto_equilibrio_diag
+        margem_seguranca_pct = (margem_seguranca_valor / rec_liq_diag * 100) if rec_liq_diag else 0
+        pct_atingido_be = (rec_liq_diag / ponto_equilibrio_diag * 100) if ponto_equilibrio_diag else 0
+
+        st.markdown(
+            render_kpi_row([
+                dict(label="MARGEM DE CONTRIBUIÇÃO", value=f"{mc_pct_diag * 100:.1f}%",
+                     value_color=COLORS["positive"] if mc_pct_diag > 0 else COLORS["negative"],
+                     subtext=f"{formata_brl(mc_valor_diag)} sobre a receita", icon="💹"),
+                dict(label="CUSTOS FIXOS DO PERÍODO", value=formata_brl(custos_fixos_diag),
+                     value_color=COLORS["text"], subtext="Despesas operacionais", icon="🏛️"),
+                dict(label="PONTO DE EQUILÍBRIO", value=formata_brl(ponto_equilibrio_diag),
+                     value_color=COLORS["warning"], subtext="Receita mínima para não ter prejuízo", icon="🎯"),
+                dict(label="RECEITA vs. PONTO DE EQUILÍBRIO", value=f"{pct_atingido_be:.0f}%",
+                     value_color=COLORS["positive"] if pct_atingido_be >= 100 else COLORS["negative"],
+                     subtext="Acima de 100% = operação lucrativa", icon="📊"),
+                dict(label="MARGEM DE SEGURANÇA", value=f"{margem_seguranca_pct:.1f}%",
+                     value_color=COLORS["positive"] if margem_seguranca_pct > 0 else COLORS["negative"],
+                     subtext=f"{formata_brl(margem_seguranca_valor)} acima do mínimo", icon="🛡️"),
+            ]),
+            unsafe_allow_html=True,
+        )
+
+        if ponto_equilibrio_diag > 0:
+            fig_be = go.Figure()
+            fig_be.add_trace(go.Bar(
+                name="Receita realizada", x=["Receita realizada", "Ponto de equilíbrio"],
+                y=[rec_liq_diag, ponto_equilibrio_diag],
+                marker=dict(color=[COLORS["primary"], COLORS["warning"]], opacity=0.75),
+                text=[formata_m(rec_liq_diag), formata_m(ponto_equilibrio_diag)],
+                textposition="outside", textfont=dict(size=11, color=COLORS["text_muted"]),
+                showlegend=False,
+            ))
+            estilo_grafico(
+                fig_be, height=280,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=11)),
+                yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f",
+                           range=[0, max(rec_liq_diag, ponto_equilibrio_diag) * 1.2]),
+                margin=dict(l=70, r=20, t=25, b=30),
+            )
+            st.plotly_chart(fig_be, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            if margem_seguranca_pct > 0:
+                st.success(
+                    f"✅ A operação está **{margem_seguranca_pct:.1f}% acima** do ponto de equilíbrio. "
+                    f"A receita poderia cair até {formata_brl(margem_seguranca_valor)} antes de entrar em prejuízo."
+                    .replace("$", "\\$")
+                )
+            else:
+                st.error(
+                    f"⚠️ A receita está **abaixo** do ponto de equilíbrio. Faltam "
+                    f"{formata_brl(abs(margem_seguranca_valor))} de faturamento para cobrir os custos."
+                    .replace("$", "\\$")
+                )
+        else:
+            st.warning(
+                "Não foi possível calcular o ponto de equilíbrio: a margem de contribuição está zerada ou "
+                "negativa no período (os custos variáveis consomem toda a receita)."
+            )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # =====================================================================
+        # 3. CURVA ABC DE DESPESAS
+        # =====================================================================
+        st.markdown('<div class="section-title">📊 Curva ABC de Custos e Despesas</div>', unsafe_allow_html=True)
+        st.caption(
+            "Classe **A** = as contas que somam os primeiros 80% do gasto (é onde a gestão deve focar). "
+            "Classe **B** = os 15% seguintes. Classe **C** = os últimos 5%, pulverizados em muitas contas."
+        )
+
+        dados_abc = []
+        for linha in linhas_custo_raiz_diag:
+            valor = abs(get_valor_consolidado_multi(list_df_real, linha, cols_kpi, exato_linha_sintetica=True))
+            if valor > 0:
+                dados_abc.append({"Conta": _nome_sem_numero_dre(linha), "Valor": valor})
+
+        if dados_abc:
+            df_abc = pd.DataFrame(dados_abc).sort_values("Valor", ascending=False).reset_index(drop=True)
+            total_abc = df_abc["Valor"].sum()
+            df_abc["% do total"] = df_abc["Valor"] / total_abc * 100
+            df_abc["% acumulado"] = df_abc["% do total"].cumsum()
+            df_abc["Classe"] = df_abc["% acumulado"].apply(
+                lambda p: "A" if p <= 80 else ("B" if p <= 95 else "C")
+            )
+
+            qtd_a = int((df_abc["Classe"] == "A").sum())
+            valor_a = df_abc.loc[df_abc["Classe"] == "A", "Valor"].sum()
+            pct_contas_a = qtd_a / len(df_abc) * 100 if len(df_abc) else 0
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="CONTAS CLASSE A", value=str(qtd_a),
+                         value_color=COLORS["negative"],
+                         subtext=f"{pct_contas_a:.0f}% das contas · {formata_brl(valor_a)}", icon="🅰️"),
+                    dict(label="CONCENTRAÇÃO", value=f"{valor_a / total_abc * 100:.0f}%",
+                         value_color=COLORS["warning"],
+                         subtext="Do gasto total está na classe A", icon="🎯"),
+                    dict(label="TOTAL DE CONTAS ANALISADAS", value=str(len(df_abc)),
+                         value_color=COLORS["text"],
+                         subtext=f"Gasto total: {formata_brl(total_abc)}", icon="🧾"),
+                ]),
+                unsafe_allow_html=True,
+            )
+
+            # Gráfico de Pareto: barras do valor + linha do acumulado
+            top_abc_grafico = df_abc.head(15)
+            fig_abc = go.Figure()
+            cores_classe = {"A": COLORS["negative"], "B": COLORS["warning"], "C": COLORS["secondary"]}
+            fig_abc.add_trace(go.Bar(
+                name="Valor", x=list(top_abc_grafico["Conta"]), y=list(top_abc_grafico["Valor"]),
+                marker=dict(color=[cores_classe[c] for c in top_abc_grafico["Classe"]], opacity=0.6),
+                hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_abc.add_trace(go.Scatter(
+                name="% acumulado", x=list(top_abc_grafico["Conta"]),
+                y=list(top_abc_grafico["% acumulado"]), yaxis="y2",
+                mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
+                marker=dict(size=7), hovertemplate="Acumulado: %{y:.1f}%<extra></extra>",
+            ))
+            fig_abc.add_hline(
+                y=80, yref="y2", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
+                annotation_text="80%", annotation_position="right",
+                annotation_font=dict(size=10, color=COLORS["text_muted"]),
+            )
+            estilo_grafico(
+                fig_abc, height=420,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-35,
+                           automargin=True, tickfont=dict(size=9)),
+                yaxis=dict(title=dict(text="R$", font=dict(size=10, color=COLORS["text_muted"])),
+                           gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+                yaxis2=dict(title=dict(text="% acumulado", font=dict(size=10, color=COLORS["primary"])),
+                            overlaying="y", side="right", showgrid=False, fixedrange=True,
+                            range=[0, 105], ticksuffix="%",
+                            tickfont=dict(size=9, color=COLORS["primary"])),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.42, xanchor="center", x=0.5),
+                margin=dict(l=70, r=70, t=25, b=120),
+            )
+            st.plotly_chart(fig_abc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
+                st.dataframe(
+                    df_abc.style.format({
+                        "Valor": formata_brl,
+                        "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
+                        "% acumulado": lambda v: f"{v:.1f}%".replace(".", ","),
+                    }).map(cor_valor, subset=["Valor"]),
+                    use_container_width=True, hide_index=True, height=420,
+                )
+        else:
+            st.info("Sem custos ou despesas no período selecionado para montar a curva ABC.")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # =====================================================================
+        # 4. DETECÇÃO AUTOMÁTICA DE ANOMALIAS
+        # =====================================================================
+        st.markdown('<div class="section-title">🚨 Anomalias Detectadas</div>', unsafe_allow_html=True)
+        st.caption(
+            "Compara cada conta com o próprio histórico mensal: o mês mais recente é sinalizado quando "
+            "foge do padrão dela (mais de 2 desvios-padrão da média dos meses anteriores). "
+            "É uma forma de achar o que mudou sem varrer todas as contas na mão."
+        )
+
+        col_sens_a, col_sens_b = st.columns([1, 3])
+        with col_sens_a:
+            sensibilidade_anom = st.selectbox(
+                "Sensibilidade:", ["Alta (1,5σ)", "Média (2σ)", "Baixa (3σ)"],
+                index=1, key="diag_sensibilidade",
+                help="Quanto menor o valor, mais alertas — e mais falsos positivos.",
+            )
+        limiar_sigma = {"Alta (1,5σ)": 1.5, "Média (2σ)": 2.0, "Baixa (3σ)": 3.0}[sensibilidade_anom]
+
+        colunas_hist_anom = list(m_map.values())
+        anomalias = []
+        if len(colunas_hist_anom) >= 4:
+            for linha in linhas_custo_raiz_diag:
+                serie_mensal = [
+                    abs(get_valor_consolidado_multi(list_df_real, linha, [col], exato_linha_sintetica=True))
+                    for col in colunas_hist_anom
+                ]
+                serie_com_dado = [v for v in serie_mensal if v > 0]
+                if len(serie_com_dado) < 4:
+                    continue
+                # O último mês com movimento é comparado com os anteriores
+                ultimo_valor = serie_com_dado[-1]
+                anteriores = serie_com_dado[:-1]
+                media_ant = sum(anteriores) / len(anteriores)
+                variancia = sum((v - media_ant) ** 2 for v in anteriores) / len(anteriores)
+                desvio_padrao = variancia ** 0.5
+                if desvio_padrao == 0:
+                    continue
+                z = (ultimo_valor - media_ant) / desvio_padrao
+                if abs(z) >= limiar_sigma:
+                    idx_ultimo = len(serie_com_dado) - 1
+                    nomes_meses_com_dado = [
+                        nome for nome, col in m_map.items()
+                        if abs(get_valor_consolidado_multi(list_df_real, linha, [col], exato_linha_sintetica=True)) > 0
+                    ]
+                    mes_anom = nomes_meses_com_dado[idx_ultimo] if idx_ultimo < len(nomes_meses_com_dado) else "—"
+                    anomalias.append({
+                        "Conta": _nome_sem_numero_dre(linha),
+                        "Mês": mes_anom.capitalize(),
+                        "Valor do mês": ultimo_valor,
+                        "Média anterior": media_ant,
+                        "Variação": ultimo_valor - media_ant,
+                        "Var. %": ((ultimo_valor - media_ant) / media_ant * 100) if media_ant else 0,
+                        "Desvios (σ)": z,
+                    })
+
+        if anomalias:
+            df_anom = pd.DataFrame(anomalias).sort_values("Desvios (σ)", key=abs, ascending=False)
+            n_altas = int((df_anom["Variação"] > 0).sum())
+            n_baixas = int((df_anom["Variação"] < 0).sum())
+            st.markdown(
+                render_kpi_row([
+                    dict(label="ANOMALIAS ENCONTRADAS", value=str(len(df_anom)),
+                         value_color=COLORS["warning"],
+                         subtext=f"Em {len(linhas_custo_raiz_diag)} contas analisadas", icon="🔍"),
+                    dict(label="GASTOS ACIMA DO PADRÃO", value=str(n_altas),
+                         value_color=COLORS["negative"], subtext="Contas que subiram fora da curva", icon="📈"),
+                    dict(label="GASTOS ABAIXO DO PADRÃO", value=str(n_baixas),
+                         value_color=COLORS["positive"], subtext="Podem indicar economia ou falta de lançamento", icon="📉"),
+                ]),
+                unsafe_allow_html=True,
+            )
+            st.dataframe(
+                df_anom.style.format({
+                    "Valor do mês": formata_brl,
+                    "Média anterior": formata_brl,
+                    "Variação": formata_brl,
+                    "Var. %": lambda v: f"{v:+.1f}%".replace(".", ","),
+                    "Desvios (σ)": lambda v: f"{v:+.1f}σ".replace(".", ","),
+                }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
+                .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
+                     subset=["Variação", "Var. %"]),
+                use_container_width=True, hide_index=True, height=min(500, 60 + 35 * len(df_anom)),
+            )
+            st.caption(
+                "⚠️ Uma anomalia não é necessariamente um erro — pode ser um evento legítimo (compra "
+                "sazonal, rescisão, campanha). Ela apenas indica **onde vale olhar primeiro**."
+            )
+        elif len(colunas_hist_anom) < 4:
+            st.info(
+                "São necessários pelo menos 4 meses de histórico para detectar anomalias com alguma "
+                "confiança estatística. Com menos que isso, qualquer variação parece anormal."
+            )
+        else:
+            st.success(
+                f"✅ Nenhuma conta fugiu do próprio padrão histórico na sensibilidade "
+                f"**{sensibilidade_anom}** — os gastos do último mês estão dentro do comportamento habitual."
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # =====================================================================
+        # 5. FORECAST ROLLING — REPROJEÇÃO DO ANO
+        # =====================================================================
+        st.markdown('<div class="section-title">🔄 Forecast Rolling do Ano</div>', unsafe_allow_html=True)
+        st.caption(
+            "O orçamento foi feito antes do ano começar e vai perdendo aderência com o tempo. "
+            "O forecast rolling substitui os meses que ainda não aconteceram por uma projeção baseada "
+            "no que a operação vem entregando de verdade — e mostra onde o ano deve fechar."
+        )
+
+        col_fc1, col_fc2 = st.columns([1, 2])
+        with col_fc1:
+            base_forecast = st.selectbox(
+                "Base da projeção:",
+                ["Média dos últimos 3 meses", "Média dos últimos 6 meses", "Média de todo o realizado"],
+                key="diag_base_forecast",
+                help="Quantos meses realizados entram na média que projeta os meses restantes.",
+            )
+        meses_base_fc = {"Média dos últimos 3 meses": 3, "Média dos últimos 6 meses": 6,
+                         "Média de todo o realizado": 99}[base_forecast]
+
+        colunas_ano_fc = list(m_map.values())
+
+        def _projetar_linha_fc(termo_linha, exato=False):
+            """Realizado até agora + projeção dos meses restantes.
+            Devolve (realizado, projetado, forecast_total, orcado_ano, meses_realizados)."""
+            valores_mes = [
+                get_valor_consolidado_multi(list_df_real, termo_linha, [col], exato_linha_sintetica=exato)
+                for col in colunas_ano_fc
+            ]
+            # Mês "realizado" é aquele que tem movimento; os seguintes ainda
+            # não aconteceram (ou não foram lançados).
+            indices_com_dado = [i for i, v in enumerate(valores_mes) if v != 0]
+            if not indices_com_dado:
+                return 0.0, 0.0, 0.0, 0.0, 0
+            ultimo_idx = max(indices_com_dado)
+            realizados = valores_mes[: ultimo_idx + 1]
+            meses_restantes = len(colunas_ano_fc) - (ultimo_idx + 1)
+
+            base = [v for v in realizados[-meses_base_fc:] if v != 0] if meses_base_fc != 99 \
+                else [v for v in realizados if v != 0]
+            media_base = (sum(base) / len(base)) if base else 0.0
+
+            total_realizado = sum(realizados)
+            total_projetado = media_base * meses_restantes
+            orcado_ano = get_valor_consolidado_multi(
+                list_df_orc, termo_linha, colunas_ano_fc, exato_linha_sintetica=exato
+            )
+            return total_realizado, total_projetado, total_realizado + total_projetado, orcado_ano, ultimo_idx + 1
+
+        linhas_forecast = [
+            ("Receita Líquida", "3 - Receita Operacional Liquida", False),
+            ("EBITDA", "11 - EBITDA", False),
+        ]
+
+        dados_fc = []
+        meses_realizados_fc = 0
+        for rotulo, termo, exato in linhas_forecast:
+            real, proj, total, orc, n_meses = _projetar_linha_fc(termo, exato)
+            meses_realizados_fc = max(meses_realizados_fc, n_meses)
+            dados_fc.append({
+                "Linha": rotulo,
+                "Realizado até agora": real,
+                "Projeção do restante": proj,
+                "Forecast do ano": total,
+                "Orçado do ano": orc,
+                "Desvio vs. orçado": total - orc,
+                "% do orçado": (total / orc * 100) if orc else 0,
+            })
+
+        if meses_realizados_fc == 0:
+            st.info("Ainda não há meses realizados suficientes para projetar o fechamento do ano.")
+        else:
+            meses_restantes_fc = len(colunas_ano_fc) - meses_realizados_fc
+            fc_receita = dados_fc[0]
+            fc_ebitda = dados_fc[1]
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="MESES JÁ REALIZADOS", value=f"{meses_realizados_fc} de {len(colunas_ano_fc)}",
+                         value_color=COLORS["text"],
+                         subtext=f"Faltam {meses_restantes_fc} meses para projetar", icon="📆"),
+                    dict(label="FORECAST DE RECEITA", value=formata_m(fc_receita["Forecast do ano"]),
+                         value_color=COLORS["primary"],
+                         subtext=f"{fc_receita['% do orçado']:.0f}% do orçado do ano", icon="💰"),
+                    dict(label="FORECAST DE EBITDA", value=formata_m(fc_ebitda["Forecast do ano"]),
+                         value_color=cor_variacao(fc_ebitda["Desvio vs. orçado"]),
+                         subtext=f"{fc_ebitda['% do orçado']:.0f}% do orçado do ano", icon="📈"),
+                    dict(label="DESVIO PROJETADO DO EBITDA", value=formata_brl(fc_ebitda["Desvio vs. orçado"]),
+                         value_color=cor_variacao(fc_ebitda["Desvio vs. orçado"]),
+                         subtext="Forecast do ano − orçado do ano", icon="⚖️"),
+                ]),
+                unsafe_allow_html=True,
+            )
+
+            df_fc = pd.DataFrame(dados_fc)
+            st.dataframe(
+                df_fc.style.format({
+                    "Realizado até agora": formata_brl,
+                    "Projeção do restante": formata_brl,
+                    "Forecast do ano": formata_brl,
+                    "Orçado do ano": formata_brl,
+                    "Desvio vs. orçado": formata_brl,
+                    "% do orçado": lambda v: f"{v:.1f}%".replace(".", ","),
+                }).map(cor_valor, subset=["Realizado até agora", "Projeção do restante",
+                                          "Forecast do ano", "Orçado do ano", "Desvio vs. orçado"]),
+                use_container_width=True, hide_index=True,
+            )
+
+            # Gráfico: realizado x projetado x orçado, mês a mês
+            valores_ebitda_mes = [
+                get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [col]) for col in colunas_ano_fc
+            ]
+            valores_ebitda_orc = [
+                get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", [col]) for col in colunas_ano_fc
+            ]
+            realizados_ebitda = valores_ebitda_mes[:meses_realizados_fc]
+            base_ebitda = [v for v in realizados_ebitda[-meses_base_fc:] if v != 0] if meses_base_fc != 99 \
+                else [v for v in realizados_ebitda if v != 0]
+            media_ebitda_fc = (sum(base_ebitda) / len(base_ebitda)) if base_ebitda else 0.0
+
+            serie_realizada_graf = realizados_ebitda + [None] * meses_restantes_fc
+            serie_projetada_graf = (
+                [None] * (meses_realizados_fc - 1)
+                + [realizados_ebitda[-1] if realizados_ebitda else 0]
+                + [media_ebitda_fc] * meses_restantes_fc
+            )
+            rotulos_meses_fc = list(m_map.keys())
+
+            fig_fc = go.Figure()
+            fig_fc.add_trace(go.Scatter(
+                name="Realizado", x=rotulos_meses_fc, y=serie_realizada_graf,
+                mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
+                marker=dict(size=8), connectgaps=False,
+                hovertemplate="Realizado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_fc.add_trace(go.Scatter(
+                name="Projetado (forecast)", x=rotulos_meses_fc, y=serie_projetada_graf,
+                mode="lines+markers", line=dict(color=COLORS["warning"], width=2.5, dash="dot"),
+                marker=dict(size=7), connectgaps=False,
+                hovertemplate="Projetado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_fc.add_trace(go.Scatter(
+                name="Orçado", x=rotulos_meses_fc, y=valores_ebitda_orc,
+                mode="lines", line=dict(color=COLORS["muted_line"], width=2, dash="dash"),
+                hovertemplate="Orçado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            estilo_grafico(
+                fig_fc, height=380,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-35,
+                           automargin=True, tickfont=dict(size=9)),
+                yaxis=dict(title=dict(text="EBITDA (R$)", font=dict(size=10, color=COLORS["text_muted"])),
+                           gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5),
+                margin=dict(l=80, r=30, t=25, b=95),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_fc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+
+            desvio_fc = fc_ebitda["Desvio vs. orçado"]
+            if desvio_fc < 0:
+                st.warning(
+                    f"⚠️ Mantido o ritmo atual, o ano deve fechar **{formata_brl(abs(desvio_fc))} abaixo** "
+                    f"do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta). Para chegar ao orçado, "
+                    f"seria preciso gerar {formata_brl(abs(desvio_fc) / max(meses_restantes_fc, 1))} a mais "
+                    f"por mês nos {meses_restantes_fc} meses restantes.".replace("$", "\\$")
+                )
+            else:
+                st.success(
+                    f"✅ Mantido o ritmo atual, o ano deve fechar **{formata_brl(desvio_fc)} acima** do "
+                    f"EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta).".replace("$", "\\$")
+                )
+            st.caption(
+                "A projeção repete a média dos meses escolhidos para os meses que faltam. É uma leitura de "
+                "tendência, não uma previsão com sazonalidade — se o negócio tem meses tipicamente mais "
+                "fortes ou fracos à frente, considere isso na análise."
+            )
 
 
 # ---------------------------------------------------------------------------
