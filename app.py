@@ -2513,6 +2513,68 @@ def _saldo_posicao_atual_fin(df, coluna_valor):
     return valor, ultima_data
 
 
+@st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
+def preparar_fluxo_caixa(base_data):
+    """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
+    CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
+    classificação dos movimentos.
+
+    Antes isso rodava a cada clique (trocar um filtro, mudar de aba), o que
+    deixava o painel lento sem necessidade -- os dados são os mesmos. O
+    cache é por `base_data` porque só essa escolha muda o resultado; os
+    demais filtros são aplicados depois, sobre o DataFrame já pronto.
+
+    Retorna (df, erro, total_lido, linhas_sem_data)."""
+    df_fluxo, erro = obter_dados_fluxo_caixa()
+    if erro or df_fluxo is None or df_fluxo.empty:
+        return None, erro or "Sem dados", 0, 0
+
+    colunas_esperadas = [
+        COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
+        COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
+    ]
+    faltando = [c for c in colunas_esperadas if c not in df_fluxo.columns]
+    if faltando:
+        return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0
+
+    df = df_fluxo.copy()
+
+    # O CSV publicado entrega tudo como TEXTO no formato brasileiro (valor
+    # com vírgula decimal e ponto de milhar, data dd/mm/aaaa).
+    valores_texto = (
+        df[COL_FIN_VALOR].astype(str).str.strip()
+        .str.replace(r"[R$\s]", "", regex=True)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+    )
+    df[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
+
+    df[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
+        df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+    )
+    df[COL_FIN_VENCIMENTO] = pd.to_datetime(
+        df[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
+    )
+
+    if str(base_data).startswith("Vencimento"):
+        df["Data Efetiva"] = df[COL_FIN_VENCIMENTO].fillna(df[COL_FIN_DATA_LIQUIDACAO])
+    else:
+        df["Data Efetiva"] = df[COL_FIN_DATA_LIQUIDACAO].fillna(df[COL_FIN_VENCIMENTO])
+
+    total_lido = len(df)
+    df = df.dropna(subset=["Data Efetiva"])
+    sem_data = total_lido - len(df)
+
+    df["Tipo Movimento"] = df[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin)
+    df["Liquidado"] = df[COL_FIN_DATA_LIQUIDACAO].notna()
+    # Colunas de texto viram "category": ocupam bem menos memória e deixam
+    # os agrupamentos por canal/modalidade bem mais rápidos.
+    for coluna_texto in (COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_MOVIMENTO):
+        df[coluna_texto] = df[coluna_texto].astype("category")
+
+    return df, None, total_lido, sem_data
+
+
 if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         """<style>[data-testid="stSidebar"], header[data-testid="stHeader"] { display: none !important; }</style>""",
@@ -2575,73 +2637,64 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.rerun()
         st.stop()
 
-    # ---- Usuário autorizado: carrega a planilha do Fluxo de Caixa ----
-    col_topo_fin_a, col_topo_fin_b = st.columns([5, 1])
-    with col_topo_fin_a:
-        st.markdown('<div class="section-title">💰 Painel Financeiro — Fluxo de Caixa</div>', unsafe_allow_html=True)
-    with col_topo_fin_b:
-        if st.button("🔀 Trocar Painel", use_container_width=True):
+    # ---- Usuário autorizado: cabeçalho do painel ----
+    st.markdown(
+        f"""
+        <style>
+            .fin-header {{
+                display: flex; justify-content: space-between; align-items: center;
+                padding: 4px 2px 12px 2px; border-bottom: 1px solid {COLORS['border']};
+                margin-bottom: 14px;
+            }}
+            .fin-header .marca {{ display: flex; align-items: center; gap: 12px; }}
+            .fin-header img.logo {{
+                width: 40px; height: 40px; border-radius: 50%;
+                box-shadow: 0 0 14px rgba(76,141,255,0.30);
+            }}
+            .fin-header h1 {{
+                font-size: 21px; font-weight: 800; color: {COLORS['text']};
+                margin: 0; letter-spacing: 0.2px;
+            }}
+            .fin-header .sub {{ color: {COLORS['text_muted']}; font-size: 12px; margin-top: 3px; }}
+            .fin-header .selo {{
+                display: inline-flex; align-items: center; gap: 6px;
+                background: rgba(62,207,142,0.12); border: 1px solid {COLORS['positive']};
+                color: {COLORS['positive']}; border-radius: 20px; padding: 3px 11px;
+                font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; margin-left: 10px;
+            }}
+        </style>
+        <div class="fin-header">
+            <div class="marca">
+                <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
+                <div>
+                    <h1>Painel Financeiro · Fluxo de Caixa
+                        <span class="selo">● DADOS AO VIVO</span>
+                    </h1>
+                    <div class="sub">Grupo B&amp;A · Controladoria · atualizado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_acao_fin_a, col_acao_fin_b, col_acao_fin_c = st.columns([4, 1, 1])
+    with col_acao_fin_b:
+        if st.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+    with col_acao_fin_c:
+        if st.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
             st.session_state["painel_escolhido"] = None
             st.rerun()
 
-    df_fluxo, erro_fluxo = obter_dados_fluxo_caixa()
-
-    if erro_fluxo:
-        st.error(
-            "Não consegui carregar os dados do Fluxo de Caixa. O painel lê o CSV publicado da aba "
-            "\"Fluxo de Caixa 2026\" -- confirme na planilha, em Arquivo > Compartilhar > Publicar na web, "
-            "se a publicação continua ativa e se a opção \"Restringir acesso\" está DESMARCADA."
-        )
-        with st.expander("Detalhe técnico do erro"):
-            st.code(erro_fluxo)
-        st.stop()
-
-    if df_fluxo is None or df_fluxo.empty:
-        st.warning("O CSV publicado foi lido, mas não trouxe nenhuma linha de dado.")
-        st.stop()
-
-    colunas_esperadas_fin = [
-        COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
-        COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
-    ]
-    colunas_faltando_fin = [c for c in colunas_esperadas_fin if c not in df_fluxo.columns]
-    if colunas_faltando_fin:
-        st.error(
-            "Algumas colunas esperadas não foram encontradas na planilha: "
-            + ", ".join(colunas_faltando_fin)
-            + ". Confira se o nome está escrito exatamente igual na aba, ou me avise pra eu ajustar."
-        )
-        with st.expander("Colunas que a planilha realmente tem"):
-            st.code(", ".join(str(c) for c in df_fluxo.columns))
-        st.stop()
-
-    df_fin = df_fluxo.copy()
-
-    # O CSV publicado entrega tudo como TEXTO no formato brasileiro (valor
-    # com vírgula decimal e ponto de milhar, data dd/mm/aaaa).
-    valores_texto = df_fin[COL_FIN_VALOR].astype(str).str.strip()
-    valores_texto = (
-        valores_texto
-        .str.replace(r"[R$\s]", "", regex=True)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-    )
-    df_fin[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
-
-    df_fin[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
-        df_fin[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
-    )
-    df_fin[COL_FIN_VENCIMENTO] = pd.to_datetime(
-        df_fin[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
-    )
-
     # ---- Base de data: qual coluna define em que mês o lançamento cai ----
     # A tabela dinâmica da planilha (e a medida DAX que a área usa) tem o
-    # VENCIMENTO como eixo de data -- inclusive o LASTDATE do saldo de
-    # Caixa/Banco é sobre Vencimento.1. Por isso o padrão aqui é Vencimento:
-    # é o que faz o painel bater número a número com a planilha.
-    # A opção por Liquidação fica disponível para quem quiser ver o caixa
-    # pela data em que o dinheiro efetivamente entrou/saiu.
+    # VENCIMENTO como eixo de data -- por isso é o padrão aqui: é o que faz
+    # o painel bater número a número com a planilha. A opção por Liquidação
+    # fica disponível pra quem quiser ver o caixa pela data em que o
+    # dinheiro efetivamente entrou ou saiu.
     base_data_fin = st.radio(
         "Base de data:",
         ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
@@ -2652,17 +2705,33 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "usa o vencimento como previsão)."
         ),
     )
-    if base_data_fin.startswith("Vencimento"):
-        df_fin["Data Efetiva"] = df_fin[COL_FIN_VENCIMENTO].fillna(df_fin[COL_FIN_DATA_LIQUIDACAO])
-    else:
-        df_fin["Data Efetiva"] = df_fin[COL_FIN_DATA_LIQUIDACAO].fillna(df_fin[COL_FIN_VENCIMENTO])
 
-    total_linhas_lidas = len(df_fin)
-    df_fin = df_fin.dropna(subset=["Data Efetiva"])
-    linhas_sem_data = total_linhas_lidas - len(df_fin)
+    # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
+    # em cache: só refaz se a base de data mudar ou se você clicar em
+    # "Atualizar Dados".
+    df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data = preparar_fluxo_caixa(base_data_fin)
 
-    df_fin["Tipo Movimento"] = df_fin[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin)
-    df_fin["Liquidado"] = df_fin[COL_FIN_DATA_LIQUIDACAO].notna()
+    if erro_fluxo and str(erro_fluxo).startswith("COLUNAS_FALTANDO:"):
+        st.error(
+            "Algumas colunas esperadas não foram encontradas na planilha: "
+            + str(erro_fluxo).split("COLUNAS_FALTANDO:", 1)[1]
+            + ". Confira se o nome está escrito exatamente igual na aba."
+        )
+        st.stop()
+
+    if erro_fluxo:
+        st.error(
+            "Não consegui carregar os dados do Fluxo de Caixa. O painel lê o CSV publicado da aba "
+            "\"Fluxo de Caixa 2026\" -- confirme na planilha, em Arquivo > Compartilhar > Publicar na web, "
+            "se a publicação continua ativa e se a opção \"Restringir acesso\" está DESMARCADA."
+        )
+        with st.expander("Detalhe técnico do erro"):
+            st.code(str(erro_fluxo))
+        st.stop()
+
+    if df_fin is None or df_fin.empty:
+        st.warning("O CSV publicado foi lido, mas não trouxe nenhuma linha com data válida.")
+        st.stop()
 
     if eh_admin:
         with st.expander("🔧 Diagnóstico da planilha (visível só para administrador)"):
@@ -2675,14 +2744,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
             st.write("**Movimento → como o painel classificou:**")
             st.dataframe(
-                df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"])[COL_FIN_VALOR]
+                df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
                 .agg(["count", "sum"]).reset_index()
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
                 use_container_width=True, hide_index=True,
             )
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
-            st.dataframe(df_fluxo.head(15), use_container_width=True, hide_index=True)
+            st.dataframe(df_fin.head(15), use_container_width=True, hide_index=True)
 
     tab_fin_mensal, tab_fin_diario, tab_fin_analises = st.tabs(
         ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "📊 Análises"]
@@ -3643,7 +3712,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             with col_g1:
                 st.markdown('<div class="section-title">🏢 Saídas por Canal</div>', unsafe_allow_html=True)
                 saidas_canal_a = (
-                    df_a[df_a["Tipo Movimento"] == "saida"].groupby(COL_FIN_CANAL)[COL_FIN_VALOR].sum().abs().sort_values()
+                    df_a[df_a["Tipo Movimento"] == "saida"].groupby(COL_FIN_CANAL, observed=True)[COL_FIN_VALOR].sum().abs().sort_values()
                 )
                 if not saidas_canal_a.empty and saidas_canal_a.sum():
                     fig_canal = go.Figure(data=[go.Bar(
@@ -3666,7 +3735,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             with col_g2:
                 st.markdown('<div class="section-title">💳 Movimentação por Modalidade</div>', unsafe_allow_html=True)
-                modal_a = df_a.groupby(COL_FIN_MODALIDADE)[COL_FIN_VALOR].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+                modal_a = df_a.groupby(COL_FIN_MODALIDADE, observed=True)[COL_FIN_VALOR].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
                 modal_a = modal_a[modal_a > 0]
                 if not modal_a.empty:
                     TOP_MODAL = 6
@@ -3696,19 +3765,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             # ---- Maiores despesas por grupo ----
             if COL_FIN_GRUPO_DESPESA in df_a.columns:
+                # Mantém o sinal negativo: são saídas de caixa. Com abs() o
+                # valor virava positivo e a coloração pintava despesa de
+                # verde, como se fosse entrada.
                 grupo_a = (
                     df_a[df_a["Tipo Movimento"] == "saida"]
-                    .groupby(COL_FIN_GRUPO_DESPESA)[COL_FIN_VALOR].sum().abs().sort_values(ascending=False)
+                    .groupby(COL_FIN_GRUPO_DESPESA, observed=True)[COL_FIN_VALOR].sum().sort_values()
                 )
-                grupo_a = grupo_a[grupo_a > 0].head(10)
+                grupo_a = grupo_a[grupo_a < 0].head(10)
                 if not grupo_a.empty:
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>', unsafe_allow_html=True)
-                    total_saidas_grupo = grupo_a.sum()
+                    total_saidas_grupo = abs(grupo_a.sum())
                     df_grupo_a = pd.DataFrame({
-                        "Grupo de Despesa": grupo_a.index,
+                        "Grupo de Despesa": grupo_a.index.astype(str),
                         "Valor (R$)": grupo_a.values,
-                        "% do total": [v / total_saidas_grupo * 100 for v in grupo_a.values],
+                        "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
                     })
                     st.dataframe(
                         df_grupo_a.style.format({
