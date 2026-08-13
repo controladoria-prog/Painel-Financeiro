@@ -46,31 +46,32 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # ============================================================================
 # Paleta calibrada para leitura longa em tela grande. O tema era quase preto
 # com texto quase branco: contraste acima de 17, bem além da faixa confortável
-# (7 a 12). Nessa altura o texto claro "sangra" na borda e a vista cansa. O
+# (7 a 12) -- hoje o texto de apoio no cartão fica em ~9,8. Naquela altura o
+# texto claro "sangrava" na borda e a vista cansava. O
 # fundo subiu alguns tons, as superfícies e bordas subiram junto para o relevo
 # não sumir, o texto de apoio saiu do branco puro e as cores semânticas foram
 # levemente dessaturadas -- num campo escuro grande, cor muito viva vibra.
 COLORS = {
-    "bg": "#151A24",
-    "sidebar_bg": "#11151E",
-    "surface": "#1E2432",
-    "surface_alt": "#252C3C",
-    "border": "#2E3648",
-    "border_soft": "#262D3D",
-    "text": "#EDF2F8",
+    "bg": "#1B2230",
+    "sidebar_bg": "#161C28",
+    "surface": "#242C3C",
+    "surface_alt": "#2C3547",
+    "border": "#364054",
+    "border_soft": "#2E374A",
+    "text": "#E7EDF5",
     # Cor de TODO texto de apoio (rótulos pequenos, legendas, subtextos,
     # eixos de gráfico). Era um cinza médio, ilegível em 9-12px; passou por
     # branco puro, que resolveu a leitura mas criou brilho demais. Este
     # quase-branco parece igualmente branco na tela e mantém o contraste
     # dentro da faixa confortável.
-    "text_muted": "#DCE4EF",
-    "primary": "#5C97E8",
-    "primary_soft": "rgba(92, 151, 232, 0.16)",
-    "secondary": "#6E7A8C",
-    "positive": "#4FC392",
-    "negative": "#E87C7C",
-    "warning": "#DFA24A",
-    "muted_line": "#9AA7BA",
+    "text_muted": "#CFD9E7",
+    "primary": "#6B9EE6",
+    "primary_soft": "rgba(107, 158, 230, 0.18)",
+    "secondary": "#7A8698",
+    "positive": "#57BE92",
+    "negative": "#E08585",
+    "warning": "#D6A155",
+    "muted_line": "#A3AEBF",
 }
 
 FONT_STACK = "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
@@ -1101,7 +1102,7 @@ def _injetar_css_login():
         .login-split-left .login-badge img {{
             width: 40px; height: 40px; border-radius: 50%;
             background: #FFFFFF; padding: 5px; object-fit: contain;
-            box-shadow: 0 4px 14px rgba(92, 151, 232, 0.3);
+            box-shadow: 0 4px 14px rgba(107, 158, 230, 0.3);
         }}
         .login-split-left .login-badge span {{
             font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]};
@@ -2289,8 +2290,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             div[data-testid="stVerticalBlock"] {{ gap: 0.5rem !important; }}
             .stApp {{
                 background:
-                    radial-gradient(circle at 15% 0%, rgba(92, 151, 232, 0.09) 0%, transparent 42%),
-                    radial-gradient(circle at 90% 100%, rgba(79, 195, 146, 0.06) 0%, transparent 45%),
+                    radial-gradient(circle at 15% 0%, rgba(107, 158, 230, 0.09) 0%, transparent 42%),
+                    radial-gradient(circle at 90% 100%, rgba(87, 190, 146, 0.06) 0%, transparent 45%),
                     linear-gradient(180deg, #0A0D16 0%, #05070c 100%) !important;
             }}
             @keyframes tv-pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
@@ -2300,11 +2301,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 padding: 2px 4px 10px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 10px;
             }}
             .tv-header .brand {{ display:flex; align-items:center; gap:12px; }}
-            .tv-header img.logo {{ width: 38px; height: 38px; border-radius: 50%; box-shadow: 0 0 14px rgba(92, 151, 232, 0.35); }}
+            .tv-header img.logo {{ width: 38px; height: 38px; border-radius: 50%; box-shadow: 0 0 14px rgba(107, 158, 230, 0.35); }}
             .tv-header h1 {{ font-size: 23px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
             .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 12.5px; margin-top: 2px; }}
             .tv-live-pill {{
-                display: inline-flex; align-items: center; gap: 6px; background: rgba(79, 195, 146, 0.12);
+                display: inline-flex; align-items: center; gap: 6px; background: rgba(87, 190, 146, 0.12);
                 border: 1px solid {COLORS["positive"]}; color: {COLORS["positive"]}; border-radius: 20px;
                 padding: 3px 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; margin-left: 12px;
             }}
@@ -3523,7 +3524,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 }}
                 .fin-bloqueio .selo {{
                     width: 66px; height: 66px; margin: 0 auto 18px auto; border-radius: 50%;
-                    background: rgba(232, 124, 124, 0.10); border: 1px solid rgba(232, 124, 124, 0.35);
+                    background: rgba(224, 133, 133, 0.10); border: 1px solid rgba(224, 133, 133, 0.35);
                     display: flex; align-items: center; justify-content: center; font-size: 28px;
                 }}
                 .fin-bloqueio h2 {{
@@ -4104,7 +4105,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 fig_es = go.Figure()
                 fig_es.add_trace(go.Bar(
                     name="Entradas", x=rotulos_x_m, y=valores_entrada,
-                    marker=dict(color="rgba(79, 195, 146, 0.28)",
+                    marker=dict(color="rgba(87, 190, 146, 0.28)",
                                 line=dict(color=COLORS["positive"], width=1.8)),
                     text=[formata_m(v) for v in valores_entrada],
                     textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
@@ -4112,7 +4113,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ))
                 fig_es.add_trace(go.Bar(
                     name="Saídas", x=rotulos_x_m, y=valores_saida,
-                    marker=dict(color="rgba(232, 124, 124, 0.28)",
+                    marker=dict(color="rgba(224, 133, 133, 0.28)",
                                 line=dict(color=COLORS["negative"], width=1.8)),
                     text=[formata_m(v) for v in valores_saida],
                     textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
@@ -4516,8 +4517,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                     # Saldo: destaque azul mais forte, é a
                                     # linha mais consultada da tabela.
                                     base += (
-                                        " background-color: rgba(92, 151, 232, 0.26);"
-                                        " font-weight: 800; border-top: 2px solid rgba(92, 151, 232, 0.85);"
+                                        " background-color: rgba(107, 158, 230, 0.26);"
+                                        " font-weight: 800; border-top: 2px solid rgba(107, 158, 230, 0.85);"
                                     )
                                 estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                         return estilos
@@ -4585,13 +4586,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         # separa visualmente o que entra do que sai.
                         fig_ac.add_trace(go.Bar(
                             name="Entradas", x=rotulos_grafico_d, y=list(entradas_por_dia_d.values),
-                            marker=dict(color="rgba(79, 195, 146, 0.30)",
+                            marker=dict(color="rgba(87, 190, 146, 0.30)",
                                         line=dict(color=COLORS["positive"], width=1.3)),
                             hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                         ))
                         fig_ac.add_trace(go.Bar(
                             name="Saídas", x=rotulos_grafico_d, y=[-v for v in saidas_por_dia_graf.values],
-                            marker=dict(color="rgba(232, 124, 124, 0.30)",
+                            marker=dict(color="rgba(224, 133, 133, 0.30)",
                                         line=dict(color=COLORS["negative"], width=1.3)),
                             hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
                         ))
@@ -4607,7 +4608,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         fig_ac.add_trace(go.Scatter(
                             name="Acumulado", x=rotulos_grafico_d, y=list(acumulado_d.values), yaxis="y2",
                             mode="lines", line=dict(color=COLORS["primary"], width=3.5),
-                            fill="tozeroy", fillcolor="rgba(92, 151, 232, 0.10)",
+                            fill="tozeroy", fillcolor="rgba(107, 158, 230, 0.10)",
                             hovertemplate="Acumulado: R$ %{y:,.2f}<extra></extra>",
                         ))
                         # Referência: média diária do resultado
@@ -4783,13 +4784,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 fig_t = go.Figure()
                 fig_t.add_trace(go.Bar(
                     name="Entradas", x=rotulos_sem, y=list(entradas_sem.values),
-                    marker=dict(color="rgba(79, 195, 146, 0.30)",
+                    marker=dict(color="rgba(87, 190, 146, 0.30)",
                                 line=dict(color=COLORS["positive"], width=1.3)),
                     hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                 ))
                 fig_t.add_trace(go.Bar(
                     name="Saídas", x=rotulos_sem, y=list(saidas_sem.values),
-                    marker=dict(color="rgba(232, 124, 124, 0.30)",
+                    marker=dict(color="rgba(224, 133, 133, 0.30)",
                                 line=dict(color=COLORS["negative"], width=1.3)),
                     hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
                 ))
@@ -5277,7 +5278,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     if not saidas_canal_a.empty and saidas_canal_a.sum():
                         fig_canal = go.Figure(data=[go.Bar(
                             x=list(saidas_canal_a.values), y=list(saidas_canal_a.index), orientation="h",
-                            marker=dict(color="rgba(232, 124, 124, 0.35)", line=dict(color=COLORS["negative"], width=1.5)),
+                            marker=dict(color="rgba(224, 133, 133, 0.35)", line=dict(color=COLORS["negative"], width=1.5)),
                             text=[formata_m(v) for v in saidas_canal_a.values],
                             textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
                             hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>",
@@ -6798,10 +6799,10 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
         for alerta in criticos + atencoes:
             if alerta["nivel"] == "critico":
                 cor_borda, icone = COLORS["negative"], "🚨"
-                fundo = "rgba(232, 124, 124, 0.08)"
+                fundo = "rgba(224, 133, 133, 0.08)"
             else:
                 cor_borda, icone = COLORS["warning"], "⚠️"
-                fundo = "rgba(223, 162, 74, 0.08)"
+                fundo = "rgba(214, 161, 85, 0.08)"
             st.markdown(
                 html_compacto(f"""
                 <div style="border-left: 3px solid {cor_borda}; background: {fundo};
@@ -8366,9 +8367,9 @@ if not departamento_ativo and tab_diag is not None:
                     <div style="position:relative; display:flex; height:38px;
                                 border-radius:6px; overflow:hidden;
                                 background:{COLORS['surface_alt']};">
-                        <div style="width:{pct_var:.2f}%; background:rgba(232, 124, 124, 0.55);"></div>
-                        <div style="width:{pct_fix:.2f}%; background:rgba(223, 162, 74, 0.55);"></div>
-                        <div style="width:{pct_res:.2f}%; background:rgba(79, 195, 146, 0.55);"></div>
+                        <div style="width:{pct_var:.2f}%; background:rgba(224, 133, 133, 0.55);"></div>
+                        <div style="width:{pct_fix:.2f}%; background:rgba(214, 161, 85, 0.55);"></div>
+                        <div style="width:{pct_res:.2f}%; background:rgba(87, 190, 146, 0.55);"></div>
                         <div style="position:absolute; left:{pos_pe:.2f}%; top:-5px; bottom:-5px;
                                     width:3px; background:{COLORS['text']};
                                     box-shadow:0 0 6px rgba(0,0,0,0.7);"></div>
@@ -9063,7 +9064,7 @@ que ainda não entrou.
                     fig_fc.add_trace(go.Scatter(
                         name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
                         mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor="rgba(223, 162, 74, 0.06)", connectgaps=False,
+                        fillcolor="rgba(214, 161, 85, 0.06)", connectgaps=False,
                         hovertemplate="Faixa de cenários<extra></extra>",
                     ))
             fig_fc.add_trace(go.Scatter(
