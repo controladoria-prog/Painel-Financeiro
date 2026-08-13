@@ -840,117 +840,6 @@ st.markdown(
             .hub-card h3 {{ font-size: 16px !important; }}
         }}
 
-        /* Tela de login (acesso restrito) */
-        /* ==================== TELA DE LOGIN (split-screen) ==================== */
-        .login-split-left {{
-            padding: 2.5vh 8% 0 4%;
-        }}
-        .login-split-left .login-badge {{
-            display: flex; align-items: center; gap: 10px; margin-bottom: 26px;
-        }}
-        .login-split-left .login-badge img {{
-            width: 40px; height: 40px; border-radius: 50%;
-            background: #FFFFFF; padding: 5px; object-fit: contain;
-            box-shadow: 0 4px 14px rgba(76,141,255,0.3);
-        }}
-        .login-split-left .login-badge span {{
-            font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]};
-            letter-spacing: 0.3px;
-        }}
-        .login-hero-title {{
-            font-size: 34px; font-weight: 800; color: {COLORS["text"]};
-            margin: 0 0 6px 0; line-height: 1.12; letter-spacing: -0.5px;
-        }}
-        .login-hero-title .dot {{ color: {COLORS["primary"]}; }}
-        .login-hero-sub {{
-            font-size: 13px; color: {COLORS["text_muted"]}; margin-bottom: 22px; max-width: 380px;
-        }}
-        .login-field-label {{
-            font-size: 12px; font-weight: 700; color: {COLORS["text_muted"]};
-            text-transform: uppercase; letter-spacing: 0.4px; margin: 0 0 6px 2px;
-        }}
-
-        /* Painel visual à direita — como não temos uma foto de verdade pra
-           usar, montamos um "céu noturno" abstrato só com CSS (gradientes +
-           pontinhos de estrela + silhueta de montanha via clip-path),
-           seguindo a composição da referência. */
-        .login-visual-panel {{
-            position: relative;
-            height: 640px;
-            max-height: 80vh;
-            border-radius: 26px;
-            overflow: hidden;
-            margin: 2.5vh 4% 0 0;
-            background-image:
-                linear-gradient(180deg, rgba(11,14,20,0.1) 0%, rgba(11,14,20,0.35) 60%, rgba(11,14,20,0.85) 100%),
-                url(data:image/jpeg;base64,{LOGIN_BG_B64});
-            background-size: cover;
-            background-position: center 20%;
-            box-shadow: 0 24px 70px rgba(0,0,0,0.5);
-        }}
-        .login-visual-panel .shooting-star,
-        .login-visual-panel .mountains {{
-            display: none;
-        }}
-        .login-visual-panel .panel-footer {{
-            position: absolute; left: 28px; bottom: 24px; right: 28px;
-            display: flex; justify-content: space-between; align-items: flex-end;
-            color: rgba(241,245,249,0.9);
-        }}
-        .login-visual-panel .panel-footer .marca {{
-            font-size: 15px; font-weight: 800; letter-spacing: 0.3px;
-        }}
-        .login-visual-panel .panel-footer .marca small {{
-            display: block; font-size: 11px; font-weight: 500; color: rgba(241,245,249,0.6); margin-top: 2px;
-        }}
-
-        /* Campos com "borda em gradiente" (dupla camada de background) --
-           border simples não suporta gradiente, então usamos esse truque:
-           uma camada de fundo sólida por cima (clip: padding-box) e o
-           gradiente só aparece na faixa da borda (clip: border-box).
-           Tudo escopado só pra coluna do formulário de login (via :has),
-           pra não vazar esse estilo pro resto do painel. */
-        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input {{
-            background-image:
-                linear-gradient({COLORS["bg"]}, {COLORS["bg"]}),
-                linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
-            background-origin: border-box !important;
-            background-clip: padding-box, border-box !important;
-            border: 2px solid transparent !important;
-            border-radius: 12px !important;
-            color: {COLORS["text"]} !important;
-            padding: 12px 16px !important;
-            font-size: 14.5px !important;
-        }}
-        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input:focus {{
-            box-shadow: 0 0 0 3px {COLORS["primary_soft"]} !important;
-        }}
-        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] label p {{
-            display: none !important; /* usamos .login-field-label no lugar */
-        }}
-        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stCheckbox"] label p {{
-            color: {COLORS["text_muted"]} !important;
-            font-size: 12.5px !important;
-        }}
-        .login-forgot-hint {{
-            font-size: 12px; color: {COLORS["text_muted"]}; margin: 2px 0 18px 2px;
-        }}
-        div[data-testid="column"]:has(.login-hero-title) .stButton > button {{
-            background: linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
-            border: none !important;
-            border-radius: 30px !important;
-            color: #FFFFFF !important;
-            font-weight: 700 !important;
-            font-size: 15px !important;
-            padding: 13px 0 !important;
-            margin-top: 6px;
-            box-shadow: 0 10px 26px rgba(76,141,255,0.35);
-            transition: transform 0.12s, box-shadow 0.12s;
-        }}
-        div[data-testid="column"]:has(.login-hero-title) .stButton > button:hover {{
-            transform: translateY(-1px);
-            box-shadow: 0 12px 30px rgba(76,141,255,0.45);
-        }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -1169,6 +1058,251 @@ def _pedir_autofill_via_localstorage():
     )
 
 
+# ---------------------------------------------------------------------------
+# CSS DA TELA DE LOGIN — injetado só quando essa tela aparece
+# ---------------------------------------------------------------------------
+# Este bloco vivia no CSS global da seção 3. O problema: ele carrega a foto de
+# fundo embutida em base64 (~80 KB) e o Streamlit reenvia o CSS global a CADA
+# execução do script -- ou seja, quem já estava logado rebaixava a imagem da
+# tela de login a cada clique em qualquer aba. Aqui ela só vai para o
+# navegador quando a tela de login é realmente desenhada.
+def _injetar_css_login():
+    st.markdown(
+        f"""
+        <style>
+        /* Tela de login (acesso restrito) */
+        /* ==================== TELA DE LOGIN (split-screen) ==================== */
+        .login-split-left {{
+            padding: 2.5vh 8% 0 4%;
+        }}
+        .login-split-left .login-badge {{
+            display: flex; align-items: center; gap: 10px; margin-bottom: 26px;
+        }}
+        .login-split-left .login-badge img {{
+            width: 40px; height: 40px; border-radius: 50%;
+            background: #FFFFFF; padding: 5px; object-fit: contain;
+            box-shadow: 0 4px 14px rgba(76,141,255,0.3);
+        }}
+        .login-split-left .login-badge span {{
+            font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]};
+            letter-spacing: 0.3px;
+        }}
+        .login-hero-title {{
+            font-size: 34px; font-weight: 800; color: {COLORS["text"]};
+            margin: 0 0 6px 0; line-height: 1.12; letter-spacing: -0.5px;
+        }}
+        .login-hero-title .dot {{ color: {COLORS["primary"]}; }}
+        .login-hero-sub {{
+            font-size: 13px; color: {COLORS["text_muted"]}; margin-bottom: 22px; max-width: 380px;
+        }}
+        .login-field-label {{
+            font-size: 12px; font-weight: 700; color: {COLORS["text_muted"]};
+            text-transform: uppercase; letter-spacing: 0.4px; margin: 0 0 6px 2px;
+        }}
+
+        /* Painel visual à direita — como não temos uma foto de verdade pra
+           usar, montamos um "céu noturno" abstrato só com CSS (gradientes +
+           pontinhos de estrela + silhueta de montanha via clip-path),
+           seguindo a composição da referência. */
+        .login-visual-panel {{
+            position: relative;
+            height: 640px;
+            max-height: 80vh;
+            border-radius: 26px;
+            overflow: hidden;
+            margin: 2.5vh 4% 0 0;
+            background-image:
+                linear-gradient(180deg, rgba(11,14,20,0.1) 0%, rgba(11,14,20,0.35) 60%, rgba(11,14,20,0.85) 100%),
+                url(data:image/jpeg;base64,{LOGIN_BG_B64});
+            background-size: cover;
+            background-position: center 20%;
+            box-shadow: 0 24px 70px rgba(0,0,0,0.5);
+        }}
+        .login-visual-panel .panel-footer {{
+            position: absolute; left: 28px; bottom: 24px; right: 28px;
+            display: flex; justify-content: space-between; align-items: flex-end;
+            color: rgba(241,245,249,0.9);
+        }}
+        .login-visual-panel .panel-footer .marca {{
+            font-size: 15px; font-weight: 800; letter-spacing: 0.3px;
+        }}
+        .login-visual-panel .panel-footer .marca small {{
+            display: block; font-size: 11px; font-weight: 500; color: rgba(241,245,249,0.6); margin-top: 2px;
+        }}
+
+        /* Campos com "borda em gradiente" (dupla camada de background) --
+           border simples não suporta gradiente, então usamos esse truque:
+           uma camada de fundo sólida por cima (clip: padding-box) e o
+           gradiente só aparece na faixa da borda (clip: border-box).
+           Tudo escopado só pra coluna do formulário de login (via :has),
+           pra não vazar esse estilo pro resto do painel. */
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input,
+        div[data-testid="stColumn"]:has(.login-hero-title) div[data-testid="stTextInput"] input {{
+            background-image:
+                linear-gradient({COLORS["bg"]}, {COLORS["bg"]}),
+                linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
+            background-origin: border-box !important;
+            background-clip: padding-box, border-box !important;
+            border: 2px solid transparent !important;
+            border-radius: 12px !important;
+            color: {COLORS["text"]} !important;
+            padding: 12px 16px !important;
+            font-size: 14.5px !important;
+        }}
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] input:focus,
+        div[data-testid="stColumn"]:has(.login-hero-title) div[data-testid="stTextInput"] input:focus {{
+            box-shadow: 0 0 0 3px {COLORS["primary_soft"]} !important;
+        }}
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stTextInput"] label p,
+        div[data-testid="stColumn"]:has(.login-hero-title) div[data-testid="stTextInput"] label p {{
+            display: none !important; /* usamos .login-field-label no lugar */
+        }}
+        div[data-testid="column"]:has(.login-hero-title) div[data-testid="stCheckbox"] label p,
+        div[data-testid="stColumn"]:has(.login-hero-title) div[data-testid="stCheckbox"] label p {{
+            color: {COLORS["text_muted"]} !important;
+            font-size: 12.5px !important;
+        }}
+        .login-forgot-hint {{
+            font-size: 12px; color: {COLORS["text_muted"]}; margin: 2px 0 18px 2px;
+        }}
+        div[data-testid="column"]:has(.login-hero-title) .stButton > button,
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button {{
+            background: {COLORS["primary"]} !important;
+            border: 1px solid {COLORS["primary"]} !important;
+            border-radius: 8px !important;
+            color: #FFFFFF !important;
+            font-weight: 600 !important;
+            font-size: 14px !important;
+            letter-spacing: 0.3px;
+            padding: 13px 0 !important;
+            margin-top: 6px;
+            box-shadow: none !important;
+            transition: filter 0.15s ease;
+        }}
+        div[data-testid="column"]:has(.login-hero-title) .stButton > button:hover,
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:hover {{
+            filter: brightness(1.12);
+        }}
+        div[data-testid="column"]:has(.login-hero-title) .stButton > button:disabled,
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:disabled {{
+            background: {COLORS["surface"]} !important;
+            border-color: {COLORS["border"]} !important;
+            color: {COLORS["text_muted"]} !important;
+        }}
+
+        /* (7) Centraliza o formulário na altura da imagem ao lado -- antes ele
+           terminava bem acima dela e a composição ficava torta. */
+        div[data-testid="column"]:has(.login-hero-title),
+        div[data-testid="stColumn"]:has(.login-hero-title) {{
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 76vh;
+        }}
+
+        /* (5) Erro de login: linha discreta logo abaixo dos campos */
+        .login-erro {{
+            display: flex; align-items: center; gap: 7px;
+            font-size: 12.5px; color: {COLORS["negative"]};
+            margin: -6px 0 12px 2px;
+        }}
+        .login-erro::before {{
+            content: ""; width: 6px; height: 6px; border-radius: 50%;
+            background: {COLORS["negative"]}; flex: none;
+        }}
+        .login-aviso-espera {{
+            font-size: 12.5px; color: {COLORS["warning"]};
+            margin: -6px 0 12px 2px;
+        }}
+        .login-forgot-hint a {{
+            color: {COLORS["primary"]}; text-decoration: none;
+        }}
+        .login-forgot-hint a:hover {{ text-decoration: underline; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# LIMITE DE TENTATIVAS DE SENHA
+# ---------------------------------------------------------------------------
+# Sem isto, dá para tentar senha indefinidamente. O controle é por SESSÃO:
+# atrapalha tentativa manual, mas quem abrir uma aba nova zera a contagem --
+# um bloqueio de verdade exigiria guardar as tentativas fora do app.
+TENTATIVAS_ATE_BLOQUEIO = 5
+ESPERA_BASE_LOGIN_SEG = 30
+
+
+def _segundos_bloqueio_login():
+    """Quantos segundos ainda faltam para liberar o login (0 = liberado)."""
+    ate = st.session_state.get("_login_bloqueado_ate", 0)
+    return max(0, int(ate - time.time()))
+
+
+def _registrar_falha_login():
+    """Conta a tentativa errada e, no limite, bloqueia por um tempo que dobra
+    a cada novo bloqueio (30s, 1min, 2min...)."""
+    tentativas = st.session_state.get("_login_tentativas", 0) + 1
+    if tentativas >= TENTATIVAS_ATE_BLOQUEIO:
+        bloqueios = st.session_state.get("_login_bloqueios", 0)
+        espera = ESPERA_BASE_LOGIN_SEG * (2 ** bloqueios)
+        st.session_state["_login_bloqueado_ate"] = time.time() + espera
+        st.session_state["_login_bloqueios"] = bloqueios + 1
+        st.session_state["_login_tentativas"] = 0
+    else:
+        st.session_state["_login_tentativas"] = tentativas
+
+
+def _limpar_falhas_login():
+    for chave in ("_login_tentativas", "_login_bloqueado_ate", "_login_bloqueios"):
+        st.session_state.pop(chave, None)
+
+
+# Aviso de Caps Lock preso ao campo de senha. É melhor esforço: usa a mesma
+# janela que o "lembrar de mim" já acessa e, se o navegador não deixar,
+# simplesmente não acontece nada.
+_JS_CAPS_LOCK = """
+<script>
+__JANELA__
+try {
+    const w = _janelaAlvo();
+    if (w && w.document && !w.__beeaCapsLigado) {
+        w.__beeaCapsLigado = true;
+        const doc = w.document;
+        const atualizar = function (evento) {
+            const campo = doc.querySelector('input[type=password]');
+            if (!campo || !evento.getModifierState) return;
+            const caixa = campo.closest('div[data-testid=\"stTextInput\"]') || campo.parentElement;
+            let aviso = doc.getElementById('beea-capslock');
+            if (evento.getModifierState('CapsLock')) {
+                if (!aviso && caixa) {
+                    aviso = doc.createElement('div');
+                    aviso.id = 'beea-capslock';
+                    aviso.textContent = 'Caps Lock ativado';
+                    aviso.style.cssText = 'font-size:11.5px;color:__COR__;margin:6px 0 0 2px;';
+                    caixa.appendChild(aviso);
+                }
+            } else if (aviso) {
+                aviso.remove();
+            }
+        };
+        doc.addEventListener('keydown', atualizar, true);
+        doc.addEventListener('keyup', atualizar, true);
+    }
+} catch (e) {}
+</script>
+"""
+
+
+def _avisar_caps_lock():
+    components.html(
+        _JS_CAPS_LOCK.replace("__JANELA__", _JS_ACHAR_JANELA).replace("__COR__", COLORS["warning"]),
+        height=0,
+        width=0,
+    )
+
+
 def checar_login():
     """Exibe uma tela de login (e-mail + senha) e retorna True somente apos
     autenticacao valida. Guarda o usuario logado em
@@ -1192,8 +1326,15 @@ def checar_login():
         _pedir_autofill_via_localstorage()
 
     def validar_login():
+        # Bloqueado por excesso de tentativas: nem chega a comparar a senha.
+        if _segundos_bloqueio_login() > 0:
+            return
         email_digitado = st.session_state.get("campo_email", "").strip().lower()
         senha_digitada = st.session_state.get("campo_senha", "")
+        # Campo vazio não é tentativa errada -- antes, dar Enter no e-mail
+        # já acendia "senha incorreta" antes de a pessoa digitar a senha.
+        if not email_digitado or not senha_digitada:
+            return
         lembrar = st.session_state.get("campo_lembrar", True)
         usuario = usuarios.get(email_digitado)
         if usuario and str(senha_digitada) == usuario["senha"]:
@@ -1202,6 +1343,7 @@ def checar_login():
                 "perfil": usuario["perfil"],
             }
             st.session_state["login_invalido"] = False
+            _limpar_falhas_login()
             if lembrar:
                 st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
             else:
@@ -1209,6 +1351,10 @@ def checar_login():
         else:
             st.session_state["usuario_logado"] = None
             st.session_state["login_invalido"] = True
+            _registrar_falha_login()
+
+    _injetar_css_login()
+    _avisar_caps_lock()
 
     col_form, col_visual = st.columns([1, 1.05])
     with col_form:
@@ -1226,7 +1372,10 @@ def checar_login():
             unsafe_allow_html=True,
         )
         st.markdown('<div class="login-field-label">E-mail</div>', unsafe_allow_html=True)
-        st.text_input("E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br", label_visibility="collapsed")
+        st.text_input(
+            "E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br",
+            label_visibility="collapsed", on_change=validar_login,
+        )
         st.markdown('<div class="login-field-label">Senha</div>', unsafe_allow_html=True)
         st.text_input(
             "Senha",
@@ -1236,24 +1385,36 @@ def checar_login():
             placeholder="Digite sua senha",
             label_visibility="collapsed",
         )
+        # (5) O erro fica colado nos campos, não numa caixa vermelha depois
+        # do botão -- é onde a pessoa está olhando quando erra.
+        segundos_espera = _segundos_bloqueio_login()
+        if segundos_espera > 0:
+            st.markdown(
+                f'<div class="login-aviso-espera">Muitas tentativas seguidas. '
+                f'Aguarde {segundos_espera}s para tentar de novo.</div>',
+                unsafe_allow_html=True,
+            )
+        elif st.session_state.get("login_invalido", False):
+            st.markdown(
+                '<div class="login-erro">E-mail ou senha incorretos. Tente novamente.</div>',
+                unsafe_allow_html=True,
+            )
+
         st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
         st.markdown(
             '<div class="login-forgot-hint">Esqueceu a senha ou ainda não tem acesso? '
-            "Fale com o administrador da Controladoria.</div>",
+            'Fale com o <a href="mailto:controladoria@grupobeea.com.br">administrador '
+            'da Controladoria</a>.</div>',
             unsafe_allow_html=True,
         )
-        if st.button("Entrar", use_container_width=True):
+        if st.button("Entrar", use_container_width=True, disabled=segundos_espera > 0):
             validar_login()
             st.rerun()
-        if st.session_state.get("login_invalido", False):
-            st.error("E-mail ou senha incorretos. Tente novamente.")
 
     with col_visual:
         st.markdown(
             """
             <div class="login-visual-panel">
-                <div class="shooting-star"></div>
-                <div class="mountains"></div>
                 <div class="panel-footer">
                     <div class="marca">Controladoria B&amp;A
                         <small>Painel Financeiro</small>
