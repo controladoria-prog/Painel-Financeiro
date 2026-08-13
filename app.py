@@ -160,6 +160,38 @@ def html_compacto(html):
 FONTE_MONO = "ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, monospace"
 
 
+def render_tabela(dados, altura=None, ocultar_indice=True):
+    """Desenha uma tabela em HTML, no lugar do st.dataframe.
+
+    Motivo: o st.dataframe é pintado num canvas com o tema interno do
+    Streamlit, e nenhum CSS do painel chega nele -- as tabelas ficavam num
+    tom diferente de todo o resto da tela. Montando o HTML nós mesmos, elas
+    seguem a mesma paleta, o mesmo tipo monoespaçado dos números e o mesmo
+    cabeçalho das outras seções.
+
+    Aceita tanto um DataFrame quanto um Styler (com .format e .map já
+    aplicados) -- as cores de célula do Styler continuam valendo, porque ele
+    escreve regras mais específicas que as deste painel.
+
+    `altura` (em pixels) liga a rolagem interna, com o cabeçalho fixo."""
+    estilizado = dados if hasattr(dados, "to_html") else dados.style
+    if ocultar_indice:
+        try:
+            estilizado = estilizado.hide(axis="index")
+        except Exception:
+            pass
+    try:
+        html = estilizado.to_html(table_attributes='class="tabela-painel"')
+    except TypeError:
+        # Versões antigas do pandas não aceitam table_attributes.
+        html = estilizado.to_html()
+    estilo = f"max-height:{int(altura)}px;" if altura else ""
+    st.markdown(
+        f'<div class="tab-wrap" style="{estilo}">{html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def faixa_metricas_html(metricas):
     """Faixa de indicadores em linha, separados por filete vertical, sem
     caixas nem ícones. `metricas` é uma lista de tuplas
@@ -622,6 +654,56 @@ st.markdown(
             letter-spacing: 0.2px;
             margin-bottom: 2px;
         }}
+
+        /* ---- Tabelas desenhadas por nós, em HTML ----
+           O st.dataframe é pintado num canvas com o tema interno do
+           Streamlit, fora do alcance deste CSS -- por isso as tabelas
+           ficavam num tom que não combinava com o resto. Estas regras valem
+           para as tabelas que passaram a ser montadas como HTML. */
+        .tab-wrap {{
+            border: 1px solid {COLORS["border"]};
+            border-radius: 8px;
+            overflow: auto;
+            margin: 0 4px 10px;
+            background: {COLORS["surface"]};
+        }}
+        .tab-wrap table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12.5px;
+        }}
+        .tab-wrap thead th {{
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: {COLORS["surface_alt"]};
+            color: {COLORS["text_muted"]};
+            font-size: 9.5px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            text-align: right;
+            white-space: nowrap;
+            padding: 11px 14px;
+            border-bottom: 1px solid {COLORS["border"]};
+        }}
+        .tab-wrap thead th:first-child {{ text-align: left; }}
+        .tab-wrap tbody td {{
+            padding: 9px 14px;
+            text-align: right;
+            white-space: nowrap;
+            color: {COLORS["text"]};
+            font-family: {FONTE_MONO};
+            font-variant-numeric: tabular-nums;
+            border-top: 1px solid {COLORS["border_soft"]};
+        }}
+        .tab-wrap tbody td:first-child {{
+            text-align: left;
+            font-family: inherit;
+            color: {COLORS["text"]};
+        }}
+        .tab-wrap tbody tr:hover td {{ background: {COLORS["surface_alt"]}; }}
+        .tab-wrap .blank {{ background: {COLORS["surface_alt"]}; }}
 
         /* Números tabulares em toda parte: as casas decimais se alinham na
            vertical de uma linha para a outra, que é o que faz uma coluna de
@@ -1136,21 +1218,26 @@ def _injetar_css_login():
            além do necessário. O degradê escuro que cobria a imagem toda
            virou uma faixa só na parte de baixo, onde fica o texto: o resto
            da foto passa a ser exibido com o brilho real. */
+        /* O quadro tem a MESMA proporção da foto (804x1006). Com a altura
+           definida e `aspect-ratio`, a largura sai por conta -- então a
+           imagem preenche tudo e não sobra faixa nenhuma dos lados. O
+           `margin: auto` centraliza o quadro na coluna. */
         .login-visual-panel {{
             position: relative;
-            height: 82vh;
-            min-height: 520px;
+            height: 78vh;
+            min-height: 480px;
+            aspect-ratio: 804 / 1006;
+            width: auto;
+            max-width: 100%;
+            margin: 1.5vh auto 0;
             border-radius: 20px;
             overflow: hidden;
-            margin: 1.5vh 4% 0 0;
-            background-color: {COLORS["surface"]};
             background-image:
                 linear-gradient(180deg, rgba(0,0,0,0) 68%, rgba(0,0,0,0.55) 100%),
                 url(data:image/jpeg;base64,{LOGIN_BG_B64});
-            background-size: contain;
+            background-size: cover;
             background-repeat: no-repeat;
-            background-position: center top;
-            border: 1px solid {COLORS["border"]};
+            background-position: center;
             box-shadow: none;
         }}
         .login-visual-panel .panel-footer {{
@@ -3815,7 +3902,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "traz -- procure ali a coluna que guarda a data do pagamento."
                 )
                 if diag_fluxo.get("varredura_pagar") is not None:
-                    st.dataframe(diag_fluxo["varredura_pagar"], use_container_width=True, hide_index=True)
+                    render_tabela(diag_fluxo["varredura_pagar"])
             if diag_fluxo.get("colunas_csv"):
                 st.caption("**Colunas lidas do CSV:** " + " · ".join(diag_fluxo["colunas_csv"]))
             if diag_fluxo.get("colunas_liq_extras"):
@@ -3825,17 +3912,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
             if diag_fluxo.get("por_movimento") is not None:
                 st.write("**Liquidação por Movimento (pagos/recebidos x em aberto):**")
-                st.dataframe(diag_fluxo["por_movimento"], use_container_width=True, hide_index=True)
+                render_tabela(diag_fluxo["por_movimento"])
             st.write("**Movimento → como o painel classificou:**")
-            st.dataframe(
+            render_tabela(
                 df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
                 .agg(["count", "sum"]).reset_index()
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
-                use_container_width=True, hide_index=True,
             )
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
-            st.dataframe(df_fin.head(15), use_container_width=True, hide_index=True)
+            render_tabela(df_fin.head(15))
 
     tab_fin_mensal, tab_fin_diario, tab_fin_tesouraria, tab_fin_analises = st.tabs(
         ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🏦 Tesouraria", "📊 Análises"]
@@ -4016,10 +4102,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
 
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
-            st.dataframe(
-                pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-                use_container_width=True,
-            )
+            render_tabela(pivot_m_exibicao.style.format(formata_brl).map(cor_valor))
             st.caption(
                 "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
                 "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
@@ -4076,14 +4159,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     ]
                 return [cor_valor(v) for v in linha]
 
-            st.dataframe(
+            render_tabela(
                 df_reserva_m.style.format(
                     {c: formata_brl for c in colunas_meses_m}
                 ).format(
                     {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
                     subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
                 ).apply(_cor_pct_meta_fin, axis=1),
-                use_container_width=True,
             )
 
             st.caption(
@@ -4211,7 +4293,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
                 pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
                 pivot_ap.index.name = "Movimento"
-                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
+                render_tabela(pivot_ap.style.format(formata_brl).map(cor_valor))
                 st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
     # ---------------- DIÁRIO ----------------
@@ -4544,11 +4626,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         coluna: st.column_config.NumberColumn(coluna, width="medium")
                         for coluna in pivot_d.columns
                     }
-                    st.dataframe(
+                    render_tabela(
                         pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
-                        use_container_width=True,
-                        column_config=config_colunas_d,
-                        height=668,  # 18 linhas visíveis, sem precisar rolar
+                        altura=668,
                     )
                     st.caption(
                         "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
@@ -4848,12 +4928,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         "Líquido": liquido_sem.values,
                         "Saldo projetado": saldo_projetado_sem.values,
                     })
-                    st.dataframe(
+                    render_tabela(
                         df_proj_t.style.format({
                             "Entradas": formata_brl, "Saídas": formata_brl,
                             "Líquido": formata_brl, "Saldo projetado": formata_brl,
                         }).map(cor_valor, subset=["Entradas", "Saídas", "Líquido", "Saldo projetado"]),
-                        use_container_width=True, hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
+                        altura=min(520, 60 + 35 * len(df_proj_t)),
                     )
                 st.caption(
                     "A projeção parte do saldo de caixa/banco mais recente e acumula os lançamentos "
@@ -5357,12 +5437,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "Valor (R$)": grupo_a.values,
                             "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
                         })
-                        st.dataframe(
+                        render_tabela(
                             df_grupo_a.style.format({
                                 "Valor (R$)": formata_brl,
                                 "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                             }).map(cor_valor, subset=["Valor (R$)"]),
-                            use_container_width=True, hide_index=True,
                         )
                         st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
 
@@ -7182,7 +7261,7 @@ with tab1:
                 })
             df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
             cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
-            st.dataframe(
+            render_tabela(
                 df_tabela_dept.style.format(
                     {
                         "Realizado (R$)": formata_brl,
@@ -7190,11 +7269,6 @@ with tab1:
                         "Desvio (R$)": formata_brl,
                     }
                 ).map(cor_valor, subset=cols_num_dept),
-                column_config={
-                    "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
-                },
-                use_container_width=True,
-                hide_index=True,
             )
 
             # ---- Linhas informativas (ex.: no MKT, a gestão GB da
@@ -7221,7 +7295,7 @@ with tab1:
                         "Desvio (R$)": v_o_info - v_r_info,
                     })
                 df_tabela_info = pd.DataFrame(linhas_tabela_info)
-                st.dataframe(
+                render_tabela(
                     df_tabela_info.style.format(
                         {
                             "Realizado (R$)": formata_brl,
@@ -7229,11 +7303,6 @@ with tab1:
                             "Desvio (R$)": formata_brl,
                         }
                     ).map(cor_valor, subset=cols_num_dept),
-                    column_config={
-                        "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
-                    },
-                    use_container_width=True,
-                    hide_index=True,
                 )
 
     else:
@@ -7872,13 +7941,10 @@ with tab2:
                 "Conta / Linha DRE": l, "Realizado (R$)": v_r_info_dre, "Orçado (R$)": v_o_info_dre,
                 "Desvio (R$)": v_o_info_dre - v_r_info_dre,
             })
-        st.dataframe(
+        render_tabela(
             pd.DataFrame(linhas_tabela_info_dre).style.format(
                 {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
             ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]),
-            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
-            use_container_width=True,
-            hide_index=True,
         )
 
 
@@ -8118,13 +8184,10 @@ with tab3:
 
         df_hist_info = pd.DataFrame(hist_data_info)
         colunas_numericas_info = list(m_map.keys()) + ["Total Acumulado"]
-        st.dataframe(
+        render_tabela(
             df_hist_info.style.format({col: formata_brl for col in colunas_numericas_info}).map(
                 cor_valor, subset=colunas_numericas_info
             ),
-            column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large", pinned=True)},
-            use_container_width=True,
-            hide_index=True,
         )
 
 
@@ -8642,13 +8705,13 @@ if not departamento_ativo and tab_diag is not None:
             )
 
             with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
-                st.dataframe(
+                render_tabela(
                     df_abc[["Conta", "Classe", "Valor (R$)", "% do total", "% acumulado"]].style.format({
                         "Valor (R$)": formata_brl,
                         "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                         "% acumulado": lambda v: f"{v:.1f}%".replace(".", ","),
                     }).map(cor_valor, subset=["Valor (R$)"]),
-                    use_container_width=True, hide_index=True, height=420,
+                    altura=420,
                 )
             st.caption(
                 f"A classificação segue a regra 80/15/5: **classe A** são as contas que somam os "
@@ -8838,7 +8901,7 @@ if not departamento_ativo and tab_diag is not None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             with st.expander("📋 Ver todas as anomalias em tabela"):
-                st.dataframe(
+                render_tabela(
                     df_anom.drop(columns=["Historico"]).style.format({
                         "Valor do mês": formata_brl,
                         "Média anterior": formata_brl,
@@ -8848,8 +8911,7 @@ if not departamento_ativo and tab_diag is not None:
                     }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
                     .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
                          subset=["Variação", "Var. %"]),
-                    use_container_width=True, hide_index=True,
-                    height=min(500, 60 + 35 * len(df_anom)),
+                    altura=min(500, 60 + 35 * len(df_anom)),
                 )
 
             with st.expander("❓ Como ler estes números"):
@@ -9414,15 +9476,13 @@ if not departamento_ativo:
 
         ALTURA_12_LINHAS = 38 + len(df_resumo_proj) * 35
 
-        st.dataframe(
+        render_tabela(
             df_resumo_proj.style.format({
                 "Valor Realizado / Projetado": formata_brl,
                 "Orçado Original": formata_brl,
                 "Desvio (R$)": formata_brl,
             }).map(cor_valor, subset=["Desvio (R$)"]),
-            use_container_width=True,
-            hide_index=True,
-            height=ALTURA_12_LINHAS,
+            altura=ALTURA_12_LINHAS,
         )
 
         # -----------------------------------------------------------------------
@@ -9521,12 +9581,11 @@ if not departamento_ativo:
                 [(l, v_o, v_n, d) for l, v_o, v_n, d in detalhes_dependentes],
                 columns=["Linha da DRE", "Valor Original", "Valor Estressado", "Delta (R$)"],
             )
-            st.dataframe(
+            render_tabela(
                 df_dependentes_stress.style.format({
                     "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
                 }).map(cor_valor, subset=["Delta (R$)"]),
-                use_container_width=True, hide_index=True,
-                height=38 + len(df_dependentes_stress) * 35,
+                altura=38 + len(df_dependentes_stress) * 35,
             )
 
         st.caption(
@@ -9724,7 +9783,7 @@ if eh_admin and not departamento_ativo:
             {"E-mail": u["email"], "Perfil": u["perfil"]}
             for u in usuarios_atuais.values()
         ]
-        st.dataframe(pd.DataFrame(lista_usuarios), use_container_width=True, hide_index=True)
+        render_tabela(pd.DataFrame(lista_usuarios))
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**➕ Novo usuário de visualização**")
