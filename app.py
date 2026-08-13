@@ -2537,6 +2537,18 @@ COL_FIN_HISTORICO = "Histórico"
 COL_FIN_GRUPO_DESPESA = "GRUPO DESPESA"
 COL_FIN_VENCIMENTO = "Vencimento.1"
 
+# Coluna CRIADA pelo painel (não existe no CSV): data de pagamento das
+# contas a pagar, buscada na aba DIÁRIO da planilha Realizado 2026.
+# ATENÇÃO: ela é usada SOMENTE na aba "Análises", para os cálculos de prazo
+# médio de pagamento e de quitado x em aberto. Todo o resto do painel
+# (Fluxo Mensal, Fluxo Diário, Tesouraria, base de data, NCG) continua
+# olhando exclusivamente a "Data Liquidação" que vem no próprio CSV --
+# misturar as duas fazia sumir do fluxo o que já estava pago.
+COL_FIN_LIQ_DIARIO = "Data Liquidação (DIÁRIO)"
+# Coluna auxiliar montada dentro da aba Análises: a liquidação do CSV
+# completada pela da DIÁRIO. Vive só ali.
+COL_FIN_LIQ_EFETIVA = "Liquidação Efetiva"
+
 MESES_PT_FIN = [
     "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
@@ -2892,6 +2904,9 @@ def preparar_fluxo_caixa(base_data):
     # completamos SÓ o que está vazio. Nada que já veio com data é tocado.
     mask_pagar = df[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
     faltando_pagar = mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    # A data encontrada na DIÁRIO NÃO entra na coluna do CSV: vai para uma
+    # coluna própria, consumida só pela aba Análises.
+    df[COL_FIN_LIQ_DIARIO] = pd.NaT
     diagnostico["pagar_sem_liq_no_csv"] = int(faltando_pagar.sum())
     diagnostico["liq_do_diario"] = 0
     if faltando_pagar.any() and COL_FIN_NUMERO in df.columns:
@@ -2919,7 +2934,7 @@ def preparar_fluxo_caixa(base_data):
                 achados.loc[sobra, "data_liq"] = complemento["data_liq"].values
             casados = achados.dropna(subset=["data_liq"])
             if not casados.empty:
-                df.loc[casados["_idx"].values, COL_FIN_DATA_LIQUIDACAO] = casados["data_liq"].values
+                df.loc[casados["_idx"].values, COL_FIN_LIQ_DIARIO] = casados["data_liq"].values
             sem_par = achados[achados["data_liq"].isna()]
             diagnostico["liq_do_diario"] = int(len(casados))
             diagnostico["pagar_sem_match"] = int(len(sem_par))
@@ -2936,7 +2951,7 @@ def preparar_fluxo_caixa(base_data):
     liquidados_pagar = int(df.loc[mask_pagar_diag, COL_FIN_DATA_LIQUIDACAO].notna().sum())
     diagnostico["pagar_titulos"] = int(mask_pagar_diag.sum())
     diagnostico["pagar_liquidados"] = liquidados_pagar
-    if mask_pagar_diag.any() and liquidados_pagar == 0:
+    if mask_pagar_diag.any() and liquidados_pagar == 0 and not diagnostico.get("liq_do_diario"):
         linhas_varredura = []
         for coluna in df_fluxo.columns:
             serie_pagar = df_fluxo.loc[mask_pagar_diag, coluna]
@@ -3256,7 +3271,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         "Exemplos de documentos que não acharam par na DIÁRIO: "
                         + ", ".join(str(v) for v in diag_fluxo["amostras_sem_match"])
                     )
-            if diag_fluxo.get("pagar_titulos") and not diag_fluxo.get("pagar_liquidados"):
+            if (
+                diag_fluxo.get("pagar_titulos")
+                and not diag_fluxo.get("pagar_liquidados")
+                and not diag_fluxo.get("liq_do_diario")
+            ):
                 st.error(
                     f"**Nenhuma das {diag_fluxo['pagar_titulos']} contas a pagar tem data de liquidação "
                     "na coluna lida.** Não é erro de leitura: a coluna está vazia para essas linhas. "
@@ -4485,6 +4504,19 @@ if st.session_state["painel_escolhido"] == "financeiro":
         if df_a.empty:
             st.info("Nenhum lançamento para os filtros selecionados.")
         else:
+            # ---- Liquidação efetiva: SÓ NESTA ABA ----
+            # O CSV não traz a baixa das contas a pagar; ela vem da DIÁRIO,
+            # numa coluna à parte. Aqui as duas são juntadas para os cálculos
+            # de prazo médio e de quitado x em aberto. Nenhuma outra aba do
+            # painel usa isso -- lá o pago continua aparecendo no fluxo
+            # normalmente, como sempre foi.
+            if COL_FIN_LIQ_DIARIO in df_a.columns:
+                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO].fillna(
+                    df_a[COL_FIN_LIQ_DIARIO]
+                )
+            else:
+                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO]
+
             df_a["DiaOrd"] = df_a["Data Efetiva"].dt.normalize()
             entradas_a = df_a.loc[df_a["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
             saidas_a = df_a.loc[df_a["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
@@ -4493,11 +4525,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             # ---- Prazos e cobertura ----
             df_prazo_a = df_a[
-                df_a[COL_FIN_DATA_LIQUIDACAO].notna() & df_a[COL_FIN_VENCIMENTO].notna()
+                df_a[COL_FIN_LIQ_EFETIVA].notna() & df_a[COL_FIN_VENCIMENTO].notna()
             ].copy()
             if not df_prazo_a.empty:
                 df_prazo_a["DiasAteLiquidar"] = (
-                    df_prazo_a[COL_FIN_DATA_LIQUIDACAO] - df_prazo_a[COL_FIN_VENCIMENTO]
+                    df_prazo_a[COL_FIN_LIQ_EFETIVA] - df_prazo_a[COL_FIN_VENCIMENTO]
                 ).dt.days
             saidas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "saida"] if not df_prazo_a.empty else pd.DataFrame()
             entradas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "entrada"] if not df_prazo_a.empty else pd.DataFrame()
@@ -4526,8 +4558,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             PRAZO_INTERNO_DIAS = 10
             hoje_analise = pd.Timestamp(datetime.now(FUSO_BR).date())
             df_pagar_a = df_a[df_a["Tipo Movimento"] == "saida"].copy()
-            df_pagar_aberto = df_pagar_a[df_pagar_a[COL_FIN_DATA_LIQUIDACAO].isna()].copy()
-            df_pagar_quitado = df_pagar_a[df_pagar_a[COL_FIN_DATA_LIQUIDACAO].notna()].copy()
+            df_pagar_aberto = df_pagar_a[df_pagar_a[COL_FIN_LIQ_EFETIVA].isna()].copy()
+            df_pagar_quitado = df_pagar_a[df_pagar_a[COL_FIN_LIQ_EFETIVA].notna()].copy()
 
             valor_aberto_a = abs(df_pagar_aberto[COL_FIN_VALOR].sum())
             valor_quitado_a = abs(df_pagar_quitado[COL_FIN_VALOR].sum())
