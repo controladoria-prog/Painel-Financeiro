@@ -52,7 +52,11 @@ COLORS = {
     "border": "#232838",
     "border_soft": "#1D2230",
     "text": "#F1F5F9",
-    "text_muted": "#8B95A5",
+    # Cor de TODO texto de apoio (rótulos pequenos, legendas, subtextos,
+    # eixos de gráfico). Era um cinza médio: em fonte de 9 a 12px, no fundo
+    # escuro, ficava difícil de ler. Branco resolve a leitura sem aumentar
+    # a fonte -- a hierarquia passa a ser feita por tamanho e peso.
+    "text_muted": "#FFFFFF",
     "primary": "#4C8DFF",
     "primary_soft": "rgba(76, 141, 255, 0.14)",
     "secondary": "#5B6472",
@@ -616,10 +620,19 @@ st.markdown(
             font-feature-settings: "tnum";
         }}
 
-        /* Legendas e textos de apoio */
+        /* Legendas e textos de apoio. Tudo que é pequeno vai em branco:
+           em 11px sobre fundo escuro, cinza custa a ser lido. */
         div[data-testid="stCaptionContainer"], div[data-testid="stCaptionContainer"] p {{
             font-size: 11.5px !important;
             line-height: 1.65 !important;
+            color: {COLORS["text_muted"]} !important;
+        }}
+        small, .stMarkdown small,
+        div[data-testid="stMarkdownContainer"] small,
+        div[data-testid="stExpander"] div[data-testid="stCaptionContainer"] p,
+        div[data-testid="stTooltipContent"], div[data-testid="stTooltipContent"] p,
+        div[data-testid="stRadio"] label p, div[data-testid="stCheckbox"] label p,
+        div[data-testid="stMultiSelect"] span {{
             color: {COLORS["text_muted"]} !important;
         }}
 
@@ -1432,7 +1445,9 @@ def checar_login():
 # ============================================================================
 # 4. CARREGAMENTO DE DADOS (Google Sheets com fallback local em rede)
 # ============================================================================
-@st.cache_resource
+# ttl: sem ele, as planilhas baixadas ficavam em memória até o app
+# reiniciar -- dava para passar o dia vendo dado de ontem sem perceber.
+@st.cache_resource(ttl=900)
 def obter_caminhos_excel():
     url_orc = "https://docs.google.com/spreadsheets/d/1x68Eg_6LlSKeFJEGmfhyBfcGgheSrVsl/export?format=xlsx"
     url_real = "https://docs.google.com/spreadsheets/d/12I0vGpYU_KNhGxAHOMHWAQu3Xkz_EsUZ/export?format=xlsx"
@@ -1510,7 +1525,7 @@ def obter_url_csv_fluxo():
     return url_secreta or URL_CSV_FLUXO_PADRAO
 
 
-@st.cache_resource
+@st.cache_resource(ttl=300)
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
 
@@ -2228,7 +2243,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             }}
             .tv-kpi .lbl {{ font-size: 10px; font-weight: 600; letter-spacing: 0.9px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
             .tv-kpi .val {{ font-family: {FONTE_MONO}; font-size: 25px; font-weight: 700; margin-top: 6px; letter-spacing: -0.3px; }}
-            .tv-kpi .sub {{ font-size: 11.5px; margin-top: 4px; color: {COLORS["muted_line"]}; display:flex; align-items:center; gap:4px; }}
+            .tv-kpi .sub {{ font-size: 11.5px; margin-top: 4px; color: {COLORS["text_muted"]}; display:flex; align-items:center; gap:4px; }}
             .tv-section-title {{
                 font-size: 12.5px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
                 letter-spacing: 0.6px; margin: 2px 0 8px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
@@ -2247,7 +2262,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-atg-track {{ position: relative; height: 9px; background: {COLORS["border"]}; border-radius: 6px; }}
             .tv-atg-fill {{ height: 100%; border-radius: 6px; }}
             .tv-atg-marker {{ position: absolute; top: -4px; bottom: -4px; width: 2px; background: {COLORS["warning"]}; }}
-            .tv-atg-foot {{ display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; color: {COLORS["muted_line"]}; }}
+            .tv-atg-foot {{ display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; color: {COLORS["text_muted"]}; }}
             /* ---- Lista de composição de custos (ao lado do donut) ---- */
             .tv-cost-row {{
                 display: flex; align-items: center; gap: 10px; padding: 8px 2px;
@@ -2263,7 +2278,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-rank-bar-bg {{ flex:1.1; background:{COLORS["border"]}; border-radius:4px; height:7px; overflow:hidden; }}
             .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["secondary"]}, {COLORS["warning"]}); }}
             .tv-rank-pct-rec {{ flex:0.6; font-size:12.5px; color:{COLORS["text_muted"]}; text-align:right; white-space:nowrap; }}
-            .tv-rank-val {{ font-size:13.5px; color:{COLORS["muted_line"]}; width: 130px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
+            .tv-rank-val {{ font-size:13.5px; color:{COLORS["text_muted"]}; width: 130px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
@@ -3080,7 +3095,7 @@ def _chave_numero_fin(serie):
 TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
 
 
-@st.cache_resource(show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
+@st.cache_resource(ttl=900, show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
 def carregar_liquidacoes_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026 e devolve as datas de
     pagamento por documento, prontas para cruzar com o CSV do Fluxo de Caixa.
@@ -3175,7 +3190,7 @@ def carregar_liquidacoes_diario(path_r):
     return {"por_num_valor": por_num_valor, "por_num": por_num}, diag
 
 
-@st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
+@st.cache_resource(ttl=300, show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -9603,7 +9618,7 @@ if eh_admin and not departamento_ativo:
 st.markdown(
     html_compacto(f"""
     <div class="footer-note">
-        Controladoria B&A · Painel Financeiro · Dados atualizados automaticamente a cada 60s
+        Controladoria B&A · Painel Financeiro · Dados recarregados a cada 5 minutos — use <b>Atualizar</b> para buscar agora
     </div>
     """),
     unsafe_allow_html=True,
