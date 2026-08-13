@@ -6151,7 +6151,23 @@ meses_cols = [
     "07/2026", "08/2026", "09/2026", "10/2026", "11/2026", "12/2026",
 ]
 
-df_ref = list_df_real[0]
+# A referência é a primeira aba que veio COM conteúdo, não simplesmente a
+# primeira da lista: quando a aba de cabeça falha na leitura (nome mudou,
+# planilha ainda sincronizando), ela volta como um DataFrame sem coluna
+# nenhuma -- e aí qualquer acesso a df_ref.columns[0] derrubava o painel.
+df_ref = next(
+    (df for df in list_df_real if df is not None and not df.empty and len(df.columns)),
+    pd.DataFrame(),
+)
+if df_ref.empty or not len(df_ref.columns):
+    st.error(
+        "Não consegui ler nenhuma linha da DRE nas abas selecionadas. "
+        "Isso costuma acontecer quando o nome de uma aba muda na planilha ou quando ela "
+        "ainda está sincronizando. Clique em **Atualizar Dados** na barra lateral; se "
+        "continuar, confira os nomes das abas na planilha."
+    )
+    st.stop()
+
 colunas_validas = [m for m in meses_cols if m in df_ref.columns]
 m_map = {
     m_nome: m_col
@@ -6163,7 +6179,7 @@ m_map = {
 # contra as linhas REAIS da DRE atual -- mesma lógica de correspondência
 # usada na aba de Emitir Relatório (ver _resolver_termo_departamento).
 col_nome_dre_dept = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique()) if not df_ref.empty else []
+linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique())
 linhas_departamento_resolvidas = []
 linhas_departamento_raiz = []
 linhas_departamento_informativas = []
