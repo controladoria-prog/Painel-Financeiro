@@ -2958,7 +2958,7 @@ if st.session_state["painel_escolhido"] is None:
             }}
             /* Metade da janela menos metade da altura do conteúdo (~520px).
                Em tela baixa o max() garante que nada seja empurrado para fora. */
-            .hub-espaco {{ height: max(10px, calc(50vh - 260px)); }}
+            .hub-espaco {{ height: max(10px, calc(50vh - 305px)); }}
             .hub-topo {{ text-align: center; margin-bottom: 30px; }}
             .hub-topo img {{
                 width: 42px; height: 42px; border-radius: 50%; background: #FFFFFF;
