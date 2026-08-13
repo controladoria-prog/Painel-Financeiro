@@ -6938,7 +6938,8 @@ def montar_relatorio_excel(
     if planos_filtro:
         _legenda_resumo += (
             " · Recorte por plano de contas: " + ", ".join(planos_filtro)
-            + " · Orçado fica zerado (o orçamento é definido por linha da DRE, não por plano)"
+            + " · Realizado só dos planos selecionados; Orçado é o da linha da DRE inteira "
+            "(o orçamento não é detalhado por plano), e fica zerado nos planos sem linha da DRE"
         )
     _escrever_legenda(ws1, _legenda_resumo, 2, 5)
 
@@ -6957,7 +6958,13 @@ def montar_relatorio_excel(
     for i, conta in enumerate(contas_sel):
         if planos_filtro:
             v_real = sum(_valores_planos(conta, colunas_ano))
-            v_orc = 0.0
+            # O orçamento existe por LINHA da DRE. Numa linha de verdade ele
+            # aparece normalmente; só a pseudo-conta dos planos sem linha
+            # fica zerada, porque ali não há o que comparar.
+            v_orc = (
+                0.0 if _normalizar_texto(conta) == _normalizar_texto(ROTULO_FORA_DA_DRE)
+                else get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
+            )
         else:
             v_real = get_valor_consolidado_multi(dfs_real, conta, colunas_ano)
             v_orc = get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
@@ -7032,10 +7039,15 @@ def montar_relatorio_excel(
         for conta in contas_sel:
             if planos_filtro:
                 valores_real = _valores_planos(conta, list(mapa_meses.values()), lojas_do_bloco)
-                # O orçamento não é detalhado por plano de contas -- só existe
-                # no nível da linha da DRE. Num recorte por plano, comparar
-                # com ele daria um desvio inventado, então fica zerado.
-                valores_orc = [0.0] * len(mapa_meses)
+                # Linha da DRE de verdade mantém o orçado dela; a pseudo-conta
+                # dos planos sem linha fica zerada.
+                if _normalizar_texto(conta) == _normalizar_texto(ROTULO_FORA_DA_DRE):
+                    valores_orc = [0.0] * len(mapa_meses)
+                else:
+                    valores_orc = [
+                        get_valor_consolidado_multi([df_o_loja], conta, [m_col])
+                        for m_col in mapa_meses.values()
+                    ]
             else:
                 valores_real = [get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()]
                 valores_orc = [get_valor_consolidado_multi([df_o_loja], conta, [m_col]) for m_col in mapa_meses.values()]
