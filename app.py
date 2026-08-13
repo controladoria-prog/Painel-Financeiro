@@ -4981,26 +4981,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
                     pivot_d.index.name = "Canal / Movimento"
 
-                    # ---- Linha SALDO: igual à da planilha ----
-                    # Cada dia soma o Total Geral daquele dia com o saldo do
-                    # dia anterior. IMPORTANTE: o acúmulo parte do INÍCIO DO
-                    # MÊS, não do primeiro dia exibido -- se você recorta a
-                    # partir do dia 11, o saldo do dia 11 já tem que trazer
-                    # tudo que veio dos dias 1 a 10. Por isso o cálculo usa o
-                    # mês inteiro e só depois recorta as colunas visíveis.
-                    total_geral_mes_dia = (
-                        df_d_mes.groupby("DiaOrd")[COL_FIN_VALOR].sum().sort_index()
-                    )
-                    saldo_acumulado_mes = total_geral_mes_dia.cumsum()
-                    saldo_dias_exibidos = [
-                        float(saldo_acumulado_mes.get(dia, 0.0)) for dia in dias_ordenados_d
-                    ]
-                    linha_saldo_d = saldo_dias_exibidos + [
-                        saldo_dias_exibidos[-1] if saldo_dias_exibidos else 0.0
-                    ]
-                    pivot_d.loc[_rotulo_unico_d("SALDO (acumulado)", len(pivot_d))] = linha_saldo_d
-                    estilo_linhas_d.append(("saldo_acumulado", "SALDO (acumulado)"))
-
                     st.markdown(
                         f'<div class="section-title">📋 Fluxo Diário por Canal — {mes_sel_d}</div>',
                         unsafe_allow_html=True,
@@ -5028,13 +5008,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                         " background-color: rgba(139,149,165,0.20);"
                                         " font-weight: 800; border-top: 2px solid rgba(139,149,165,0.75);"
                                     )
-                                elif tipo_linha == "saldo_acumulado":
-                                    # Saldo: destaque azul mais forte, é a
-                                    # linha mais consultada da tabela.
-                                    base += (
-                                        " background-color: rgba(107, 158, 230, 0.26);"
-                                        " font-weight: 800; border-top: 2px solid rgba(107, 158, 230, 0.85);"
-                                    )
                                 estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                         return estilos
 
@@ -5053,10 +5026,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
                     st.caption(
                         "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
-                        "e, recuadas abaixo, os movimentos de cada um. A linha **SALDO (acumulado)** soma o "
-                        "Total Geral do dia com o saldo do dia anterior — é a posição de caixa ao longo do "
-                        "mês. Na última coluna, contas a receber/pagar trazem a **soma do período** e "
-                        "caixa/banco trazem o **saldo do último dia** com movimento."
+                        "e, recuadas abaixo, os movimentos de cada um. Na última coluna, contas a "
+                        "receber/pagar trazem a **soma do período** e caixa/banco trazem o **saldo do "
+                        "último dia** com movimento."
                     )
 
                     # ---- Gráfico: movimento do dia + fluxo acumulado ----
@@ -5844,28 +5816,75 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # Mantém o sinal negativo: são saídas de caixa. Com abs() o
                     # valor virava positivo e a coloração pintava despesa de
                     # verde, como se fosse entrada.
-                    grupo_a = (
+                    grupo_completo_a = (
                         df_a[df_a["Tipo Movimento"] == "saida"]
                         .groupby(COL_FIN_GRUPO_DESPESA, observed=True)[COL_FIN_VALOR].sum().sort_values()
                     )
-                    grupo_a = grupo_a[grupo_a < 0].head(10)
-                    if not grupo_a.empty:
+                    grupo_completo_a = grupo_completo_a[grupo_completo_a < 0]
+                    if not grupo_completo_a.empty:
                         st.markdown("<br>", unsafe_allow_html=True)
-                        st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>', unsafe_allow_html=True)
-                        total_saidas_grupo = abs(grupo_a.sum())
-                        df_grupo_a = pd.DataFrame({
-                            "Grupo de Despesa": grupo_a.index.astype(str),
-                            "Valor (R$)": grupo_a.values,
-                            "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
-                        })
-                        st.dataframe(
-                            df_grupo_a.style.format({
-                                "Valor (R$)": formata_brl,
-                                "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
-                            }).map(cor_valor, subset=["Valor (R$)"]),
-                            use_container_width=True, hide_index=True,
+                        st.markdown('<div class="section-title">📉 Maiores Grupos de Despesa</div>',
+                                    unsafe_allow_html=True)
+
+                        # Estes quatro dominam o desembolso e escondem o resto:
+                        # com eles na tabela, os grupos que dá para gerenciar
+                        # somem no arredondamento. Ficam de fora por padrão e
+                        # voltam pelo filtro logo abaixo, quando fizer sentido.
+                        _norm_grupo = lambda g: _normalizar_texto(str(g))
+                        ocultos_por_padrao = {
+                            _norm_grupo(g) for g in
+                            ("Custo - Mercadoria", "Pessoal", "TRF", "Imposto sobre Venda")
+                        }
+                        grupos_ocultos_a = [
+                            str(g) for g in grupo_completo_a.index
+                            if _norm_grupo(g) in ocultos_por_padrao
+                        ]
+
+                        grupos_reincluidos_a = st.multiselect(
+                            "Incluir grupos que estão fora da tabela:",
+                            options=grupos_ocultos_a,
+                            default=[],
+                            key="fin_grupos_reincluidos",
+                            help=(
+                                "Custo - Mercadoria, Pessoal, TRF e Imposto sobre Venda ficam fora por "
+                                "padrão porque concentram quase todo o desembolso e achatam o resto da "
+                                "tabela. Marque aqui para trazê-los de volta — os percentuais são "
+                                "recalculados sobre o que estiver sendo exibido."
+                            ),
                         )
-                        st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
+                        _reincluidos_norm = {_norm_grupo(g) for g in grupos_reincluidos_a}
+                        grupo_a = grupo_completo_a[[
+                            (_norm_grupo(g) not in ocultos_por_padrao) or (_norm_grupo(g) in _reincluidos_norm)
+                            for g in grupo_completo_a.index
+                        ]].head(10)
+
+                        if grupo_a.empty:
+                            st.caption("Nenhum grupo de despesa para exibir com a seleção atual.")
+                        else:
+                            # O percentual é sempre sobre o total EXIBIDO -- se
+                            # fosse sobre o total geral, a soma da coluna não
+                            # fecharia em 100% e a tabela mentiria.
+                            total_saidas_grupo = abs(grupo_a.sum())
+                            df_grupo_a = pd.DataFrame({
+                                "Grupo de Despesa": grupo_a.index.astype(str),
+                                "Valor (R$)": grupo_a.values,
+                                "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
+                            })
+                            st.dataframe(
+                                df_grupo_a.style.format({
+                                    "Valor (R$)": formata_brl,
+                                    "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
+                                }).map(cor_valor, subset=["Valor (R$)"]),
+                                use_container_width=True, hide_index=True,
+                            )
+                            _fora = [g for g in grupos_ocultos_a if _norm_grupo(g) not in _reincluidos_norm]
+                            _legenda_grupo = (
+                                f"Os {len(df_grupo_a)} grupos que mais consumiram caixa no recorte "
+                                "selecionado · o percentual é sobre o total desta tabela."
+                            )
+                            if _fora:
+                                _legenda_grupo += " Fora da tabela: " + ", ".join(_fora) + "."
+                            st.caption(_legenda_grupo)
 
     # Mesmo rodapé da Controladoria. Ele fica aqui porque o bloco do
     # Financeiro termina em st.stop() -- a seção 9, lá no fim do arquivo,
