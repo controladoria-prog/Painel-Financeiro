@@ -8,12 +8,9 @@ Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
 import base64
-import hashlib
-import hmac
 import io
 import os
 import re
-import secrets as _secrets_py
 import time
 import urllib.parse
 import urllib.request
@@ -1049,87 +1046,16 @@ function _lerCookie(nome) {
 """
 
 
-# ---------------------------------------------------------------------------
-# SENHAS: comparação por hash, com o texto puro ainda aceito
-# ---------------------------------------------------------------------------
-# Antes a senha digitada era comparada diretamente com o texto guardado nos
-# Secrets, e o "lembrar de mim" gravava a senha no navegador em base64 -- que
-# é disfarce, não criptografia. Agora:
-#   * os Secrets podem guardar "sha256$<sal>$<hash>" em vez do texto puro;
-#   * o navegador guarda um TOKEN derivado do e-mail, nunca a senha.
-# O texto puro continua funcionando para não derrubar ninguém na virada --
-# a aba Usuários mostra quem ainda está assim.
-PREFIXO_HASH_SENHA = "sha256$"
-
-
-def gerar_hash_senha(senha, sal=None):
-    """Devolve "sha256$<sal>$<hash>" para colar nos Secrets."""
-    sal = sal or _secrets_py.token_hex(8)
-    digest = hashlib.sha256(f"{sal}{senha}".encode("utf-8")).hexdigest()
-    return f"{PREFIXO_HASH_SENHA}{sal}${digest}"
-
-
-def senha_esta_em_texto_puro(valor_guardado):
-    return not str(valor_guardado or "").startswith(PREFIXO_HASH_SENHA)
-
-
-def senha_confere(senha_digitada, valor_guardado):
-    """Compara a senha digitada com o que está nos Secrets, aceitando tanto o
-    hash quanto o texto puro. Usa compare_digest para não vazar informação
-    pelo tempo da comparação."""
-    guardado = str(valor_guardado or "")
-    digitada = str(senha_digitada or "")
-    if guardado.startswith(PREFIXO_HASH_SENHA):
-        partes = guardado.split("$")
-        if len(partes) != 3:
-            return False
-        _, sal, esperado = partes
-        calculado = hashlib.sha256(f"{sal}{digitada}".encode("utf-8")).hexdigest()
-        return hmac.compare_digest(calculado, esperado)
-    return hmac.compare_digest(digitada, guardado)
-
-
-def _segredo_do_app():
-    """Chave usada para assinar o token do navegador. Vem dos Secrets
-    (TOKEN_SECRET); se não existir, é derivada das próprias senhas
-    cadastradas -- fica estável enquanto elas não mudarem, e trocar qualquer
-    senha invalida os tokens antigos, que é o comportamento desejado."""
-    try:
-        configurado = str(st.secrets.get("TOKEN_SECRET", "") or "").strip()
-    except Exception:
-        configurado = ""
-    if configurado:
-        return configurado
-    base = "|".join(
-        f"{email}:{dados.get('senha', '')}"
-        for email, dados in sorted(obter_usuarios_cadastrados().items())
-    )
-    return hashlib.sha256(("beea-token|" + base).encode("utf-8")).hexdigest()
-
-
-def token_navegador(email):
-    """Token que o navegador guarda no lugar da senha. É verificável sem
-    banco de dados (é um HMAC do e-mail) e deixa de valer se a senha daquele
-    usuário mudar ou se o TOKEN_SECRET for trocado."""
-    return hmac.new(
-        _segredo_do_app().encode("utf-8"),
-        str(email or "").strip().lower().encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _salvar_credenciais_no_navegador(email, senha=None):
-    """Grava no navegador o e-mail e um TOKEN de acesso (nunca a senha),
-    para preencher o login sozinho na próxima vez que a pessoa abrir o
-    painel. Usa DOIS mecanismos em paralelo (localStorage da janela "de
-    verdade" + cookie de longa duração no documento do próprio componente)
-    porque, dependendo do navegador/implantação, um dos dois pode estar
-    bloqueado -- assim o recurso continua funcionando mesmo se um falhar.
-
-    O argumento `senha` continua na assinatura por compatibilidade, mas não
-    é usado: o que se guarda é o token derivado do e-mail."""
+def _salvar_credenciais_no_navegador(email, senha):
+    """Grava e-mail/senha (ofuscados em base64 -- isso NAO e criptografia) no
+    navegador, para preencher o login sozinho na proxima vez que a pessoa
+    abrir o painel. Usa DOIS mecanismos em paralelo (localStorage da janela
+    "de verdade" + cookie de longa duração no documento do próprio
+    componente) porque, dependendo do navegador/implantação, um dos dois
+    pode estar bloqueado -- assim o recurso continua funcionando mesmo se
+    um deles falhar."""
     email_b64 = base64.b64encode(email.encode("utf-8")).decode("ascii")
-    senha_b64 = base64.b64encode(token_navegador(email).encode("utf-8")).decode("ascii")
+    senha_b64 = base64.b64encode(senha.encode("utf-8")).decode("ascii")
     components.html(
         f"""
         <script>
@@ -1189,23 +1115,15 @@ def _tentar_autologin_via_url():
 
     try:
         email_salvo = base64.b64decode(str(le)).decode("utf-8").strip().lower()
-        valor_salvo = base64.b64decode(str(ls)).decode("utf-8")
+        senha_salva = base64.b64decode(str(ls)).decode("utf-8")
     except Exception:
         return False
 
     usuarios = obter_usuarios_cadastrados()
     usuario = usuarios.get(email_salvo)
-    if usuario:
-        # Caminho novo: o navegador guarda um token.
-        if hmac.compare_digest(valor_salvo, token_navegador(email_salvo)):
-            st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
-            return True
-        # Caminho antigo: quem já tinha a SENHA salva continua entrando --
-        # e o navegador é regravado com o token, tirando a senha de lá.
-        if senha_confere(valor_salvo, usuario["senha"]):
-            st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
-            st.session_state["_credenciais_para_salvar"] = (usuario["email"], None)
-            return True
+    if usuario and senha_salva == usuario["senha"]:
+        st.session_state["usuario_logado"] = {"email": usuario["email"], "perfil": usuario["perfil"]}
+        return True
 
     # Credenciais salvas nao sao mais validas (ex.: senha trocada) -- apaga.
     _esquecer_credenciais_no_navegador()
@@ -1278,14 +1196,14 @@ def checar_login():
         senha_digitada = st.session_state.get("campo_senha", "")
         lembrar = st.session_state.get("campo_lembrar", True)
         usuario = usuarios.get(email_digitado)
-        if usuario and senha_confere(senha_digitada, usuario["senha"]):
+        if usuario and str(senha_digitada) == usuario["senha"]:
             st.session_state["usuario_logado"] = {
                 "email": usuario["email"],
                 "perfil": usuario["perfil"],
             }
             st.session_state["login_invalido"] = False
             if lembrar:
-                st.session_state["_credenciais_para_salvar"] = (usuario["email"], None)
+                st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
             else:
                 st.session_state["_esquecer_credenciais"] = True
         else:
@@ -1353,11 +1271,7 @@ def checar_login():
 # ============================================================================
 # 4. CARREGAMENTO DE DADOS (Google Sheets com fallback local em rede)
 # ============================================================================
-# ttl: sem ele, as planilhas baixadas ficavam em memória até o app
-# reiniciar -- alguém podia passar o dia inteiro vendo dado de ontem sem
-# perceber. 15 minutos é o meio-termo entre atualidade e não rebaixar
-# duas planilhas grandes a cada clique.
-@st.cache_resource(ttl=900)
+@st.cache_resource
 def obter_caminhos_excel():
     url_orc = "https://docs.google.com/spreadsheets/d/1x68Eg_6LlSKeFJEGmfhyBfcGgheSrVsl/export?format=xlsx"
     url_real = "https://docs.google.com/spreadsheets/d/12I0vGpYU_KNhGxAHOMHWAQu3Xkz_EsUZ/export?format=xlsx"
@@ -1435,7 +1349,7 @@ def obter_url_csv_fluxo():
     return url_secreta or URL_CSV_FLUXO_PADRAO
 
 
-@st.cache_resource(ttl=300)
+@st.cache_resource
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
 
@@ -3005,7 +2919,7 @@ def _chave_numero_fin(serie):
 TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
 
 
-@st.cache_resource(ttl=900, show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
+@st.cache_resource(show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
 def carregar_liquidacoes_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026 e devolve as datas de
     pagamento por documento, prontas para cruzar com o CSV do Fluxo de Caixa.
@@ -3100,7 +3014,7 @@ def carregar_liquidacoes_diario(path_r):
     return {"por_num_valor": por_num_valor, "por_num": por_num}, diag
 
 
-@st.cache_resource(ttl=300, show_spinner="Preparando os dados do fluxo de caixa...")
+@st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -9484,38 +9398,10 @@ if eh_admin and not departamento_ativo:
         usuarios_atuais = obter_usuarios_cadastrados()
         st.markdown("**Usuários atualmente configurados nos Secrets:**")
         lista_usuarios = [
-            {"E-mail": u["email"], "Perfil": u["perfil"],
-             "Senha": "texto puro" if senha_esta_em_texto_puro(u.get("senha")) else "hash"}
+            {"E-mail": u["email"], "Perfil": u["perfil"]}
             for u in usuarios_atuais.values()
         ]
         st.dataframe(pd.DataFrame(lista_usuarios), use_container_width=True, hide_index=True)
-
-        _em_texto_puro = [
-            u["email"] for u in usuarios_atuais.values()
-            if senha_esta_em_texto_puro(u.get("senha"))
-        ]
-        if _em_texto_puro:
-            st.caption(
-                f"{len(_em_texto_puro)} usuário(s) ainda com a senha em texto puro nos Secrets. "
-                "Use o conversor abaixo para trocar cada uma pelo hash — o login continua o mesmo "
-                "para o usuário."
-            )
-            with st.expander("🔐 Converter uma senha existente em hash"):
-                col_hash_a, col_hash_b = st.columns([2, 1])
-                with col_hash_a:
-                    _senha_para_hash = st.text_input(
-                        "Senha atual do usuário", type="password", key="campo_senha_para_hash",
-                        help="Digite a senha que hoje está em texto puro nos Secrets.",
-                    )
-                with col_hash_b:
-                    st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-                    _gerar_hash = st.button("Gerar hash")
-                if _gerar_hash and _senha_para_hash:
-                    st.code(f'senha = "{gerar_hash_senha(_senha_para_hash)}"', language="toml")
-                    st.caption(
-                        "Substitua a linha `senha = ...` daquele usuário nos Secrets por esta. "
-                        "A senha que ele digita no login não muda."
-                    )
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**➕ Novo usuário de visualização**")
@@ -9535,20 +9421,18 @@ if eh_admin and not departamento_ativo:
                 st.error("Já existe um usuário cadastrado com esse e-mail.")
             else:
                 apelido = re.sub(r"[^a-z0-9]+", "_", novo_email.strip().lower().split("@")[0]).strip("_")
-                # Vai para os Secrets o HASH, não a senha: quem abrir o
-                # arquivo de configuração não consegue ler a senha de volta.
+                senha_escapada = nova_senha.replace('"', '\\"')
                 bloco_toml = (
                     f'[usuarios.{apelido}]\n'
                     f'email = "{novo_email.strip().lower()}"\n'
-                    f'senha = "{gerar_hash_senha(nova_senha)}"\n'
+                    f'senha = "{senha_escapada}"\n'
                     f'perfil = "visualizacao"'
                 )
                 st.success("Copie o bloco abaixo e cole nos **Secrets** do app (em uma nova linha, mantendo os que já existem).")
                 st.code(bloco_toml, language="toml")
                 st.caption(
-                    "A senha vai guardada como hash — nem quem abre os Secrets consegue lê-la. "
-                    "Depois de colar e salvar, o app reinicia sozinho e o novo usuário já entra "
-                    "com o e-mail e a senha cadastrados."
+                    "Depois de colar e salvar nos Secrets, o app reinicia sozinho e o novo "
+                    "usuário já consegue entrar com o e-mail e a senha cadastrados."
                 )
 
 
@@ -9558,7 +9442,7 @@ if eh_admin and not departamento_ativo:
 st.markdown(
     html_compacto(f"""
     <div class="footer-note">
-        Controladoria B&A · Painel Financeiro · Dados recarregados a cada 5 minutos — use <b>Atualizar</b> para buscar agora
+        Controladoria B&A · Painel Financeiro · Dados atualizados automaticamente a cada 60s
     </div>
     """),
     unsafe_allow_html=True,
