@@ -7794,7 +7794,14 @@ CANAIS_MKT = [
     ("Venda Direta", "VD CONSOLIDADO", False),
     ("ABPR", "ABPR CONSOLIDADO", False),
 ]
-META_MKT_PCT_LOJA = 1.0  # regra do 1% sobre a receita do canal Loja
+# O "1%" do canal Loja NÃO é calculado sobre a receita aqui: ele já está
+# embutido no ORÇAMENTO da linha 6.24.2 daquele canal -- foi assim que o
+# orçamento foi montado. Então o teto do 1% é o próprio orçado do canal
+# Loja, e a régua compara o investido contra ele. A porcentagem sobre a
+# receita continua na tabela, como referência: serve para ver se o
+# orçamento ainda corresponde a 1% da receita que está entrando de fato.
+# VD e ABPR não seguem essa regra -- têm orçamento próprio, à parte.
+REFERENCIA_MKT_PCT_LOJA = 1.0
 
 
 def _total_dre(dfs, linhas, colunas):
@@ -7891,20 +7898,26 @@ def _painel_dept_mkt(ctx):
 
     pct_geral = (total_inv / total_rec * 100) if total_rec else 0.0
     loja = next((l for l in linhas_tabela if l["Canal"] == "Loja"), None)
-    pct_loja = loja["% da receita"] if loja else float("nan")
-    teto_loja = (loja["Receita do canal (R$)"] * META_MKT_PCT_LOJA / 100) if loja else 0.0
-    folga_loja = teto_loja - (loja["Investido (R$)"] if loja else 0.0)
+    # Teto do 1% = orçamento do canal Loja na 6.24.2 (o 1% já está nele).
+    teto_loja = loja["Orçado (R$)"] if loja else 0.0
+    investido_loja = loja["Investido (R$)"] if loja else 0.0
+    folga_loja = teto_loja - investido_loja
+    consumo_loja = (investido_loja / teto_loja * 100) if teto_loja else float("nan")
+    # Referência: quanto seria 1% da receita que o canal realizou.
+    um_pct_receita_loja = (
+        loja["Receita do canal (R$)"] * REFERENCIA_MKT_PCT_LOJA / 100 if loja else 0.0
+    )
 
     st.markdown(
         faixa_metricas_html([
             ("Investimento no período", formata_valor_curto(total_inv), COLORS["text"],
              f"{pct_geral:.1f}%".replace(".", ",") + " da receita líquida dos canais"),
-            ("Canal Loja · régua de 1%",
-             ("—" if pd.isna(pct_loja) else f"{pct_loja:.2f}%".replace(".", ",")),
+            ("Canal Loja · consumo do 1%",
+             ("—" if pd.isna(consumo_loja) else f"{consumo_loja:.1f}%".replace(".", ",")),
              cor_variacao(folga_loja),
-             f"teto de {formata_valor_curto(teto_loja)} no período"),
-            ("Folga até o teto do 1%", formata_valor_curto(folga_loja), cor_variacao(folga_loja),
-             "positivo = ainda cabe investir"),
+             f"orçamento do 1% no período: {formata_valor_curto(teto_loja)}"),
+            ("Folga no orçamento do 1%", formata_valor_curto(folga_loja), cor_variacao(folga_loja),
+             "positivo = ainda cabe investir no canal Loja"),
             ("Fora do 1% (canal Loja)", formata_valor_curto(abs(fora_do_1pct)), COLORS["warning"],
              "Encontro de Ciclo + Outras Despesas de MKT"),
         ]),
@@ -7912,9 +7925,13 @@ def _painel_dept_mkt(ctx):
     )
     _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
     st.caption(
-        "Investido é a linha 6.24.2 (Gestão CP). No canal Loja, o Encontro de Ciclo e as Outras "
-        "Despesas de Marketing saem da conta do 1% e aparecem no indicador ao lado — mesma regra "
-        "do relatório que vai para o gestor."
+        "Investido é a linha 6.24.2 (Gestão CP). **O 1% vale só para o canal Loja**, e o teto dele "
+        "é o próprio orçamento daquele canal — o 1% já está embutido ali. VD e ABPR têm orçamento "
+        "próprio, à parte dessa regra. No canal Loja, o Encontro de Ciclo e as Outras Despesas de "
+        "Marketing saem da conta do 1% e aparecem no indicador ao lado, como no relatório que vai "
+        "para o gestor. Referência: 1% da receita que a Loja realizou no período daria "
+        f"{formata_valor_curto(um_pct_receita_loja)} — comparar com o orçamento mostra se ele "
+        "ainda acompanha a venda real."
     )
 
 
