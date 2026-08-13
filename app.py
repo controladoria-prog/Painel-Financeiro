@@ -1161,7 +1161,7 @@ def obter_dados_fluxo_caixa():
     Retorna (df, erro); erro é None se carregou certo."""
     URL_CSV_FLUXO_PUBLICADO = (
         "https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
-        "/pub?gid=474479631&single=true&output=csv"
+        "/pub?gid=692792036&single=true&output=csv"
     )
     try:
         df = pd.read_csv(URL_CSV_FLUXO_PUBLICADO)
@@ -2821,13 +2821,40 @@ if st.session_state["painel_escolhido"] == "financeiro":
         st.stop()
 
     if erro_fluxo:
-        st.error(
-            "Não consegui carregar os dados do Fluxo de Caixa. O painel lê o CSV publicado da aba "
-            "\"Fluxo de Caixa 2026\" -- confirme na planilha, em Arquivo > Compartilhar > Publicar na web, "
-            "se a publicação continua ativa e se a opção \"Restringir acesso\" está DESMARCADA."
-        )
+        # A orientação muda conforme o tipo de falha -- uma mensagem genérica
+        # faz a pessoa conferir a coisa errada e perder tempo.
+        _texto_erro = str(erro_fluxo)
+        if "400" in _texto_erro or "404" in _texto_erro:
+            st.error(
+                "**O link publicado não existe mais.** Isso acontece quando o arquivo é substituído "
+                "no Drive (por exemplo, depois de reconectar a conta ou reenviar a planilha) — o novo "
+                "arquivo não herda a publicação do anterior.\n\n"
+                "**Como resolver:** abra a planilha no navegador, vá em *Arquivo > Compartilhar > "
+                "Publicar na web*, publique novamente a aba \"Fluxo de Caixa 2026\" em formato CSV "
+                "e envie o novo link para atualizar aqui."
+            )
+        elif "403" in _texto_erro:
+            st.error(
+                "**Acesso negado ao link publicado.** A publicação existe, mas está restrita.\n\n"
+                "**Como resolver:** em *Arquivo > Compartilhar > Publicar na web*, desmarque a opção "
+                "\"Restringir acesso ao seguinte\" — o servidor do painel não faz login em nenhuma "
+                "conta, então precisa de acesso aberto pelo link."
+            )
+        elif "timed out" in _texto_erro.lower() or "timeout" in _texto_erro.lower():
+            st.error(
+                "**A planilha demorou demais para responder.** Costuma indicar arquivo muito grande "
+                "ou instabilidade momentânea do Google.\n\n"
+                "**Como resolver:** tente novamente em alguns minutos pelo botão *Atualizar*. Se "
+                "persistir, vale reduzir o tamanho do arquivo (apagar abas de apoio e colunas vazias)."
+            )
+        else:
+            st.error(
+                "Não consegui carregar os dados do Fluxo de Caixa. O painel lê o CSV publicado da aba "
+                "\"Fluxo de Caixa 2026\" — confirme na planilha, em *Arquivo > Compartilhar > Publicar "
+                "na web*, se a publicação continua ativa e se \"Restringir acesso\" está desmarcada."
+            )
         with st.expander("Detalhe técnico do erro"):
-            st.code(str(erro_fluxo))
+            st.code(_texto_erro)
         st.stop()
 
     if df_fin is None or df_fin.empty:
