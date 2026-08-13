@@ -2622,7 +2622,23 @@ def _saldo_posicao_atual_fin(df, coluna_valor):
     return valor, ultima_data
 
 
-@st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
+# Texto que representa "sem data" no CSV publicado. Fica numa constante só
+# porque a mesma lista é usada na conversão e nos diagnósticos -- se as duas
+# saírem do lugar, o diagnóstico passa a acusar problema onde não tem.
+MARCADORES_VAZIOS_FIN = [
+    "", "nan", "nat", "none", "null", "-", "--", "0", "00/00/0000", "0000-00-00",
+]
+
+
+def _texto_preenchido_fin(serie):
+    """Marca as linhas que realmente têm algum texto na coluna. Precisa do
+    fillna: dependendo da versão do pandas, `astype(str)` MANTÉM o vazio como
+    nulo em vez de virar a string "nan" -- e aí o `.isin` não pega nada e todo
+    campo em branco passa a ser contado como se tivesse conteúdo."""
+    texto = serie.astype(str).fillna("").str.strip()
+    return ~texto.str.lower().isin(MARCADORES_VAZIOS_FIN)
+
+
 def _parse_datas_fin(serie):
     """Converte uma coluna de datas do CSV publicado, aceitando MAIS DE UM
     formato dentro da MESMA coluna.
@@ -2638,11 +2654,8 @@ def _parse_datas_fin(serie):
 
     Trata ainda: marcadores de vazio ("-", "0", "00/00/0000"), sobra de hora
     no texto e data em número de série do Excel (ex.: 45789)."""
-    texto = serie.astype(str).str.strip()
-    vazios = texto.str.lower().isin(
-        ["", "nan", "nat", "none", "null", "-", "--", "0", "00/00/0000", "0000-00-00"]
-    )
-    texto = texto.mask(vazios)
+    texto = serie.astype(str).fillna("").str.strip()
+    texto = texto.mask(texto.str.lower().isin(MARCADORES_VAZIOS_FIN))
 
     try:
         # format="mixed" avalia linha a linha, em vez de impor à coluna
@@ -2671,6 +2684,7 @@ def _parse_datas_fin(serie):
     return datas
 
 
+@st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -2726,18 +2740,48 @@ def preparar_fluxo_caixa(base_data):
             df.loc[faltando_liq, coluna_extra]
         )
 
-    # Diagnóstico: quanto texto tinha cara de data mas não converteu. Se isso
-    # for maior que zero, tem formato novo aparecendo na planilha.
-    tem_texto_liq = ~texto_liq_bruto.str.lower().isin(
-        ["", "nan", "nat", "none", "null", "-", "--", "0", "00/00/0000", "0000-00-00"]
-    )
-    nao_convertidas = tem_texto_liq & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    # Diagnóstico: texto que tinha conteúdo de verdade mas não virou data. Se
+    # isso for maior que zero, tem formato novo aparecendo na planilha. Campo
+    # em branco NÃO entra nessa conta (é o normal: título ainda não pago).
+    nao_convertidas = _texto_preenchido_fin(texto_liq_bruto) & df[COL_FIN_DATA_LIQUIDACAO].isna()
     diagnostico = {
         "liq_preenchidas": int(df[COL_FIN_DATA_LIQUIDACAO].notna().sum()),
         "liq_nao_convertidas": int(nao_convertidas.sum()),
         "liq_amostras_nao_convertidas": texto_liq_bruto[nao_convertidas].unique()[:5].tolist(),
         "colunas_liq_extras": colunas_liq_extras,
+        "colunas_csv": [str(c) for c in df_fluxo.columns],
     }
+
+    # Se NENHUMA conta a pagar tiver data de liquidação, o problema não é de
+    # leitura: a data de pagamento está em outra coluna (ou não vem no
+    # recorte publicado). Varre as colunas das linhas de "a pagar" e mostra
+    # quais têm conteúdo e quais têm cara de data -- é o caminho mais rápido
+    # para achar onde a baixa foi parar.
+    mask_pagar_diag = (
+        df_fluxo[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
+    )
+    liquidados_pagar = int(df.loc[mask_pagar_diag, COL_FIN_DATA_LIQUIDACAO].notna().sum())
+    diagnostico["pagar_titulos"] = int(mask_pagar_diag.sum())
+    diagnostico["pagar_liquidados"] = liquidados_pagar
+    if mask_pagar_diag.any() and liquidados_pagar == 0:
+        linhas_varredura = []
+        for coluna in df_fluxo.columns:
+            serie_pagar = df_fluxo.loc[mask_pagar_diag, coluna]
+            preenchidos = _texto_preenchido_fin(serie_pagar)
+            n_preenchidos = int(preenchidos.sum())
+            if n_preenchidos == 0:
+                exemplo = ""
+                n_datas = 0
+            else:
+                exemplo = str(serie_pagar[preenchidos].iloc[0])[:40]
+                n_datas = int(_parse_datas_fin(serie_pagar).notna().sum())
+            linhas_varredura.append({
+                "Coluna": str(coluna),
+                "Preenchidos": n_preenchidos,
+                "Parecem data": n_datas,
+                "Exemplo": exemplo,
+            })
+        diagnostico["varredura_pagar"] = pd.DataFrame(linhas_varredura)
 
 
     if str(base_data).startswith("Vencimento"):
@@ -3014,6 +3058,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "Tem valor na coluna de liquidação que o painel não conseguiu ler como data. "
                     "Exemplos: " + ", ".join(str(v) for v in diag_fluxo.get("liq_amostras_nao_convertidas", []))
                 )
+            if diag_fluxo.get("pagar_titulos") and not diag_fluxo.get("pagar_liquidados"):
+                st.error(
+                    f"**Nenhuma das {diag_fluxo['pagar_titulos']} contas a pagar tem data de liquidação "
+                    "na coluna lida.** Não é erro de leitura: a coluna está vazia para essas linhas. "
+                    "A tabela abaixo mostra, só para as linhas de \"a pagar\", o que cada coluna do CSV "
+                    "traz -- procure ali a coluna que guarda a data do pagamento."
+                )
+                if diag_fluxo.get("varredura_pagar") is not None:
+                    st.dataframe(diag_fluxo["varredura_pagar"], use_container_width=True, hide_index=True)
+            if diag_fluxo.get("colunas_csv"):
+                st.caption("**Colunas lidas do CSV:** " + " · ".join(diag_fluxo["colunas_csv"]))
             if diag_fluxo.get("colunas_liq_extras"):
                 st.caption(
                     "Outras colunas de liquidação encontradas na planilha (usadas só para completar "
