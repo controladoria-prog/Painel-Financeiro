@@ -3717,8 +3717,10 @@ def preparar_fluxo_caixa(base_data):
 
 
 if st.session_state["painel_escolhido"] == "financeiro":
+    # Só o cabeçalho nativo do Streamlit fica escondido. A barra lateral
+    # volta a aparecer: é lá que ficam os controles, como na Controladoria.
     st.markdown(
-        """<style>[data-testid="stSidebar"], header[data-testid="stHeader"] { display: none !important; }</style>""",
+        """<style>header[data-testid="stHeader"] { display: none !important; }</style>""",
         unsafe_allow_html=True,
     )
 
@@ -3778,97 +3780,70 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.rerun()
         st.stop()
 
-    # ---- Cabeçalho compacto: marca e ações na MESMA linha ----
-    # O Streamlit deixa uma folga generosa entre blocos; num cabeçalho isso
-    # vira espaço morto. O CSS abaixo aperta esses espaçamentos só aqui.
-    st.markdown(
+    # ---- Controles na barra lateral, cabeçalho reduzido a uma faixa ----
+    # O cabeçalho anterior empilhava marca, seletor e dois botões numa linha
+    # alta, comendo o topo da tela. Aqui ele segue o mesmo desenho da
+    # Controladoria: os controles moram na barra lateral e o topo do conteúdo
+    # é só uma faixa fina de contexto.
+    st.sidebar.markdown(
         f"""
-        <style>
-            /* Só o estilo do cabeçalho -- nada que mexa no espaçamento geral
-               dos blocos. A tentativa anterior de apertar o "gap" global fez
-               títulos e tabelas se sobreporem pelo painel inteiro. */
-            .fin-topo {{ display: flex; align-items: center; gap: 11px; }}
-            .fin-topo img.logo {{ width: 36px; height: 36px; border-radius: 50%; }}
-            .fin-topo h1 {{
-                font-size: 18px; font-weight: 800; color: {COLORS['text']};
-                margin: 0; letter-spacing: 0.2px; line-height: 1.2;
-            }}
-            .fin-topo .sub {{ color: {COLORS['text_muted']}; font-size: 11px; margin-top: 1px; }}
-            .fin-barra {{
-                display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-                color: {COLORS['text_muted']}; font-size: 10.5px; margin: 3px 0 0 0;
-            }}
-            .fin-barra .chip {{
-                background: {COLORS['primary_soft']}; color: {COLORS['primary']};
-                border-radius: 5px; padding: 3px 9px; font-size: 10.5px;
-                font-weight: 700; letter-spacing: 0.5px;
-            }}
-            .fin-barra b {{ color: {COLORS['text']}; font-weight: 600; }}
-            .fin-barra .sep {{ opacity: 0.4; }}
-            /* Radio da base de data: fonte menor, sem mexer em margens */
-            div[data-testid="stRadio"] label p {{ font-size: 11.5px !important; }}
-            div[data-testid="stRadio"] > label p {{
-                font-size: 10px !important; text-transform: uppercase;
-                letter-spacing: 0.4px; opacity: 0.65;
-            }}
-            div[data-testid="stRadio"] > div {{ gap: 0.6rem !important; }}
-            /* Faixa divisória fina abaixo do cabeçalho */
-            .fin-divisor {{
-                border-bottom: 1px solid {COLORS['border']};
-                margin: 6px 0 12px 0;
-            }}
-        </style>
+        <div class="sidebar-brand">
+            <img class="brand-logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+            <div>
+                <span class="title">Controladoria B&A</span>
+                <span class="subtitle">Painel Financeiro</span>
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Tudo numa linha só: marca à esquerda, base de data no meio e as ações
-    # à direita. Antes isso ocupava duas linhas com bastante espaço morto.
-    col_marca_fin, col_base_fin, col_atualizar_fin, col_trocar_fin = st.columns(
-        [3.2, 2.4, 1.1, 1.1], vertical_alignment="center"
+    st.sidebar.markdown("**🗓️ Base de Data**")
+    # A base de data define em que mês o lançamento cai. O padrão é
+    # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
+    # é o que faz o painel bater número a número com ela.
+    base_data_fin = st.sidebar.radio(
+        "Base de data:",
+        ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
+        key="fin_base_data", label_visibility="collapsed",
+        help=(
+            "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica "
+            "da planilha. Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que "
+            "ainda não liquidou, usa o vencimento como previsão)."
+        ),
     )
-    with col_marca_fin:
-        st.markdown(
-            html_compacto(f"""
-            <div class="fin-topo">
-                <img class="logo" src="data:image/png;base64,{LOGO_BEEA_B64}" alt="Grupo Beea"/>
-                <div>
-                    <h1>Painel Financeiro</h1>
-                    <div class="fin-barra">
-                        <span class="chip">FLUXO DE CAIXA 2026</span>
-                        <span class="sep">·</span>
-                        <span>{datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</span>
-                    </div>
-                </div>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
-    with col_base_fin:
-        # A base de data define em que mês o lançamento cai. O padrão é
-        # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
-        # é o que faz o painel bater número a número com ela.
-        base_data_fin = st.radio(
-            "Base de data:",
-            ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
-            horizontal=True, key="fin_base_data",
-            help=(
-                "Vencimento: cada lançamento cai no mês em que vence -- mesma regra da tabela dinâmica "
-                "da planilha. Liquidação: cai no mês em que o dinheiro de fato entrou ou saiu (para o que "
-                "ainda não liquidou, usa o vencimento como previsão)."
-            ),
-        )
-    with col_atualizar_fin:
-        if st.button("🔄 Atualizar", use_container_width=True, key="fin_btn_atualizar"):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.rerun()
-    with col_trocar_fin:
-        if st.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
-            st.session_state["painel_escolhido"] = None
-            st.rerun()
 
-    st.markdown('<div class="fin-divisor"></div>', unsafe_allow_html=True)
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
+    if st.sidebar.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
+        st.session_state["painel_escolhido"] = None
+        st.rerun()
+    if st.sidebar.button("🚪 Sair", use_container_width=True, key="fin_btn_sair"):
+        st.session_state["usuario_logado"] = None
+        st.session_state["painel_escolhido"] = None
+        _esquecer_credenciais_no_navegador()
+        st.rerun()
+
+    # Faixa de contexto: mesma classe usada na Controladoria, para as duas
+    # telas começarem igual.
+    _base_curta_fin = "Vencimento" if base_data_fin.startswith("Vencimento") else "Liquidação"
+    st.markdown(
+        html_compacto(f"""
+        <div class="top-status-strip">
+            <span class="chip">FLUXO DE CAIXA 2026</span>
+            <span class="sep">·</span>
+            <span>Base de data: <b>{_base_curta_fin}</b></span>
+            <span class="sep">·</span>
+            <span>Atualizado em <b>{datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}</b></span>
+            <span class="sep">·</span>
+            <span>Controladoria B&amp;A · Painel Financeiro</span>
+        </div>
+        """),
+        unsafe_allow_html=True,
+    )
 
 
     # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
