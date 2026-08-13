@@ -106,7 +106,11 @@ def estilo_grafico(fig, height=400, **overrides):
 
 def kpi_card_html(label, value, value_color, subtext="", subtext_color=None,
                    progress_pct=None, icon="📌"):
-    """Gera o HTML (string) de um cartão de KPI, sem renderizar."""
+    """Gera o HTML (string) de um cartão de KPI, sem renderizar.
+
+    `icon` continua na assinatura porque dezenas de chamadas passam esse
+    argumento, mas o emoji não é mais desenhado: quem marca o indicador é o
+    filete de 2px na lateral, na cor do próprio valor."""
     subtext_color = subtext_color or COLORS["text_muted"]
     progress_html = ""
     if progress_pct is not None:
@@ -117,10 +121,9 @@ def kpi_card_html(label, value, value_color, subtext="", subtext_color=None,
             f"</div>"
         )
     return (
-        f'<div class="kpi-card" style="border-top-color:{value_color};">'
+        f'<div class="kpi-card" style="border-left-color:{value_color};">'
         f'<div class="kpi-top">'
         f'<span class="kpi-label">{label}</span>'
-        f'<span class="kpi-icon" style="background:{value_color}22;">{icon}</span>'
         f"</div>"
         f'<div class="kpi-value" style="color:{value_color};">{value}</div>'
         f'<div class="kpi-subtext" style="color:{subtext_color};">{subtext}</div>'
@@ -405,14 +408,17 @@ LOGIN_BG_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAcFBQYFBAcGBgYIBwcICxILCwoKCxYP
 st.markdown(
     f"""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
         html, body, [class*="css"] {{
             font-family: {FONT_STACK};
         }}
 
+        /* Fundo chapado: o degradê deixava a metade de baixo da tela mais
+           clara que a de cima, e qualquer cartão parecia flutuar em cor
+           diferente conforme a rolagem. */
         .stApp {{
-            background: linear-gradient(180deg, {COLORS["bg"]} 0%, #0D111A 100%);
+            background: {COLORS["bg"]};
             color: {COLORS["text"]};
         }}
 
@@ -533,93 +539,185 @@ st.markdown(
             margin-bottom: 0;
         }}
 
-        /* Cartões de KPI */
+        /* Cartões de KPI. Sem emoji dentro de um quadradinho colorido e sem
+           salto no hover: o acento é um filete de 2px na cor do próprio
+           indicador, e o número usa a fonte monoespaçada para as casas
+           ficarem alinhadas de um cartão para o outro. */
         .kpi-card {{
             background-color: {COLORS["surface"]};
-            padding: 16px 18px;
-            border-radius: 10px;
+            padding: 14px 16px 14px 18px;
+            border-radius: 8px;
             border: 1px solid {COLORS["border"]};
+            border-left-width: 2px;
             margin-bottom: 10px;
-            transition: transform 0.15s ease, border-color 0.15s ease;
+            transition: border-color 0.15s ease;
         }}
         .kpi-card:hover {{
-            transform: translateY(-2px);
-            border-color: {COLORS["primary"]};
+            border-color: {COLORS["secondary"]};
         }}
         .kpi-top {{
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 8px;
+            margin-bottom: 7px;
         }}
         .kpi-label {{
-            font-size: 11px !important;
-            font-weight: 700 !important;
+            font-size: 9.5px !important;
+            font-weight: 600 !important;
             color: {COLORS["text_muted"]} !important;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.9px;
         }}
-        .kpi-icon {{
-            font-size: 13px;
-            opacity: 0.95;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 26px;
-            height: 26px;
-            border-radius: 8px;
-        }}
+        .kpi-icon {{ display: none; }}
         .kpi-value {{
-            font-size: 22px !important;
+            font-family: {FONTE_MONO};
+            font-size: 21px !important;
             font-weight: 700 !important;
-            letter-spacing: -0.3px;
-            line-height: 1.2;
+            letter-spacing: -0.2px;
+            line-height: 1.15;
         }}
         .kpi-subtext {{
-            font-size: 12px;
-            font-weight: 500;
-            margin-top: 4px;
-            color: {COLORS["muted_line"]};
+            font-size: 11px;
+            font-weight: 400;
+            margin-top: 5px;
+            line-height: 1.45;
+            color: {COLORS["text_muted"]};
         }}
 
         .progress-container {{
             width: 100%;
             background-color: {COLORS["border"]};
-            border-radius: 3px;
-            height: 6px;
-            margin-top: 10px;
+            border-radius: 2px;
+            height: 3px;
+            margin-top: 11px;
             overflow: hidden;
         }}
         .progress-bar {{
             height: 100%;
-            background: linear-gradient(90deg, {COLORS["primary"]}, #7AB0FF);
-            border-radius: 3px;
+            background: {COLORS["primary"]};
+            border-radius: 2px;
         }}
 
-        /* Chart / section captions */
+        /* Título de seção */
         .section-title {{
-            font-size: 14px;
-            font-weight: 700;
+            font-size: 13.5px;
+            font-weight: 600;
             color: {COLORS["text"]};
+            letter-spacing: 0.2px;
             margin-bottom: 2px;
         }}
 
-        /* Abas */
-        button[data-baseweb="tab"] {{
-            background-color: {COLORS["surface"]};
-            border-radius: 6px;
+        /* Números tabulares em toda parte: as casas decimais se alinham na
+           vertical de uma linha para a outra, que é o que faz uma coluna de
+           valores parecer coluna e não texto solto. */
+        .kpi-value, .stMetric, table, div[data-testid="stDataFrame"],
+        div[data-testid="stMetricValue"] {{
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum";
+        }}
+
+        /* Legendas e textos de apoio */
+        div[data-testid="stCaptionContainer"], div[data-testid="stCaptionContainer"] p {{
+            font-size: 11.5px !important;
+            line-height: 1.65 !important;
             color: {COLORS["text_muted"]} !important;
-            padding: 7px 16px;
-            margin-right: 4px;
-            border: 1px solid {COLORS["border"]};
-            font-size: 13px;
+        }}
+
+        /* Botões: contorno fino, sem sombra e sem preenchimento chapado */
+        .stButton > button, .stDownloadButton > button {{
+            background: {COLORS["surface"]} !important;
+            border: 1px solid {COLORS["border"]} !important;
+            border-radius: 6px !important;
+            color: {COLORS["text"]} !important;
+            font-size: 12.5px !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.2px;
+            box-shadow: none !important;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{
+            border-color: {COLORS["primary"]} !important;
+            background: {COLORS["primary_soft"]} !important;
+            color: {COLORS["text"]} !important;
+        }}
+
+        /* Campos (seleção, texto, número) no mesmo contorno dos botões */
+        div[data-baseweb="select"] > div,
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stNumberInput"] input {{
+            background-color: {COLORS["surface"]} !important;
+            border-color: {COLORS["border"]} !important;
+            border-radius: 6px !important;
+            font-size: 12.5px !important;
+        }}
+        div[data-baseweb="select"] > div:hover {{
+            border-color: {COLORS["secondary"]} !important;
+        }}
+        label[data-testid="stWidgetLabel"] p {{
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: {COLORS["text_muted"]} !important;
+        }}
+
+        /* Expanders: cabeçalho discreto, sem caixa pesada */
+        div[data-testid="stExpander"] {{
+            border: 1px solid {COLORS["border"]} !important;
+            border-radius: 8px !important;
+            background: {COLORS["surface"]} !important;
+            box-shadow: none !important;
+        }}
+        div[data-testid="stExpander"] summary {{
+            font-size: 12.5px !important;
+            font-weight: 600 !important;
+            color: {COLORS["text"]} !important;
+        }}
+
+        /* Avisos do Streamlit: canto menor, sem sombra, texto na medida do
+           resto do painel. A cor de cada tipo continua sendo do Streamlit. */
+        div[data-testid="stAlert"], div[data-testid="stAlertContainer"],
+        div[data-baseweb="notification"] {{
+            border-radius: 8px !important;
+            box-shadow: none !important;
+            font-size: 12.5px !important;
+            line-height: 1.6 !important;
+            padding: 12px 16px !important;
+        }}
+
+        /* Abas em sublinhado, no lugar de botões preenchidos: com sete ou
+           oito abas, uma fileira de retângulos coloridos competia com o
+           conteúdo da tela. */
+        div[data-baseweb="tab-list"] {{
+            gap: 2px;
+            border-bottom: 1px solid {COLORS["border"]};
+            margin-bottom: 6px;
+        }}
+        div[data-baseweb="tab-highlight"],
+        div[data-baseweb="tab-border"] {{
+            background-color: transparent !important;
+        }}
+        button[data-baseweb="tab"] {{
+            background-color: transparent !important;
+            border: none !important;
+            border-bottom: 2px solid transparent !important;
+            border-radius: 0 !important;
+            color: {COLORS["text_muted"]} !important;
+            padding: 9px 14px !important;
+            margin-right: 0;
+            font-size: 12.5px;
             font-weight: 500;
+            letter-spacing: 0.2px;
+            transition: color 0.15s ease, border-color 0.15s ease;
+        }}
+        button[data-baseweb="tab"]:hover {{
+            color: {COLORS["text"]} !important;
         }}
         button[data-baseweb="tab"][aria-selected="true"] {{
-            background-color: {COLORS["primary_soft"]} !important;
+            background-color: transparent !important;
             color: {COLORS["text"]} !important;
-            font-weight: 700;
-            border-color: {COLORS["primary"]} !important;
+            font-weight: 600;
+            border-bottom: 2px solid {COLORS["primary"]} !important;
         }}
         hr {{
             border-color: {COLORS["border"]} !important;
@@ -1967,8 +2065,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 border: 1px solid {COLORS["border"]}; border-radius: 12px; padding: 14px 16px;
                 border-top: 3px solid var(--tv-accent, {COLORS["primary"]});
             }}
-            .tv-kpi .lbl {{ font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
-            .tv-kpi .val {{ font-size: 25px; font-weight: 800; margin-top: 5px; letter-spacing: -0.5px; }}
+            .tv-kpi .lbl {{ font-size: 10px; font-weight: 600; letter-spacing: 0.9px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
+            .tv-kpi .val {{ font-family: {FONTE_MONO}; font-size: 25px; font-weight: 700; margin-top: 6px; letter-spacing: -0.3px; }}
             .tv-kpi .sub {{ font-size: 11.5px; margin-top: 4px; color: {COLORS["muted_line"]}; display:flex; align-items:center; gap:4px; }}
             .tv-section-title {{
                 font-size: 12.5px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
