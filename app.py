@@ -5001,12 +5001,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                         " font-weight: 700; border-top: 1px solid rgba(139,149,165,0.35);"
                                     )
                                 elif tipo_linha == "total":
-                                    # Total Geral: faixa mais clara e borda
-                                    # grossa em cima, pra fechar visualmente o
-                                    # bloco dos canais.
+                                    # Total Geral: mesma cor das linhas de canal
+                                    # (era um cinza à parte, que destoava), com
+                                    # peso maior e borda grossa em cima para
+                                    # fechar visualmente o bloco.
                                     base += (
-                                        " background-color: rgba(139,149,165,0.20);"
-                                        " font-weight: 800; border-top: 2px solid rgba(139,149,165,0.75);"
+                                        f" background-color: {COLORS['surface_alt']};"
+                                        " font-weight: 800;"
+                                        f" border-top: 2px solid {COLORS['primary']};"
                                     )
                                 estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
                         return estilos
@@ -5018,11 +5020,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         coluna: st.column_config.NumberColumn(coluna, width="medium")
                         for coluna in pivot_d.columns
                     }
+                    # Altura pelo número real de linhas (cabeçalho + linhas x 35px):
+                    # com valor fixo, sobrava uma faixa vazia embaixo quando a
+                    # tabela tinha menos linhas do que o previsto.
+                    altura_tabela_d = min(35 * (len(pivot_d) + 1) + 3, 760)
                     st.dataframe(
                         pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
                         use_container_width=True,
                         column_config=config_colunas_d,
-                        height=668,  # 18 linhas visíveis, sem precisar rolar
+                        height=altura_tabela_d,
                     )
                     st.caption(
                         "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
