@@ -3048,6 +3048,7 @@ EMAILS_FINANCEIRO_PERMITIDOS = {
     "coordenador.financeiro@grupobeea.com.br",
     "diretoria.financeira@grupobeea.com.br",
     "analista.gestaofinanceira@grupobeea.com.br",
+    "analista.60371@grupobeea.com.br",
 }
 
 # ============================================================================
