@@ -3319,6 +3319,50 @@ def _rotulo_mes_pt_extenso(periodo):
     return f"{MESES_PT_FIN[periodo.month - 1]}/{periodo.year}"
 
 
+def calcular_saldo_inicial_diario(df, coluna_valor):
+    """Saldo inicial de CADA dia da base, na ordem do calendário.
+
+    A regra segue o jeito como a planilha é alimentada:
+
+    * Dia com posição de caixa/banco preenchida = dia já conferido. A posição
+      informada JÁ é o saldo real daquele dia, então o saldo inicial fica
+      ZERADO (somá-lo contaria o mesmo dinheiro duas vezes) e o total do dia é
+      a soma das linhas dele.
+    * Dia sem posição preenchida = dia ainda por vir. Aí o saldo inicial é o
+      total de fechamento do dia anterior, e o total do dia é esse saldo mais
+      as entradas e saídas previstas.
+
+    O cálculo roda sobre a base INTEIRA, não sobre o mês que está na tela --
+    é isso que permite abrir novembro e ver o saldo previsto para lá, já
+    carregando tudo que veio antes.
+
+    Devolve (saldo_inicial_por_dia, total_por_dia), ambos indexados pelo dia."""
+    saldo_inicial, total_dia = {}, {}
+    if df is None or df.empty:
+        return saldo_inicial, total_dia
+
+    movimentos = df[df["Tipo Movimento"].isin(["entrada", "saida"])]
+    posicoes = df[df["Tipo Movimento"] == "saldo"]
+    soma_movimento = movimentos.groupby("DiaOrd")[coluna_valor].sum()
+    soma_posicao = posicoes.groupby("DiaOrd")[coluna_valor].sum()
+    # "Tem posição" é ter linha de caixa/banco com valor -- dia com a linha
+    # zerada é dia ainda não preenchido, e entra na projeção.
+    dias_com_posicao = set(soma_posicao[soma_posicao != 0].index)
+
+    saldo_corrente = 0.0
+    for dia in sorted(df["DiaOrd"].dropna().unique()):
+        movimento = float(soma_movimento.get(dia, 0.0))
+        posicao = float(soma_posicao.get(dia, 0.0))
+        if dia in dias_com_posicao:
+            saldo_inicial[dia] = 0.0
+            total_dia[dia] = posicao + movimento
+        else:
+            saldo_inicial[dia] = saldo_corrente
+            total_dia[dia] = saldo_corrente + movimento
+        saldo_corrente = total_dia[dia]
+    return saldo_inicial, total_dia
+
+
 def _dia_valido_no_mes(valor, ultimo_dia_mes):
     """True se `valor` é um dia que existe naquele mês (1 até o último dia).
     Usado para descartar um dia guardado da sessão que não serve mais (ex.:
@@ -4873,13 +4917,24 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 modal_sel_d = st.selectbox("Modalidade:", opcoes_modal_d, key="fin_modal_sel_diario")
 
             periodo_d = meses_disp_d[rotulos_d.index(mes_sel_d)]
-            df_d = df_fin[df_fin["Data Efetiva"].dt.to_period("M") == periodo_d].copy()
+            # Primeiro os filtros de canal/modalidade sobre a base TODA: é
+            # dela que sai o saldo inicial de cada dia, que precisa vir
+            # acumulado desde o começo do ano. Só depois vem o recorte do mês.
+            df_d_completo = df_fin.copy()
             if canal_sel_d != "Todos":
-                df_d = df_d[df_d[COL_FIN_CANAL].astype(str) == canal_sel_d]
+                df_d_completo = df_d_completo[df_d_completo[COL_FIN_CANAL].astype(str) == canal_sel_d]
             if modal_sel_d != "Todas":
-                df_d = df_d[df_d[COL_FIN_MODALIDADE].astype(str) == modal_sel_d]
+                df_d_completo = df_d_completo[df_d_completo[COL_FIN_MODALIDADE].astype(str) == modal_sel_d]
             # Aplicações ficam fora, igual ao resto do painel
-            df_d = df_d[df_d["Tipo Movimento"] != "aplicacao"]
+            df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "aplicacao"]
+            df_d_completo["DiaOrd"] = df_d_completo["Data Efetiva"].dt.normalize()
+            saldo_inicial_por_dia, total_por_dia = calcular_saldo_inicial_diario(
+                df_d_completo, COL_FIN_VALOR
+            )
+
+            df_d = df_d_completo[
+                df_d_completo["Data Efetiva"].dt.to_period("M") == periodo_d
+            ].copy()
 
             if df_d.empty:
                 st.info("Nenhum lançamento nesse mês para os filtros selecionados.")
@@ -5046,6 +5101,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     def _rotulo_unico_d(texto, posicao):
                         return texto + ("\u200b" * posicao)
 
+                    # Saldo Inicial abre a tabela: é o que sobrou do dia
+                    # anterior e entra no total do dia.
+                    linha_saldo_inicial_d = [
+                        float(saldo_inicial_por_dia.get(dia, 0.0)) for dia in dias_ordenados_d
+                    ]
+                    linhas_tabela_d.append(linha_saldo_inicial_d)
+                    indices_tabela_d.append(_rotulo_unico_d("SALDO INICIAL", len(indices_tabela_d)))
+                    estilo_linhas_d.append(("saldo_inicial", "SALDO INICIAL"))
+
                     canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
                     for canal in canais_ordenados_d:
                         df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
@@ -5059,7 +5123,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
                             estilo_linhas_d.append(("movimento", movimento))
 
-                    linhas_tabela_d.append(_agrega_por_dia(df_d))
+                    # O total do dia já vem pronto do cálculo do saldo: é a
+                    # soma das linhas do dia mais o saldo inicial dele.
+                    linhas_tabela_d.append([
+                        float(total_por_dia.get(dia, 0.0)) for dia in dias_ordenados_d
+                    ])
                     indices_tabela_d.append(_rotulo_unico_d("TOTAL GERAL", len(indices_tabela_d)))
                     estilo_linhas_d.append(("total", "TOTAL GERAL"))
 
@@ -5070,8 +5138,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # pras linhas de saldo (somar saldo de dias diferentes não
                     # faz sentido).
                     totais_finais_d = []
+                    _dia_ini_exibido = dias_ordenados_d[0]
+                    _dia_fim_exibido = dias_ordenados_d[-1]
                     for posicao, (tipo_linha, nome_limpo) in enumerate(estilo_linhas_d):
-                        if tipo_linha == "movimento":
+                        if tipo_linha == "saldo_inicial":
+                            # Saldo com que o período começa (não faz sentido somar).
+                            totais_finais_d.append(
+                                float(saldo_inicial_por_dia.get(_dia_ini_exibido, 0.0))
+                            )
+                        elif tipo_linha == "total":
+                            # Saldo projetado no fim do período exibido.
+                            totais_finais_d.append(float(total_por_dia.get(_dia_fim_exibido, 0.0)))
+                        elif tipo_linha == "movimento":
                             if _classificar_movimento_fin(nome_limpo) in ("saldo", "aplicacao"):
                                 serie_linha = pivot_d.iloc[posicao]
                                 nao_zerados = serie_linha[serie_linha != 0]
@@ -5079,10 +5157,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             else:
                                 totais_finais_d.append(pivot_d.iloc[posicao].sum())
                         else:
-                            if tipo_linha == "canal":
-                                df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
-                            else:
-                                df_escopo = df_d
+                            df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
                             fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
                             saldo_escopo = 0.0
                             df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"] == "saldo"]
@@ -5110,7 +5185,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             for coluna in df_tabela.columns:
                                 valor = df_tabela.iloc[posicao][coluna]
                                 base = cor_valor(valor)
-                                if tipo_linha == "canal":
+                                if tipo_linha == "saldo_inicial":
+                                    # Abre a tabela: mesmo peso do total, com
+                                    # borda embaixo separando dos canais.
+                                    base += (
+                                        f" background-color: {COLORS['surface_alt']};"
+                                        " font-weight: 800;"
+                                        f" border-bottom: 2px solid {COLORS['primary']};"
+                                    )
+                                elif tipo_linha == "canal":
                                     base += (
                                         f" background-color: {COLORS['surface_alt']};"
                                         " font-weight: 700; border-top: 1px solid rgba(139,149,165,0.35);"
@@ -5146,10 +5229,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         height=altura_tabela_d,
                     )
                     st.caption(
-                        "Cada coluna é um dia. As linhas em destaque são os canais (com o subtotal do canal) "
-                        "e, recuadas abaixo, os movimentos de cada um. Na última coluna, contas a "
-                        "receber/pagar trazem a **soma do período** e caixa/banco trazem o **saldo do "
-                        "último dia** com movimento."
+                        "Cada coluna é um dia. **SALDO INICIAL** é o que sobrou do dia anterior: nos dias "
+                        "que ainda não tiveram caixa e banco preenchidos, ele carrega o fechamento do dia "
+                        "anterior e entra no TOTAL GERAL; no dia em que a posição é preenchida, ele zera, "
+                        "porque o saldo real já está nas linhas de caixa/banco. As linhas em destaque são "
+                        "os canais (com o subtotal do canal) e, recuadas abaixo, os movimentos de cada um. "
+                        "Na última coluna: contas a receber/pagar trazem a **soma do período**, caixa/banco "
+                        "o **saldo do último dia** com movimento, SALDO INICIAL o saldo de abertura do "
+                        "recorte e TOTAL GERAL o **saldo projetado no fim** dele."
                     )
 
                     # ---- Gráfico: movimento do dia + fluxo acumulado ----
