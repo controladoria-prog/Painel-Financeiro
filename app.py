@@ -2948,8 +2948,8 @@ if st.session_state["painel_escolhido"] is None:
                 display: flex !important;
                 flex-direction: column;
                 justify-content: center;
-                min-height: 88vh;
-                max-width: 880px !important;
+                min-height: 84vh;
+                max-width: 960px !important;
                 padding-top: 0 !important;
                 margin: 0 auto !important;
             }}
@@ -2980,7 +2980,7 @@ if st.session_state["painel_escolhido"] is None:
                 border: 1px solid {COLORS['border']};
                 border-bottom: none;
                 border-radius: 12px 12px 0 0;
-                padding: 26px 24px 22px 24px;
+                padding: 28px 26px 24px 26px;
                 text-align: left;
             }}
             .hub-card .marca {{
@@ -2992,8 +2992,8 @@ if st.session_state["painel_escolhido"] is None:
                 margin: 0 0 8px 0; letter-spacing: -0.2px;
             }}
             .hub-card p {{
-                color: {COLORS['text_muted']}; font-size: 12.5px; line-height: 1.6;
-                margin: 0 0 16px 0; min-height: 40px;
+                color: {COLORS['text_muted']}; font-size: 12.5px; line-height: 1.65;
+                margin: 0 0 18px 0; min-height: 42px;
             }}
             .hub-tags {{ display: flex; flex-wrap: wrap; gap: 6px; }}
             .hub-tags span {{
@@ -3065,7 +3065,9 @@ if st.session_state["painel_escolhido"] is None:
         unsafe_allow_html=True,
     )
 
-    col_hub_esp1, col_hub_a, col_hub_b, col_hub_esp2 = st.columns([0.35, 1, 1, 0.35])
+    # Sem colunas vazias nas pontas: o bloco já é limitado e centralizado
+    # pelo CSS, então elas só espremiam os cartões.
+    col_hub_a, col_hub_b = st.columns(2, gap="medium")
     with col_hub_a:
         st.markdown(
             html_compacto(f"""
