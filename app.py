@@ -3236,6 +3236,199 @@ def _classificar_movimento_fin(nome_movimento):
     return "outro"
 
 
+# Desenha os alertas dos dois painéis. Fica aqui em cima porque o bloco do
+# Painel Financeiro roda antes da seção 7.5, onde ela vivia.
+def _renderizar_painel_alertas(alertas, titulo="Alertas"):
+    """Mostra os alertas em cartões compactos, ordenados por gravidade."""
+    if not alertas:
+        st.success(f"✅ {titulo}: nenhum ponto de atenção nas regras configuradas.")
+        return
+
+    criticos = [a for a in alertas if a["nivel"] == "critico"]
+    atencoes = [a for a in alertas if a["nivel"] == "atencao"]
+
+    resumo = []
+    if criticos:
+        resumo.append(f"{len(criticos)} crítico(s)")
+    if atencoes:
+        resumo.append(f"{len(atencoes)} de atenção")
+    rotulo_expander = f"🔔 {titulo} — {' · '.join(resumo)}"
+
+    with st.expander(rotulo_expander, expanded=bool(criticos)):
+        for alerta in criticos + atencoes:
+            if alerta["nivel"] == "critico":
+                cor_borda, icone = COLORS["negative"], "🚨"
+                fundo = "rgba(224, 133, 133, 0.08)"
+            else:
+                cor_borda, icone = COLORS["warning"], "⚠️"
+                fundo = "rgba(214, 161, 85, 0.08)"
+            st.markdown(
+                html_compacto(f"""
+                <div style="border-left: 3px solid {cor_borda}; background: {fundo};
+                            padding: 8px 12px; border-radius: 4px; margin-bottom: 7px;">
+                    <div style="color:{COLORS['text']}; font-size:13px; font-weight:600;">
+                        {icone} {alerta['titulo']}
+                    </div>
+                    <div style="color:{COLORS['text_muted']}; font-size:11.5px; margin-top:2px;">
+                        {alerta['detalhe']}
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True,
+            )
+
+
+# ============================================================================
+# MOTOR DE ALERTAS DO FLUXO DE CAIXA
+# ============================================================================
+# Mesma ideia do motor da Controladoria, com regras voltadas para caixa: em
+# vez de esperar alguém abrir cada aba e comparar números, o painel avalia as
+# regras a cada carregamento e mostra o que exige atenção. Os limites são
+# configuráveis porque o que é "grave" muda de empresa para empresa -- alerta
+# que dispara sempre vira ruído e passa a ser ignorado.
+META_RESERVA_PADRAO = 30      # % do disponível que deve sobrar após pagar tudo
+HORIZONTE_ALERTA_SEMANAS = 13
+
+
+def _avaliar_alertas_fluxo(
+    df, coluna_valor, meta_reserva_pct, limite_vencido_reais, limite_concentracao_pct,
+):
+    """Devolve a lista de alertas do fluxo de caixa, no mesmo formato do motor
+    da Controladoria: nível ('critico' ou 'atencao'), título e detalhe."""
+    alertas = []
+    hoje = pd.Timestamp(datetime.now(FUSO_BR).date())
+
+    saldo_atual, data_saldo = _saldo_posicao_atual_fin(df, coluna_valor)
+    entradas = df[df["Tipo Movimento"] == "entrada"]
+    saidas = df[df["Tipo Movimento"] == "saida"]
+
+    # Liquidação efetiva: a do CSV, completada pela leitura ampla e pela baixa
+    # trazida da aba DIÁRIO. É a mesma regra da aba Análises -- sem ela, toda
+    # conta a pagar pareceria em aberto, porque o CSV não traz a baixa delas.
+    def _liquidacao_efetiva(bloco):
+        liq = bloco[COL_FIN_DATA_LIQUIDACAO]
+        for coluna in (COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO):
+            if coluna in bloco.columns:
+                liq = liq.fillna(bloco[coluna])
+        return liq
+
+    # --- 1. Semana com saldo negativo no horizonte ---
+    futuro = df[df["Data Efetiva"] >= hoje]
+    if not futuro.empty and saldo_atual:
+        limite_horizonte = hoje + pd.Timedelta(weeks=HORIZONTE_ALERTA_SEMANAS)
+        janela = futuro[
+            (futuro["Data Efetiva"] <= limite_horizonte)
+            & (futuro["Tipo Movimento"].isin(["entrada", "saida"]))
+        ]
+        if not janela.empty:
+            por_semana = (
+                janela.assign(_sem=janela["Data Efetiva"].dt.to_period("W"))
+                .groupby("_sem", observed=True)[coluna_valor].sum().sort_index()
+            )
+            saldo_corrente = saldo_atual
+            pior_saldo, pior_semana = None, None
+            for semana, movimento in por_semana.items():
+                saldo_corrente += movimento
+                if pior_saldo is None or saldo_corrente < pior_saldo:
+                    pior_saldo, pior_semana = saldo_corrente, semana
+            if pior_saldo is not None and pior_saldo < 0:
+                alertas.append({
+                    "nivel": "critico",
+                    "titulo": f"Caixa fica negativo na semana de {pior_semana.start_time:%d/%m}",
+                    "detalhe": (
+                        f"Partindo de {formata_brl(saldo_atual)}, o saldo projetado chega a "
+                        f"{formata_brl(pior_saldo)} dentro das próximas "
+                        f"{HORIZONTE_ALERTA_SEMANAS} semanas."
+                    ),
+                })
+
+    # --- 2. Contas a pagar vencidas e ainda em aberto ---
+    if not saidas.empty:
+        liq_saidas = _liquidacao_efetiva(saidas)
+        venc_saidas = saidas[COL_FIN_VENCIMENTO]
+        em_aberto_vencido = liq_saidas.isna() & venc_saidas.notna() & (venc_saidas < hoje)
+        valor_vencido = abs(saidas.loc[em_aberto_vencido, coluna_valor].sum())
+        qtd_vencido = int(em_aberto_vencido.sum())
+        if valor_vencido >= limite_vencido_reais and qtd_vencido:
+            alertas.append({
+                "nivel": "critico",
+                "titulo": f"{formata_brl(valor_vencido)} vencidos e ainda não pagos",
+                "detalhe": (
+                    f"{qtd_vencido} título(s) com vencimento anterior a "
+                    f"{hoje:%d/%m/%Y} e sem baixa registrada."
+                ),
+            })
+
+    # --- 3. Desembolso dos próximos 7 dias contra o saldo disponível ---
+    if saldo_atual:
+        proximos = saidas[
+            (saidas["Data Efetiva"] >= hoje)
+            & (saidas["Data Efetiva"] <= hoje + pd.Timedelta(days=7))
+        ]
+        a_pagar_semana = abs(proximos[coluna_valor].sum())
+        if a_pagar_semana:
+            if a_pagar_semana > saldo_atual:
+                alertas.append({
+                    "nivel": "critico",
+                    "titulo": "Pagamentos da semana acima do saldo disponível",
+                    "detalhe": (
+                        f"{formata_brl(a_pagar_semana)} a desembolsar em 7 dias contra "
+                        f"{formata_brl(saldo_atual)} em caixa e banco"
+                        + (f" (posição em {data_saldo:%d/%m/%Y})" if data_saldo is not None else "")
+                        + " — depende de recebimento no período."
+                    ),
+                })
+            elif a_pagar_semana > saldo_atual * 0.8:
+                alertas.append({
+                    "nivel": "atencao",
+                    "titulo": "Pagamentos da semana consomem quase todo o caixa",
+                    "detalhe": (
+                        f"{formata_brl(a_pagar_semana)} a desembolsar em 7 dias, "
+                        f"{a_pagar_semana / saldo_atual * 100:.0f}% do saldo disponível."
+                    ),
+                })
+
+    # --- 4. Reserva do mês corrente abaixo da meta ---
+    mes_atual = hoje.to_period("M")
+    entradas_mes = entradas[entradas["Data Efetiva"].dt.to_period("M") == mes_atual][coluna_valor].sum()
+    saidas_mes = abs(saidas[saidas["Data Efetiva"].dt.to_period("M") == mes_atual][coluna_valor].sum())
+    disponivel_mes = saldo_atual + entradas_mes
+    if disponivel_mes > 0 and saidas_mes:
+        sobra_pct = (disponivel_mes - saidas_mes) / disponivel_mes * 100
+        if sobra_pct < meta_reserva_pct:
+            alertas.append({
+                "nivel": "critico" if sobra_pct < 0 else "atencao",
+                "titulo": f"Reserva do mês em {sobra_pct:.0f}% (meta: {meta_reserva_pct}%)",
+                "detalhe": (
+                    f"Pagando tudo do mês ({formata_brl(saidas_mes)}) sobra "
+                    f"{formata_brl(disponivel_mes - saidas_mes)} de "
+                    f"{formata_brl(disponivel_mes)} disponíveis."
+                ),
+            })
+
+    # --- 5. Desembolso concentrado em poucos dias ---
+    saidas_mes_df = saidas[saidas["Data Efetiva"].dt.to_period("M") == mes_atual]
+    if len(saidas_mes_df) > 3:
+        por_dia = saidas_mes_df.groupby(saidas_mes_df["Data Efetiva"].dt.date)[coluna_valor].sum().abs()
+        total_mes = por_dia.sum()
+        # Com poucos dias de pagamento no mês, "3 dias concentram 80%" é
+        # aritmética, não concentração -- por isso o mínimo de 8 dias.
+        if total_mes and len(por_dia) >= 8:
+            concentracao = por_dia.nlargest(3).sum() / total_mes * 100
+            if concentracao >= limite_concentracao_pct:
+                maior_dia = por_dia.idxmax()
+                alertas.append({
+                    "nivel": "atencao",
+                    "titulo": f"{concentracao:.0f}% do desembolso do mês em 3 dias",
+                    "detalhe": (
+                        f"Maior pico em {maior_dia:%d/%m} com {formata_brl(por_dia.max())}. "
+                        "Concentração assim exige caixa parado esperando a data."
+                    ),
+                })
+
+    return alertas
+
+
 def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos):
     """Monta a tabela Movimento x Período com a agregação CORRETA para cada
     tipo de linha:
@@ -3816,6 +4009,23 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
 
     st.sidebar.markdown("---")
+    with st.sidebar.expander("🔔 Regras de alerta"):
+        st.caption("Define a partir de que ponto o painel considera algo digno de atenção.")
+        meta_reserva_cfg = st.slider(
+            "Reserva mínima do mês (%)", min_value=0, max_value=60,
+            value=META_RESERVA_PADRAO, step=5, key="cfg_fin_reserva",
+            help="Quanto deve sobrar do disponível depois de pagar tudo do mês.",
+        )
+        limite_vencido_cfg = st.number_input(
+            "Avisar sobre vencidos acima de (R$)", min_value=0, value=50_000, step=10_000,
+            key="cfg_fin_vencido",
+        )
+        limite_concentracao_cfg = st.slider(
+            "Concentração do desembolso em 3 dias (%)", min_value=30, max_value=100,
+            value=60, step=5, key="cfg_fin_concentracao",
+        )
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown("**🔄 Dados**")
     if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
         st.cache_data.clear()
@@ -4044,6 +4254,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
             st.dataframe(df_fin.head(15), use_container_width=True, hide_index=True)
+
+    # Faixa de alertas, no mesmo lugar e no mesmo formato da Controladoria:
+    # logo abaixo do contexto e antes das abas.
+    _alertas_fin = _avaliar_alertas_fluxo(
+        df_fin, COL_FIN_VALOR, meta_reserva_cfg, limite_vencido_cfg, limite_concentracao_cfg,
+    )
+    _renderizar_painel_alertas(_alertas_fin, titulo="Alertas do Fluxo de Caixa")
 
     tab_fin_mensal, tab_fin_diario, tab_fin_tesouraria, tab_fin_analises = st.tabs(
         ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🏦 Tesouraria", "📊 Análises"]
@@ -7013,45 +7230,6 @@ def _avaliar_alertas_controladoria(
 
     return alertas
 
-
-def _renderizar_painel_alertas(alertas, titulo="Alertas"):
-    """Mostra os alertas em cartões compactos, ordenados por gravidade."""
-    if not alertas:
-        st.success(f"✅ {titulo}: nenhum ponto de atenção nas regras configuradas.")
-        return
-
-    criticos = [a for a in alertas if a["nivel"] == "critico"]
-    atencoes = [a for a in alertas if a["nivel"] == "atencao"]
-
-    resumo = []
-    if criticos:
-        resumo.append(f"{len(criticos)} crítico(s)")
-    if atencoes:
-        resumo.append(f"{len(atencoes)} de atenção")
-    rotulo_expander = f"🔔 {titulo} — {' · '.join(resumo)}"
-
-    with st.expander(rotulo_expander, expanded=bool(criticos)):
-        for alerta in criticos + atencoes:
-            if alerta["nivel"] == "critico":
-                cor_borda, icone = COLORS["negative"], "🚨"
-                fundo = "rgba(224, 133, 133, 0.08)"
-            else:
-                cor_borda, icone = COLORS["warning"], "⚠️"
-                fundo = "rgba(214, 161, 85, 0.08)"
-            st.markdown(
-                html_compacto(f"""
-                <div style="border-left: 3px solid {cor_borda}; background: {fundo};
-                            padding: 8px 12px; border-radius: 4px; margin-bottom: 7px;">
-                    <div style="color:{COLORS['text']}; font-size:13px; font-weight:600;">
-                        {icone} {alerta['titulo']}
-                    </div>
-                    <div style="color:{COLORS['text_muted']}; font-size:11.5px; margin-top:2px;">
-                        {alerta['detalhe']}
-                    </div>
-                </div>
-                """),
-                unsafe_allow_html=True,
-            )
 
 
 # ---- Configuração dos limites de alerta (barra lateral) ----
