@@ -6851,7 +6851,6 @@ def montar_relatorio_excel(
     mapa_loja_centro_custo=None,
     dados_visoes_mkt=None,
     incluir_aba_mkt_1pct=False,
-    planos_contas_extra=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -7376,16 +7375,6 @@ def montar_relatorio_excel(
     ws4.column_dimensions["G"].width = 28
     ws4.column_dimensions["H"].width = 40
     ws4.column_dimensions["I"].width = 18
-
-    # ---------------- ABAS DE PLANO DE CONTAS ----------------
-    # Entram no MESMO arquivo quando a pessoa escolhe planos além das linhas
-    # da DRE -- são recortes complementares do mesmo relatório, não dois
-    # relatórios diferentes.
-    if planos_contas_extra and df_diario is not None and not df_diario.empty:
-        _criar_abas_planos_contas(
-            wb, nomes_abas_usados, df_diario, planos_contas_extra, mapa_meses, gerado_em,
-            mapa_loja_centro_custo,
-        )
 
     # ---------------- ABA "MKT - 1% x OUTRAS DESPESAS" (só no modelo de MKT) ----------------
     # Layout fixo, independente das linhas/lojas selecionadas: sempre a linha
@@ -10248,56 +10237,52 @@ with tab5:
 
     linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
 
-    # ---- Período do relatório: ano + intervalo de meses ----
-    # Os anos saem das próprias colunas da planilha (formato MM/AAAA), não de
-    # uma lista fixa: quando 2027 entrar na base, ele aparece aqui sozinho.
-    # O período é independente do filtro da barra lateral, porque o relatório
-    # costuma ser emitido para um recorte próprio sem mudar a tela inteira.
-    colunas_periodo_rel = [
-        str(c).strip() for c in df_ref.columns
-        if re.fullmatch(r"\d{2}/\d{4}", str(c).strip())
-    ]
-    anos_disponiveis_rel = sorted({c.split("/")[1] for c in colunas_periodo_rel})
+    # ---- Período do relatório: um intervalo contínuo de meses ----
+    # A lista atravessa os anos numa sequência só (…, Nov/2025, Dez/2025,
+    # Jan/2026, …), justamente para permitir recortes como "dezembro de 2025
+    # a maio de 2026". Com ano e mês em campos separados isso era impossível.
+    # Os meses saem das próprias colunas da planilha (formato MM/AAAA), então
+    # 2027 aparece sozinho quando entrar na base.
+    colunas_periodo_rel = sorted(
+        {str(c).strip() for c in df_ref.columns if re.fullmatch(r"\d{2}/\d{4}", str(c).strip())},
+        key=lambda c: (int(c.split("/")[1]), int(c.split("/")[0])),
+    )
     if not colunas_periodo_rel:
         st.warning("Nenhuma coluna de mês (MM/AAAA) encontrada na planilha para montar o relatório.")
         st.stop()
 
-    col_per_ano, col_per_ini, col_per_fim = st.columns([1, 1.5, 1.5])
-    with col_per_ano:
-        ano_rel = st.selectbox(
-            "📅 Ano:", anos_disponiveis_rel,
-            index=len(anos_disponiveis_rel) - 1, key="rel_periodo_ano",
-        )
+    rotulos_periodo_rel = [
+        f"{nomes_meses[int(c.split('/')[0]) - 1].capitalize()}/{c.split('/')[1]}"
+        for c in colunas_periodo_rel
+    ]
+    mapa_periodo_rel = dict(zip(rotulos_periodo_rel, colunas_periodo_rel))
 
-    meses_do_ano_rel = [c for c in colunas_periodo_rel if c.endswith(f"/{ano_rel}")]
-    meses_do_ano_rel.sort(key=lambda c: int(c.split("/")[0]))
-    nomes_do_ano_rel = [nomes_meses[int(c.split("/")[0]) - 1] for c in meses_do_ano_rel]
-    mapa_ano_rel = dict(zip(nomes_do_ano_rel, meses_do_ano_rel))
-
+    col_per_ini, col_per_fim = st.columns(2)
     with col_per_ini:
         mes_ini_rel = st.selectbox(
-            "Do mês:", nomes_do_ano_rel, index=0, key=f"rel_periodo_ini__{ano_rel}",
+            "📅 Do mês:", rotulos_periodo_rel, index=0, key="rel_periodo_ini",
         )
     with col_per_fim:
         mes_fim_rel = st.selectbox(
-            "Até o mês:", nomes_do_ano_rel, index=len(nomes_do_ano_rel) - 1,
-            key=f"rel_periodo_fim__{ano_rel}",
+            "📅 Até o mês:", rotulos_periodo_rel,
+            index=len(rotulos_periodo_rel) - 1, key="rel_periodo_fim",
         )
 
-    idx_ini_rel = nomes_do_ano_rel.index(mes_ini_rel)
-    idx_fim_rel = nomes_do_ano_rel.index(mes_fim_rel)
+    idx_ini_rel = rotulos_periodo_rel.index(mes_ini_rel)
+    idx_fim_rel = rotulos_periodo_rel.index(mes_fim_rel)
     periodo_invertido = idx_ini_rel > idx_fim_rel
     if periodo_invertido:
         idx_ini_rel, idx_fim_rel = idx_fim_rel, idx_ini_rel
 
-    m_map_rel = {n: mapa_ano_rel[n] for n in nomes_do_ano_rel[idx_ini_rel:idx_fim_rel + 1]}
+    m_map_rel = {
+        rot: mapa_periodo_rel[rot] for rot in rotulos_periodo_rel[idx_ini_rel:idx_fim_rel + 1]
+    }
     colunas_rel = list(m_map_rel.values())
 
     _hoje_rel = datetime.now(FUSO_BR)
     _mes_atual_col = f"{_hoje_rel.month:02d}/{_hoje_rel.year}"
     _aviso_periodo = (
-        f"Período do relatório: **{mes_ini_rel.capitalize()} a {mes_fim_rel.capitalize()} "
-        f"de {ano_rel}** ({len(m_map_rel)} mês(es))."
+        f"Período do relatório: **{mes_ini_rel} a {mes_fim_rel}** ({len(m_map_rel)} mês(es))."
     )
     if periodo_invertido:
         _aviso_periodo += " Os meses estavam invertidos — considerei do menor para o maior."
@@ -10380,32 +10365,38 @@ with tab5:
         )
         planos_relatorio = []
     else:
+        # Este campo é um FILTRO, não um acréscimo. Vazio (o padrão), o
+        # relatório sai completo: as linhas da DRE do modelo, os planos que
+        # compõem essas linhas e os planos que o modelo exige por nome.
+        # Preenchido, o relatório passa a considerar SÓ os planos marcados --
+        # é o caso do gestor que quer ver apenas "Mercadorias", por exemplo.
         planos_relatorio = st.multiselect(
-            "🧾 Planos de contas incluídos no relatório:",
+            "🧾 Filtrar por plano de contas (opcional):",
             options=planos_disponiveis,
-            # Os planos próprios do modelo já vêm marcados: o modelo diz que
-            # eles fazem parte do relatório, então o padrão é incluí-los.
-            default=planos_do_modelo,
+            default=[],
             key=f"planos_relatorio__{modelo_sel}",
             help=(
-                "A lista segue as linhas da DRE selecionadas acima, mais os planos que o "
-                "modelo exige por nome. Sem nenhuma linha selecionada, aparecem todos os "
-                "planos da DIÁRIO."
+                "Deixe vazio para o relatório completo do modelo. Ao marcar um ou mais "
+                "planos, o relatório passa a trazer apenas os valores desses planos — "
+                "inclusive os que não têm linha da DRE correspondente."
             ),
         )
-        _partes_caption = []
-        if contas_relatorio:
-            _partes_caption.append(
-                f"{len(planos_disponiveis)} plano(s) disponíveis a partir das "
-                f"{len(contas_relatorio)} linha(s) da DRE selecionadas"
-            )
+        _partes_caption = [
+            f"{len(planos_disponiveis)} plano(s) disponíveis"
+            + (f" nas {len(contas_relatorio)} linha(s) da DRE selecionadas" if contas_relatorio else "")
+        ]
         if planos_do_modelo:
             _partes_caption.append(
-                f"{len(planos_do_modelo)} plano(s) próprios do modelo já marcados "
-                "(entram no relatório mesmo sem linha da DRE correspondente)"
+                f"incluindo {len(planos_do_modelo)} plano(s) que o modelo pede por nome, "
+                "sem linha da DRE correspondente"
             )
-        if _partes_caption:
-            st.caption(" · ".join(_partes_caption) + ".")
+        st.caption(" · ".join(_partes_caption) + ".")
+        if planos_relatorio:
+            st.caption(
+                f"⚠️ Com {len(planos_relatorio)} plano(s) marcados, o relatório sai **apenas "
+                "com esses planos** — as linhas da DRE acima ficam de fora. Limpe o campo "
+                "para voltar ao relatório completo do modelo."
+            )
         if planos_modelo_faltando:
             st.warning(
                 "Não encontrei na aba DIÁRIO estes planos que o modelo pede: "
@@ -10434,7 +10425,23 @@ with tab5:
             disabled=(not contas_relatorio and not planos_relatorio) or not lojas_relatorio_sel,
         )
 
-    if gerar_clicado and contas_relatorio:
+    # A ordem importa: se há plano marcado, o relatório é o do plano --
+    # foi isso que a pessoa pediu ao filtrar.
+    if gerar_clicado and planos_relatorio:
+        with st.spinner("Montando o relatório em Excel..."):
+            mapa_loja_cc_planos = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
+            excel_bytes = montar_relatorio_planos_excel(
+                df_diario_planos, planos_relatorio, m_map_rel, label_visao,
+                mapa_loja_centro_custo=mapa_loja_cc_planos,
+            )
+        st.session_state["relatorio_excel_bytes"] = excel_bytes
+        st.session_state["relatorio_excel_nome"] = "Relatorio_Plano_de_Contas.xlsx"
+        st.success(
+            f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, "
+            "pronto para download."
+        )
+
+    elif gerar_clicado and contas_relatorio:
         with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
             # Carrega só as lojas/visões escolhidas no filtro acima -- evita
             # gerar um arquivo gigante com todas as 26 abas de uma vez.
@@ -10479,7 +10486,6 @@ with tab5:
                 mapa_loja_centro_custo=mapa_loja_cc_rel,
                 dados_visoes_mkt=dados_visoes_mkt_rel,
                 incluir_aba_mkt_1pct=incluir_aba_mkt,
-                planos_contas_extra=planos_relatorio or None,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
@@ -10493,10 +10499,10 @@ with tab5:
             return texto or "Relatório"
 
         st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
-        _resumo_selecao = f"{len(contas_relatorio)} linha(s) da DRE"
-        if planos_relatorio:
-            _resumo_selecao += f" e {len(planos_relatorio)} plano(s) de contas"
-        st.success(f"Relatório gerado com {_resumo_selecao}, pronto para download.")
+        st.success(
+            f"Relatório gerado com {len(contas_relatorio)} linha(s) da DRE do modelo, "
+            "pronto para download."
+        )
         if incluir_aba_mkt:
             st.caption(
                 "📣 Incluída a aba **MKT - 1% x Outras Despesas** (LOJA-1%, VD, ABPR e CONSOLIDADO, "
@@ -10510,21 +10516,6 @@ with tab5:
             )
         else:
             st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
-    elif gerar_clicado and planos_relatorio:
-        # Só planos: não há linha da DRE para montar as abas tradicionais,
-        # então o arquivo sai apenas com as planilhas de plano de contas.
-        with st.spinner("Montando o relatório em Excel..."):
-            mapa_loja_cc_planos = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
-            excel_bytes = montar_relatorio_planos_excel(
-                df_diario_planos, planos_relatorio, m_map_rel, label_visao,
-                mapa_loja_centro_custo=mapa_loja_cc_planos,
-            )
-        st.session_state["relatorio_excel_bytes"] = excel_bytes
-        st.session_state["relatorio_excel_nome"] = "Relatorio_Plano_de_Contas.xlsx"
-        st.success(
-            f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, pronto para download."
-        )
-
     if not contas_relatorio and not planos_relatorio:
         st.info(
             "Selecione ao menos uma linha da DRE ou um plano de contas — ou os dois, "
