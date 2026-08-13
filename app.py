@@ -3914,8 +3914,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
         st.warning("O CSV publicado foi lido, mas não trouxe nenhuma linha com data válida.")
         st.stop()
 
+    # O diagnóstico saiu do corpo da página para a barra lateral: ele é
+    # ferramenta de manutenção, não conteúdo do painel, e ocupava uma faixa
+    # inteira acima das abas. O rótulo também encolheu -- dizer que é só
+    # para administrador é redundante, já que só administrador enxerga.
     if eh_admin:
-        with st.expander("🔧 Diagnóstico da planilha (visível só para administrador)"):
+        st.sidebar.markdown("---")
+        with st.sidebar.expander("🔧 Diagnóstico da planilha"):
             st.write(
                 f"**Linhas lidas do CSV:** {total_linhas_lidas} · "
                 f"**Com data válida:** {len(df_fin)} · **Descartadas por falta de data:** {linhas_sem_data}"
@@ -5537,6 +5542,19 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             use_container_width=True, hide_index=True,
                         )
                         st.caption("Os 10 grupos que mais consumiram caixa no recorte selecionado.")
+
+    # Mesmo rodapé da Controladoria. Ele fica aqui porque o bloco do
+    # Financeiro termina em st.stop() -- a seção 9, lá no fim do arquivo,
+    # nunca chegava a ser executada nesta tela.
+    st.markdown(
+        html_compacto(
+            '<div class="footer-note">'
+            'Controladoria B&A · Painel Financeiro · Dados recarregados a cada 5 minutos — '
+            'use <b>Atualizar Dados</b> para buscar agora'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
 
     st.stop()
 
