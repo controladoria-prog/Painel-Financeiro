@@ -6626,6 +6626,41 @@ def _criar_aba_mkt_1pct(wb, dados_visoes, mapa_meses, gerado_em):
     return ws
 
 
+def resolver_planos_forcados(df_diario, termos):
+    """Acha, na aba DIÁRIO, os planos de contas que um modelo exige pelo NOME.
+
+    Alguns modelos têm planos que precisam sair no relatório mesmo sem uma
+    linha da DRE apontando para eles (o caso de "Mercadorias", em Compras, e
+    das benfeitorias, em Suprimentos). Como esses planos não são alcançados
+    pela busca a partir das linhas da DRE, eles são resolvidos aqui, direto
+    pelo nome.
+
+    A comparação é tolerante: primeiro o nome exato (normalizado) e, se não
+    achar, aceita o plano que contenha o termo -- a grafia na planilha muda
+    com o tempo e um acento a mais não pode derrubar o item do relatório.
+
+    Devolve (encontrados, nao_encontrados) para a tela poder avisar quando um
+    termo do modelo não existe mais na DIÁRIO."""
+    if df_diario is None or df_diario.empty or "Plano de Contas" not in df_diario.columns:
+        return [], list(termos or [])
+    disponiveis = (
+        df_diario["Plano de Contas"].dropna().astype(str).str.strip().unique().tolist()
+    )
+    indice = {_normalizar_texto(p): p for p in disponiveis}
+    encontrados, faltando = [], []
+    for termo in (termos or []):
+        chave = _normalizar_texto(termo)
+        if chave in indice:
+            encontrados.append(indice[chave])
+            continue
+        parecidos = [nome for norm, nome in indice.items() if chave and chave in norm]
+        if parecidos:
+            encontrados.extend(parecidos)
+        else:
+            faltando.append(termo)
+    return list(dict.fromkeys(encontrados)), faltando
+
+
 def planos_do_diario(df_diario, linhas_dre=None):
     """Lista os planos de contas que EXISTEM na aba DIÁRIO.
 
@@ -6647,37 +6682,34 @@ def planos_do_diario(df_diario, linhas_dre=None):
     return sorted(planos.unique().tolist())
 
 
-def montar_relatorio_planos_excel(
-    df_diario, planos_sel, mapa_meses, escopo_label, mapa_loja_centro_custo=None,
+def _criar_abas_planos_contas(
+    wb, nomes_usados, df_diario, planos_sel, mapa_meses, gerado_em, mapa_loja_centro_custo=None,
 ):
-    """Relatório montado a partir dos PLANOS DE CONTAS, direto da aba DIÁRIO.
+    """Acrescenta ao workbook as planilhas focadas em PLANOS DE CONTAS,
+    montadas direto da aba DIÁRIO:
+      - Planos - Resumo: cada plano com total do período, participação e nº de lançamentos;
+      - Planos - Mensal: plano x loja x meses, com filtro do Excel ligado;
+      - uma aba de lançamentos com a DIÁRIO filtrada nesses planos.
 
-    É um caminho separado do relatório por linha da DRE: aqui o plano de
-    contas é o assunto, não a composição de uma linha. Três planilhas:
-      - Resumo: cada plano com total do período, participação e nº de lançamentos;
-      - Detalhe Mensal: plano x loja x meses, com filtro do Excel ligado;
-      - Lançamentos: a própria DIÁRIO, filtrada pelos planos escolhidos.
-    """
+    É função separada porque as mesmas abas entram tanto no relatório completo
+    (junto com as linhas da DRE) quanto num relatório só de planos."""
     mapa_loja_centro_custo = mapa_loja_centro_custo or {}
     colunas_mes = list(mapa_meses.values())
-    gerado_em = f"Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')} · {escopo_label}"
-
     alvo = {_normalizar_texto(p) for p in planos_sel}
     df = df_diario[df_diario["Plano de Contas"].map(_normalizar_texto).isin(alvo)].copy()
+    if colunas_mes and "Mês" in df.columns:
+        df = df[df["Mês"].isin(colunas_mes)]
 
-    wb = Workbook()
-    nomes_usados = set()
-
-    # ---------------- ABA "RESUMO" ----------------
-    ws = wb.active
-    ws.title = _nome_aba_seguro("Resumo", nomes_usados)
-    ws.sheet_properties.tabColor = "FF4C8DFF"
+    # ---------------- RESUMO POR PLANO ----------------
+    ws = wb.create_sheet(_nome_aba_seguro("Planos - Resumo", nomes_usados))
+    ws.sheet_properties.tabColor = "FF6B9EE6"
     _escrever_titulo(ws, "RESUMO POR PLANO DE CONTAS", 1, 5)
     _escrever_legenda(ws, gerado_em, 2, 5)
 
-    cabecalho = ["Plano de Contas", "Linha DRE", "Lançamentos", "Total (R$)", "% do total"]
-    for col, texto in enumerate(cabecalho, start=1):
-        cell = ws.cell(row=4, column=col, value=texto)
+    for col, texto_col in enumerate(
+        ["Plano de Contas", "Linha DRE", "Lançamentos", "Total (R$)", "% do total"], start=1
+    ):
+        cell = ws.cell(row=4, column=col, value=texto_col)
         cell.font = EXCEL_STYLE["font_bold"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
@@ -6688,12 +6720,15 @@ def montar_relatorio_planos_excel(
     for plano in planos_sel:
         bloco = df[df["Plano de Contas"].map(_normalizar_texto) == _normalizar_texto(plano)]
         total_plano = float(bloco["Valor Bruto"].sum())
-        linhas_dre_plano = ", ".join(
-            sorted(bloco["Linha DRE"].dropna().astype(str).str.strip().unique())[:3]
-        ) if "Linha DRE" in bloco.columns else ""
+        linhas_dre_plano = ""
+        if "Linha DRE" in bloco.columns and not bloco.empty:
+            linhas_dre_plano = ", ".join(
+                sorted(bloco["Linha DRE"].dropna().astype(str).str.strip().unique())[:3]
+            )
         participacao = (total_plano / total_geral) if total_geral else 0.0
-        valores = [plano, linhas_dre_plano, len(bloco), total_plano, participacao]
-        for col, val in enumerate(valores, start=1):
+        for col, val in enumerate(
+            [plano, linhas_dre_plano, len(bloco), total_plano, participacao], start=1
+        ):
             cell = ws.cell(row=linha, column=col, value=val)
             cell.border = EXCEL_STYLE["border"]
             if col <= 2:
@@ -6712,7 +6747,9 @@ def montar_relatorio_planos_excel(
                 cell.alignment = Alignment(horizontal="right")
         linha += 1
 
-    for col, val in enumerate(["TOTAL", "", len(df), total_geral, 1.0 if total_geral else 0.0], start=1):
+    for col, val in enumerate(
+        ["TOTAL", "", len(df), total_geral, 1.0 if total_geral else 0.0], start=1
+    ):
         cell = ws.cell(row=linha, column=col, value=val)
         cell.font = EXCEL_STYLE["font_bold"]
         cell.fill = EXCEL_STYLE["fill_total"]
@@ -6733,20 +6770,18 @@ def montar_relatorio_planos_excel(
     ws.column_dimensions["E"].width = 12
     ws.freeze_panes = "A5"
 
-    # ---------------- ABA "DETALHE MENSAL" ----------------
-    ws2 = wb.create_sheet(_nome_aba_seguro("Detalhe Mensal", nomes_usados))
-    ws2.sheet_properties.tabColor = "FF3ECF8E"
+    # ---------------- PLANO x LOJA x MÊS ----------------
+    ws2 = wb.create_sheet(_nome_aba_seguro("Planos - Mensal", nomes_usados))
+    ws2.sheet_properties.tabColor = "FF57BE92"
     n_colunas = 2 + len(colunas_mes) + 1
     _escrever_titulo(ws2, "PLANO DE CONTAS x MÊS", 1, n_colunas)
     _escrever_legenda(
-        ws2,
-        gerado_em + " · use o filtro (▾) da coluna \"Loja\" para ver uma unidade de cada vez",
+        ws2, gerado_em + ' · use o filtro (▾) da coluna "Loja" para ver uma unidade de cada vez',
         2, n_colunas,
     )
-
-    cabecalho2 = ["Plano de Contas", "Loja"] + [m.capitalize() for m in mapa_meses.keys()] + ["Total"]
-    for col, texto in enumerate(cabecalho2, start=1):
-        cell = ws2.cell(row=4, column=col, value=texto)
+    cabecalho = ["Plano de Contas", "Loja"] + [m.capitalize() for m in mapa_meses.keys()] + ["Total do período"]
+    for col, texto_col in enumerate(cabecalho, start=1):
+        cell = ws2.cell(row=4, column=col, value=texto_col)
         cell.font = EXCEL_STYLE["font_bold"]
         cell.fill = EXCEL_STYLE["fill_header"]
         cell.border = EXCEL_STYLE["border"]
@@ -6775,10 +6810,26 @@ def montar_relatorio_planos_excel(
         ws2.column_dimensions[get_column_letter(col)].width = 15
     ws2.freeze_panes = "C5"
 
-    # ---------------- ABA "LANÇAMENTOS" ----------------
+    # ---------------- LANÇAMENTOS ----------------
     if not df.empty:
-        _criar_aba_lancamentos(wb, nomes_usados, "Planos de Contas", df.drop(columns=["_loja"]))
+        _criar_aba_lancamentos(
+            wb, nomes_usados, "Planos de Contas",
+            df.drop(columns=["_loja"]) if "_loja" in df.columns else df,
+        )
 
+
+def montar_relatorio_planos_excel(
+    df_diario, planos_sel, mapa_meses, escopo_label, mapa_loja_centro_custo=None,
+):
+    """Relatório SÓ de planos de contas (quando nenhuma linha da DRE foi
+    escolhida). Usa as mesmas abas do relatório completo."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    nomes_usados = set()
+    gerado_em = f"Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')} · {escopo_label}"
+    _criar_abas_planos_contas(
+        wb, nomes_usados, df_diario, planos_sel, mapa_meses, gerado_em, mapa_loja_centro_custo,
+    )
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
@@ -6800,6 +6851,7 @@ def montar_relatorio_excel(
     mapa_loja_centro_custo=None,
     dados_visoes_mkt=None,
     incluir_aba_mkt_1pct=False,
+    planos_contas_extra=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -7324,6 +7376,16 @@ def montar_relatorio_excel(
     ws4.column_dimensions["G"].width = 28
     ws4.column_dimensions["H"].width = 40
     ws4.column_dimensions["I"].width = 18
+
+    # ---------------- ABAS DE PLANO DE CONTAS ----------------
+    # Entram no MESMO arquivo quando a pessoa escolhe planos além das linhas
+    # da DRE -- são recortes complementares do mesmo relatório, não dois
+    # relatórios diferentes.
+    if planos_contas_extra and df_diario is not None and not df_diario.empty:
+        _criar_abas_planos_contas(
+            wb, nomes_abas_usados, df_diario, planos_contas_extra, mapa_meses, gerado_em,
+            mapa_loja_centro_custo,
+        )
 
     # ---------------- ABA "MKT - 1% x OUTRAS DESPESAS" (só no modelo de MKT) ----------------
     # Layout fixo, independente das linhas/lojas selecionadas: sempre a linha
@@ -10186,45 +10248,60 @@ with tab5:
 
     linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
 
-    # ---- Período do relatório ----
-    # Independente do filtro de período da barra lateral: o relatório costuma
-    # ser emitido para um recorte próprio (um trimestre, um mês fechado) sem
-    # que a pessoa queira mudar a tela inteira para isso. Começa com tudo
-    # selecionado, então quem não mexer aqui recebe o mesmo de antes.
-    meses_relatorio = list(m_map.keys())
-    if not meses_relatorio:
-        st.warning("Nenhum mês com dados disponível para montar o relatório.")
+    # ---- Período do relatório: ano + intervalo de meses ----
+    # Os anos saem das próprias colunas da planilha (formato MM/AAAA), não de
+    # uma lista fixa: quando 2027 entrar na base, ele aparece aqui sozinho.
+    # O período é independente do filtro da barra lateral, porque o relatório
+    # costuma ser emitido para um recorte próprio sem mudar a tela inteira.
+    colunas_periodo_rel = [
+        str(c).strip() for c in df_ref.columns
+        if re.fullmatch(r"\d{2}/\d{4}", str(c).strip())
+    ]
+    anos_disponiveis_rel = sorted({c.split("/")[1] for c in colunas_periodo_rel})
+    if not colunas_periodo_rel:
+        st.warning("Nenhuma coluna de mês (MM/AAAA) encontrada na planilha para montar o relatório.")
         st.stop()
 
-    col_per_ini, col_per_fim = st.columns(2)
+    col_per_ano, col_per_ini, col_per_fim = st.columns([1, 1.5, 1.5])
+    with col_per_ano:
+        ano_rel = st.selectbox(
+            "📅 Ano:", anos_disponiveis_rel,
+            index=len(anos_disponiveis_rel) - 1, key="rel_periodo_ano",
+        )
+
+    meses_do_ano_rel = [c for c in colunas_periodo_rel if c.endswith(f"/{ano_rel}")]
+    meses_do_ano_rel.sort(key=lambda c: int(c.split("/")[0]))
+    nomes_do_ano_rel = [nomes_meses[int(c.split("/")[0]) - 1] for c in meses_do_ano_rel]
+    mapa_ano_rel = dict(zip(nomes_do_ano_rel, meses_do_ano_rel))
+
     with col_per_ini:
         mes_ini_rel = st.selectbox(
-            "📅 Do mês:", meses_relatorio, index=0, key="rel_periodo_ini",
+            "Do mês:", nomes_do_ano_rel, index=0, key=f"rel_periodo_ini__{ano_rel}",
         )
     with col_per_fim:
         mes_fim_rel = st.selectbox(
-            "📅 Até o mês:", meses_relatorio, index=len(meses_relatorio) - 1,
-            key="rel_periodo_fim",
+            "Até o mês:", nomes_do_ano_rel, index=len(nomes_do_ano_rel) - 1,
+            key=f"rel_periodo_fim__{ano_rel}",
         )
 
-    idx_ini_rel = meses_relatorio.index(mes_ini_rel)
-    idx_fim_rel = meses_relatorio.index(mes_fim_rel)
+    idx_ini_rel = nomes_do_ano_rel.index(mes_ini_rel)
+    idx_fim_rel = nomes_do_ano_rel.index(mes_fim_rel)
     periodo_invertido = idx_ini_rel > idx_fim_rel
     if periodo_invertido:
         idx_ini_rel, idx_fim_rel = idx_fim_rel, idx_ini_rel
 
-    m_map_rel = {n: m_map[n] for n in meses_relatorio[idx_ini_rel:idx_fim_rel + 1]}
+    m_map_rel = {n: mapa_ano_rel[n] for n in nomes_do_ano_rel[idx_ini_rel:idx_fim_rel + 1]}
     colunas_rel = list(m_map_rel.values())
 
-    _mes_atual_nome = MESES_PT_FIN[datetime.now(FUSO_BR).month - 1].upper() \
-        if "MESES_PT_FIN" in globals() else ""
+    _hoje_rel = datetime.now(FUSO_BR)
+    _mes_atual_col = f"{_hoje_rel.month:02d}/{_hoje_rel.year}"
     _aviso_periodo = (
-        f"Período do relatório: **{mes_ini_rel.capitalize()} a {mes_fim_rel.capitalize()}** "
-        f"({len(m_map_rel)} mês(es))."
+        f"Período do relatório: **{mes_ini_rel.capitalize()} a {mes_fim_rel.capitalize()} "
+        f"de {ano_rel}** ({len(m_map_rel)} mês(es))."
     )
     if periodo_invertido:
         _aviso_periodo += " Os meses estavam invertidos — considerei do menor para o maior."
-    if _mes_atual_nome and _mes_atual_nome in m_map_rel:
+    if _mes_atual_col in colunas_rel:
         _aviso_periodo += (
             " O mês corrente entra parcial, com o que já foi lançado até agora na planilha."
         )
@@ -10265,194 +10342,194 @@ with tab5:
                 + ". Adicione-as manualmente no campo abaixo, se existirem."
             )
 
-    # ---- Como o relatório é montado: por linha da DRE ou por plano de contas ----
-    # O caminho por PLANO DE CONTAS nasce da aba DIÁRIO: em vez de partir da
-    # linha da DRE e abrir a composição dela, parte direto do plano. Serve para
-    # quem quer olhar uma conta específica (energia, frete, comissão) sem o
-    # resto da linha em volta.
-    base_relatorio = st.radio(
-        "Montar o relatório a partir de:",
-        ["Linhas da DRE", "Planos de contas"],
-        horizontal=True, key=f"base_relatorio__{modelo_sel}",
+    # ---- O que entra no relatório: linhas da DRE, planos de contas ou os dois ----
+    # Antes era uma escolha entre um e outro, e trocar de modelo derrubava a
+    # seleção. Agora os dois campos ficam sempre disponíveis: dá para pedir só
+    # as linhas, só os planos, ou os dois no mesmo arquivo.
+    contas_relatorio = st.multiselect(
+        "🔍 Linhas da DRE incluídas no relatório:",
+        options=linhas_relatorio,
+        default=default_contas,
+        key=f"contas_relatorio__{modelo_sel}",
+        help="Deixe vazio se quiser um relatório apenas de planos de contas.",
+    )
+
+    # Os planos oferecidos saem da aba DIÁRIO e seguem as linhas da DRE
+    # escolhidas acima -- é isso que faz cada modelo de departamento enxergar
+    # apenas os planos que pertencem a ele de fato.
+    with st.spinner("Lendo os planos de contas da aba DIÁRIO..."):
+        df_diario_planos = carregar_diario(path_real)
+
+    planos_disponiveis, planos_do_modelo, planos_modelo_faltando = [], [], []
+    if df_diario_planos is not None and not df_diario_planos.empty:
+        planos_das_linhas = planos_do_diario(df_diario_planos, contas_relatorio or None)
+        # Planos que o modelo exige POR NOME, sem depender de linha da DRE
+        # (ex.: "Mercadorias" em Compras, as benfeitorias em Suprimentos).
+        # Sem isto eles não apareceriam na lista, porque nenhuma linha da DRE
+        # selecionada aponta para eles.
+        planos_do_modelo, planos_modelo_faltando = resolver_planos_forcados(
+            df_diario_planos,
+            MODELOS_RELATORIO.get(modelo_sel, {}).get("forcar_planos_contas", []),
+        )
+        planos_disponiveis = list(dict.fromkeys(planos_do_modelo + planos_das_linhas))
+
+    if df_diario_planos is None or df_diario_planos.empty:
+        st.caption(
+            "Aba DIÁRIO não encontrada na planilha Realizado — o relatório por plano de contas "
+            "fica indisponível até ela existir."
+        )
+        planos_relatorio = []
+    else:
+        planos_relatorio = st.multiselect(
+            "🧾 Planos de contas incluídos no relatório:",
+            options=planos_disponiveis,
+            # Os planos próprios do modelo já vêm marcados: o modelo diz que
+            # eles fazem parte do relatório, então o padrão é incluí-los.
+            default=planos_do_modelo,
+            key=f"planos_relatorio__{modelo_sel}",
+            help=(
+                "A lista segue as linhas da DRE selecionadas acima, mais os planos que o "
+                "modelo exige por nome. Sem nenhuma linha selecionada, aparecem todos os "
+                "planos da DIÁRIO."
+            ),
+        )
+        _partes_caption = []
+        if contas_relatorio:
+            _partes_caption.append(
+                f"{len(planos_disponiveis)} plano(s) disponíveis a partir das "
+                f"{len(contas_relatorio)} linha(s) da DRE selecionadas"
+            )
+        if planos_do_modelo:
+            _partes_caption.append(
+                f"{len(planos_do_modelo)} plano(s) próprios do modelo já marcados "
+                "(entram no relatório mesmo sem linha da DRE correspondente)"
+            )
+        if _partes_caption:
+            st.caption(" · ".join(_partes_caption) + ".")
+        if planos_modelo_faltando:
+            st.warning(
+                "Não encontrei na aba DIÁRIO estes planos que o modelo pede: "
+                + "; ".join(planos_modelo_faltando)
+                + ". Verifique se o nome mudou na planilha."
+            )
+
+    opcoes_lojas_relatorio = list(abas_disponiveis)
+    lojas_relatorio_sel = st.multiselect(
+        "🏬 Lojas / Visões incluídas no relatório:",
+        options=opcoes_lojas_relatorio,
+        default=opcoes_lojas_relatorio,
         help=(
-            "Linhas da DRE: o relatório completo, com Resumo, Detalhe Mensal, composição por "
-            "plano e lançamentos. Planos de contas: um relatório enxuto, focado apenas nos "
-            "planos escolhidos, montado a partir da aba DIÁRIO."
+            "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
+            "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
+            "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
+            "seleção aqui se quiser um arquivo menor desde já."
         ),
     )
 
-    if base_relatorio == "Linhas da DRE":
-        contas_relatorio = st.multiselect(
-            "🔍 Linhas da DRE incluídas no relatório:",
-            options=linhas_relatorio,
-            default=default_contas,
-            key=f"contas_relatorio__{modelo_sel}",
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        gerar_clicado = st.button(
+            "📊 Gerar Relatório Excel",
+            use_container_width=True,
+            disabled=(not contas_relatorio and not planos_relatorio) or not lojas_relatorio_sel,
         )
 
-        opcoes_lojas_relatorio = list(abas_disponiveis)
+    if gerar_clicado and contas_relatorio:
+        with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
+            # Carrega só as lojas/visões escolhidas no filtro acima -- evita
+            # gerar um arquivo gigante com todas as 26 abas de uma vez.
+            dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
+            df_tabela_contas = carregar_tabela_contas(path_real)
+            mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
+            df_diario_rel = carregar_diario(path_real)
+            df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
+            mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
 
-        lojas_relatorio_sel = st.multiselect(
-            "🏬 Lojas / Visões incluídas no relatório:",
-            options=opcoes_lojas_relatorio,
-            default=opcoes_lojas_relatorio,
-            help=(
-                "Por padrão, todas as lojas e visões consolidadas entram no relatório -- dentro do Excel "
-                "gerado, use o filtro (▾) na coluna \"Loja\" das abas \"Detalhe Mensal\" e \"Plano de "
-                "Contas\" para escolher qual visão ver, sem precisar gerar o arquivo de novo. Só reduza a "
-                "seleção aqui se quiser um arquivo menor desde já."
-            ),
-        )
+        info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
+        incluir_aba_mkt = bool(info_modelo_sel.get("aba_mkt_1pct", False))
 
-        col_btn, col_info = st.columns([1, 2])
-        with col_btn:
-            gerar_clicado = st.button(
-                "📊 Gerar Relatório Excel",
-                use_container_width=True,
-                disabled=not contas_relatorio or not lojas_relatorio_sel,
+        # A aba de MKT tem layout fixo e SEMPRE lê as quatro visões
+        # consolidadas (LJ, VD, ABPR e DRE) -- mesmo que o filtro de lojas
+        # acima tenha sido reduzido, senão ela sairia zerada. Reaproveita o
+        # que já foi carregado e só busca as abas que faltarem.
+        dados_visoes_mkt_rel = None
+        if incluir_aba_mkt:
+            visoes_mkt_reais = []
+            for alvo in VISOES_ABA_MKT_1PCT:
+                achou = next(
+                    (a for a in abas_disponiveis if _normalizar_nome_aba(a) == _normalizar_nome_aba(alvo)),
+                    None,
+                )
+                if achou:
+                    visoes_mkt_reais.append(achou)
+            dados_visoes_mkt_rel = dict(dados_por_loja_rel)
+            faltando_mkt = [v for v in visoes_mkt_reais if v not in dados_visoes_mkt_rel]
+            if faltando_mkt:
+                with st.spinner("Carregando as visões consolidadas da aba de MKT..."):
+                    dados_visoes_mkt_rel.update(carregar_dados_por_loja(path_orc, path_real, faltando_mkt))
+
+        with st.spinner("Montando o relatório em Excel..."):
+            excel_bytes = montar_relatorio_excel(
+                contas_relatorio, list_df_real, list_df_orc, m_map_rel, colunas_rel, label_visao,
+                dados_por_loja=dados_por_loja_rel,
+                mapa_planos_dre=mapa_planos_dre_rel,
+                df_diario=df_diario_rel,
+                forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
+                permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
+                mapa_loja_centro_custo=mapa_loja_cc_rel,
+                dados_visoes_mkt=dados_visoes_mkt_rel,
+                incluir_aba_mkt_1pct=incluir_aba_mkt,
+                planos_contas_extra=planos_relatorio or None,
+            )
+        st.session_state["relatorio_excel_bytes"] = excel_bytes
+
+        def _nome_arquivo_modelo(nome_modelo):
+            """Usa o nome completo do modelo (igual aparece no seletor, só
+            sem o emoji na frente) como base do nome do arquivo -- ex.:
+            "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
+            Compras". Só remove caracteres inválidos em nome de arquivo."""
+            texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
+            texto = re.sub(r'[\\/*?:"<>|]', "", texto)
+            return texto or "Relatório"
+
+        st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
+        _resumo_selecao = f"{len(contas_relatorio)} linha(s) da DRE"
+        if planos_relatorio:
+            _resumo_selecao += f" e {len(planos_relatorio)} plano(s) de contas"
+        st.success(f"Relatório gerado com {_resumo_selecao}, pronto para download.")
+        if incluir_aba_mkt:
+            st.caption(
+                "📣 Incluída a aba **MKT - 1% x Outras Despesas** (LOJA-1%, VD, ABPR e CONSOLIDADO, "
+                "com os quadros de Outras Despesas de MKT do canal Loja na lateral)."
             )
 
-        if gerar_clicado and contas_relatorio:
-            with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
-                # Carrega só as lojas/visões escolhidas no filtro acima -- evita
-                # gerar um arquivo gigante com todas as 26 abas de uma vez.
-                dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
-                df_tabela_contas = carregar_tabela_contas(path_real)
-                mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
-                df_diario_rel = carregar_diario(path_real)
-                df_tabela_lojas_rel = carregar_tabela_lojas(path_real)
-                mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
-
-            info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
-            incluir_aba_mkt = bool(info_modelo_sel.get("aba_mkt_1pct", False))
-
-            # A aba de MKT tem layout fixo e SEMPRE lê as quatro visões
-            # consolidadas (LJ, VD, ABPR e DRE) -- mesmo que o filtro de lojas
-            # acima tenha sido reduzido, senão ela sairia zerada. Reaproveita o
-            # que já foi carregado e só busca as abas que faltarem.
-            dados_visoes_mkt_rel = None
-            if incluir_aba_mkt:
-                visoes_mkt_reais = []
-                for alvo in VISOES_ABA_MKT_1PCT:
-                    achou = next(
-                        (a for a in abas_disponiveis if _normalizar_nome_aba(a) == _normalizar_nome_aba(alvo)),
-                        None,
-                    )
-                    if achou:
-                        visoes_mkt_reais.append(achou)
-                dados_visoes_mkt_rel = dict(dados_por_loja_rel)
-                faltando_mkt = [v for v in visoes_mkt_reais if v not in dados_visoes_mkt_rel]
-                if faltando_mkt:
-                    with st.spinner("Carregando as visões consolidadas da aba de MKT..."):
-                        dados_visoes_mkt_rel.update(carregar_dados_por_loja(path_orc, path_real, faltando_mkt))
-
-            with st.spinner("Montando o relatório em Excel..."):
-                excel_bytes = montar_relatorio_excel(
-                    contas_relatorio, list_df_real, list_df_orc, m_map_rel, colunas_rel, label_visao,
-                    dados_por_loja=dados_por_loja_rel,
-                    mapa_planos_dre=mapa_planos_dre_rel,
-                    df_diario=df_diario_rel,
-                    forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
-                    permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
-                    mapa_loja_centro_custo=mapa_loja_cc_rel,
-                    dados_visoes_mkt=dados_visoes_mkt_rel,
-                    incluir_aba_mkt_1pct=incluir_aba_mkt,
-                )
-            st.session_state["relatorio_excel_bytes"] = excel_bytes
-
-            def _nome_arquivo_modelo(nome_modelo):
-                """Usa o nome completo do modelo (igual aparece no seletor, só
-                sem o emoji na frente) como base do nome do arquivo -- ex.:
-                "🛒 Relatório de Custos - Compras" vira "Relatório de Custos -
-                Compras". Só remove caracteres inválidos em nome de arquivo."""
-                texto = re.sub(r"^[^\w]+", "", nome_modelo, flags=re.UNICODE).strip()
-                texto = re.sub(r'[\\/*?:"<>|]', "", texto)
-                return texto or "Relatório"
-
-            st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
-            st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
-            if incluir_aba_mkt:
-                st.caption(
-                    "📣 Incluída a aba **MKT - 1% x Outras Despesas** (LOJA-1%, VD, ABPR e CONSOLIDADO, "
-                    "com os quadros de Outras Despesas de MKT do canal Loja na lateral)."
-                )
-
-            if df_diario_rel is None or df_diario_rel.empty:
-                st.warning(
-                    "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
-                    "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
-                )
-            else:
-                st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
-
-        if not contas_relatorio:
-            st.info("Selecione um modelo padrão acima, ou escolha manualmente ao menos uma linha da DRE.")
-
-    else:
-        # ---- Relatório por PLANO DE CONTAS ----
-        with st.spinner("Lendo os planos de contas da aba DIÁRIO..."):
-            df_diario_planos = carregar_diario(path_real)
-
-        if df_diario_planos is None or df_diario_planos.empty:
+        if df_diario_rel is None or df_diario_rel.empty:
             st.warning(
-                "Não encontrei a aba DIÁRIO (ou ela veio vazia) na planilha Realizado — "
-                "sem ela não há como montar o relatório por plano de contas."
+                "Aba 'DIÁRIO' não encontrada (ou vazia/sem as colunas esperadas) no arquivo Realizado — "
+                "a aba 'Plano de Contas' do relatório usou o método antigo (Tabela_Contas) como alternativa."
             )
         else:
-            # No modelo de um departamento, a lista só traz os planos que
-            # realmente aparecem nas linhas daquele modelo: oferecer a lista
-            # inteira da empresa seria dar acesso a conta de outra área.
-            linhas_filtro_planos = default_contas if modelo_sel != "Seleção manual" else None
-            planos_disponiveis = planos_do_diario(df_diario_planos, linhas_filtro_planos)
+            st.caption(f"📄 DIÁRIO conectado: {len(df_diario_rel)} lançamento(s) encontrados na aba do Realizado.")
+    elif gerar_clicado and planos_relatorio:
+        # Só planos: não há linha da DRE para montar as abas tradicionais,
+        # então o arquivo sai apenas com as planilhas de plano de contas.
+        with st.spinner("Montando o relatório em Excel..."):
+            mapa_loja_cc_planos = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
+            excel_bytes = montar_relatorio_planos_excel(
+                df_diario_planos, planos_relatorio, m_map_rel, label_visao,
+                mapa_loja_centro_custo=mapa_loja_cc_planos,
+            )
+        st.session_state["relatorio_excel_bytes"] = excel_bytes
+        st.session_state["relatorio_excel_nome"] = "Relatorio_Plano_de_Contas.xlsx"
+        st.success(
+            f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, pronto para download."
+        )
 
-            if not planos_disponiveis:
-                st.warning(
-                    "Nenhum plano de contas encontrado para este modelo na aba DIÁRIO. "
-                    "Verifique se as linhas da DRE do modelo aparecem lá."
-                )
-            else:
-                if linhas_filtro_planos:
-                    st.caption(
-                        f"{len(planos_disponiveis)} plano(s) de contas disponíveis para o modelo "
-                        f"**{_nome_departamento_curto(modelo_sel)}** — a lista já vem restrita às "
-                        "linhas da DRE desse modelo."
-                    )
-                else:
-                    st.caption(
-                        f"{len(planos_disponiveis)} plano(s) de contas encontrados na aba DIÁRIO."
-                    )
-
-                planos_relatorio = st.multiselect(
-                    "🧾 Planos de contas incluídos no relatório:",
-                    options=planos_disponiveis,
-                    default=[],
-                    key=f"planos_relatorio__{modelo_sel}",
-                )
-
-                gerar_planos = st.button(
-                    "📊 Gerar Relatório por Plano de Contas",
-                    use_container_width=True,
-                    disabled=not planos_relatorio,
-                    key="btn_gerar_relatorio_planos",
-                )
-
-                if gerar_planos and planos_relatorio:
-                    with st.spinner("Montando o relatório em Excel..."):
-                        mapa_loja_cc_planos = montar_mapa_loja_centro_custo(
-                            carregar_tabela_lojas(path_real)
-                        )
-                        excel_planos = montar_relatorio_planos_excel(
-                            df_diario_planos, planos_relatorio, m_map_rel, label_visao,
-                            mapa_loja_centro_custo=mapa_loja_cc_planos,
-                        )
-                    st.session_state["relatorio_excel_bytes"] = excel_planos
-                    st.session_state["relatorio_excel_nome"] = "Relatorio_Plano_de_Contas.xlsx"
-                    st.success(
-                        f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, "
-                        "pronto para download."
-                    )
-
-                if not planos_relatorio:
-                    st.info("Escolha ao menos um plano de contas acima.")
+    if not contas_relatorio and not planos_relatorio:
+        st.info(
+            "Selecione ao menos uma linha da DRE ou um plano de contas — ou os dois, "
+            "se quiser tudo no mesmo arquivo."
+        )
 
     if st.session_state.get("relatorio_excel_bytes"):
         st.download_button(
