@@ -3717,12 +3717,11 @@ def preparar_fluxo_caixa(base_data):
 
 
 if st.session_state["painel_escolhido"] == "financeiro":
-    # Só o cabeçalho nativo do Streamlit fica escondido. A barra lateral
-    # volta a aparecer: é lá que ficam os controles, como na Controladoria.
-    st.markdown(
-        """<style>header[data-testid="stHeader"] { display: none !important; }</style>""",
-        unsafe_allow_html=True,
-    )
+    # Nada é escondido aqui: a barra lateral e o cabeçalho nativo do
+    # Streamlit ficam como na Controladoria. É no cabeçalho nativo que mora
+    # a setinha de reabrir a barra lateral -- escondendo-o, quem fechasse a
+    # barra não tinha como trazer de volta. O CSS global já deixa esse
+    # cabeçalho transparente, então ele não ocupa espaço visual.
 
     email_atual_financeiro = str(usuario_atual.get("email", "")).strip().lower()
     if email_atual_financeiro not in EMAILS_FINANCEIRO_PERMITIDOS:
