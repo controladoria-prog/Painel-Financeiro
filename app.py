@@ -1136,21 +1136,28 @@ def _injetar_css_login():
            além do necessário. O degradê escuro que cobria a imagem toda
            virou uma faixa só na parte de baixo, onde fica o texto: o resto
            da foto passa a ser exibido com o brilho real. */
+        /* O quadro tem a MESMA proporção da foto (804x1006). Com a altura
+           definida e a proporção travada, a largura sai por consequência --
+           a imagem preenche tudo e não sobra faixa dos lados. Antes o quadro
+           ocupava a largura inteira da coluna e a foto, sendo vertical,
+           deixava duas barras do fundo do cartão aparecendo. O `margin:auto`
+           centraliza o quadro na coluna. */
         .login-visual-panel {{
             position: relative;
-            height: 82vh;
-            min-height: 520px;
+            height: 78vh;
+            min-height: 480px;
+            aspect-ratio: 804 / 1006;
+            width: auto;
+            max-width: 100%;
+            margin: 1.5vh auto 0;
             border-radius: 20px;
             overflow: hidden;
-            margin: 1.5vh 4% 0 0;
-            background-color: {COLORS["surface"]};
             background-image:
                 linear-gradient(180deg, rgba(0,0,0,0) 68%, rgba(0,0,0,0.55) 100%),
                 url(data:image/jpeg;base64,{LOGIN_BG_B64});
-            background-size: contain;
+            background-size: cover;
             background-repeat: no-repeat;
-            background-position: center top;
-            border: 1px solid {COLORS["border"]};
+            background-position: center;
             box-shadow: none;
         }}
         .login-visual-panel .panel-footer {{
@@ -2302,11 +2309,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 padding: 0.5rem 1.8rem 0.4rem 1.8rem !important; max-width: 100% !important;
             }}
             div[data-testid="stVerticalBlock"] {{ gap: 0.5rem !important; }}
+            /* O fundo do Painel de TV era duas cores fixas, quase pretas
+               (#0A0D16 -> #05070c), sobra da paleta antiga: ele não
+               acompanhava as mudanças de cor do resto e destoava. Agora usa
+               o mesmo fundo chapado do painel. */
             .stApp {{
-                background:
-                    radial-gradient(circle at 15% 0%, rgba(107, 158, 230, 0.09) 0%, transparent 42%),
-                    radial-gradient(circle at 90% 100%, rgba(87, 190, 146, 0.06) 0%, transparent 45%),
-                    linear-gradient(180deg, #0A0D16 0%, #05070c 100%) !important;
+                background: {COLORS["bg"]} !important;
             }}
             @keyframes tv-pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
             @keyframes tv-marquee {{ 0% {{ transform: translateX(100%); }} 100% {{ transform: translateX(-100%); }} }}
