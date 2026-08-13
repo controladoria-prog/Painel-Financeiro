@@ -2941,24 +2941,24 @@ if st.session_state["painel_escolhido"] is None:
                só um deles a regra não pegava, e numa tela grande os cartões
                esticavam de ponta a ponta, colados no topo. Este CSS só existe
                nesta tela, então o seletor genérico não afeta o resto do painel. */
+            /* Largura e espaçamento do bloco. A centralização vertical NÃO é
+               feita aqui: o bloco interno do Streamlit cresce e ocupa toda a
+               altura, então não sobra folga para o justify-content distribuir
+               -- foi por isso que a tela continuou colada no topo nas duas
+               tentativas anteriores. Quem centraliza é o espaçador .hub-espaco
+               logo abaixo, que não depende da estrutura interna do Streamlit. */
             [data-testid="stMainBlockContainer"],
             section[data-testid="stMain"] .block-container,
             div[data-testid="stAppViewContainer"] .block-container,
             .block-container {{
-                display: flex !important;
-                flex-direction: column;
-                justify-content: center;
-                /* A altura precisa ser a da janela inteira e o padding tem de
-                   ir a zero nos dois lados. Antes só o de cima estava zerado, e
-                   o padding de baixo que o Streamlit aplica (bem alto) empurrava
-                   o conteúdo para cima -- a centralização acontecia, só que
-                   dentro de uma caixa deslocada. */
-                min-height: 96vh;
                 max-width: 960px !important;
                 padding-top: 0 !important;
-                padding-bottom: 0 !important;
+                padding-bottom: 2rem !important;
                 margin: 0 auto !important;
             }}
+            /* Metade da janela menos metade da altura do conteúdo (~520px).
+               Em tela baixa o max() garante que nada seja empurrado para fora. */
+            .hub-espaco {{ height: max(10px, calc(50vh - 260px)); }}
             .hub-topo {{ text-align: center; margin-bottom: 30px; }}
             .hub-topo img {{
                 width: 42px; height: 42px; border-radius: 50%; background: #FFFFFF;
@@ -3061,6 +3061,7 @@ if st.session_state["painel_escolhido"] is None:
                 color: {COLORS['text']} !important;
             }}
         </style>
+        <div class="hub-espaco"></div>
         <div class="hub-topo">
             <img src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
             <div class="hub-eyebrow">Controladoria B&amp;A</div>
