@@ -1,0 +1,39 @@
+# ============================================================================
+# TEMA DO STREAMLIT — Painel Controladoria B&A
+# ============================================================================
+# Este arquivo vai em .streamlit/config.toml, na raiz do repositório.
+#
+# Por que ele existe: as tabelas (st.dataframe) NÃO são desenhadas em HTML —
+# o Streamlit as desenha num canvas, com o tema dele. Por isso o CSS do
+# painel nunca chegou nelas, e elas continuaram com as cores padrão enquanto
+# o resto da tela clareava. As cores abaixo são as mesmas da paleta do
+# app.py, para tabelas, menus e caixas de seleção ficarem no mesmo tom.
+#
+# Se mudar a paleta no app.py, mude aqui também.
+# ============================================================================
+
+[theme]
+base = "dark"
+
+primaryColor = "#6B9EE6"              # azul de destaque (mesmo do painel)
+backgroundColor = "#1B2230"           # fundo da página
+secondaryBackgroundColor = "#242C3C"  # cartões, barra lateral, células
+textColor = "#E7EDF5"                 # texto principal
+
+# --------------------------------------------------------------------------
+# A partir daqui são opções de versões mais novas do Streamlit. Se o log da
+# publicação reclamar de opção desconhecida, é só apagar este bloco: as
+# quatro de cima já resolvem a maior parte.
+# --------------------------------------------------------------------------
+borderColor = "#364054"                       # bordas em geral
+dataframeBorderColor = "#364054"              # grade das tabelas
+dataframeHeaderBackgroundColor = "#2C3547"    # cabeçalho das tabelas
+baseRadius = "8px"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#161C28"
+secondaryBackgroundColor = "#242C3C"
+textColor = "#E7EDF5"
+borderColor = "#364054"
+tema do painel
