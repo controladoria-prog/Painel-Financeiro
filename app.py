@@ -2654,6 +2654,11 @@ def _parse_datas_fin(serie):
 
     Trata ainda: marcadores de vazio ("-", "0", "00/00/0000"), sobra de hora
     no texto e data em número de série do Excel (ex.: 45789)."""
+    # Vindo do Excel, a coluna já costuma chegar como data de verdade --
+    # nesse caso não há texto para interpretar.
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return serie
+
     texto = serie.astype(str).fillna("").str.strip()
     texto = texto.mask(texto.str.lower().isin(MARCADORES_VAZIOS_FIN))
 
@@ -2682,6 +2687,133 @@ def _parse_datas_fin(serie):
             datas.loc[seriais.index] = pd.to_datetime(seriais, unit="D", origin="1899-12-30")
 
     return datas
+
+
+# _normalizar_texto deixa o texto em MAIÚSCULAS e mantém acento -- serve para
+# comparar nomes de conta, mas não para procurar pedaço de nome de coluna
+# ("liquida" nunca casaria com "DATA LIQUIDAÇÃO"). Aqui a comparação é sempre
+# em minúsculas e sem acento.
+_ACENTOS_FIN = str.maketrans(
+    "ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑáàâãäéèêëíìîïóòôõöúùûüçñ",
+    "AAAAAEEEEIIIIOOOOOUUUUCNaaaaaeeeeiiiiooooouuuucn",
+)
+
+
+def _normalizar_coluna_fin(nome):
+    """Nome de coluna em minúsculas, sem acento e sem espaço sobrando --
+    usado para achar colunas pelo pedaço do nome."""
+    return re.sub(r"\s+", " ", str(nome or "").strip().translate(_ACENTOS_FIN).lower())
+
+
+def _chave_numero_fin(serie):
+    """Normaliza o Número do documento para servir de chave entre o CSV do
+    Fluxo de Caixa e a aba DIÁRIO: tira espaços, deixa maiúsculo e remove o
+    ".0" que o Excel gruda quando o número é lido como decimal."""
+    texto = serie.astype(str).fillna("").str.strip().str.upper()
+    texto = texto.str.replace(r"\.0+$", "", regex=True)
+    texto = texto.str.replace(r"\s+", "", regex=True)
+    return texto.mask(texto.isin(["", "NAN", "NAT", "NONE", "NULL", "0", "-"]))
+
+
+# Nomes possíveis da coluna de data de pagamento na aba DIÁRIO, em ordem de
+# preferência -- a planilha pode chamar de "Data Liquidação", "Data de
+# Pagamento", "Baixa" etc., então procuramos por pedaço do nome.
+TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
+
+
+@st.cache_resource(show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
+def carregar_liquidacoes_diario(path_r):
+    """Lê a aba DIÁRIO da planilha Realizado 2026 e devolve as datas de
+    pagamento por documento, prontas para cruzar com o CSV do Fluxo de Caixa.
+
+    Motivo: no CSV publicado, "4 - Contas a Pagar" vem SEM data de liquidação
+    (conferido na planilha). Os mesmos lançamentos aparecem na DIÁRIO, e lá a
+    baixa existe -- é de lá que sai a data de pagamento usada no painel.
+
+    Devolve (tabelas, diagnóstico). `tabelas` traz duas chaves de cruzamento:
+    "por_num_valor" (Número + valor, mais específica) e "por_num" (só o
+    Número, usada para o que não casou na primeira). Em ambas, quando o mesmo
+    documento tem mais de uma baixa, fica a data MAIS ANTIGA."""
+    diag = {}
+    df = None
+    for nome_aba in ("DIÁRIO", "DIARIO", "Diário", "Diario"):
+        try:
+            df = pd.read_excel(path_r, sheet_name=nome_aba)
+            break
+        except Exception:
+            continue
+    if df is None or df.empty:
+        diag["erro"] = "Não encontrei a aba DIÁRIO na planilha Realizado (ou ela está vazia)."
+        return None, diag
+
+    df.columns = [str(c).strip() for c in df.columns]
+    diag["colunas_diario"] = list(df.columns)
+    diag["linhas_diario"] = len(df)
+
+    def _achar_coluna(termos):
+        # Primeiro procura o nome exato, depois aceita nome que contenha o
+        # termo -- assim "Número" ganha de "Número do Lote", por exemplo.
+        nomes = {coluna: _normalizar_coluna_fin(coluna) for coluna in df.columns}
+        for termo in termos:
+            for coluna, nome in nomes.items():
+                if nome == termo:
+                    return coluna
+        for termo in termos:
+            for coluna, nome in nomes.items():
+                if termo in nome:
+                    return coluna
+        return None
+
+    col_num = _achar_coluna(["numero", "n documento", "documento", "docum", "nro", "nf"])
+    col_valor = _achar_coluna(["valor bruto", "valor"])
+
+    # A coluna de data é escolhida pelo nome, mas só vale se realmente tiver
+    # data dentro -- senão seguimos procurando na próxima candidata.
+    col_liq, serie_liq = None, None
+    for termo in TERMOS_COL_LIQUIDACAO_DIARIO:
+        for coluna in df.columns:
+            if termo not in _normalizar_coluna_fin(coluna):
+                continue
+            datas = _parse_datas_fin(df[coluna])
+            if datas.notna().any():
+                col_liq, serie_liq = coluna, datas
+                break
+        if col_liq:
+            break
+
+    diag["coluna_numero"] = col_num
+    diag["coluna_valor"] = col_valor
+    diag["coluna_liquidacao"] = col_liq
+
+    if col_liq is None:
+        diag["erro"] = (
+            "Não achei na DIÁRIO nenhuma coluna com data de pagamento "
+            "(procurei por: " + ", ".join(TERMOS_COL_LIQUIDACAO_DIARIO) + ")."
+        )
+        return None, diag
+    if col_num is None:
+        diag["erro"] = "Não achei na DIÁRIO a coluna de Número do documento, que é a chave do cruzamento."
+        return None, diag
+
+    base = pd.DataFrame({
+        "chave_num": _chave_numero_fin(df[col_num]),
+        "data_liq": serie_liq,
+    })
+    if col_valor is not None:
+        valores = pd.to_numeric(df[col_valor], errors="coerce").abs().round(2)
+        base["valor_abs"] = valores.map(lambda v: f"{v:.2f}" if pd.notna(v) else None)
+    else:
+        base["valor_abs"] = None
+
+    base = base[base["chave_num"].notna() & base["data_liq"].notna()]
+    diag["lancamentos_com_data"] = len(base)
+
+    por_num_valor = (
+        base.dropna(subset=["valor_abs"])
+        .groupby(["chave_num", "valor_abs"], as_index=False)["data_liq"].min()
+    )
+    por_num = base.groupby("chave_num", as_index=False)["data_liq"].min()
+    return {"por_num_valor": por_num_valor, "por_num": por_num}, diag
 
 
 @st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
@@ -2730,7 +2862,7 @@ def preparar_fluxo_caixa(base_data):
     # sem data -- nunca sobrescreve o que já veio preenchido.
     colunas_liq_extras = [
         coluna for coluna in df.columns
-        if coluna != COL_FIN_DATA_LIQUIDACAO and "liquida" in _normalizar_texto(str(coluna))
+        if coluna != COL_FIN_DATA_LIQUIDACAO and "liquida" in _normalizar_coluna_fin(coluna)
     ]
     for coluna_extra in colunas_liq_extras:
         faltando_liq = df[COL_FIN_DATA_LIQUIDACAO].isna()
@@ -2751,6 +2883,47 @@ def preparar_fluxo_caixa(base_data):
         "colunas_liq_extras": colunas_liq_extras,
         "colunas_csv": [str(c) for c in df_fluxo.columns],
     }
+
+    # ---- Data de pagamento das CONTAS A PAGAR: vem da aba DIÁRIO ----
+    # No CSV do Fluxo de Caixa a coluna de liquidação chega SEMPRE vazia para
+    # "4 - Contas a Pagar". Os mesmos lançamentos existem na aba DIÁRIO da
+    # planilha Realizado 2026, e lá a baixa está preenchida -- então cruzamos
+    # os dois pelo Número do documento (com o valor junto, quando bate) e
+    # completamos SÓ o que está vazio. Nada que já veio com data é tocado.
+    mask_pagar = df[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
+    faltando_pagar = mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    diagnostico["pagar_sem_liq_no_csv"] = int(faltando_pagar.sum())
+    diagnostico["liq_do_diario"] = 0
+    if faltando_pagar.any() and COL_FIN_NUMERO in df.columns:
+        tabelas_liq, diag_diario = carregar_liquidacoes_diario(path_real)
+        diagnostico["diario"] = diag_diario
+        if tabelas_liq is not None:
+            valores_pagar = df.loc[faltando_pagar, COL_FIN_VALOR].abs().round(2)
+            a_cruzar = pd.DataFrame({
+                "_idx": df.index[faltando_pagar],
+                "chave_num": _chave_numero_fin(df.loc[faltando_pagar, COL_FIN_NUMERO]).values,
+                "valor_abs": valores_pagar.map(lambda v: f"{v:.2f}").values,
+            })
+            # 1ª tentativa: Número + valor (mais específica).
+            achados = a_cruzar.merge(
+                tabelas_liq["por_num_valor"], on=["chave_num", "valor_abs"], how="left"
+            )
+            # 2ª tentativa, só para o que sobrou: Número sozinho. Cobre os
+            # casos em que o valor da parcela no fluxo não é idêntico ao do
+            # lançamento contábil (juros, desconto, arredondamento).
+            sobra = achados["data_liq"].isna()
+            if sobra.any():
+                complemento = achados.loc[sobra, ["chave_num"]].merge(
+                    tabelas_liq["por_num"], on="chave_num", how="left"
+                )
+                achados.loc[sobra, "data_liq"] = complemento["data_liq"].values
+            casados = achados.dropna(subset=["data_liq"])
+            if not casados.empty:
+                df.loc[casados["_idx"].values, COL_FIN_DATA_LIQUIDACAO] = casados["data_liq"].values
+            sem_par = achados[achados["data_liq"].isna()]
+            diagnostico["liq_do_diario"] = int(len(casados))
+            diagnostico["pagar_sem_match"] = int(len(sem_par))
+            diagnostico["amostras_sem_match"] = sem_par["chave_num"].dropna().unique()[:5].tolist()
 
     # Se NENHUMA conta a pagar tiver data de liquidação, o problema não é de
     # leitura: a data de pagamento está em outra coluna (ou não vem no
@@ -3058,6 +3231,31 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "Tem valor na coluna de liquidação que o painel não conseguiu ler como data. "
                     "Exemplos: " + ", ".join(str(v) for v in diag_fluxo.get("liq_amostras_nao_convertidas", []))
                 )
+            if diag_fluxo.get("pagar_sem_liq_no_csv"):
+                st.write(
+                    f"**Contas a pagar sem baixa no CSV:** {diag_fluxo['pagar_sem_liq_no_csv']} · "
+                    f"**Baixas trazidas da aba DIÁRIO:** {diag_fluxo.get('liq_do_diario', 0)} · "
+                    f"**Sem correspondência:** {diag_fluxo.get('pagar_sem_match', 0)}"
+                )
+                _diag_diario = diag_fluxo.get("diario", {})
+                if _diag_diario.get("erro"):
+                    st.warning(
+                        _diag_diario["erro"]
+                        + " Colunas encontradas na DIÁRIO: "
+                        + ", ".join(str(c) for c in _diag_diario.get("colunas_diario", []))
+                    )
+                elif _diag_diario:
+                    st.caption(
+                        f"DIÁRIO: {_diag_diario.get('linhas_diario', 0)} lançamentos · "
+                        f"coluna de baixa: **{_diag_diario.get('coluna_liquidacao')}** · "
+                        f"chave: **{_diag_diario.get('coluna_numero')}** + "
+                        f"**{_diag_diario.get('coluna_valor')}**"
+                    )
+                if diag_fluxo.get("amostras_sem_match"):
+                    st.caption(
+                        "Exemplos de documentos que não acharam par na DIÁRIO: "
+                        + ", ".join(str(v) for v in diag_fluxo["amostras_sem_match"])
+                    )
             if diag_fluxo.get("pagar_titulos") and not diag_fluxo.get("pagar_liquidados"):
                 st.error(
                     f"**Nenhuma das {diag_fluxo['pagar_titulos']} contas a pagar tem data de liquidação "
@@ -4406,6 +4604,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     f'(posição em {hoje_analise:%d/%m/%Y} · prazo interno de {PRAZO_INTERNO_DIAS} dias)</span></div>',
                     unsafe_allow_html=True,
                 )
+                if diag_fluxo.get("liq_do_diario"):
+                    st.caption(
+                        f"A baixa das contas a pagar não vem no CSV do Fluxo de Caixa — "
+                        f"{diag_fluxo['liq_do_diario']} títulos tiveram a data de pagamento "
+                        f"buscada na aba DIÁRIO da planilha Realizado 2026, pelo número do documento."
+                    )
                 st.markdown(
                     render_kpi_row([
                         dict(label="TOTAL A PAGAR NO RECORTE", value=formata_brl(total_pagar_a),
