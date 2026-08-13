@@ -3292,6 +3292,7 @@ HORIZONTE_ALERTA_SEMANAS = 13
 
 def _avaliar_alertas_fluxo(
     df, coluna_valor, meta_reserva_pct, limite_vencido_reais, limite_concentracao_pct,
+    horizonte_canal_dias=30,
 ):
     """Devolve a lista de alertas do fluxo de caixa, no mesmo formato do motor
     da Controladoria: nível ('critico' ou 'atencao'), título e detalhe."""
@@ -3425,6 +3426,74 @@ def _avaliar_alertas_fluxo(
                         "Concentração assim exige caixa parado esperando a data."
                     ),
                 })
+
+    # --- 6. Cada canal tem recurso para os próprios pagamentos, no dia? ---
+    # Olha canal a canal: parte do saldo daquele canal e caminha dia a dia,
+    # somando o que ele recebe e pagando o que ele deve. Se o saldo do canal
+    # fura, o alerta separa dois casos bem diferentes: se o caixa da empresa
+    # no mesmo dia também está negativo, é aperto de verdade (crítico); se o
+    # total está positivo, o canal só não se banca sozinho e depende do caixa
+    # dos outros (atenção). Canal sem posição de caixa própria não é avaliado:
+    # sem saldo de partida não dá para dizer se ele tem recurso ou não.
+    limite_canal = hoje + pd.Timedelta(days=horizonte_canal_dias)
+    janela = df[
+        (df["Data Efetiva"] >= hoje)
+        & (df["Data Efetiva"] <= limite_canal)
+        & (df["Tipo Movimento"].isin(["entrada", "saida"]))
+    ]
+    saldos_canal = df[df["Tipo Movimento"] == "saldo"]
+    if not janela.empty and not saldos_canal.empty and COL_FIN_CANAL in df.columns:
+        saldo_por_canal = {}
+        for canal, bloco_saldo in saldos_canal.groupby(COL_FIN_CANAL, observed=True):
+            ultima = bloco_saldo["Data Efetiva"].max()
+            saldo_por_canal[str(canal)] = float(
+                bloco_saldo.loc[bloco_saldo["Data Efetiva"] == ultima, coluna_valor].sum()
+            )
+
+        # Saldo da empresa toda, dia a dia, para classificar a gravidade.
+        total_por_dia = janela.groupby(janela["Data Efetiva"].dt.date)[coluna_valor].sum().sort_index()
+        saldo_total = saldo_atual
+        saldo_total_no_dia = {}
+        for dia, movimento in total_por_dia.items():
+            saldo_total += movimento
+            saldo_total_no_dia[dia] = saldo_total
+
+        for canal, bloco in janela.groupby(COL_FIN_CANAL, observed=True):
+            canal = str(canal)
+            if canal not in saldo_por_canal:
+                continue
+            valores_dia = bloco.groupby(bloco["Data Efetiva"].dt.date)[coluna_valor]
+            movimento_dia = valores_dia.sum().sort_index()
+            pagamentos_dia = valores_dia.apply(lambda s: abs(s[s < 0].sum()))
+            saldo_corrente = saldo_por_canal[canal]
+            for dia, movimento in movimento_dia.items():
+                saldo_antes = saldo_corrente
+                saldo_corrente += movimento
+                if saldo_corrente >= 0:
+                    continue
+                a_pagar_no_dia = float(pagamentos_dia.get(dia, 0.0))
+                if not a_pagar_no_dia:
+                    break
+                total_no_dia = saldo_total_no_dia.get(dia, 0.0)
+                critico = total_no_dia < 0
+                alertas.append({
+                    "nivel": "critico" if critico else "atencao",
+                    "titulo": (
+                        f"{canal} sem recurso próprio em {dia:%d/%m}"
+                        + (" — e o caixa total também não cobre" if critico else "")
+                    ),
+                    "detalhe": (
+                        f"{formata_brl(a_pagar_no_dia)} a pagar no dia e "
+                        f"{formata_brl(max(saldo_antes, 0))} disponíveis no canal "
+                        f"(faltam {formata_brl(abs(saldo_corrente))})."
+                        + (
+                            f" No mesmo dia o caixa da empresa fica em {formata_brl(total_no_dia)}."
+                            if critico else
+                            " O caixa da empresa cobre no dia, mas a conta sai do dinheiro dos outros canais."
+                        )
+                    ),
+                })
+                break  # um aviso por canal: o primeiro dia que fura
 
     return alertas
 
@@ -4024,6 +4093,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "Concentração do desembolso em 3 dias (%)", min_value=30, max_value=100,
             value=60, step=5, key="cfg_fin_concentracao",
         )
+        horizonte_canal_cfg = st.slider(
+            "Olhar a cobertura por canal nos próximos (dias)", min_value=7, max_value=90,
+            value=30, step=7, key="cfg_fin_horizonte_canal",
+            help=("Até onde o painel projeta o caixa de cada canal para ver se ele banca "
+                  "os próprios pagamentos."),
+        )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("**🔄 Dados**")
@@ -4259,6 +4334,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
     # logo abaixo do contexto e antes das abas.
     _alertas_fin = _avaliar_alertas_fluxo(
         df_fin, COL_FIN_VALOR, meta_reserva_cfg, limite_vencido_cfg, limite_concentracao_cfg,
+        horizonte_canal_dias=horizonte_canal_cfg,
     )
     _renderizar_painel_alertas(_alertas_fin, titulo="Alertas do Fluxo de Caixa")
 
