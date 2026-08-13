@@ -7759,6 +7759,393 @@ else:
 # ============================================================================
 # 8. ABAS
 # ============================================================================
+# ============================================================================
+# VISÕES PERSONALIZADAS POR DEPARTAMENTO
+# ============================================================================
+# As quatro visões de departamento eram a mesma tela: total, orçado, desvio,
+# peso na receita e um donut de composição -- mudavam só as linhas da DRE.
+# Isso responde "quanto gastei", mas não "como está a minha operação".
+#
+# Aqui cada departamento ganha um bloco próprio, com os números que aquele
+# gestor de fato acompanha. O bloco genérico continua logo abaixo, para quem
+# quiser o comparativo tradicional. Departamento sem personalização (e a
+# própria Controladoria) segue exatamente como antes.
+CODIGO_MKT_GESTAO_CP = "6.24.2"
+CODIGOS_MKT_FORA_1PCT = ["6.24.2.5", "6.24.2.6"]
+LINHA_RECEITA_LIQUIDA = "3 - Receita Operacional Liquida"
+CANAIS_MKT = [
+    ("Loja", "LJ CONSOLIDADO", True),
+    ("Venda Direta", "VD CONSOLIDADO", False),
+    ("ABPR", "ABPR CONSOLIDADO", False),
+]
+META_MKT_PCT_LOJA = 1.0  # regra do 1% sobre a receita do canal Loja
+
+
+def _total_dre(dfs, linhas, colunas):
+    """Soma de um conjunto de linhas da DRE no período. Usa correspondência
+    exata para não somar a linha-mãe junto com as filhas."""
+    return sum(
+        get_valor_consolidado_multi(dfs, linha, colunas, exato_linha_sintetica=True)
+        for linha in linhas
+    )
+
+
+def _total_planos(df_diario, termos, colunas_mes):
+    """Soma, na aba DIÁRIO, os lançamentos dos planos de contas indicados --
+    caminho para os itens que não têm linha da DRE (Mercadorias, benfeitorias)."""
+    if df_diario is None or df_diario.empty or not termos:
+        return 0.0
+    encontrados, _ = resolver_planos_forcados(df_diario, termos)
+    if not encontrados:
+        return 0.0
+    alvo = {_normalizar_texto(p) for p in encontrados}
+    bloco = df_diario[df_diario["Plano de Contas"].map(_normalizar_texto).isin(alvo)]
+    if colunas_mes and "Mês" in bloco.columns:
+        bloco = bloco[bloco["Mês"].isin(colunas_mes)]
+    return float(bloco["Valor Bruto"].sum())
+
+
+def _tabela_departamento(linhas, colunas_percentual=()):
+    """Mostra uma tabela do bloco personalizado com o mesmo desenho das
+    outras: valores em reais, percentuais com vírgula e cor por sinal."""
+    if not linhas:
+        return
+    df = pd.DataFrame(linhas)
+    formatos = {}
+    for coluna in df.columns:
+        if coluna in colunas_percentual:
+            formatos[coluna] = lambda v: ("—" if pd.isna(v) else f"{v:.1f}%".replace(".", ","))
+        elif df[coluna].dtype.kind in "fi":
+            formatos[coluna] = formata_brl
+    estilo = df.style.format(formatos)
+    colunas_valor = [c for c in df.columns if df[c].dtype.kind in "fi" and c not in colunas_percentual]
+    if colunas_valor:
+        estilo = estilo.map(cor_valor, subset=colunas_valor)
+    st.dataframe(estilo, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# MKT
+# ---------------------------------------------------------------------------
+def _painel_dept_mkt(ctx):
+    """O que o gestor de MKT acompanha: quanto do investimento vai para cada
+    canal, quanto isso representa da receita daquele canal e como o canal Loja
+    se comporta diante da régua de 1%. O que sai do 1% (Encontro de Ciclo e
+    Outras Despesas) aparece separado, como no relatório que ele já recebe."""
+    st.markdown('<div class="section-title">📣 Investimento de Marketing por Canal</div>',
+                unsafe_allow_html=True)
+
+    visoes = [aba for _, aba, _ in CANAIS_MKT]
+    try:
+        dados_canais = carregar_dados_por_loja(ctx["path_orc"], ctx["path_real"], visoes)
+    except Exception:
+        dados_canais = {}
+    if not dados_canais:
+        st.caption("Não consegui carregar as visões por canal (LJ, VD e ABPR CONSOLIDADO).")
+        return
+
+    indice = {_normalizar_nome_aba(k): v for k, v in dados_canais.items()}
+    colunas = ctx["colunas"]
+    linhas_tabela, total_inv, total_rec, fora_do_1pct = [], 0.0, 0.0, 0.0
+
+    for rotulo, aba, descontar in CANAIS_MKT:
+        df_o, df_r = indice.get(_normalizar_nome_aba(aba), (None, None))
+        if df_r is None:
+            continue
+        investido = sum(_valor_linha_por_codigo(df_r, CODIGO_MKT_GESTAO_CP, c) for c in colunas)
+        if descontar:
+            fora_do_1pct = sum(
+                _valor_linha_por_codigo(df_r, cod, c)
+                for cod in CODIGOS_MKT_FORA_1PCT for c in colunas
+            )
+            investido -= fora_do_1pct
+        orcado = sum(_valor_linha_por_codigo(df_o, CODIGO_MKT_GESTAO_CP, c) for c in colunas)
+        receita = get_valor_consolidado_multi([df_r], LINHA_RECEITA_LIQUIDA, colunas)
+        investido_abs, orcado_abs = abs(investido), abs(orcado)
+        total_inv += investido_abs
+        total_rec += abs(receita)
+        linhas_tabela.append({
+            "Canal": rotulo,
+            "Investido (R$)": investido_abs,
+            "Orçado (R$)": orcado_abs,
+            "Desvio (R$)": orcado_abs - investido_abs,
+            "Receita do canal (R$)": abs(receita),
+            "% da receita": (investido_abs / abs(receita) * 100) if receita else float("nan"),
+        })
+
+    pct_geral = (total_inv / total_rec * 100) if total_rec else 0.0
+    loja = next((l for l in linhas_tabela if l["Canal"] == "Loja"), None)
+    pct_loja = loja["% da receita"] if loja else float("nan")
+    teto_loja = (loja["Receita do canal (R$)"] * META_MKT_PCT_LOJA / 100) if loja else 0.0
+    folga_loja = teto_loja - (loja["Investido (R$)"] if loja else 0.0)
+
+    st.markdown(
+        faixa_metricas_html([
+            ("Investimento no período", formata_valor_curto(total_inv), COLORS["text"],
+             f"{pct_geral:.1f}%".replace(".", ",") + " da receita líquida dos canais"),
+            ("Canal Loja · régua de 1%",
+             ("—" if pd.isna(pct_loja) else f"{pct_loja:.2f}%".replace(".", ",")),
+             cor_variacao(folga_loja),
+             f"teto de {formata_valor_curto(teto_loja)} no período"),
+            ("Folga até o teto do 1%", formata_valor_curto(folga_loja), cor_variacao(folga_loja),
+             "positivo = ainda cabe investir"),
+            ("Fora do 1% (canal Loja)", formata_valor_curto(abs(fora_do_1pct)), COLORS["warning"],
+             "Encontro de Ciclo + Outras Despesas de MKT"),
+        ]),
+        unsafe_allow_html=True,
+    )
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
+    st.caption(
+        "Investido é a linha 6.24.2 (Gestão CP). No canal Loja, o Encontro de Ciclo e as Outras "
+        "Despesas de Marketing saem da conta do 1% e aparecem no indicador ao lado — mesma regra "
+        "do relatório que vai para o gestor."
+    )
+
+
+# ---------------------------------------------------------------------------
+# COMPRAS
+# ---------------------------------------------------------------------------
+def _painel_dept_compras(ctx):
+    """Compras vive de dois números que a DRE não junta: Mercadorias (que nem
+    linha da DRE tem) e os materiais. O que interessa é o peso de cada um
+    sobre o que a empresa vendeu -- valor absoluto sobe junto com a venda e
+    não diz se o custo piorou."""
+    st.markdown('<div class="section-title">🛒 Mercadorias e Materiais</div>',
+                unsafe_allow_html=True)
+
+    colunas = ctx["colunas"]
+    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
+    cmv = abs(get_valor_consolidado_multi(ctx["dfs_real"], "4 - Custo das Vendas", colunas))
+    materiais = abs(_total_dre(ctx["dfs_real"], ctx["linhas_raiz"], colunas))
+    materiais_orc = abs(_total_dre(ctx["dfs_orc"], ctx["linhas_raiz"], colunas))
+
+    try:
+        df_diario = carregar_diario(ctx["path_real"])
+    except Exception:
+        df_diario = None
+    mercadorias = abs(_total_planos(df_diario, ["Mercadorias"], colunas))
+
+    st.markdown(
+        faixa_metricas_html([
+            ("Mercadorias no período", formata_valor_curto(mercadorias), COLORS["text"],
+             (f"{mercadorias / cmv * 100:.1f}% do custo das vendas".replace(".", ",")
+              if cmv else "sem CMV no período")),
+            ("Mercadorias / receita",
+             (f"{mercadorias / receita * 100:.1f}%".replace(".", ",") if receita else "—"),
+             COLORS["primary"], "quanto da venda vira compra de mercadoria"),
+            ("Materiais no período", formata_valor_curto(materiais), COLORS["text"],
+             f"{len(ctx['linhas_raiz'])} linha(s) da DRE do modelo"),
+            ("Materiais por R$ 1.000 vendidos",
+             (formata_brl(materiais / receita * 1000) if receita else "—"),
+             cor_variacao(materiais_orc - materiais),
+             "quanto de material cada mil reais de venda consome"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    linhas_tabela = []
+    for linha in ctx["linhas_raiz"]:
+        valor = abs(get_valor_consolidado_multi(ctx["dfs_real"], linha, colunas, exato_linha_sintetica=True))
+        orcado = abs(get_valor_consolidado_multi(ctx["dfs_orc"], linha, colunas, exato_linha_sintetica=True))
+        linhas_tabela.append({
+            "Material": _nome_sem_numero_dre(linha),
+            "Realizado (R$)": valor,
+            "Orçado (R$)": orcado,
+            "Desvio (R$)": orcado - valor,
+            "Por R$ 1.000 vendidos": (valor / receita * 1000) if receita else float("nan"),
+            "% da receita": (valor / receita * 100) if receita else float("nan"),
+        })
+    linhas_tabela.sort(key=lambda item: item["Realizado (R$)"], reverse=True)
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
+    st.caption(
+        "Mercadorias vem da aba DIÁRIO, pelo plano de contas — não existe linha da DRE para ela. "
+        "A coluna por R$ 1.000 vendidos é o custo unitário de cada material em relação à venda: "
+        "é ela que mostra se o custo piorou, independentemente de a empresa ter vendido mais."
+    )
+
+
+# ---------------------------------------------------------------------------
+# SUPRIMENTOS
+# ---------------------------------------------------------------------------
+def _painel_dept_suprimentos(ctx):
+    """Suprimentos mistura duas naturezas que a soma esconde: o CUSTEIO do
+    dia a dia (frete, combustível, manutenção, limpeza) e o INVESTIMENTO em
+    benfeitorias e padronização, que é ativo e não despesa recorrente."""
+    st.markdown('<div class="section-title">🚚 Custeio x Investimento</div>',
+                unsafe_allow_html=True)
+
+    colunas = ctx["colunas"]
+    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
+    custeio = abs(_total_dre(ctx["dfs_real"], ctx["linhas_raiz"], colunas))
+    custeio_orc = abs(_total_dre(ctx["dfs_orc"], ctx["linhas_raiz"], colunas))
+
+    try:
+        df_diario = carregar_diario(ctx["path_real"])
+    except Exception:
+        df_diario = None
+    planos_investimento = MODELOS_RELATORIO.get(
+        ctx["departamento"], {}).get("forcar_planos_contas", [])
+    investimento = abs(_total_planos(df_diario, planos_investimento, colunas))
+
+    def _linhas_por_termo(*termos):
+        # Procura na lista completa da DRE: buscar só dentro das linhas do
+        # modelo faz um item não listado virar zero silenciosamente.
+        universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
+        achadas = []
+        for termo in termos:
+            achadas.extend(_resolver_termo_departamento(termo, universo))
+        return list(dict.fromkeys(achadas))
+
+    logistica = abs(_total_dre(
+        ctx["dfs_real"], _linhas_por_termo("6.8 - Serviço de Entrega", "8.8.10 - Serviços de Transporte"), colunas))
+    frota = abs(_total_dre(
+        ctx["dfs_real"], _linhas_por_termo("8.5.3 - Combustível", "8.5.4 - Manutenção Veículos"), colunas))
+
+    st.markdown(
+        faixa_metricas_html([
+            ("Custeio no período", formata_valor_curto(custeio), COLORS["text"],
+             f"orçado {formata_valor_curto(custeio_orc)} · desvio "
+             f"{formata_valor_curto(custeio_orc - custeio)}"),
+            ("Investimento (benfeitorias)", formata_valor_curto(investimento), COLORS["primary"],
+             "planos de ativo, sem linha da DRE"),
+            ("Custo logístico / receita",
+             (f"{logistica / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
+             COLORS["text"], f"entrega + transporte: {formata_valor_curto(logistica)}"),
+            ("Custo de frota", formata_valor_curto(frota), COLORS["text"],
+             "combustível + manutenção de veículos"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    linhas_tabela = []
+    for linha in ctx["linhas_raiz"]:
+        valor = abs(get_valor_consolidado_multi(ctx["dfs_real"], linha, colunas, exato_linha_sintetica=True))
+        orcado = abs(get_valor_consolidado_multi(ctx["dfs_orc"], linha, colunas, exato_linha_sintetica=True))
+        if not valor and not orcado:
+            continue
+        linhas_tabela.append({
+            "Item de custeio": _nome_sem_numero_dre(linha),
+            "Realizado (R$)": valor,
+            "Orçado (R$)": orcado,
+            "Desvio (R$)": orcado - valor,
+            "% do custeio": (valor / custeio * 100) if custeio else float("nan"),
+        })
+    linhas_tabela.sort(key=lambda item: item["Realizado (R$)"], reverse=True)
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custeio",))
+    st.caption(
+        "O investimento em benfeitorias e padronização vem da aba DIÁRIO, pelos planos de contas — "
+        "ele não entra no custeio nem no orçamento das linhas acima, por ser ativo e não despesa "
+        "recorrente. Separar os dois evita ler um mês de obra como estouro de custo."
+    )
+
+
+# ---------------------------------------------------------------------------
+# RH
+# ---------------------------------------------------------------------------
+def _painel_dept_rh(ctx):
+    """As 41 linhas de RH viram cinco blocos. Hora extra e rescisões ganham
+    indicador próprio porque são os dois termômetros de gestão de pessoal:
+    sobem antes de qualquer outro sinal aparecer."""
+    st.markdown('<div class="section-title">👥 Estrutura da Folha</div>',
+                unsafe_allow_html=True)
+
+    colunas = ctx["colunas"]
+    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
+
+    def _valor(termo, dfs=None):
+        # Idem: hora extra e rescisões precisam ser encontradas mesmo que o
+        # modelo não liste aquela sublinha.
+        universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
+        linhas = _resolver_termo_departamento(termo, universo)
+        return abs(_total_dre(dfs or ctx["dfs_real"], linhas, colunas))
+
+    blocos = [
+        ("Salários", "8.3.1 - Salários"),
+        ("Encargos sociais", "8.3.2 - Encargos Sociais"),
+        ("Benefícios", "8.3.3 - Benefícios"),
+        ("Movimentação de pessoal", "8.3.4 - Movimentação de Pessoal"),
+        ("Comissões sobre vendas", "6.1 - Comissões sobre Vendas"),
+    ]
+    valores_blocos = [(rotulo, _valor(termo), _valor(termo, ctx["dfs_orc"])) for rotulo, termo in blocos]
+    folha_total = abs(_total_dre(ctx["dfs_real"], ctx["linhas_raiz"], colunas))
+    hora_extra = _valor("8.3.1.4 - Hora Extra")
+    rescisoes = _valor("8.3.4.1 - Indenizações / Rescisões") + _valor("8.3.4.2 - Multa de FGTS")
+
+    st.markdown(
+        faixa_metricas_html([
+            ("Custo total de pessoal", formata_valor_curto(folha_total), COLORS["text"],
+             (f"{folha_total / receita * 100:.1f}% da receita líquida".replace(".", ",")
+              if receita else "sem receita no período")),
+            ("Hora extra", formata_valor_curto(hora_extra),
+             cor_variacao(-(hora_extra / folha_total * 100 - 5) if folha_total else 0),
+             (f"{hora_extra / folha_total * 100:.1f}% da folha".replace(".", ",")
+              if folha_total else "—")),
+            ("Rescisões e multa de FGTS", formata_valor_curto(rescisoes),
+             cor_variacao(-(rescisoes / folha_total * 100 - 5) if folha_total else 0),
+             (f"{rescisoes / folha_total * 100:.1f}% da folha".replace(".", ",")
+              if folha_total else "—")),
+            ("Comissões sobre vendas",
+             formata_valor_curto(next((v for r, v, _ in valores_blocos if r.startswith("Comissões")), 0.0)),
+             COLORS["primary"], "acompanha a venda, não é folha fixa"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    linhas_tabela = []
+    for rotulo, valor, orcado in valores_blocos:
+        if not valor and not orcado:
+            continue
+        linhas_tabela.append({
+            "Bloco": rotulo,
+            "Realizado (R$)": valor,
+            "Orçado (R$)": orcado,
+            "Desvio (R$)": orcado - valor,
+            "% do custo de pessoal": (valor / folha_total * 100) if folha_total else float("nan"),
+            "% da receita": (valor / receita * 100) if receita else float("nan"),
+        })
+    outros = folha_total - sum(v for _, v, _ in valores_blocos)
+    if abs(outros) > 0.01:
+        linhas_tabela.append({
+            "Bloco": "Outras despesas com pessoal",
+            "Realizado (R$)": outros,
+            "Orçado (R$)": 0.0,
+            "Desvio (R$)": -outros,
+            "% do custo de pessoal": (outros / folha_total * 100) if folha_total else float("nan"),
+            "% da receita": (outros / receita * 100) if receita else float("nan"),
+        })
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custo de pessoal", "% da receita"))
+    st.caption(
+        "Os blocos usam as linhas-mãe da DRE (8.3.1 a 8.3.4), que já somam as filhas — "
+        "\"Outras despesas com pessoal\" é o que sobra do total do modelo fora desses blocos. "
+        "Hora extra e rescisões estão em destaque por serem os primeiros indicadores a se mexer "
+        "quando a operação aperta."
+    )
+
+
+PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
+    "📣 Relatório de Custos - MKT": _painel_dept_mkt,
+    "🛒 Relatório de Custos - Compras": _painel_dept_compras,
+    "🚚 Relatório de Custos - Suprimentos": _painel_dept_suprimentos,
+    "👥 Relatório de Custos - RH": _painel_dept_rh,
+}
+
+
+def renderizar_painel_personalizado(departamento, ctx):
+    """Desenha o bloco próprio do departamento, quando existir. Departamento
+    sem personalização simplesmente não desenha nada e a tela segue com o
+    bloco genérico, como sempre foi."""
+    funcao = PAINEIS_PERSONALIZADOS_DEPARTAMENTO.get(departamento)
+    if not funcao:
+        return
+    try:
+        funcao(ctx)
+    except Exception as erro:
+        # Um erro aqui não pode derrubar a visão inteira do departamento -- o
+        # bloco genérico logo abaixo continua respondendo.
+        st.caption(f"Não consegui montar o bloco personalizado deste departamento ({erro}).")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
 if departamento_ativo:
     # Modo Departamento -- painel inteiro focado só no departamento
     # escolhido: 5 abas próprias (inclusive Impacto & Tendências e Emitir
@@ -7834,6 +8221,21 @@ with tab1:
                 unsafe_allow_html=True,
             )
             st.markdown("<br>", unsafe_allow_html=True)
+
+            # ---- Bloco próprio do departamento ----
+            # Vem antes da leitura genérica: é o que o gestor daquela área
+            # olha primeiro. O comparativo tradicional continua abaixo.
+            renderizar_painel_personalizado(departamento_ativo, {
+                "departamento": departamento_ativo,
+                "dfs_real": list_df_real,
+                "dfs_orc": list_df_orc,
+                "colunas": cols_kpi,
+                "linhas_resolvidas": linhas_departamento_resolvidas,
+                "linhas_raiz": linhas_departamento_raiz,
+                "linhas_todas": linhas_dre_todas_painel,
+                "path_orc": path_orc,
+                "path_real": path_real,
+            })
 
             # ---- Impacto no resultado da empresa (Receita, EBITDA, Custos+Despesas totais) ----
             rec_liq_real_dept = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_kpi)
