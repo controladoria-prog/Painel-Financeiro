@@ -8,6 +8,8 @@ Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
 import base64
+import hashlib
+import hmac
 import io
 import os
 import re
@@ -960,6 +962,96 @@ function _lerCookie(nome) {
 """
 
 
+# ---------------------------------------------------------------------------
+# SESSÃO QUE SOBREVIVE AO F5
+# ---------------------------------------------------------------------------
+# O Streamlit cria uma sessão nova a cada recarga da página, e tudo que estava
+# em session_state se perde -- por isso um F5 caía na tela de login. A solução
+# é um "bilhete" assinado que viaja na URL (e, opcionalmente, no navegador):
+# ele diz quem é a pessoa e até quando vale.
+#
+# O bilhete é renovado a cada interação, então a contagem é de INATIVIDADE:
+# enquanto o painel estiver sendo usado, ele nunca expira; parado por mais de
+# MINUTOS_INATIVIDADE, o próximo acesso cai no login. Sair apaga o bilhete.
+#
+# A assinatura usa uma chave que só o servidor conhece, então o bilhete não
+# pode ser forjado nem ter a validade esticada por quem recebeu o link.
+MINUTOS_INATIVIDADE = 10
+CHAVE_SESSAO_URL = "sid"
+
+
+def _segredo_sessao():
+    """Chave usada para assinar o bilhete. Vem dos Secrets (TOKEN_SECRET) e,
+    se não existir, é derivada das próprias senhas cadastradas -- estável
+    enquanto elas não mudarem, e trocar qualquer senha invalida os bilhetes
+    antigos, que é o comportamento desejado."""
+    try:
+        configurado = str(st.secrets.get("TOKEN_SECRET", "") or "").strip()
+    except Exception:
+        configurado = ""
+    if configurado:
+        return configurado
+    base = "|".join(
+        f"{email}:{dados.get('senha', '')}"
+        for email, dados in sorted(obter_usuarios_cadastrados().items())
+    )
+    return hashlib.sha256(("beea-sessao|" + base).encode("utf-8")).hexdigest()
+
+
+def _assinar_sessao(corpo):
+    return hmac.new(
+        _segredo_sessao().encode("utf-8"), corpo.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:32]
+
+
+def gerar_bilhete_sessao(email):
+    """Bilhete com o e-mail e o instante em que expira, assinado."""
+    expira_em = int(time.time()) + MINUTOS_INATIVIDADE * 60
+    corpo = f"{str(email).strip().lower()}|{expira_em}"
+    dados = f"{corpo}|{_assinar_sessao(corpo)}"
+    return base64.urlsafe_b64encode(dados.encode("utf-8")).decode("ascii")
+
+
+def ler_bilhete_sessao(bilhete):
+    """Devolve o e-mail se o bilhete for válido e ainda estiver no prazo.
+    Qualquer problema -- assinatura errada, formato estranho, prazo vencido --
+    devolve None, e a pessoa cai no login."""
+    try:
+        dados = base64.urlsafe_b64decode(str(bilhete).encode("ascii")).decode("utf-8")
+        email, expira_em, assinatura = dados.rsplit("|", 2)
+    except Exception:
+        return None
+    corpo = f"{email}|{expira_em}"
+    if not hmac.compare_digest(assinatura, _assinar_sessao(corpo)):
+        return None
+    try:
+        if int(expira_em) < int(time.time()):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return email
+
+
+def renovar_bilhete_sessao(email, lembrar=True):
+    """Renova o prazo do bilhete e o grava na URL. É chamado a cada execução
+    enquanto a pessoa estiver logada -- é isso que faz a contagem ser de
+    inatividade, e não de tempo total de sessão."""
+    bilhete = gerar_bilhete_sessao(email)
+    try:
+        st.query_params[CHAVE_SESSAO_URL] = bilhete
+    except Exception:
+        pass
+    return bilhete
+
+
+def limpar_bilhete_sessao():
+    try:
+        if CHAVE_SESSAO_URL in st.query_params:
+            del st.query_params[CHAVE_SESSAO_URL]
+    except Exception:
+        pass
+
+
 def _salvar_credenciais_no_navegador(email, senha):
     """Grava e-mail/senha (ofuscados em base64 -- isso NAO e criptografia) no
     navegador, para preencher o login sozinho na proxima vez que a pessoa
@@ -1366,6 +1458,20 @@ def checar_login():
     if st.session_state.get("usuario_logado"):
         return True
 
+    # Recarregou a página? O bilhete continua na URL: se ainda estiver no
+    # prazo, a sessão é retomada sem passar pelo login.
+    _email_bilhete = ler_bilhete_sessao(st.query_params.get(CHAVE_SESSAO_URL))
+    if _email_bilhete:
+        _usuario_bilhete = usuarios.get(_email_bilhete)
+        if _usuario_bilhete:
+            st.session_state["usuario_logado"] = {
+                "email": _usuario_bilhete["email"],
+                "perfil": _usuario_bilhete["perfil"],
+            }
+            return True
+    # Bilhete vencido ou inválido: não deixa lixo na URL.
+    limpar_bilhete_sessao()
+
     if _tentar_autologin_via_url():
         st.rerun()
 
@@ -1392,6 +1498,7 @@ def checar_login():
             }
             st.session_state["login_invalido"] = False
             _limpar_falhas_login()
+            renovar_bilhete_sessao(usuario["email"])
             if lembrar:
                 st.session_state["_credenciais_para_salvar"] = (usuario["email"], senha_digitada)
             else:
@@ -2805,6 +2912,12 @@ if st.session_state.pop("_esquecer_credenciais", False):
 usuario_atual = st.session_state.get("usuario_logado") or {"email": "", "perfil": "admin"}
 eh_admin = usuario_atual["perfil"] == "admin"
 
+# Renova o prazo do bilhete a cada execução: enquanto o painel estiver
+# sendo usado, a sessão não expira. Parada por mais de MINUTOS_INATIVIDADE,
+# a próxima interação (ou o próximo F5) cai no login.
+if usuario_atual.get("email"):
+    renovar_bilhete_sessao(usuario_atual["email"])
+
 
 MODELOS_RELATORIO = {
     "🛒 Relatório de Custos - Compras": {
@@ -3154,6 +3267,7 @@ if st.session_state["painel_escolhido"] is None:
         if st.button("Sair", use_container_width=True, key="btn_hub_sair"):
             st.session_state["usuario_logado"] = None
             st.session_state["painel_escolhido"] = None
+            limpar_bilhete_sessao()
             _esquecer_credenciais_no_navegador()
             st.rerun()
 
@@ -4139,6 +4253,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
     if st.sidebar.button("🚪 Sair", use_container_width=True, key="fin_btn_sair"):
         st.session_state["usuario_logado"] = None
         st.session_state["painel_escolhido"] = None
+        limpar_bilhete_sessao()
         _esquecer_credenciais_no_navegador()
         st.rerun()
 
@@ -6155,6 +6270,7 @@ st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{perfil_label}
 if st.sidebar.button("🚪 Sair", use_container_width=True):
     st.session_state["usuario_logado"] = None
     st.session_state["painel_escolhido"] = None
+    limpar_bilhete_sessao()
     _esquecer_credenciais_no_navegador()
     st.rerun()
 
