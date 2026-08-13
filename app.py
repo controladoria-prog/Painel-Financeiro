@@ -188,6 +188,33 @@ def formata_m(val):
     return f"R$ {val / 1e6:,.1f}M".replace(".", ",")
 
 
+def formata_valor_curto(val):
+    """Valor em R$ curto o bastante para caber numa linha, mas sem perder a
+    grandeza: milhões com uma casa, milhares arredondados e o valor cheio
+    abaixo disso. formata_m sempre divide por um milhão -- em contas pequenas
+    isso transformava tudo em "R$ 0,0M", e a tela ficava cheia de zeros."""
+    if pd.isna(val):
+        return "R$ 0"
+    absoluto = abs(val)
+    if absoluto >= 1_000_000:
+        return f"R$ {val / 1e6:,.1f}M".replace(",", "X").replace(".", ",").replace("X", ".")
+    if absoluto >= 1_000:
+        return f"R$ {val / 1e3:,.0f} mil".replace(",", ".")
+    return f"R$ {val:,.0f}".replace(",", ".")
+
+
+def formata_sigma_curto(z):
+    """Desvio-padrão para exibição. Acima de 10σ o número exato não acrescenta
+    nada (já é "completamente fora do padrão") e ainda atrapalha a leitura --
+    aparecia coisa como -108,2σ na tela. Daí em diante vira "10σ+"."""
+    if pd.isna(z):
+        return "—"
+    sinal = "+" if z >= 0 else "−"
+    if abs(z) >= 10:
+        return f"{sinal}10σ+"
+    return f"{sinal}{abs(z):.1f}σ".replace(".", ",")
+
+
 def eh_grupo_sintetico(nome_linha):
     return bool(re.match(r"^\d+\s*-\s*", str(nome_linha).strip()))
 
@@ -8219,11 +8246,11 @@ if not departamento_ativo and tab_diag is not None:
                  f"de {contas_avaliadas_anom} contas com histórico"),
                 ("Gastos acima do padrão", str(n_altas),
                  COLORS["negative"] if n_altas else COLORS["text_muted"],
-                 f"{formata_m(impacto_alta)} acima da média" if n_altas else "nenhuma conta subiu fora da curva"),
+                 f"{formata_valor_curto(impacto_alta)} acima da média" if n_altas else "nenhuma conta subiu fora da curva"),
                 ("Gastos abaixo do padrão", str(n_baixas),
                  COLORS["positive"] if n_baixas else COLORS["text_muted"],
-                 f"{formata_m(abs(impacto_baixa))} abaixo da média" if n_baixas else "nenhuma conta caiu fora da curva"),
-                ("Efeito líquido", formata_m(impacto_alta + impacto_baixa),
+                 f"{formata_valor_curto(abs(impacto_baixa))} abaixo da média" if n_baixas else "nenhuma conta caiu fora da curva"),
+                ("Efeito líquido", formata_valor_curto(impacto_alta + impacto_baixa),
                  cor_variacao(-(impacto_alta + impacto_baixa)),
                  "Soma dos desvios em relação ao normal"),
             ]
@@ -8247,63 +8274,77 @@ if not departamento_ativo and tab_diag is not None:
                 unsafe_allow_html=True,
             )
 
-            # ---- Cada anomalia como um cartão com o histórico visível ----
-            # Ver a série mensal ao lado do número explica na hora se aquilo
-            # é um pico isolado ou uma mudança de patamar -- coisa que uma
-            # tabela de números não mostra.
-            _cartoes_anom = []
+            # ---- Lista de anomalias: uma linha por conta ----
+            # Antes cada anomalia era um cartão com um mini-gráfico de barras do
+            # histórico. Na prática ele atrapalhava: em conta de valor baixo as
+            # barras viravam um borrão de 3px sem informação nenhuma, e doze
+            # gráficos ao mesmo tempo deixavam a tela carregada. Agora é uma
+            # linha por conta: identificação à esquerda, números à direita, em
+            # fonte monoespaçada para as colunas se alinharem na vertical. Quem
+            # quiser o histórico completo tem a tabela logo abaixo.
+            _css_anom = f"""
+            <style>
+                .anom-lista {{
+                    display:grid; grid-template-columns:repeat(auto-fill, minmax(400px, 1fr));
+                    gap:1px; background:{COLORS['border']}; border:1px solid {COLORS['border']};
+                    border-radius:8px; overflow:hidden; margin:0 4px;
+                }}
+                .anom-item {{
+                    position:relative; background:{COLORS['surface']}; min-width:0;
+                    padding:12px 16px 12px 18px;
+                    display:flex; align-items:center; justify-content:space-between; gap:16px;
+                }}
+                .anom-item::before {{
+                    content:""; position:absolute; left:0; top:0; bottom:0;
+                    width:2px; background:var(--anom-cor);
+                }}
+                .anom-id {{ min-width:0; }}
+                .anom-nome {{
+                    font-size:12.5px; font-weight:600; color:{COLORS['text']};
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                }}
+                .anom-sub {{
+                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-size:10.5px; color:{COLORS['text_muted']}; margin-top:4px;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                }}
+                .anom-sep {{ color:{COLORS['secondary']}; margin:0 7px; }}
+                .anom-num {{ text-align:right; white-space:nowrap; }}
+                .anom-pct {{
+                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-size:16.5px; font-weight:700; color:var(--anom-cor); line-height:1.1;
+                }}
+                .anom-sigma {{
+                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-size:10px; color:{COLORS['text_muted']}; margin-top:4px; letter-spacing:0.5px;
+                }}
+            </style>
+            """
+
+            _linhas_anom = []
             for _, linha_anom in df_anom.head(12).iterrows():
                 subiu = linha_anom["Variação"] > 0
                 cor_anom = COLORS["negative"] if subiu else COLORS["positive"]
-                seta = "▲" if subiu else "▼"
-                historico = linha_anom["Historico"]
-                maior_hist = max(historico) if historico else 1
-
-                # Mini-gráfico do histórico em barras, com o último mês em destaque
-                barras = "".join(
-                    f'<div style="flex:1; height:{max(3, v / maior_hist * 26):.0f}px; '
-                    f'background:{cor_anom if i == len(historico) - 1 else COLORS["secondary"]}; '
-                    f'opacity:{1 if i == len(historico) - 1 else 0.45}; border-radius:1px;"></div>'
-                    for i, v in enumerate(historico)
-                )
-
-                nome_conta_anom = linha_anom["Conta"]
-                nome_exibido_anom = (
-                    nome_conta_anom if len(nome_conta_anom) <= 38 else nome_conta_anom[:37] + "…"
-                )
-                _cartoes_anom.append(
-                    f'<div style="flex:1; min-width:330px; background:{COLORS["surface"]}; '
-                    f'border:1px solid {COLORS["border"]}; border-left:3px solid {cor_anom}; '
-                    f'border-radius:6px; padding:11px 14px;">'
-                    # cabeçalho: conta + mês
-                    f'<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
-                    f'<div style="font-size:12.5px; color:{COLORS["text"]}; font-weight:600; '
-                    f'white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" '
-                    f'title="{nome_conta_anom}">{nome_exibido_anom}</div>'
-                    f'<div style="font-size:10.5px; color:{COLORS["text_muted"]}; white-space:nowrap;">'
-                    f'{linha_anom["Mês"]}</div></div>'
-                    # variação em destaque
-                    f'<div style="display:flex; align-items:flex-end; gap:14px; margin-top:7px;">'
-                    f'<div><div style="font-size:19px; font-weight:800; color:{cor_anom}; line-height:1.1;">'
-                    f'{seta} {abs(linha_anom["Var. %"]):.0f}%</div>'
-                    f'<div style="font-size:10.5px; color:{COLORS["text_muted"]}; margin-top:2px;">'
-                    f'{formata_m(linha_anom["Valor do mês"])} vs. {formata_m(linha_anom["Média anterior"])} '
-                    f'de média</div></div>'
-                    # mini-histórico
-                    f'<div style="flex:1; display:flex; align-items:flex-end; gap:2px; height:28px;">'
-                    f'{barras}</div>'
-                    f'<div style="text-align:right;">'
-                    f'<div style="font-size:13px; font-weight:700; color:{cor_anom};">'
-                    f'{linha_anom["Desvios"]:+.1f}σ</div>'
-                    f'<div style="font-size:9.5px; color:{COLORS["text_muted"]};">do padrão</div>'
-                    f'</div></div></div>'
+                nome_conta_anom = str(linha_anom["Conta"])
+                mes_curto_anom = str(linha_anom["Mês"])[:3].upper()
+                pct_anom = f'{abs(linha_anom["Var. %"]):,.0f}'.replace(",", ".")
+                _linhas_anom.append(
+                    f'<div class="anom-item" style="--anom-cor:{cor_anom};">'
+                    f'<div class="anom-id">'
+                    f'<div class="anom-nome" title="{nome_conta_anom}">{nome_conta_anom}</div>'
+                    f'<div class="anom-sub">{formata_valor_curto(linha_anom["Valor do mês"])}'
+                    f'<span class="anom-sep">→</span>'
+                    f'{formata_valor_curto(linha_anom["Média anterior"])} de média'
+                    f'<span class="anom-sep">·</span>{mes_curto_anom}</div>'
+                    f'</div>'
+                    f'<div class="anom-num">'
+                    f'<div class="anom-pct">{"+" if subiu else "−"}{pct_anom}%</div>'
+                    f'<div class="anom-sigma">{formata_sigma_curto(linha_anom["Desvios"])}</div>'
+                    f'</div></div>'
                 )
 
             st.markdown(
-                html_compacto(
-                    f'<div style="display:flex; flex-wrap:wrap; gap:10px; margin:0 4px;">'
-                    f'{"".join(_cartoes_anom)}</div>'
-                ),
+                html_compacto(_css_anom + f'<div class="anom-lista">{"".join(_linhas_anom)}</div>'),
                 unsafe_allow_html=True,
             )
             if len(df_anom) > 12:
