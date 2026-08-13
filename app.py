@@ -2936,11 +2936,22 @@ if st.session_state["painel_escolhido"] is None:
         html_compacto(f"""
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
-            /* A tela tinha o conteúdo colado no topo e um vazio enorme embaixo;
-               agora o bloco fica centralizado na altura da janela. */
-            div[data-testid="stAppViewContainer"] > .main .block-container {{
-                display: flex; flex-direction: column; justify-content: center;
-                min-height: 92vh; max-width: 900px;
+            /* Centraliza o bloco e limita a largura. Vários seletores porque o
+               Streamlit mudou o nome do contêiner principal entre versões -- com
+               só um deles a regra não pegava, e numa tela grande os cartões
+               esticavam de ponta a ponta, colados no topo. Este CSS só existe
+               nesta tela, então o seletor genérico não afeta o resto do painel. */
+            [data-testid="stMainBlockContainer"],
+            section[data-testid="stMain"] .block-container,
+            div[data-testid="stAppViewContainer"] .block-container,
+            .block-container {{
+                display: flex !important;
+                flex-direction: column;
+                justify-content: center;
+                min-height: 88vh;
+                max-width: 880px !important;
+                padding-top: 0 !important;
+                margin: 0 auto !important;
             }}
             .hub-topo {{ text-align: center; margin-bottom: 30px; }}
             .hub-topo img {{
@@ -2991,6 +3002,12 @@ if st.session_state["painel_escolhido"] is None:
                 border-radius: 4px; padding: 3px 8px;
             }}
             .hub-card.bloqueado {{ opacity: 0.55; }}
+            /* O cartão inteiro acende junto com o botão: deixa claro que a
+               peça toda é um alvo só. */
+            div[data-testid="column"]:has(.hub-card):hover .hub-card,
+            div[data-testid="stColumn"]:has(.hub-card):hover .hub-card {{
+                border-color: {COLORS['secondary']};
+            }}
 
             div[data-testid="column"]:has(.hub-card) .stButton > button,
             div[data-testid="stColumn"]:has(.hub-card) .stButton > button {{
@@ -3016,8 +3033,26 @@ if st.session_state["painel_escolhido"] is None:
                 color: {COLORS['text_muted']} !important;
             }}
             .hub-rodape {{
-                text-align: center; margin-top: 26px;
+                text-align: center; margin-top: 28px;
                 font-size: 11.5px; color: {COLORS['text_muted']};
+            }}
+            /* O Streamlit gera uma classe a partir da `key` do botão. Usando
+               ela, o "Sair" fica discreto: sem caixa, sem borda, só um link --
+               antes tinha o mesmo peso dos dois botões principais. */
+            .st-key-btn_hub_sair button {{
+                background: transparent !important;
+                border: none !important;
+                box-shadow: none !important;
+                color: {COLORS['text_muted']} !important;
+                font-size: 12px !important;
+                font-weight: 500 !important;
+                padding: 4px 0 !important;
+                text-decoration: underline;
+                text-underline-offset: 3px;
+            }}
+            .st-key-btn_hub_sair button:hover {{
+                background: transparent !important;
+                color: {COLORS['text']} !important;
             }}
         </style>
         <div class="hub-topo">
@@ -3085,7 +3120,7 @@ if st.session_state["painel_escolhido"] is None:
         f'<div class="hub-rodape">Conectado como <b>{_email_hub or "-"}</b></div>',
         unsafe_allow_html=True,
     )
-    col_sair_a, col_sair_b, col_sair_c = st.columns([1, 0.5, 1])
+    col_sair_a, col_sair_b, col_sair_c = st.columns([1, 0.35, 1])
     with col_sair_b:
         # A barra lateral fica escondida nesta tela, então o "Sair" precisa
         # existir aqui -- senão quem entrou com a conta errada fica preso.
