@@ -3797,10 +3797,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
         unsafe_allow_html=True,
     )
 
+    # A barra lateral segue os mesmos blocos da Controladoria: cada grupo com
+    # um título, uma linha explicando o que ele faz e um filete separando --
+    # antes os controles vinham empilhados sem respiro nenhum entre eles.
     st.sidebar.markdown("**🗓️ Base de Data**")
-    # A base de data define em que mês o lançamento cai. O padrão é
-    # VENCIMENTO porque é o eixo que a tabela dinâmica da planilha usa --
-    # é o que faz o painel bater número a número com ela.
+    st.sidebar.caption("Define em que mês cada lançamento entra no fluxo.")
+    # O padrão é VENCIMENTO porque é o eixo que a tabela dinâmica da planilha
+    # usa -- é o que faz o painel bater número a número com ela.
     base_data_fin = st.sidebar.radio(
         "Base de data:",
         ["Vencimento (igual à planilha)", "Liquidação (caixa efetivo)"],
@@ -3813,13 +3816,41 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown("**🔄 Dados**")
     if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
         st.cache_data.clear()
         st.cache_resource.clear()
         st.rerun()
+    st.sidebar.caption(f"Última atualização: {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🖥️ Painel para TV**")
+    st.sidebar.caption(
+        "Abre uma visão executiva (somente leitura, atualização automática) para deixar "
+        "exibida numa tela/TV da empresa."
+    )
+    st.sidebar.markdown(
+        f"""
+        <a href="?modo=tv" target="_blank" style="text-decoration:none;">
+            <div style="
+                background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
+                border-radius:8px; padding:8px 12px; text-align:center; font-weight:600; font-size:13.5px;
+                margin-bottom: 6px;">
+                📺 Abrir Painel de TV
+            </div>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.markdown("---")
     if st.sidebar.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
         st.session_state["painel_escolhido"] = None
         st.rerun()
+
+    st.sidebar.markdown("---")
+    _perfil_label_fin = "Administrador" if eh_admin else "Visualização"
+    st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{_perfil_label_fin}**")
     if st.sidebar.button("🚪 Sair", use_container_width=True, key="fin_btn_sair"):
         st.session_state["usuario_logado"] = None
         st.session_state["painel_escolhido"] = None
