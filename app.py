@@ -2623,6 +2623,54 @@ def _saldo_posicao_atual_fin(df, coluna_valor):
 
 
 @st.cache_resource(show_spinner="Preparando os dados do fluxo de caixa...")
+def _parse_datas_fin(serie):
+    """Converte uma coluna de datas do CSV publicado, aceitando MAIS DE UM
+    formato dentro da MESMA coluna.
+
+    Isso não é preciosismo: o pandas, quando recebe uma coluna de texto sem
+    `format`, deduz UM formato a partir do primeiro valor preenchido e aplica
+    esse mesmo formato em todas as linhas -- tudo que estiver diferente vira
+    NaT silenciosamente (errors="coerce"). Era exatamente o que acontecia com
+    a "Data Liquidação": os títulos a receber vinham em dd/mm/aaaa (o formato
+    deduzido) e os títulos a pagar liquidados vinham em outro formato, então o
+    painel enxergava TODA conta a pagar como não liquidada -- daí "Já quitado"
+    R$ 0,00 e o prazo médio de pagamento sem valor nenhum.
+
+    Trata ainda: marcadores de vazio ("-", "0", "00/00/0000"), sobra de hora
+    no texto e data em número de série do Excel (ex.: 45789)."""
+    texto = serie.astype(str).str.strip()
+    vazios = texto.str.lower().isin(
+        ["", "nan", "nat", "none", "null", "-", "--", "0", "00/00/0000", "0000-00-00"]
+    )
+    texto = texto.mask(vazios)
+
+    try:
+        # format="mixed" avalia linha a linha, em vez de impor à coluna
+        # inteira o formato deduzido da primeira linha preenchida.
+        datas = pd.to_datetime(texto, errors="coerce", dayfirst=True, format="mixed")
+    except (TypeError, ValueError):
+        # Pandas antigo, sem format="mixed": faz a conversão normal e depois
+        # tenta de novo, uma a uma, só o que sobrou como NaT.
+        datas = pd.to_datetime(texto, errors="coerce", dayfirst=True)
+        sobra = datas.isna() & texto.notna()
+        if sobra.any():
+            datas.loc[sobra] = texto[sobra].apply(
+                lambda valor: pd.to_datetime(valor, errors="coerce", dayfirst=True)
+            )
+
+    # O que ainda não converteu pode ser data em número de série do Excel
+    # (dias desde 30/12/1899) -- acontece quando a coluna sai da planilha
+    # como número em vez de texto.
+    sobra_numerica = datas.isna() & texto.notna()
+    if sobra_numerica.any():
+        seriais = pd.to_numeric(texto[sobra_numerica], errors="coerce")
+        seriais = seriais[seriais.between(20000, 80000)]
+        if not seriais.empty:
+            datas.loc[seriais.index] = pd.to_datetime(seriais, unit="D", origin="1899-12-30")
+
+    return datas
+
+
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -2636,7 +2684,7 @@ def preparar_fluxo_caixa(base_data):
     Retorna (df, erro, total_lido, linhas_sem_data)."""
     df_fluxo, erro = obter_dados_fluxo_caixa()
     if erro or df_fluxo is None or df_fluxo.empty:
-        return None, erro or "Sem dados", 0, 0
+        return None, erro or "Sem dados", 0, 0, {}
 
     colunas_esperadas = [
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
@@ -2644,7 +2692,7 @@ def preparar_fluxo_caixa(base_data):
     ]
     faltando = [c for c in colunas_esperadas if c not in df_fluxo.columns]
     if faltando:
-        return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0
+        return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0, {}
 
     df = df_fluxo.copy()
 
@@ -2658,12 +2706,39 @@ def preparar_fluxo_caixa(base_data):
     )
     df[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
 
-    df[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
-        df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+    texto_liq_bruto = df[COL_FIN_DATA_LIQUIDACAO].astype(str).str.strip()
+    df[COL_FIN_DATA_LIQUIDACAO] = _parse_datas_fin(df[COL_FIN_DATA_LIQUIDACAO])
+    df[COL_FIN_VENCIMENTO] = _parse_datas_fin(df[COL_FIN_VENCIMENTO])
+
+    # Rede de segurança: se a planilha tiver mais de uma coluna de liquidação
+    # (ex.: "Data Liquidação" e "Data Liquidação.1", que o Power Query cria
+    # quando há cabeçalho repetido), completa APENAS as linhas que ficaram
+    # sem data -- nunca sobrescreve o que já veio preenchido.
+    colunas_liq_extras = [
+        coluna for coluna in df.columns
+        if coluna != COL_FIN_DATA_LIQUIDACAO and "liquida" in _normalizar_texto(str(coluna))
+    ]
+    for coluna_extra in colunas_liq_extras:
+        faltando_liq = df[COL_FIN_DATA_LIQUIDACAO].isna()
+        if not faltando_liq.any():
+            break
+        df.loc[faltando_liq, COL_FIN_DATA_LIQUIDACAO] = _parse_datas_fin(
+            df.loc[faltando_liq, coluna_extra]
+        )
+
+    # Diagnóstico: quanto texto tinha cara de data mas não converteu. Se isso
+    # for maior que zero, tem formato novo aparecendo na planilha.
+    tem_texto_liq = ~texto_liq_bruto.str.lower().isin(
+        ["", "nan", "nat", "none", "null", "-", "--", "0", "00/00/0000", "0000-00-00"]
     )
-    df[COL_FIN_VENCIMENTO] = pd.to_datetime(
-        df[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
-    )
+    nao_convertidas = tem_texto_liq & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    diagnostico = {
+        "liq_preenchidas": int(df[COL_FIN_DATA_LIQUIDACAO].notna().sum()),
+        "liq_nao_convertidas": int(nao_convertidas.sum()),
+        "liq_amostras_nao_convertidas": texto_liq_bruto[nao_convertidas].unique()[:5].tolist(),
+        "colunas_liq_extras": colunas_liq_extras,
+    }
+
 
     if str(base_data).startswith("Vencimento"):
         df["Data Efetiva"] = df[COL_FIN_VENCIMENTO].fillna(df[COL_FIN_DATA_LIQUIDACAO])
@@ -2681,7 +2756,21 @@ def preparar_fluxo_caixa(base_data):
     for coluna_texto in (COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_MOVIMENTO):
         df[coluna_texto] = df[coluna_texto].astype("category")
 
-    return df, None, total_lido, sem_data
+    # Quantos títulos de cada Movimento já têm data de liquidação (= pagos /
+    # recebidos) e quantos ainda não -- é a conferência mais rápida quando
+    # algum número de "em aberto" parece alto demais.
+    diagnostico["por_movimento"] = (
+        pd.DataFrame({
+            "Movimento": df[COL_FIN_MOVIMENTO].astype(str),
+            "Com liquidação": df["Liquidado"],
+        })
+        .groupby("Movimento", observed=True)["Com liquidação"]
+        .agg(Títulos="count", Liquidados="sum")
+        .reset_index()
+        .assign(**{"Em aberto": lambda t: t["Títulos"] - t["Liquidados"]})
+    )
+
+    return df, None, total_lido, sem_data, diagnostico
 
 
 if st.session_state["painel_escolhido"] == "financeiro":
@@ -2842,7 +2931,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
     # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
     # em cache: só refaz se a base de data mudar ou se você clicar em
     # "Atualizar Dados".
-    df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data = preparar_fluxo_caixa(base_data_fin)
+    df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data, diag_fluxo = preparar_fluxo_caixa(base_data_fin)
 
     if erro_fluxo and str(erro_fluxo).startswith("COLUNAS_FALTANDO:"):
         st.error(
@@ -2916,6 +3005,23 @@ if st.session_state["painel_escolhido"] == "financeiro":
             data_min_diag = df_fin["Data Efetiva"].min()
             data_max_diag = df_fin["Data Efetiva"].max()
             st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
+            st.write(
+                f"**Títulos com data de liquidação:** {diag_fluxo.get('liq_preenchidas', 0)} · "
+                f"**Texto que não virou data:** {diag_fluxo.get('liq_nao_convertidas', 0)}"
+            )
+            if diag_fluxo.get("liq_nao_convertidas"):
+                st.warning(
+                    "Tem valor na coluna de liquidação que o painel não conseguiu ler como data. "
+                    "Exemplos: " + ", ".join(str(v) for v in diag_fluxo.get("liq_amostras_nao_convertidas", []))
+                )
+            if diag_fluxo.get("colunas_liq_extras"):
+                st.caption(
+                    "Outras colunas de liquidação encontradas na planilha (usadas só para completar "
+                    "linhas em branco): " + ", ".join(diag_fluxo["colunas_liq_extras"])
+                )
+            if diag_fluxo.get("por_movimento") is not None:
+                st.write("**Liquidação por Movimento (pagos/recebidos x em aberto):**")
+                st.dataframe(diag_fluxo["por_movimento"], use_container_width=True, hide_index=True)
             st.write("**Movimento → como o painel classificou:**")
             st.dataframe(
                 df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
