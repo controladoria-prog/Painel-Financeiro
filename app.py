@@ -2420,6 +2420,10 @@ MODELOS_RELATORIO = {
         # nos KPIs/gráficos de gestão do departamento, mas aparecem no
         # relatório e num bloco à parte no painel, só pra conhecimento.
         "linhas_informativas": ["PREFIXO:6.24.1"],
+        # Aba extra, exclusiva do MKT: o quadro "1% x Outras Despesas de
+        # Marketing" (LOJA-1%, VD, ABPR e CONSOLIDADO), no mesmo layout que
+        # a Controladoria já mandava para o gestor na mão.
+        "aba_mkt_1pct": True,
         "forcar_planos_contas": [],
         # Linhas de grupo (ex.: "6.24 - Esforços de Marketing") que não
         # tiverem um Plano de Contas próprio já caem como "Lançado
@@ -2433,9 +2437,9 @@ MODELOS_RELATORIO = {
 
 # ============================================================================
 # 4.5 SELEÇÃO DE PAINEL — Controladoria x Financeiro (tela entre o login e
-# o painel de fato). O Financeiro ainda não existe -- mostra um aviso de
-# "em construção" com a opção de ir para a Controladoria, que é o único
-# painel ativo por enquanto.
+# o painel de fato). Os dois painéis estão ativos: a escolha feita aqui
+# fica em st.session_state["painel_escolhido"] e pode ser trocada pelo
+# botão "Trocar Painel" da barra lateral.
 # ============================================================================
 if "painel_escolhido" not in st.session_state:
     st.session_state["painel_escolhido"] = None
@@ -4827,6 +4831,262 @@ def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
     return nome_aba
 
 
+# ---------------------------------------------------------------------------
+# ABA ESPECIAL DO MODELO DE MKT — "1% x Outras Despesas de Marketing"
+# ---------------------------------------------------------------------------
+# É o relatório que a Controladoria manda para o gestor de MKT. Os quatro
+# blocos usam SEMPRE a mesma linha da DRE ("6.24.2 - Marketing Regional -
+# Gestão CP"); o que muda é a visão de onde o valor é lido:
+#     LOJA - 1%                                  -> aba LJ CONSOLIDADO
+#     VD                                         -> aba VD CONSOLIDADO
+#     ABPR                                       -> aba ABPR CONSOLIDADO
+#     CONSOLIDADO: 1% + OUTRAS DESPESAS DE MKT   -> aba DRE CONSOLIDADO
+#
+# ORÇADO é sempre a linha 6.24.2 pura, sem desconto nenhum, em todos os blocos.
+#
+# A única particularidade está no REALIZADO do bloco "LOJA - 1%": ele é a
+# linha 6.24.2 MENOS "6.24.2.5 - Encontro de Ciclo" e MENOS "6.24.2.6 -
+# Outras Despesas de Marketing". Essas duas não fazem parte do 1% e vão para
+# os quadros amarelos ao lado ("Outras Despesas de MKT - Canal Loja"),
+# justamente para não somarem junto. A conferência é essa: mês a mês,
+# LOJA-1% + VD + ABPR + quadro amarelo = bloco CONSOLIDADO.
+#
+# DIFERENÇA = REALIZADO - ORÇADO (como os valores são negativos, diferença
+# positiva significa que gastou MENOS do que o orçado).
+# ---------------------------------------------------------------------------
+COD_MKT_GESTAO_CP = "6.24.2"
+CODS_MKT_FORA_DO_1PCT = ["6.24.2.5", "6.24.2.6"]
+NOME_MKT_GESTAO_CP_PADRAO = "6.24.2 - Marketing Regional - Gestão CP"
+
+# (título do bloco, aba de origem, desconta as linhas que ficam fora do 1%?)
+BLOCOS_MKT_1PCT = [
+    ("LOJA - 1%", "LJ CONSOLIDADO", True),
+    ("VD", "VD CONSOLIDADO", False),
+    ("ABPR", "ABPR CONSOLIDADO", False),
+    ("CONSOLIDADO: 1% + OUTRAS DESPESAS DE MKT", "DRE CONSOLIDADO", False),
+]
+VISOES_ABA_MKT_1PCT = [nome_aba for _, nome_aba, _ in BLOCOS_MKT_1PCT]
+
+_MKT_FILL_HEADER = PatternFill(fill_type="solid", start_color="FF5B9BD5", end_color="FF5B9BD5")
+_MKT_FILL_LINHA = PatternFill(fill_type="solid", start_color="FFDDEBF7", end_color="FFDDEBF7")
+_MKT_FILL_AMARELO = PatternFill(fill_type="solid", start_color="FFFFFF00", end_color="FFFFFF00")
+_MKT_FONT_TITULO = Font(bold=True, italic=True, size=11, color="FF000000", name="Calibri")
+_MKT_FONT_HEADER = Font(bold=True, italic=True, size=11, color="FF000000", name="Calibri")
+_MKT_FONT_ROTULO = Font(bold=True, italic=True, size=11, color="FF000000", name="Calibri")
+_MKT_FONT_CONTA = Font(italic=True, size=11, color="FFC00000", name="Calibri")
+_MKT_FONT_VALOR = Font(size=11, color="FFC00000", name="Calibri")
+_MKT_FONT_VALOR_TOTAL = Font(bold=True, size=11, color="FFC00000", name="Calibri")
+_MKT_FONT_AMARELO = Font(bold=True, size=11, color="FF000000", name="Calibri")
+_MKT_FONT_AMARELO_VALOR = Font(size=11, color="FFC00000", name="Calibri")
+_MKT_NUM_FMT = '"R$" #,##0.00;-"R$" #,##0.00'
+
+
+def _nome_linha_por_codigo(df, codigo, padrao=None):
+    """Devolve o NOME COMPLETO da linha da DRE cujo código hierárquico é
+    EXATAMENTE `codigo` (ex.: "6.24.2" -> "6.24.2 - Marketing Regional -
+    Gestão CP"). Comparar o código extraído do início do texto, em vez de
+    usar "contém", é o que impede o 6.24.2 de casar também com 6.24.2.5 e
+    6.24.2.6 -- que é justamente a diferença entre o valor cheio e o 1%."""
+    if df is None or getattr(df, "empty", True):
+        return padrao
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    nomes = df[col_nome].dropna().astype(str).str.strip()
+    if nomes.empty:
+        return padrao
+    codigos = nomes.str.extract(r"^(\d+(?:\.\d+)*)", expand=False)
+    achados = nomes[codigos == codigo]
+    return achados.iloc[0] if not achados.empty else padrao
+
+
+def _valor_linha_por_codigo(df, codigo, coluna_mes):
+    """Soma o valor de UMA linha da DRE (identificada pelo código exato) num
+    mês. Devolve 0.0 se a linha ou a coluna do mês não existirem na aba."""
+    if df is None or getattr(df, "empty", True):
+        return 0.0
+    if not coluna_mes or coluna_mes not in df.columns:
+        return 0.0
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    nomes = df[col_nome].astype(str).str.strip()
+    codigos = nomes.str.extract(r"^(\d+(?:\.\d+)*)", expand=False)
+    mask = (codigos == codigo).fillna(False)
+    if not mask.any():
+        return 0.0
+    return float(pd.to_numeric(df.loc[mask, coluna_mes], errors="coerce").fillna(0).sum())
+
+
+def _valores_mkt_1pct(dados_visoes, mapa_meses):
+    """Calcula, para cada bloco, as listas de REALIZADO / ORÇADO / DIFERENÇA
+    mês a mês, mais os valores dos quadros amarelos (o que sai do 1% do canal
+    Loja). Separado da escrita do Excel para poder ser conferido sozinho.
+
+    Devolve (blocos, outras_loja, visoes_faltando), onde `blocos` é uma lista
+    de dicionários com titulo/aba/nome_conta/realizado/orcado/diferenca."""
+    indice_visoes = {_normalizar_nome_aba(k): v for k, v in (dados_visoes or {}).items()}
+    meses_cols = list(mapa_meses.values())
+
+    def _dfs_da_visao(nome_visao):
+        return indice_visoes.get(_normalizar_nome_aba(nome_visao), (None, None))
+
+    visoes_faltando = [
+        nome_aba for nome_aba in VISOES_ABA_MKT_1PCT
+        if _normalizar_nome_aba(nome_aba) not in indice_visoes
+    ]
+
+    # Quadros amarelos: Encontro de Ciclo + Outras Despesas de Marketing,
+    # do canal Loja (LJ CONSOLIDADO), mês a mês.
+    _, df_r_lj = _dfs_da_visao("LJ CONSOLIDADO")
+    outras_loja = [
+        sum(_valor_linha_por_codigo(df_r_lj, cod, m_col) for cod in CODS_MKT_FORA_DO_1PCT)
+        for m_col in meses_cols
+    ]
+
+    blocos = []
+    for titulo, nome_aba, descontar in BLOCOS_MKT_1PCT:
+        df_o, df_r = _dfs_da_visao(nome_aba)
+        nome_conta = (
+            _nome_linha_por_codigo(df_r, COD_MKT_GESTAO_CP)
+            or _nome_linha_por_codigo(df_o, COD_MKT_GESTAO_CP)
+            or NOME_MKT_GESTAO_CP_PADRAO
+        )
+        realizado = []
+        for i, m_col in enumerate(meses_cols):
+            valor = _valor_linha_por_codigo(df_r, COD_MKT_GESTAO_CP, m_col)
+            if descontar:
+                valor -= outras_loja[i]
+            realizado.append(valor)
+        orcado = [_valor_linha_por_codigo(df_o, COD_MKT_GESTAO_CP, m_col) for m_col in meses_cols]
+        blocos.append({
+            "titulo": titulo,
+            "aba": nome_aba,
+            "nome_conta": nome_conta,
+            "realizado": realizado,
+            "orcado": orcado,
+            "diferenca": [r - o for r, o in zip(realizado, orcado)],
+        })
+    return blocos, outras_loja, visoes_faltando
+
+
+def _criar_aba_mkt_1pct(wb, dados_visoes, mapa_meses, gerado_em):
+    """Monta a aba do relatório de MKT no mesmo layout usado hoje na mão:
+    quatro blocos (LOJA - 1%, VD, ABPR e CONSOLIDADO), cada um com REALIZADO,
+    ORÇADO e DIFERENÇA por mês, e os quadros amarelos das "Outras Despesas de
+    MKT - Canal Loja" na lateral."""
+    meses_cols = list(mapa_meses.values())
+    n_meses = len(meses_cols)
+    if n_meses == 0:
+        return None
+
+    blocos, outras_loja, visoes_faltando = _valores_mkt_1pct(dados_visoes, mapa_meses)
+
+    ws = wb.create_sheet("MKT - 1% x Outras Despesas", 1)
+    ws.sheet_properties.tabColor = "FFFFC000"
+    ws.sheet_view.showGridLines = False
+
+    COL_ROTULO = 1   # A: REALIZADO / ORÇADO / DIFERENÇA
+    COL_CONTA = 2    # B: nome da linha da DRE
+    COL_MES_1 = 3    # C em diante: um mês por coluna
+    col_total = COL_MES_1 + n_meses
+    col_lateral = col_total + 3  # quadros amarelos, depois de 2 colunas em branco
+
+    def _escrever_linha_bloco(linha, rotulo, nome_conta, valores):
+        cell_rotulo = ws.cell(row=linha, column=COL_ROTULO, value=rotulo)
+        cell_rotulo.font = _MKT_FONT_ROTULO
+        cell_rotulo.alignment = Alignment(horizontal="left", vertical="center")
+
+        cell_conta = ws.cell(row=linha, column=COL_CONTA, value=nome_conta)
+        cell_conta.font = _MKT_FONT_CONTA
+        cell_conta.fill = _MKT_FILL_LINHA
+        cell_conta.border = EXCEL_STYLE["border"]
+        cell_conta.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+        for i, valor in enumerate(list(valores) + [sum(valores)]):
+            col = COL_MES_1 + i
+            cell = ws.cell(row=linha, column=col, value=valor)
+            cell.font = _MKT_FONT_VALOR_TOTAL if col == col_total else _MKT_FONT_VALOR
+            cell.fill = _MKT_FILL_LINHA
+            cell.border = EXCEL_STYLE["border"]
+            cell.number_format = _MKT_NUM_FMT
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+
+    linha = 1
+    for bloco in blocos:
+        # Título do bloco (mesclado por cima da tabela)
+        ws.merge_cells(start_row=linha, start_column=COL_CONTA, end_row=linha, end_column=col_total)
+        cell_titulo = ws.cell(row=linha, column=COL_CONTA, value=bloco["titulo"])
+        cell_titulo.font = _MKT_FONT_TITULO
+        cell_titulo.alignment = Alignment(horizontal="center", vertical="center")
+        linha += 1
+
+        # Cabeçalho: Nome | meses | Total
+        cabecalho = ["Nome"] + list(meses_cols) + ["Total"]
+        for i, texto in enumerate(cabecalho):
+            cell = ws.cell(row=linha, column=COL_CONTA + i, value=texto)
+            cell.font = _MKT_FONT_HEADER
+            cell.fill = _MKT_FILL_HEADER
+            cell.border = EXCEL_STYLE["border"]
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[linha].height = 20
+        linha += 1
+
+        _escrever_linha_bloco(linha, "REALIZADO", bloco["nome_conta"], bloco["realizado"])
+        linha += 1
+        _escrever_linha_bloco(linha, "ORÇADO", bloco["nome_conta"], bloco["orcado"])
+        linha += 1
+        _escrever_linha_bloco(linha, "DIFERENÇA", bloco["nome_conta"], bloco["diferenca"])
+        linha += 3  # duas linhas em branco entre um bloco e outro
+
+    ultima_linha_blocos = linha - 3
+
+    # ---- Quadros amarelos: o que sai do 1% do canal Loja, mês a mês ----
+    linha_lateral = 2
+    for i, nome_mes in enumerate(mapa_meses.keys()):
+        cell_lbl = ws.cell(
+            row=linha_lateral, column=col_lateral,
+            value=f"Outras Despesas de MKT - Canal Loja ({nome_mes.capitalize()})",
+        )
+        cell_lbl.font = _MKT_FONT_AMARELO
+        cell_lbl.fill = _MKT_FILL_AMARELO
+        cell_lbl.alignment = Alignment(horizontal="left", vertical="center")
+
+        cell_val = ws.cell(row=linha_lateral + 1, column=col_lateral, value=outras_loja[i])
+        cell_val.font = _MKT_FONT_AMARELO_VALOR
+        cell_val.fill = _MKT_FILL_AMARELO
+        cell_val.number_format = _MKT_NUM_FMT
+        cell_val.alignment = Alignment(horizontal="left", vertical="center")
+        linha_lateral += 3
+
+    # ---- Rodapé: como o número é montado (fica abaixo de tudo, sem
+    # atrapalhar o layout que o gestor já conhece) ----
+    linha_rodape = max(ultima_linha_blocos, linha_lateral) + 2
+    notas = [
+        gerado_em,
+        "LOJA - 1% (Realizado) = linha 6.24.2 na aba LJ CONSOLIDADO, menos 6.24.2.5 (Encontro de Ciclo) "
+        "e 6.24.2.6 (Outras Despesas de Marketing) -- esses dois estão nos quadros amarelos ao lado.",
+        "VD, ABPR e CONSOLIDADO (Realizado) = linha 6.24.2 nas abas VD CONSOLIDADO, ABPR CONSOLIDADO e "
+        "DRE CONSOLIDADO, sem nenhum desconto. Orçado = linha 6.24.2 pura em todos os blocos.",
+        "Conferência: em cada mês, LOJA-1% + VD + ABPR + quadro amarelo = CONSOLIDADO.",
+        "DIFERENÇA = Realizado - Orçado (valores negativos são despesa; diferença positiva = gastou menos que o orçado).",
+    ]
+    if visoes_faltando:
+        notas.append(
+            "ATENÇÃO: não encontrei a(s) aba(s) " + ", ".join(visoes_faltando)
+            + " nas planilhas -- o(s) bloco(s) correspondente(s) saiu(ram) zerado(s)."
+        )
+    for nota in notas:
+        cell = ws.cell(row=linha_rodape, column=COL_ROTULO, value=nota)
+        cell.font = EXCEL_STYLE["font_caption"]
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        linha_rodape += 1
+
+    # ---- Larguras ----
+    ws.column_dimensions[get_column_letter(COL_ROTULO)].width = 14
+    ws.column_dimensions[get_column_letter(COL_CONTA)].width = 42
+    for col in range(COL_MES_1, col_total + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 16
+    ws.column_dimensions[get_column_letter(col_lateral)].width = 46
+    return ws
+
+
 def montar_relatorio_excel(
     contas_sel,
     dfs_real,
@@ -4840,6 +5100,8 @@ def montar_relatorio_excel(
     forcar_planos_contas=None,
     permitir_lancamento_manual=False,
     mapa_loja_centro_custo=None,
+    dados_visoes_mkt=None,
+    incluir_aba_mkt_1pct=False,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -5364,6 +5626,14 @@ def montar_relatorio_excel(
     ws4.column_dimensions["G"].width = 28
     ws4.column_dimensions["H"].width = 40
     ws4.column_dimensions["I"].width = 18
+
+    # ---------------- ABA "MKT - 1% x OUTRAS DESPESAS" (só no modelo de MKT) ----------------
+    # Layout fixo, independente das linhas/lojas selecionadas: sempre a linha
+    # 6.24.2 nas quatro visões consolidadas. Por isso recebe os dados por
+    # `dados_visoes_mkt` (carregado à parte, garantindo as quatro abas) e só
+    # cai para `dados_por_loja` se, por algum motivo, ele não vier.
+    if incluir_aba_mkt_1pct:
+        _criar_aba_mkt_1pct(wb, dados_visoes_mkt or dados_por_loja, mapa_meses, gerado_em)
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -8234,6 +8504,27 @@ with tab5:
             mapa_loja_cc_rel = montar_mapa_loja_centro_custo(df_tabela_lojas_rel)
 
         info_modelo_sel = MODELOS_RELATORIO.get(modelo_sel, {})
+        incluir_aba_mkt = bool(info_modelo_sel.get("aba_mkt_1pct", False))
+
+        # A aba de MKT tem layout fixo e SEMPRE lê as quatro visões
+        # consolidadas (LJ, VD, ABPR e DRE) -- mesmo que o filtro de lojas
+        # acima tenha sido reduzido, senão ela sairia zerada. Reaproveita o
+        # que já foi carregado e só busca as abas que faltarem.
+        dados_visoes_mkt_rel = None
+        if incluir_aba_mkt:
+            visoes_mkt_reais = []
+            for alvo in VISOES_ABA_MKT_1PCT:
+                achou = next(
+                    (a for a in abas_disponiveis if _normalizar_nome_aba(a) == _normalizar_nome_aba(alvo)),
+                    None,
+                )
+                if achou:
+                    visoes_mkt_reais.append(achou)
+            dados_visoes_mkt_rel = dict(dados_por_loja_rel)
+            faltando_mkt = [v for v in visoes_mkt_reais if v not in dados_visoes_mkt_rel]
+            if faltando_mkt:
+                with st.spinner("Carregando as visões consolidadas da aba de MKT..."):
+                    dados_visoes_mkt_rel.update(carregar_dados_por_loja(path_orc, path_real, faltando_mkt))
 
         with st.spinner("Montando o relatório em Excel..."):
             excel_bytes = montar_relatorio_excel(
@@ -8244,6 +8535,8 @@ with tab5:
                 forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
                 permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
                 mapa_loja_centro_custo=mapa_loja_cc_rel,
+                dados_visoes_mkt=dados_visoes_mkt_rel,
+                incluir_aba_mkt_1pct=incluir_aba_mkt,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
@@ -8258,6 +8551,11 @@ with tab5:
 
         st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
         st.success(f"Relatório gerado com {len(contas_relatorio)} conta(s) selecionada(s), pronto para download.")
+        if incluir_aba_mkt:
+            st.caption(
+                "📣 Incluída a aba **MKT - 1% x Outras Despesas** (LOJA-1%, VD, ABPR e CONSOLIDADO, "
+                "com os quadros de Outras Despesas de MKT do canal Loja na lateral)."
+            )
 
         if df_diario_rel is None or df_diario_rel.empty:
             st.warning(
@@ -8277,7 +8575,12 @@ with tab5:
             file_name=st.session_state.get("relatorio_excel_nome", "relatorio_dre.xlsx"),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.caption("O relatório contém três planilhas: **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** (contas nas linhas x meses nas colunas, por loja) e **Plano de Contas** (composição de cada linha da DRE, por loja, a partir do DIÁRIO).")
+        st.caption(
+            "O relatório contém **Resumo** (total do ano por conta, consolidado), **Detalhe Mensal** "
+            "(contas nas linhas x meses nas colunas, por loja), **Plano de Contas** (composição de cada "
+            "linha da DRE, por loja, a partir do DIÁRIO) e **Lançamentos** (cópia filtrada da DIÁRIO). "
+            "No modelo de MKT entra também a aba **MKT - 1% x Outras Despesas**."
+        )
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)
