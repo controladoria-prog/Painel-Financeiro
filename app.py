@@ -2909,6 +2909,16 @@ MODELOS_RELATORIO = {
 
 
 # ============================================================================
+# Quem pode abrir o Painel Financeiro. Fica aqui em cima porque a tela de
+# escolha (logo abaixo) precisa da lista para já mostrar o cartão bloqueado
+# a quem não tem acesso, em vez de deixar entrar e barrar depois.
+EMAILS_FINANCEIRO_PERMITIDOS = {
+    "controladoria@grupobeea.com.br",
+    "coordenador.financeiro@grupobeea.com.br",
+    "diretoria.financeira@grupobeea.com.br",
+}
+
+# ============================================================================
 # 4.5 SELEÇÃO DE PAINEL — Controladoria x Financeiro (tela entre o login e
 # o painel de fato). Os dois painéis estão ativos: a escolha feita aqui
 # fica em st.session_state["painel_escolhido"] e pode ser trocada pelo
@@ -2918,57 +2928,175 @@ if "painel_escolhido" not in st.session_state:
     st.session_state["painel_escolhido"] = None
 
 if st.session_state["painel_escolhido"] is None:
+    _usuario_hub = st.session_state.get("usuario_logado") or {}
+    _email_hub = str(_usuario_hub.get("email", "")).strip().lower()
+    _pode_financeiro = _email_hub in EMAILS_FINANCEIRO_PERMITIDOS
+
     st.markdown(
         html_compacto(f"""
         <style>
             [data-testid="stSidebar"], header[data-testid="stHeader"] {{ display: none !important; }}
-            .hub-wrap {{ max-width: 760px; margin: 64px auto 0 auto; text-align: center; }}
-            .hub-title {{ font-size: 26px; font-weight: 800; color: {COLORS['text']}; margin-bottom: 6px; }}
-            .hub-sub {{ font-size: 14px; color: {COLORS['text_muted']}; margin-bottom: 34px; }}
-            .hub-card {{
-                background: linear-gradient(160deg, {COLORS['surface']} 0%, {COLORS['surface_alt']} 100%);
-                border: 1px solid {COLORS['border']}; border-radius: 16px; padding: 30px 22px 18px 22px;
-                text-align: center; height: 100%;
+            /* A tela tinha o conteúdo colado no topo e um vazio enorme embaixo;
+               agora o bloco fica centralizado na altura da janela. */
+            div[data-testid="stAppViewContainer"] > .main .block-container {{
+                display: flex; flex-direction: column; justify-content: center;
+                min-height: 92vh; max-width: 900px;
             }}
-            .hub-card .icone {{ font-size: 40px; margin-bottom: 8px; }}
-            .hub-card h3 {{ color: {COLORS['text']}; font-size: 18px; margin: 4px 0 8px 0; }}
-            .hub-card p {{ color: {COLORS['text_muted']}; font-size: 12.5px; margin-bottom: 4px; min-height: 36px; }}
+            .hub-topo {{ text-align: center; margin-bottom: 30px; }}
+            .hub-topo img {{
+                width: 42px; height: 42px; border-radius: 50%; background: #FFFFFF;
+                padding: 5px; object-fit: contain; margin-bottom: 14px;
+            }}
+            .hub-eyebrow {{
+                font-size: 10px; font-weight: 600; letter-spacing: 1.4px;
+                text-transform: uppercase; color: {COLORS['text_muted']}; margin-bottom: 8px;
+            }}
+            .hub-title {{
+                font-size: 25px; font-weight: 700; color: {COLORS['text']};
+                letter-spacing: -0.3px; margin-bottom: 6px;
+            }}
+            .hub-sub {{ font-size: 12.5px; color: {COLORS['text_muted']}; }}
+
+            /* Cartão e botão viravam duas caixas separadas, com um vão no meio.
+               Zerando o espaçamento da coluna e tirando o arredondamento do
+               lado que se encosta, os dois passam a ser uma peça só. */
+            div[data-testid="column"]:has(.hub-card) div[data-testid="stVerticalBlock"],
+            div[data-testid="stColumn"]:has(.hub-card) div[data-testid="stVerticalBlock"] {{
+                gap: 0 !important;
+            }}
+            .hub-card {{
+                background: {COLORS['surface']};
+                border: 1px solid {COLORS['border']};
+                border-bottom: none;
+                border-radius: 12px 12px 0 0;
+                padding: 26px 24px 22px 24px;
+                text-align: left;
+            }}
+            .hub-card .marca {{
+                width: 34px; height: 3px; border-radius: 2px;
+                background: var(--hub-cor); margin-bottom: 16px;
+            }}
+            .hub-card h3 {{
+                color: {COLORS['text']}; font-size: 17px; font-weight: 600;
+                margin: 0 0 8px 0; letter-spacing: -0.2px;
+            }}
+            .hub-card p {{
+                color: {COLORS['text_muted']}; font-size: 12.5px; line-height: 1.6;
+                margin: 0 0 16px 0; min-height: 40px;
+            }}
+            .hub-tags {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+            .hub-tags span {{
+                font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase;
+                color: {COLORS['text_muted']}; border: 1px solid {COLORS['border']};
+                border-radius: 4px; padding: 3px 8px;
+            }}
+            .hub-card.bloqueado {{ opacity: 0.55; }}
+
+            div[data-testid="column"]:has(.hub-card) .stButton > button,
+            div[data-testid="stColumn"]:has(.hub-card) .stButton > button {{
+                border-radius: 0 0 12px 12px !important;
+                border: 1px solid {COLORS['border']} !important;
+                border-top: 1px solid {COLORS['border']} !important;
+                background: {COLORS['surface_alt']} !important;
+                color: {COLORS['text']} !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                padding: 13px 0 !important;
+                margin: 0 !important;
+            }}
+            div[data-testid="column"]:has(.hub-card) .stButton > button:hover,
+            div[data-testid="stColumn"]:has(.hub-card) .stButton > button:hover {{
+                background: {COLORS['primary']} !important;
+                border-color: {COLORS['primary']} !important;
+                color: #FFFFFF !important;
+            }}
+            div[data-testid="column"]:has(.hub-card) .stButton > button:disabled,
+            div[data-testid="stColumn"]:has(.hub-card) .stButton > button:disabled {{
+                background: {COLORS['surface']} !important;
+                color: {COLORS['text_muted']} !important;
+            }}
+            .hub-rodape {{
+                text-align: center; margin-top: 26px;
+                font-size: 11.5px; color: {COLORS['text_muted']};
+            }}
         </style>
-        <div class="hub-wrap">
-            <div class="hub-title">👋 Bem-vindo(a) de volta</div>
-            <div class="hub-sub">Escolha qual painel você quer acessar</div>
+        <div class="hub-topo">
+            <img src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+            <div class="hub-eyebrow">Controladoria B&amp;A</div>
+            <div class="hub-title">Escolha o painel</div>
+            <div class="hub-sub">Você pode trocar depois, pelo botão Trocar Painel na barra lateral.</div>
         </div>
         """),
         unsafe_allow_html=True,
     )
 
-    col_hub_esp1, col_hub_a, col_hub_b, col_hub_esp2 = st.columns([0.6, 1, 1, 0.6])
+    col_hub_esp1, col_hub_a, col_hub_b, col_hub_esp2 = st.columns([0.35, 1, 1, 0.35])
     with col_hub_a:
         st.markdown(
-            '<div class="hub-card"><div class="icone">📊</div><h3>Controladoria</h3>'
-            "<p>DRE, orçado x realizado, histórico mensal, previsões e relatórios.</p></div>",
+            html_compacto(f"""
+            <div class="hub-card" style="--hub-cor:{COLORS['primary']};">
+                <div class="marca"></div>
+                <h3>Controladoria</h3>
+                <p>Orçado x realizado da DRE, evolução mensal, diagnóstico e emissão
+                   de relatórios por departamento.</p>
+                <div class="hub-tags">
+                    <span>DRE</span><span>Histórico</span><span>Previsões</span><span>Relatórios</span>
+                </div>
+            </div>
+            """),
             unsafe_allow_html=True,
         )
-        if st.button("Acessar Controladoria", use_container_width=True, type="primary", key="btn_hub_controladoria"):
+        if st.button("Acessar Controladoria", use_container_width=True, key="btn_hub_controladoria"):
             st.session_state["painel_escolhido"] = "controladoria"
             st.rerun()
+
     with col_hub_b:
+        _classe_fin = "hub-card" if _pode_financeiro else "hub-card bloqueado"
+        _texto_fin = (
+            "Fluxo de caixa diário e mensal, posição de tesouraria, prazos e "
+            "contas a pagar em aberto."
+            if _pode_financeiro else
+            "Acesso restrito. Fale com a Controladoria se precisar entrar neste painel."
+        )
         st.markdown(
-            '<div class="hub-card"><div class="icone">💰</div><h3>Financeiro</h3>'
-            "<p>Fluxo de caixa e demais indicadores financeiros.</p></div>",
+            html_compacto(f"""
+            <div class="{_classe_fin}" style="--hub-cor:{COLORS['positive']};">
+                <div class="marca"></div>
+                <h3>Financeiro</h3>
+                <p>{_texto_fin}</p>
+                <div class="hub-tags">
+                    <span>Fluxo de caixa</span><span>Tesouraria</span><span>Contas a pagar</span>
+                </div>
+            </div>
+            """),
             unsafe_allow_html=True,
         )
-        if st.button("Acessar Financeiro", use_container_width=True, key="btn_hub_financeiro"):
+        # Sem permissão, o botão já nasce desligado: antes a pessoa entrava e
+        # só então batia na tela de bloqueio.
+        if st.button(
+            "Acessar Financeiro" if _pode_financeiro else "Sem acesso",
+            use_container_width=True, key="btn_hub_financeiro",
+            disabled=not _pode_financeiro,
+        ):
             st.session_state["painel_escolhido"] = "financeiro"
+            st.rerun()
+
+    st.markdown(
+        f'<div class="hub-rodape">Conectado como <b>{_email_hub or "-"}</b></div>',
+        unsafe_allow_html=True,
+    )
+    col_sair_a, col_sair_b, col_sair_c = st.columns([1, 0.5, 1])
+    with col_sair_b:
+        # A barra lateral fica escondida nesta tela, então o "Sair" precisa
+        # existir aqui -- senão quem entrou com a conta errada fica preso.
+        if st.button("Sair", use_container_width=True, key="btn_hub_sair"):
+            st.session_state["usuario_logado"] = None
+            st.session_state["painel_escolhido"] = None
+            _esquecer_credenciais_no_navegador()
             st.rerun()
 
     st.stop()
 
-EMAILS_FINANCEIRO_PERMITIDOS = {
-    "controladoria@grupobeea.com.br",
-    "coordenador.financeiro@grupobeea.com.br",
-    "diretoria.financeira@grupobeea.com.br",
-}
 
 # Colunas reais da aba "Fluxo de Caixa 2026" (confirmadas pelo usuário):
 COL_FIN_VALOR = "Valor.1"
