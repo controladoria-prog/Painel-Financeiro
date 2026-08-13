@@ -2570,6 +2570,16 @@ def _rotulo_mes_pt_extenso(periodo):
     return f"{MESES_PT_FIN[periodo.month - 1]}/{periodo.year}"
 
 
+def _dia_valido_no_mes(valor, ultimo_dia_mes):
+    """True se `valor` é um dia que existe naquele mês (1 até o último dia).
+    Usado para descartar um dia guardado da sessão que não serve mais (ex.:
+    dia 31 guardado e a pessoa troca para um mês de 30 dias)."""
+    try:
+        return 1 <= int(valor) <= int(ultimo_dia_mes)
+    except (TypeError, ValueError):
+        return False
+
+
 def _classificar_movimento_fin(nome_movimento):
     """Classifica cada Movimento em uma de quatro categorias:
     - "aplicacao": aplicações financeiras -- ficam FORA de todos os totais,
@@ -3778,16 +3788,49 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     dia_ini_padrao_d = 1
                 dia_fim_padrao_d = ultimo_dia_mes_d
 
-                # IMPORTANTE: quando um campo tem `key`, o Streamlit ignora o
-                # `value` e usa o que já está guardado na sessão. Por isso o
-                # padrão precisa ser gravado direto no session_state -- senão
-                # um valor antigo fica preso e o padrão nunca aparece. Refaz
-                # também quando a pessoa troca de mês, porque o dia inicial e
-                # o final válidos mudam de um mês pro outro.
-                if st.session_state.get("_fin_mes_dias_ref") != mes_sel_d:
-                    st.session_state["fin_dia_ini_diario"] = dia_ini_padrao_d
-                    st.session_state["fin_dia_fim_diario"] = dia_fim_padrao_d
+                # Quando um campo tem `key`, o Streamlit ignora o `value` e usa
+                # o que está guardado na sessão -- por isso o padrão é gravado
+                # direto no session_state.
+                #
+                # E tem um detalhe que causava bug de verdade: o Streamlit APAGA
+                # da sessão a chave de um campo que não foi desenhado na
+                # execução anterior. Toda vez que esta aba não chegava a montar
+                # os dois campos (mês sem lançamento, recarga dos dados pelo
+                # botão Atualizar, uma falha no meio do caminho que interrompe a
+                # execução), as duas chaves sumiam. Só que o marcador de mês
+                # continuava na sessão, então o padrão não era reescrito e os
+                # campos nasciam no mínimo: "do dia 1 até o dia 1" -- a tela
+                # mostrando um dia só, até recarregar a página inteira.
+                #
+                # Solução: o dia escolhido também vive em chaves PRÓPRIAS, que
+                # não pertencem a nenhum campo e por isso o Streamlit nunca
+                # apaga. Os campos são reabastecidos delas a cada execução.
+                CHAVE_DIA_INI, CHAVE_DIA_FIM = "fin_dia_ini_diario", "fin_dia_fim_diario"
+                GUARDA_DIA_INI, GUARDA_DIA_FIM = "_fin_dia_ini_guardado", "_fin_dia_fim_guardado"
+
+                # 1) O que a pessoa acabou de escolher (o Streamlit já gravou na
+                #    chave do campo) passa a ser o valor guardado.
+                if CHAVE_DIA_INI in st.session_state:
+                    st.session_state[GUARDA_DIA_INI] = st.session_state[CHAVE_DIA_INI]
+                if CHAVE_DIA_FIM in st.session_state:
+                    st.session_state[GUARDA_DIA_FIM] = st.session_state[CHAVE_DIA_FIM]
+
+                # 2) Trocou de mês, nunca escolheu nada, ou o dia guardado não
+                #    existe neste mês -> volta para o padrão do mês.
+                if (
+                    st.session_state.get("_fin_mes_dias_ref") != mes_sel_d
+                    or not _dia_valido_no_mes(st.session_state.get(GUARDA_DIA_INI), ultimo_dia_mes_d)
+                    or not _dia_valido_no_mes(st.session_state.get(GUARDA_DIA_FIM), ultimo_dia_mes_d)
+                ):
+                    st.session_state[GUARDA_DIA_INI] = dia_ini_padrao_d
+                    st.session_state[GUARDA_DIA_FIM] = dia_fim_padrao_d
                     st.session_state["_fin_mes_dias_ref"] = mes_sel_d
+
+                # 3) Reabastece os campos a partir do valor guardado -- é isto
+                #    que devolve o recorte certo depois de o Streamlit ter
+                #    limpado as chaves dos campos.
+                st.session_state[CHAVE_DIA_INI] = int(st.session_state[GUARDA_DIA_INI])
+                st.session_state[CHAVE_DIA_FIM] = int(st.session_state[GUARDA_DIA_FIM])
 
                 with st.expander("📆 Recortar dias do mês (opcional)"):
                     col_dd1, col_dd2 = st.columns(2)
