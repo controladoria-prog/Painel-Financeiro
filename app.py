@@ -2545,6 +2545,10 @@ COL_FIN_VENCIMENTO = "Vencimento.1"
 # olhando exclusivamente a "Data Liquidação" que vem no próprio CSV --
 # misturar as duas fazia sumir do fluxo o que já estava pago.
 COL_FIN_LIQ_DIARIO = "Data Liquidação (DIÁRIO)"
+# Outra coluna criada pelo painel: a MESMA "Data Liquidação" do CSV, só que
+# lida de forma ampla (aceitando mais de um formato de data no campo).
+# Também é usada SÓ na aba Análises -- ver comentário da conversão de datas.
+COL_FIN_LIQ_AMPLA = "Data Liquidação (leitura ampla)"
 # Coluna auxiliar montada dentro da aba Análises: a liquidação do CSV
 # completada pela da DIÁRIO. Vive só ali.
 COL_FIN_LIQ_EFETIVA = "Liquidação Efetiva"
@@ -2865,31 +2869,52 @@ def preparar_fluxo_caixa(base_data):
     df[COL_FIN_VALOR] = pd.to_numeric(valores_texto, errors="coerce").fillna(0)
 
     texto_liq_bruto = df[COL_FIN_DATA_LIQUIDACAO].astype(str).str.strip()
-    df[COL_FIN_DATA_LIQUIDACAO] = _parse_datas_fin(df[COL_FIN_DATA_LIQUIDACAO])
-    df[COL_FIN_VENCIMENTO] = _parse_datas_fin(df[COL_FIN_VENCIMENTO])
 
-    # Rede de segurança: se a planilha tiver mais de uma coluna de liquidação
-    # (ex.: "Data Liquidação" e "Data Liquidação.1", que o Power Query cria
-    # quando há cabeçalho repetido), completa APENAS as linhas que ficaram
-    # sem data -- nunca sobrescreve o que já veio preenchido.
+    # ---- CONVERSÃO ESTRITA (a que vale para o painel inteiro) ----
+    # Esta é a leitura ORIGINAL, e ela fica assim de propósito. O pandas, sem
+    # `format`, deduz UM formato a partir do primeiro valor preenchido e o
+    # aplica na coluna toda: o que estiver diferente vira vazio. Isso descarta
+    # linhas -- mas é exatamente o mesmo descarte que a tabela dinâmica da
+    # planilha faz, e a planilha é a referência: quando trocamos por uma
+    # leitura mais tolerante, o Fluxo Mensal e o Diário passaram a incluir
+    # linhas que a planilha não conta (e a jogar outras em meses diferentes),
+    # e os totais deixaram de bater. Mexer aqui muda TODO o painel.
+    df[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
+        df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+    )
+    df[COL_FIN_VENCIMENTO] = pd.to_datetime(
+        df[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
+    )
+
+    # ---- LEITURA AMPLA (só para a aba Análises) ----
+    # A mesma coluna de liquidação, agora aceitando formatos misturados no
+    # mesmo campo. Vai para uma coluna à parte, que NÃO entra na Data Efetiva
+    # nem em nada do fluxo -- serve só para os cálculos de prazo e de quitado
+    # x em aberto, onde o que importa é saber se o título foi pago.
+    df[COL_FIN_LIQ_AMPLA] = _parse_datas_fin(df_fluxo[COL_FIN_DATA_LIQUIDACAO])
+
+    # Se a planilha tiver mais de uma coluna de liquidação (ex.: "Data
+    # Liquidação.1", que o Power Query cria quando há cabeçalho repetido),
+    # ela completa APENAS os vazios -- e só na leitura ampla.
     colunas_liq_extras = [
-        coluna for coluna in df.columns
+        coluna for coluna in df_fluxo.columns
         if coluna != COL_FIN_DATA_LIQUIDACAO and "liquida" in _normalizar_coluna_fin(coluna)
     ]
     for coluna_extra in colunas_liq_extras:
-        faltando_liq = df[COL_FIN_DATA_LIQUIDACAO].isna()
+        faltando_liq = df[COL_FIN_LIQ_AMPLA].isna()
         if not faltando_liq.any():
             break
-        df.loc[faltando_liq, COL_FIN_DATA_LIQUIDACAO] = _parse_datas_fin(
-            df.loc[faltando_liq, coluna_extra]
+        df.loc[faltando_liq, COL_FIN_LIQ_AMPLA] = _parse_datas_fin(
+            df_fluxo.loc[faltando_liq, coluna_extra]
         )
 
-    # Diagnóstico: texto que tinha conteúdo de verdade mas não virou data. Se
-    # isso for maior que zero, tem formato novo aparecendo na planilha. Campo
-    # em branco NÃO entra nessa conta (é o normal: título ainda não pago).
-    nao_convertidas = _texto_preenchido_fin(texto_liq_bruto) & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    # Diagnóstico: texto que tinha conteúdo de verdade e não virou data nem na
+    # leitura ampla. Campo em branco NÃO entra nessa conta (é o normal: título
+    # ainda não pago).
+    nao_convertidas = _texto_preenchido_fin(texto_liq_bruto) & df[COL_FIN_LIQ_AMPLA].isna()
     diagnostico = {
         "liq_preenchidas": int(df[COL_FIN_DATA_LIQUIDACAO].notna().sum()),
+        "liq_preenchidas_ampla": int(df[COL_FIN_LIQ_AMPLA].notna().sum()),
         "liq_nao_convertidas": int(nao_convertidas.sum()),
         "liq_amostras_nao_convertidas": texto_liq_bruto[nao_convertidas].unique()[:5].tolist(),
         "colunas_liq_extras": colunas_liq_extras,
@@ -3238,7 +3263,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             data_max_diag = df_fin["Data Efetiva"].max()
             st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
             st.write(
-                f"**Títulos com data de liquidação:** {diag_fluxo.get('liq_preenchidas', 0)} · "
+                f"**Títulos com data de liquidação:** {diag_fluxo.get('liq_preenchidas', 0)} "
+                f"(leitura estrita, usada no fluxo) · {diag_fluxo.get('liq_preenchidas_ampla', 0)} "
+                f"(leitura ampla, usada só na aba Análises) · "
                 f"**Texto que não virou data:** {diag_fluxo.get('liq_nao_convertidas', 0)}"
             )
             if diag_fluxo.get("liq_nao_convertidas"):
@@ -4510,12 +4537,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # de prazo médio e de quitado x em aberto. Nenhuma outra aba do
             # painel usa isso -- lá o pago continua aparecendo no fluxo
             # normalmente, como sempre foi.
+            df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO]
+            if COL_FIN_LIQ_AMPLA in df_a.columns:
+                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_LIQ_EFETIVA].fillna(
+                    df_a[COL_FIN_LIQ_AMPLA]
+                )
             if COL_FIN_LIQ_DIARIO in df_a.columns:
-                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO].fillna(
+                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_LIQ_EFETIVA].fillna(
                     df_a[COL_FIN_LIQ_DIARIO]
                 )
-            else:
-                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO]
 
             df_a["DiaOrd"] = df_a["Data Efetiva"].dt.normalize()
             entradas_a = df_a.loc[df_a["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
