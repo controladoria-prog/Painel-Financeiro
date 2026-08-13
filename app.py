@@ -1208,7 +1208,9 @@ def _injetar_css_login():
             font-size: 12px; color: {COLORS["text_muted"]}; margin: 2px 0 18px 2px;
         }}
         div[data-testid="column"]:has(.login-hero-title) .stButton > button,
-        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button {{
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button,
+        div[data-testid="column"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button,
+        div[data-testid="stColumn"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button {{
             background: {COLORS["primary"]} !important;
             border: 1px solid {COLORS["primary"]} !important;
             border-radius: 8px !important;
@@ -1222,11 +1224,15 @@ def _injetar_css_login():
             transition: filter 0.15s ease;
         }}
         div[data-testid="column"]:has(.login-hero-title) .stButton > button:hover,
-        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:hover {{
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:hover,
+        div[data-testid="column"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button:hover,
+        div[data-testid="stColumn"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button:hover {{
             filter: brightness(1.12);
         }}
         div[data-testid="column"]:has(.login-hero-title) .stButton > button:disabled,
-        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:disabled {{
+        div[data-testid="stColumn"]:has(.login-hero-title) .stButton > button:disabled,
+        div[data-testid="column"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button:disabled,
+        div[data-testid="stColumn"]:has(.login-hero-title) [data-testid="stFormSubmitButton"] button:disabled {{
             background: {COLORS["surface"]} !important;
             border-color: {COLORS["border"]} !important;
             color: {COLORS["text_muted"]} !important;
@@ -1413,43 +1419,55 @@ def checar_login():
             """),
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="login-field-label">E-mail</div>', unsafe_allow_html=True)
-        st.text_input(
-            "E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br",
-            label_visibility="collapsed", on_change=validar_login,
-        )
-        st.markdown('<div class="login-field-label">Senha</div>', unsafe_allow_html=True)
-        st.text_input(
-            "Senha",
-            type="password",
-            key="campo_senha",
-            on_change=validar_login,
-            placeholder="Digite sua senha",
-            label_visibility="collapsed",
-        )
-        # (5) O erro fica colado nos campos, não numa caixa vermelha depois
-        # do botão -- é onde a pessoa está olhando quando erra.
-        segundos_espera = _segundos_bloqueio_login()
-        if segundos_espera > 0:
-            st.markdown(
-                f'<div class="login-aviso-espera">Muitas tentativas seguidas. '
-                f'Aguarde {segundos_espera}s para tentar de novo.</div>',
-                unsafe_allow_html=True,
+        # Os campos ficam dentro de um FORMULÁRIO, e isso resolve dois
+        # incômodos que vinham do `on_change`:
+        #   * ao sair de um campo (clicar no outro, no olhinho, em qualquer
+        #     lugar), o Streamlit disparava a validação e recarregava a tela --
+        #     era a "subidinha" que fazia o primeiro clique na senha se perder;
+        #   * qualquer clique depois da senha digitada acabava entrando no
+        #     painel, mesmo sem apertar Entrar.
+        # Dentro do formulário, nada é enviado até o botão ser acionado -- e o
+        # Enter dentro de um campo aciona o botão, que é o que se espera.
+        with st.form("form_login", clear_on_submit=False, border=False):
+            st.markdown('<div class="login-field-label">E-mail</div>', unsafe_allow_html=True)
+            st.text_input(
+                "E-mail", key="campo_email", placeholder="seu.email@grupobeea.com.br",
+                label_visibility="collapsed",
             )
-        elif st.session_state.get("login_invalido", False):
-            st.markdown(
-                '<div class="login-erro">E-mail ou senha incorretos. Tente novamente.</div>',
-                unsafe_allow_html=True,
+            st.markdown('<div class="login-field-label">Senha</div>', unsafe_allow_html=True)
+            st.text_input(
+                "Senha",
+                type="password",
+                key="campo_senha",
+                placeholder="Digite sua senha",
+                label_visibility="collapsed",
             )
+            # O erro fica colado nos campos, não numa caixa depois do botão --
+            # é onde a pessoa está olhando quando erra.
+            segundos_espera = _segundos_bloqueio_login()
+            if segundos_espera > 0:
+                st.markdown(
+                    f'<div class="login-aviso-espera">Muitas tentativas seguidas. '
+                    f'Aguarde {segundos_espera}s para tentar de novo.</div>',
+                    unsafe_allow_html=True,
+                )
+            elif st.session_state.get("login_invalido", False):
+                st.markdown(
+                    '<div class="login-erro">E-mail ou senha incorretos. Tente novamente.</div>',
+                    unsafe_allow_html=True,
+                )
 
-        st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
-        st.markdown(
-            '<div class="login-forgot-hint">Esqueceu a senha ou ainda não tem acesso? '
-            'Fale com o <a href="mailto:controladoria@grupobeea.com.br">administrador '
-            'da Controladoria</a>.</div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("Entrar", use_container_width=True, disabled=segundos_espera > 0):
+            st.checkbox("Lembrar de mim neste navegador", value=True, key="campo_lembrar")
+            st.markdown(
+                '<div class="login-forgot-hint">Esqueceu a senha ou ainda não tem acesso? '
+                'Fale com o <a href="mailto:controladoria@grupobeea.com.br">administrador '
+                'da Controladoria</a>.</div>',
+                unsafe_allow_html=True,
+            )
+            entrar_clicado = st.form_submit_button(
+                "Entrar", use_container_width=True, disabled=segundos_espera > 0,
+            )
+        if entrar_clicado:
             validar_login()
             st.rerun()
 
