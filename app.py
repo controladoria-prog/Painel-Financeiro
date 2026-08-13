@@ -6682,160 +6682,6 @@ def planos_do_diario(df_diario, linhas_dre=None):
     return sorted(planos.unique().tolist())
 
 
-def _criar_abas_planos_contas(
-    wb, nomes_usados, df_diario, planos_sel, mapa_meses, gerado_em, mapa_loja_centro_custo=None,
-):
-    """Acrescenta ao workbook as planilhas focadas em PLANOS DE CONTAS,
-    montadas direto da aba DIÁRIO:
-      - Planos - Resumo: cada plano com total do período, participação e nº de lançamentos;
-      - Planos - Mensal: plano x loja x meses, com filtro do Excel ligado;
-      - uma aba de lançamentos com a DIÁRIO filtrada nesses planos.
-
-    É função separada porque as mesmas abas entram tanto no relatório completo
-    (junto com as linhas da DRE) quanto num relatório só de planos."""
-    mapa_loja_centro_custo = mapa_loja_centro_custo or {}
-    colunas_mes = list(mapa_meses.values())
-    alvo = {_normalizar_texto(p) for p in planos_sel}
-    df = df_diario[df_diario["Plano de Contas"].map(_normalizar_texto).isin(alvo)].copy()
-    if colunas_mes and "Mês" in df.columns:
-        df = df[df["Mês"].isin(colunas_mes)]
-
-    # ---------------- RESUMO POR PLANO ----------------
-    ws = wb.create_sheet(_nome_aba_seguro("Planos - Resumo", nomes_usados))
-    ws.sheet_properties.tabColor = "FF6B9EE6"
-    _escrever_titulo(ws, "RESUMO POR PLANO DE CONTAS", 1, 5)
-    _escrever_legenda(ws, gerado_em, 2, 5)
-
-    for col, texto_col in enumerate(
-        ["Plano de Contas", "Linha DRE", "Lançamentos", "Total (R$)", "% do total"], start=1
-    ):
-        cell = ws.cell(row=4, column=col, value=texto_col)
-        cell.font = EXCEL_STYLE["font_bold"]
-        cell.fill = EXCEL_STYLE["fill_header"]
-        cell.border = EXCEL_STYLE["border"]
-        cell.alignment = Alignment(horizontal="left" if col <= 2 else "center")
-
-    total_geral = float(df["Valor Bruto"].sum()) if not df.empty else 0.0
-    linha = 5
-    for plano in planos_sel:
-        bloco = df[df["Plano de Contas"].map(_normalizar_texto) == _normalizar_texto(plano)]
-        total_plano = float(bloco["Valor Bruto"].sum())
-        linhas_dre_plano = ""
-        if "Linha DRE" in bloco.columns and not bloco.empty:
-            linhas_dre_plano = ", ".join(
-                sorted(bloco["Linha DRE"].dropna().astype(str).str.strip().unique())[:3]
-            )
-        participacao = (total_plano / total_geral) if total_geral else 0.0
-        for col, val in enumerate(
-            [plano, linhas_dre_plano, len(bloco), total_plano, participacao], start=1
-        ):
-            cell = ws.cell(row=linha, column=col, value=val)
-            cell.border = EXCEL_STYLE["border"]
-            if col <= 2:
-                cell.font = EXCEL_STYLE["font_normal"]
-                cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            elif col == 3:
-                cell.font = EXCEL_STYLE["font_normal"]
-                cell.alignment = Alignment(horizontal="center")
-            elif col == 4:
-                cell.font = _fonte_por_valor(val)
-                cell.number_format = '"R$" #,##0.00'
-                cell.alignment = Alignment(horizontal="right")
-            else:
-                cell.font = EXCEL_STYLE["font_normal"]
-                cell.number_format = "0.0%"
-                cell.alignment = Alignment(horizontal="right")
-        linha += 1
-
-    for col, val in enumerate(
-        ["TOTAL", "", len(df), total_geral, 1.0 if total_geral else 0.0], start=1
-    ):
-        cell = ws.cell(row=linha, column=col, value=val)
-        cell.font = EXCEL_STYLE["font_bold"]
-        cell.fill = EXCEL_STYLE["fill_total"]
-        cell.border = EXCEL_STYLE["border"]
-        if col == 4:
-            cell.number_format = '"R$" #,##0.00'
-            cell.alignment = Alignment(horizontal="right")
-        elif col == 5:
-            cell.number_format = "0.0%"
-            cell.alignment = Alignment(horizontal="right")
-        elif col == 3:
-            cell.alignment = Alignment(horizontal="center")
-
-    ws.column_dimensions["A"].width = 46
-    ws.column_dimensions["B"].width = 34
-    ws.column_dimensions["C"].width = 14
-    ws.column_dimensions["D"].width = 20
-    ws.column_dimensions["E"].width = 12
-    ws.freeze_panes = "A5"
-
-    # ---------------- PLANO x LOJA x MÊS ----------------
-    ws2 = wb.create_sheet(_nome_aba_seguro("Planos - Mensal", nomes_usados))
-    ws2.sheet_properties.tabColor = "FF57BE92"
-    n_colunas = 2 + len(colunas_mes) + 1
-    _escrever_titulo(ws2, "PLANO DE CONTAS x MÊS", 1, n_colunas)
-    _escrever_legenda(
-        ws2, gerado_em + ' · use o filtro (▾) da coluna "Loja" para ver uma unidade de cada vez',
-        2, n_colunas,
-    )
-    cabecalho = ["Plano de Contas", "Loja"] + [m.capitalize() for m in mapa_meses.keys()] + ["Total do período"]
-    for col, texto_col in enumerate(cabecalho, start=1):
-        cell = ws2.cell(row=4, column=col, value=texto_col)
-        cell.font = EXCEL_STYLE["font_bold"]
-        cell.fill = EXCEL_STYLE["fill_header"]
-        cell.border = EXCEL_STYLE["border"]
-        cell.alignment = Alignment(horizontal="left" if col <= 2 else "center")
-
-    linha = 5
-    if not df.empty:
-        df = df.assign(_loja=df["Centro de Custos"].astype(str).str.strip().map(
-            lambda cc: mapa_loja_centro_custo.get(cc, cc)
-        ))
-        for (plano, loja), bloco in df.groupby(["Plano de Contas", "_loja"], observed=True):
-            valores_mes = [
-                float(bloco.loc[bloco["Mês"] == m_col, "Valor Bruto"].sum()) for m_col in colunas_mes
-            ]
-            _escrever_linha_flat(
-                ws2, linha, [str(plano), str(loja)], valores_mes, sum(valores_mes),
-                colorir_por_sinal=True,
-            )
-            linha += 1
-
-    if linha > 5:
-        ws2.auto_filter.ref = f"A4:{get_column_letter(n_colunas)}{linha - 1}"
-    ws2.column_dimensions["A"].width = 46
-    ws2.column_dimensions["B"].width = 26
-    for col in range(3, n_colunas + 1):
-        ws2.column_dimensions[get_column_letter(col)].width = 15
-    ws2.freeze_panes = "C5"
-
-    # ---------------- LANÇAMENTOS ----------------
-    if not df.empty:
-        _criar_aba_lancamentos(
-            wb, nomes_usados, "Planos de Contas",
-            df.drop(columns=["_loja"]) if "_loja" in df.columns else df,
-        )
-
-
-def montar_relatorio_planos_excel(
-    df_diario, planos_sel, mapa_meses, escopo_label, mapa_loja_centro_custo=None,
-):
-    """Relatório SÓ de planos de contas (quando nenhuma linha da DRE foi
-    escolhida). Usa as mesmas abas do relatório completo."""
-    wb = Workbook()
-    wb.remove(wb.active)
-    nomes_usados = set()
-    gerado_em = f"Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')} · {escopo_label}"
-    _criar_abas_planos_contas(
-        wb, nomes_usados, df_diario, planos_sel, mapa_meses, gerado_em, mapa_loja_centro_custo,
-    )
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
 def montar_relatorio_excel(
     contas_sel,
     dfs_real,
@@ -6851,6 +6697,7 @@ def montar_relatorio_excel(
     mapa_loja_centro_custo=None,
     dados_visoes_mkt=None,
     incluir_aba_mkt_1pct=False,
+    planos_filtro=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -6880,6 +6727,13 @@ def montar_relatorio_excel(
     dados_por_loja = dados_por_loja or {}
     mapa_planos_dre = mapa_planos_dre or {}
     forcar_planos_contas = forcar_planos_contas or []
+    # Quando a pessoa filtra por plano de contas, o relatório é o MESMO --
+    # mesmas abas, mesmos cabeçalhos, mesmo nome de arquivo. O que muda é a
+    # origem dos valores: em vez de virem das abas por loja (que só sabem
+    # somar a linha da DRE inteira), vêm da DIÁRIO, lançamento a lançamento,
+    # restrita aos planos escolhidos. É o único jeito de o número refletir
+    # apenas o que foi selecionado.
+    planos_filtro = planos_filtro or []
     mapa_loja_centro_custo = mapa_loja_centro_custo or {}
     diario_disponivel = df_diario is not None and not df_diario.empty
 
@@ -6895,58 +6749,6 @@ def montar_relatorio_excel(
         return candidatos or [loja]
     wb = Workbook()
     gerado_em = f"{escopo_label} · Gerado em {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}"
-
-    # ---------------- ABA "RESUMO" ----------------
-    ws1 = wb.active
-    ws1.title = "Resumo"
-
-    _escrever_titulo(ws1, "Relatório de DRE — Orçado vs. Realizado (Resumo Anual)", 1, 5)
-    _escrever_legenda(ws1, gerado_em, 2, 5)
-
-    linha_header = 4
-    headers = ["Conta / Linha DRE", "Realizado (R$)", "Orçado (R$)", "Desvio (R$)", "Desvio (%)"]
-    for col, texto in enumerate(headers, start=1):
-        cell = ws1.cell(row=linha_header, column=col, value=texto)
-        cell.font = EXCEL_STYLE["font_header"]
-        cell.fill = EXCEL_STYLE["fill_header"]
-        cell.border = EXCEL_STYLE["border"]
-        cell.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="center")
-    ws1.row_dimensions[linha_header].height = 20
-    ws1.freeze_panes = f"A{linha_header + 1}"
-
-    linha = linha_header + 1
-    for i, conta in enumerate(contas_sel):
-        v_real = get_valor_consolidado_multi(dfs_real, conta, colunas_ano)
-        v_orc = get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
-        desvio = v_real - v_orc
-        desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
-
-        fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
-        valores = [conta, v_real, v_orc, desvio, desvio_pct]
-        for col, val in enumerate(valores, start=1):
-            cell = ws1.cell(row=linha, column=col, value=val)
-            cell.border = EXCEL_STYLE["border"]
-            if fill:
-                cell.fill = fill
-            if col == 1:
-                cell.font = EXCEL_STYLE["font_normal"]
-                cell.alignment = Alignment(horizontal="left", vertical="center")
-            elif col in (2, 3):
-                cell.font = EXCEL_STYLE["font_normal"]
-                cell.number_format = '"R$" #,##0.00'
-                cell.alignment = Alignment(horizontal="right")
-            elif col == 4:
-                cell.font = _fonte_por_valor(desvio)
-                cell.number_format = '"R$" #,##0.00'
-                cell.alignment = Alignment(horizontal="right")
-            else:
-                cell.font = _fonte_por_valor(desvio)
-                cell.number_format = '0.0"%"'
-                cell.alignment = Alignment(horizontal="right")
-        linha += 1
-
-    for col, largura in zip(range(1, 6), [46, 18, 18, 18, 14]):
-        ws1.column_dimensions[get_column_letter(col)].width = largura
 
     # ========================================================================
     # Dados auxiliares: lojas individuais x visões consolidadas, e o filtro
@@ -7035,7 +6837,14 @@ def montar_relatorio_excel(
                 m = planos_norm.apply(lambda x: (plano_norm in x) or (x in plano_norm) if x else False)
             mask_forcado |= m
 
-        df_lanc = df_diario[mask_conta | mask_forcado].copy()
+        if planos_filtro:
+            # Só os planos marcados -- ignora tanto as linhas da DRE quanto
+            # os planos forçados do modelo.
+            alvo_planos = {_normalizar_texto(p) for p in planos_filtro}
+            mask_planos = planos_norm.isin(alvo_planos)
+            df_lanc = df_diario[mask_planos].copy()
+        else:
+            df_lanc = df_diario[mask_conta | mask_forcado].copy()
         # Resolve o nome "bonito" da loja a partir do Centro de Custos (usa o
         # mapa nos dois sentidos, montado pela Tabela_Lojas/DE_PARA). Se não
         # achar correspondência, mantém o próprio Centro de Custos como
@@ -7051,6 +6860,44 @@ def montar_relatorio_excel(
             ]
         )
 
+    # Com filtro por plano, as linhas do relatório são as que os planos
+    # escolhidos alimentam -- e não as do modelo. Plano sem linha da DRE
+    # entra como "(Fora da DRE)", exatamente como o relatório padrão já
+    # faz na aba Plano de Contas.
+    ROTULO_FORA_DA_DRE = "(Fora da DRE)"
+    if planos_filtro:
+        linhas_encontradas = []
+        if not df_lanc.empty:
+            achadas = (
+                df_lanc["Linha DRE"].dropna().astype(str).str.strip().unique().tolist()
+            )
+            linhas_encontradas = sorted(l for l in achadas if l)
+            tem_sem_linha = (
+                df_lanc["Linha DRE"].map(_normalizar_texto) == ""
+            ).any()
+            if tem_sem_linha:
+                linhas_encontradas.append(ROTULO_FORA_DA_DRE)
+        contas_sel = linhas_encontradas
+
+    def _valores_planos(conta, meses, lojas=None):
+        """Realizado dos planos filtrados, mês a mês, opcionalmente restrito
+        a um conjunto de lojas. Usado no lugar das abas por loja quando o
+        relatório está filtrado por plano de contas."""
+        if df_lanc.empty:
+            return [0.0] * len(meses)
+        bloco = df_lanc
+        if lojas is not None:
+            bloco = bloco[bloco["Loja"].isin(lojas)]
+        if conta is not None:
+            conta_norm = _normalizar_texto(conta)
+            linhas_bloco = bloco["Linha DRE"].map(_normalizar_texto)
+            if conta_norm == _normalizar_texto(ROTULO_FORA_DA_DRE):
+                bloco = bloco[linhas_bloco == ""]
+            else:
+                bloco = bloco[linhas_bloco == conta_norm]
+        return [float(bloco.loc[bloco["Mês"] == m_col, "Valor Bruto"].sum()) for m_col in meses]
+
+
     # ---- Planos de contas GLOBAIS por conta (juntando TODAS as lojas) ----
     # A aba "Plano de Contas" precisa mostrar sempre o MESMO conjunto de
     # planos de contas para uma dada linha da DRE, em todas as lojas -- com
@@ -7062,6 +6909,14 @@ def montar_relatorio_excel(
         linhas_norm_geral = df_lanc["Linha DRE"].map(_normalizar_texto)
         for conta in contas_sel:
             conta_norm_geral = _normalizar_texto(conta)
+            if conta_norm_geral == _normalizar_texto(ROTULO_FORA_DA_DRE):
+                # Os planos sem linha da DRE ficam agrupados nessa pseudo-conta.
+                planos_sem_linha = sorted(
+                    df_lanc.loc[linhas_norm_geral == "", "Plano de Contas"].dropna().unique().tolist()
+                )
+                if planos_sem_linha:
+                    planos_por_conta_global[conta] = planos_sem_linha
+                continue
             mask_geral = linhas_norm_geral == conta_norm_geral
             if not mask_geral.any():
                 mask_geral = linhas_norm_geral.apply(
@@ -7070,6 +6925,71 @@ def montar_relatorio_excel(
             planos_conta = sorted(df_lanc.loc[mask_geral, "Plano de Contas"].dropna().unique().tolist())
             if planos_conta:
                 planos_por_conta_global[conta] = planos_conta
+
+    # ---------------- ABA "RESUMO" ----------------
+    ws1 = wb.active
+    ws1.title = "Resumo"
+
+    _escrever_titulo(ws1, "Relatório de DRE — Orçado vs. Realizado (Resumo Anual)", 1, 5)
+    # No recorte por plano de contas o orçamento não existe nesse nível --
+    # ele é orçado por linha da DRE. Deixar a coluna zerada e dizer o porquê
+    # é mais honesto do que comparar com um orçado que não é daquele plano.
+    _legenda_resumo = gerado_em
+    if planos_filtro:
+        _legenda_resumo += (
+            " · Recorte por plano de contas: " + ", ".join(planos_filtro)
+            + " · Orçado fica zerado (o orçamento é definido por linha da DRE, não por plano)"
+        )
+    _escrever_legenda(ws1, _legenda_resumo, 2, 5)
+
+    linha_header = 4
+    headers = ["Conta / Linha DRE", "Realizado (R$)", "Orçado (R$)", "Desvio (R$)", "Desvio (%)"]
+    for col, texto in enumerate(headers, start=1):
+        cell = ws1.cell(row=linha_header, column=col, value=texto)
+        cell.font = EXCEL_STYLE["font_header"]
+        cell.fill = EXCEL_STYLE["fill_header"]
+        cell.border = EXCEL_STYLE["border"]
+        cell.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="center")
+    ws1.row_dimensions[linha_header].height = 20
+    ws1.freeze_panes = f"A{linha_header + 1}"
+
+    linha = linha_header + 1
+    for i, conta in enumerate(contas_sel):
+        if planos_filtro:
+            v_real = sum(_valores_planos(conta, colunas_ano))
+            v_orc = 0.0
+        else:
+            v_real = get_valor_consolidado_multi(dfs_real, conta, colunas_ano)
+            v_orc = get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
+        desvio = v_real - v_orc
+        desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
+
+        fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+        valores = [conta, v_real, v_orc, desvio, desvio_pct]
+        for col, val in enumerate(valores, start=1):
+            cell = ws1.cell(row=linha, column=col, value=val)
+            cell.border = EXCEL_STYLE["border"]
+            if fill:
+                cell.fill = fill
+            if col == 1:
+                cell.font = EXCEL_STYLE["font_normal"]
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif col in (2, 3):
+                cell.font = EXCEL_STYLE["font_normal"]
+                cell.number_format = '"R$" #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 4:
+                cell.font = _fonte_por_valor(desvio)
+                cell.number_format = '"R$" #,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.font = _fonte_por_valor(desvio)
+                cell.number_format = '0.0"%"'
+                cell.alignment = Alignment(horizontal="right")
+        linha += 1
+
+    for col, largura in zip(range(1, 6), [46, 18, 18, 18, 14]):
+        ws1.column_dimensions[get_column_letter(col)].width = largura
 
     # ---------------- ABA "DETALHE MENSAL" (Orçado x Realizado, por loja) ----------------
     # Formato tabular "achatado" (Loja/Conta/Tipo em colunas próprias, uma
@@ -7105,9 +7025,20 @@ def montar_relatorio_excel(
     for loja in lojas_ordenadas:
         df_o_loja, df_r_loja = dados_por_loja[loja]
 
+        lojas_do_bloco = (
+            [loja] if _normalizar_nome_aba(loja) not in _LOJAS_CONSOLIDADAS_NORM
+            else _lojas_do_grupo_consolidado(loja)
+        )
         for conta in contas_sel:
-            valores_real = [get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()]
-            valores_orc = [get_valor_consolidado_multi([df_o_loja], conta, [m_col]) for m_col in mapa_meses.values()]
+            if planos_filtro:
+                valores_real = _valores_planos(conta, list(mapa_meses.values()), lojas_do_bloco)
+                # O orçamento não é detalhado por plano de contas -- só existe
+                # no nível da linha da DRE. Num recorte por plano, comparar
+                # com ele daria um desvio inventado, então fica zerado.
+                valores_orc = [0.0] * len(mapa_meses)
+            else:
+                valores_real = [get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()]
+                valores_orc = [get_valor_consolidado_multi([df_o_loja], conta, [m_col]) for m_col in mapa_meses.values()]
             valores_desvio = [vr - vo for vr, vo in zip(valores_real, valores_orc)]
 
             _escrever_linha_flat(ws2, linha, [loja, conta, "Realizado"], valores_real, sum(valores_real))
@@ -7181,10 +7112,15 @@ def montar_relatorio_excel(
             if not df_lanc_loja.empty:
                 conta_norm = _normalizar_texto(conta)
                 linhas_norm_loja = df_lanc_loja["Linha DRE"].map(_normalizar_texto)
-                mask_conta_loja = linhas_norm_loja == conta_norm
-                if not mask_conta_loja.any():
-                    mask_conta_loja = linhas_norm_loja.apply(lambda x: (conta_norm in x) or (x in conta_norm) if x else False)
-                df_diario_conta = df_lanc_loja[mask_conta_loja]
+                if conta_norm == _normalizar_texto(ROTULO_FORA_DA_DRE):
+                    # Pseudo-conta dos planos sem linha da DRE: o filtro é a
+                    # ausência de linha, não o nome dela.
+                    df_diario_conta = df_lanc_loja[linhas_norm_loja == ""]
+                else:
+                    mask_conta_loja = linhas_norm_loja == conta_norm
+                    if not mask_conta_loja.any():
+                        mask_conta_loja = linhas_norm_loja.apply(lambda x: (conta_norm in x) or (x in conta_norm) if x else False)
+                    df_diario_conta = df_lanc_loja[mask_conta_loja]
 
             soma_planos_mes = [0.0] * n_meses
             planos_globais_conta = planos_por_conta_global.get(conta)
@@ -10427,21 +10363,7 @@ with tab5:
 
     # A ordem importa: se há plano marcado, o relatório é o do plano --
     # foi isso que a pessoa pediu ao filtrar.
-    if gerar_clicado and planos_relatorio:
-        with st.spinner("Montando o relatório em Excel..."):
-            mapa_loja_cc_planos = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
-            excel_bytes = montar_relatorio_planos_excel(
-                df_diario_planos, planos_relatorio, m_map_rel, label_visao,
-                mapa_loja_centro_custo=mapa_loja_cc_planos,
-            )
-        st.session_state["relatorio_excel_bytes"] = excel_bytes
-        st.session_state["relatorio_excel_nome"] = "Relatorio_Plano_de_Contas.xlsx"
-        st.success(
-            f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, "
-            "pronto para download."
-        )
-
-    elif gerar_clicado and contas_relatorio:
+    if gerar_clicado and (contas_relatorio or planos_relatorio):
         with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
             # Carrega só as lojas/visões escolhidas no filtro acima -- evita
             # gerar um arquivo gigante com todas as 26 abas de uma vez.
@@ -10486,6 +10408,7 @@ with tab5:
                 mapa_loja_centro_custo=mapa_loja_cc_rel,
                 dados_visoes_mkt=dados_visoes_mkt_rel,
                 incluir_aba_mkt_1pct=incluir_aba_mkt,
+                planos_filtro=planos_relatorio or None,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
@@ -10499,10 +10422,16 @@ with tab5:
             return texto or "Relatório"
 
         st.session_state["relatorio_excel_nome"] = f"{_nome_arquivo_modelo(modelo_sel)}.xlsx"
-        st.success(
-            f"Relatório gerado com {len(contas_relatorio)} linha(s) da DRE do modelo, "
-            "pronto para download."
-        )
+        if planos_relatorio:
+            st.success(
+                f"Relatório gerado com {len(planos_relatorio)} plano(s) de contas, "
+                "pronto para download."
+            )
+        else:
+            st.success(
+                f"Relatório gerado com {len(contas_relatorio)} linha(s) da DRE do modelo, "
+                "pronto para download."
+            )
         if incluir_aba_mkt:
             st.caption(
                 "📣 Incluída a aba **MKT - 1% x Outras Despesas** (LOJA-1%, VD, ABPR e CONSOLIDADO, "
