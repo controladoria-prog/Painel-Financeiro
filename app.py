@@ -5377,8 +5377,8 @@ def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
 # blocos usam SEMPRE a mesma linha da DRE ("6.24.2 - Marketing Regional -
 # Gestão CP"); o que muda é a visão de onde o valor é lido:
 #     LOJA - 1%                                  -> aba LJ CONSOLIDADO
-#     VD                                         -> aba VD CONSOLIDADO
-#     ABPR                                       -> aba ABPR CONSOLIDADO
+#     VD + ABPR (OUTRAS DESPESAS DE MKT)         -> abas VD CONSOLIDADO +
+#                                                   ABPR CONSOLIDADO (somadas)
 #     CONSOLIDADO: 1% + OUTRAS DESPESAS DE MKT   -> aba DRE CONSOLIDADO
 #
 # ORÇADO é sempre a linha 6.24.2 pura, sem desconto nenhum, em todos os blocos.
@@ -5388,7 +5388,7 @@ def _criar_aba_lancamentos(wb, nomes_usados, titulo_bloco, df_lancamentos):
 # Outras Despesas de Marketing". Essas duas não fazem parte do 1% e vão para
 # os quadros amarelos ao lado ("Outras Despesas de MKT - Canal Loja"),
 # justamente para não somarem junto. A conferência é essa: mês a mês,
-# LOJA-1% + VD + ABPR + quadro amarelo = bloco CONSOLIDADO.
+# LOJA-1% + (VD + ABPR) + quadro amarelo = bloco CONSOLIDADO.
 #
 # DIFERENÇA = REALIZADO - ORÇADO (como os valores são negativos, diferença
 # positiva significa que gastou MENOS do que o orçado).
@@ -5397,14 +5397,18 @@ COD_MKT_GESTAO_CP = "6.24.2"
 CODS_MKT_FORA_DO_1PCT = ["6.24.2.5", "6.24.2.6"]
 NOME_MKT_GESTAO_CP_PADRAO = "6.24.2 - Marketing Regional - Gestão CP"
 
-# (título do bloco, aba de origem, desconta as linhas que ficam fora do 1%?)
+# (título do bloco, abas de origem, desconta as linhas que ficam fora do 1%?)
+# VD e ABPR ficam SOMADOS num bloco só: os dois canais são lidos e os valores
+# somados mês a mês antes de ir para a planilha.
 BLOCOS_MKT_1PCT = [
-    ("LOJA - 1%", "LJ CONSOLIDADO", True),
-    ("VD", "VD CONSOLIDADO", False),
-    ("ABPR", "ABPR CONSOLIDADO", False),
-    ("CONSOLIDADO: 1% + OUTRAS DESPESAS DE MKT", "DRE CONSOLIDADO", False),
+    ("LOJA - 1%", ["LJ CONSOLIDADO"], True),
+    ("VD + ABPR (OUTRAS DESPESAS DE MKT)", ["VD CONSOLIDADO", "ABPR CONSOLIDADO"], False),
+    ("CONSOLIDADO: 1% + OUTRAS DESPESAS DE MKT", ["DRE CONSOLIDADO"], False),
 ]
-VISOES_ABA_MKT_1PCT = [nome_aba for _, nome_aba, _ in BLOCOS_MKT_1PCT]
+# Lista achatada das abas usadas, sem repetir, para o carregamento dos dados.
+VISOES_ABA_MKT_1PCT = list(dict.fromkeys(
+    nome_aba for _, abas, _ in BLOCOS_MKT_1PCT for nome_aba in abas
+))
 
 _MKT_FILL_HEADER = PatternFill(fill_type="solid", start_color="FF5B9BD5", end_color="FF5B9BD5")
 _MKT_FILL_LINHA = PatternFill(fill_type="solid", start_color="FFDDEBF7", end_color="FFDDEBF7")
@@ -5459,7 +5463,7 @@ def _valores_mkt_1pct(dados_visoes, mapa_meses):
     Loja). Separado da escrita do Excel para poder ser conferido sozinho.
 
     Devolve (blocos, outras_loja, visoes_faltando), onde `blocos` é uma lista
-    de dicionários com titulo/aba/nome_conta/realizado/orcado/diferenca."""
+    de dicionários com titulo/abas/nome_conta/realizado/orcado/diferenca."""
     indice_visoes = {_normalizar_nome_aba(k): v for k, v in (dados_visoes or {}).items()}
     meses_cols = list(mapa_meses.values())
 
@@ -5480,23 +5484,36 @@ def _valores_mkt_1pct(dados_visoes, mapa_meses):
     ]
 
     blocos = []
-    for titulo, nome_aba, descontar in BLOCOS_MKT_1PCT:
-        df_o, df_r = _dfs_da_visao(nome_aba)
-        nome_conta = (
-            _nome_linha_por_codigo(df_r, COD_MKT_GESTAO_CP)
-            or _nome_linha_por_codigo(df_o, COD_MKT_GESTAO_CP)
-            or NOME_MKT_GESTAO_CP_PADRAO
-        )
-        realizado = []
+    for titulo, abas_bloco, descontar in BLOCOS_MKT_1PCT:
+        dfs_bloco = [_dfs_da_visao(nome_aba) for nome_aba in abas_bloco]
+        nome_conta = NOME_MKT_GESTAO_CP_PADRAO
+        for df_o_i, df_r_i in dfs_bloco:
+            achado = (
+                _nome_linha_por_codigo(df_r_i, COD_MKT_GESTAO_CP)
+                or _nome_linha_por_codigo(df_o_i, COD_MKT_GESTAO_CP)
+            )
+            if achado:
+                nome_conta = achado
+                break
+
+        realizado, orcado = [], []
         for i, m_col in enumerate(meses_cols):
-            valor = _valor_linha_por_codigo(df_r, COD_MKT_GESTAO_CP, m_col)
+            # Quando o bloco tem mais de uma aba (VD + ABPR), o valor do mês é
+            # a soma das abas -- a linha da DRE é a mesma em todas elas.
+            valor_real = sum(
+                _valor_linha_por_codigo(df_r_i, COD_MKT_GESTAO_CP, m_col)
+                for _, df_r_i in dfs_bloco
+            )
             if descontar:
-                valor -= outras_loja[i]
-            realizado.append(valor)
-        orcado = [_valor_linha_por_codigo(df_o, COD_MKT_GESTAO_CP, m_col) for m_col in meses_cols]
+                valor_real -= outras_loja[i]
+            realizado.append(valor_real)
+            orcado.append(sum(
+                _valor_linha_por_codigo(df_o_i, COD_MKT_GESTAO_CP, m_col)
+                for df_o_i, _ in dfs_bloco
+            ))
         blocos.append({
             "titulo": titulo,
-            "aba": nome_aba,
+            "abas": list(abas_bloco),
             "nome_conta": nome_conta,
             "realizado": realizado,
             "orcado": orcado,
@@ -5601,9 +5618,10 @@ def _criar_aba_mkt_1pct(wb, dados_visoes, mapa_meses, gerado_em):
         gerado_em,
         "LOJA - 1% (Realizado) = linha 6.24.2 na aba LJ CONSOLIDADO, menos 6.24.2.5 (Encontro de Ciclo) "
         "e 6.24.2.6 (Outras Despesas de Marketing) -- esses dois estão nos quadros amarelos ao lado.",
-        "VD, ABPR e CONSOLIDADO (Realizado) = linha 6.24.2 nas abas VD CONSOLIDADO, ABPR CONSOLIDADO e "
-        "DRE CONSOLIDADO, sem nenhum desconto. Orçado = linha 6.24.2 pura em todos os blocos.",
-        "Conferência: em cada mês, LOJA-1% + VD + ABPR + quadro amarelo = CONSOLIDADO.",
+        "VD + ABPR (Realizado) = linha 6.24.2 na aba VD CONSOLIDADO MAIS a mesma linha na aba "
+        "ABPR CONSOLIDADO, somadas, sem desconto. CONSOLIDADO = linha 6.24.2 na aba DRE CONSOLIDADO. "
+        "Orçado = linha 6.24.2 pura em todos os blocos.",
+        "Conferência: em cada mês, LOJA-1% + (VD + ABPR) + quadro amarelo = CONSOLIDADO.",
         "DIFERENÇA = Realizado - Orçado (valores negativos são despesa; diferença positiva = gastou menos que o orçado).",
     ]
     if visoes_faltando:
