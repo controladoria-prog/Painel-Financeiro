@@ -1145,6 +1145,38 @@ def obter_caminhos_excel():
     return abas_validas, path_orc, path_real
 
 
+# ---------------------------------------------------------------------------
+# LINK DO CSV PUBLICADO DO FLUXO DE CAIXA
+# ---------------------------------------------------------------------------
+# ATENÇÃO: o `gid` da publicação MUDA toda vez que a aba é publicada de novo
+# (o Google gera um recurso novo a cada publicação, e o antigo para de
+# responder -- normalmente com erro HTTP 400, 404 ou 500). Já aconteceu ao
+# reconectar a conta do Drive e ao atualizar a base da planilha.
+#
+# Para não precisar mexer no código a cada republicação, o link pode ser
+# colado nos Secrets do app (Configurações do app > Secrets), assim:
+#
+#     FLUXO_CAIXA_CSV_URL = "https://docs.google.com/.../pub?gid=...&single=true&output=csv"
+#
+# Se esse segredo existir, ele manda. Se não existir, vale a URL abaixo
+# (última publicação conhecida, gerada em 13/08/2026).
+URL_CSV_FLUXO_PADRAO = (
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
+    "/pub?gid=178961203&single=true&output=csv"
+)
+
+
+def obter_url_csv_fluxo():
+    """URL do CSV publicado: usa o segredo FLUXO_CAIXA_CSV_URL se ele
+    estiver configurado; senão, a última publicação conhecida no código."""
+    try:
+        url_secreta = str(st.secrets.get("FLUXO_CAIXA_CSV_URL", "") or "").strip()
+    except Exception:
+        # Ambiente sem arquivo de secrets configurado -- segue com o padrão.
+        url_secreta = ""
+    return url_secreta or URL_CSV_FLUXO_PADRAO
+
+
 @st.cache_resource
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
@@ -1159,12 +1191,8 @@ def obter_dados_fluxo_caixa():
     alterações", ele reflete as atualizações da planilha sozinho.
 
     Retorna (df, erro); erro é None se carregou certo."""
-    URL_CSV_FLUXO_PUBLICADO = (
-        "https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
-        "/pub?gid=692792036&single=true&output=csv"
-    )
     try:
-        df = pd.read_csv(URL_CSV_FLUXO_PUBLICADO)
+        df = pd.read_csv(obter_url_csv_fluxo())
         df = df.dropna(how="all").dropna(axis=1, how="all")
         df.columns = [str(c).strip() for c in df.columns]
         return df, None
@@ -2828,14 +2856,24 @@ if st.session_state["painel_escolhido"] == "financeiro":
         # A orientação muda conforme o tipo de falha -- uma mensagem genérica
         # faz a pessoa conferir a coisa errada e perder tempo.
         _texto_erro = str(erro_fluxo)
-        if "400" in _texto_erro or "404" in _texto_erro:
+        if "500" in _texto_erro or "502" in _texto_erro or "503" in _texto_erro:
+            st.error(
+                "**A publicação antiga parou de responder** (erro do lado do Google). É o que "
+                "acontece logo depois de atualizar/substituir a base da planilha: o link publicado "
+                "anterior fica órfão e o `gid` muda.\n\n"
+                "**Como resolver:** republique a aba \"Fluxo de Caixa 2026\" em *Arquivo > "
+                "Compartilhar > Publicar na web* (formato CSV), copie o link novo e cole nos "
+                "Secrets do app, em `FLUXO_CAIXA_CSV_URL`. Se o erro persistir com o link novo, "
+                "espere alguns minutos: o Google leva um tempo até servir a publicação recém-criada."
+            )
+        elif "400" in _texto_erro or "404" in _texto_erro:
             st.error(
                 "**O link publicado não existe mais.** Isso acontece quando o arquivo é substituído "
                 "no Drive (por exemplo, depois de reconectar a conta ou reenviar a planilha) — o novo "
                 "arquivo não herda a publicação do anterior.\n\n"
                 "**Como resolver:** abra a planilha no navegador, vá em *Arquivo > Compartilhar > "
                 "Publicar na web*, publique novamente a aba \"Fluxo de Caixa 2026\" em formato CSV "
-                "e envie o novo link para atualizar aqui."
+                "e cole o link novo nos Secrets do app, em `FLUXO_CAIXA_CSV_URL`."
             )
         elif "403" in _texto_erro:
             st.error(
@@ -2871,6 +2909,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 f"**Linhas lidas do CSV:** {total_linhas_lidas} · "
                 f"**Com data válida:** {len(df_fin)} · **Descartadas por falta de data:** {linhas_sem_data}"
             )
+            _url_em_uso = obter_url_csv_fluxo()
+            _origem_url = "Secrets (FLUXO_CAIXA_CSV_URL)" if _url_em_uso != URL_CSV_FLUXO_PADRAO else "padrão do código"
+            st.write(f"**Link publicado em uso:** {_origem_url}")
+            st.code(_url_em_uso)
             data_min_diag = df_fin["Data Efetiva"].min()
             data_max_diag = df_fin["Data Efetiva"].max()
             st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
