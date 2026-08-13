@@ -1494,58 +1494,125 @@ def obter_caminhos_excel():
 
 
 # ---------------------------------------------------------------------------
-# LINK DO CSV PUBLICADO DO FLUXO DE CAIXA
+# DE ONDE VEM O FLUXO DE CAIXA
 # ---------------------------------------------------------------------------
-# ATENÇÃO: o `gid` da publicação MUDA toda vez que a aba é publicada de novo
-# (o Google gera um recurso novo a cada publicação, e o antigo para de
-# responder -- normalmente com erro HTTP 400, 404 ou 500). Já aconteceu ao
-# reconectar a conta do Drive e ao atualizar a base da planilha.
+# O `gid` do link publicado é o identificador da ABA dentro da planilha. Ele
+# muda sempre que a aba é RECRIADA -- e é isso que vem acontecendo: o processo
+# que atualiza a base apaga a aba "Fluxo de Caixa 2026" e cria uma nova no
+# lugar. A aba parece a mesma, mas para o Google é outra. Consequências:
+#   * a publicação antiga aponta para uma aba que não existe mais e passa a
+#     responder erro (400, 404 ou 500);
+#   * a tela "Publicar na web" abre dizendo que NÃO está publicado, porque a
+#     aba publicada sumiu;
+#   * o link novo nasce com outro gid, sem ninguém ter mexido em nada.
 #
-# Para não precisar mexer no código a cada republicação, o link pode ser
-# colado nos Secrets do app (Configurações do app > Secrets), assim:
+# Por isso o painel não depende mais de um único link. Ele tenta, em ordem:
+#   1. FLUXO_CAIXA_CSV_URL  (Secrets) -- link publicado colado à mão;
+#   2. o link publicado conhecido no código (abaixo);
+#   3. FLUXO_CAIXA_FILE_ID  (Secrets) -- o ID do arquivo no Drive, que NUNCA
+#      muda. Com ele o painel busca a aba pelo NOME, não pelo gid, e passa a
+#      sobreviver a qualquer recriação de aba.
 #
-#     FLUXO_CAIXA_CSV_URL = "https://docs.google.com/.../pub?gid=...&single=true&output=csv"
-#
-# Se esse segredo existir, ele manda. Se não existir, vale a URL abaixo
-# (última publicação conhecida, gerada em 13/08/2026).
-URL_CSV_FLUXO_PADRAO = (
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
-    "/pub?gid=178961203&single=true&output=csv"
+# O ID do arquivo está na barra de endereço da planilha aberta:
+#   https://docs.google.com/spreadsheets/d/<É ESTE PEDAÇO>/edit#gid=...
+# ---------------------------------------------------------------------------
+# O token da publicação (2PACX-...) é ESTÁVEL: ele não mudou em nenhuma das
+# quatro trocas de gid. Quem muda é só o gid da aba. Por isso vale a pena
+# tentar o link publicado SEM gid: nesse formato o Google devolve a primeira
+# aba do documento publicado -- e, se a planilha tem só a aba do fluxo, esse
+# link nunca mais quebra.
+TOKEN_PUBLICACAO_FLUXO = (
+    "2PACX-1vQB1ygqIm_-o7-314Gynm9H-2Ey2dh_McIIhapZ-9fjAaJc3D14TqRRJSWozuq1RQ"
 )
+URL_CSV_FLUXO_PADRAO = (
+    f"https://docs.google.com/spreadsheets/d/e/{TOKEN_PUBLICACAO_FLUXO}"
+    "/pub?gid=1000339235&single=true&output=csv"
+)
+# ID do arquivo no Drive: nunca muda (está na barra de endereço da planilha
+# aberta, entre /d/ e /edit). Pode ser trocado nos Secrets se o arquivo mudar.
+ID_ARQUIVO_FLUXO_PADRAO = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
+NOME_ABA_FLUXO = "Fluxo de Caixa 2026"
+
+# Antes de aceitar uma fonte, conferimos que ela trouxe MESMO o fluxo de
+# caixa. Sem isso, uma fonte que devolvesse a aba errada entraria em silêncio
+# e o painel mostraria números de outro lugar -- que é o pior desfecho
+# possível: errado sem avisar.
+COLUNAS_MINIMAS_FLUXO = ("Movimento", "Valor.1", "Vencimento.1")
+
+
+def _segredo(nome):
+    """Lê um segredo sem quebrar em ambiente que não tenha Secrets."""
+    try:
+        return str(st.secrets.get(nome, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def fontes_csv_fluxo():
+    """Lista de (descrição, url) para tentar, na ordem. A primeira que
+    responder é a usada."""
+    fontes = []
+    url_secreta = _segredo("FLUXO_CAIXA_CSV_URL")
+    if url_secreta:
+        fontes.append(("link publicado dos Secrets", url_secreta))
+
+    # Sem gid: pega a primeira aba do documento publicado. É a única variante
+    # do link publicado que não depende do gid.
+    fontes.append((
+        "link publicado sem gid (primeira aba)",
+        f"https://docs.google.com/spreadsheets/d/e/{TOKEN_PUBLICACAO_FLUXO}/pub?output=csv",
+    ))
+    fontes.append(("link publicado com gid", URL_CSV_FLUXO_PADRAO))
+
+    # Busca pelo NOME da aba, sem gid. Funciona em planilha nativa do Google;
+    # em arquivo .xlsx aberto no modo de compatibilidade pode não responder --
+    # por isso fica por último, e não no lugar das outras.
+    id_arquivo = _segredo("FLUXO_CAIXA_FILE_ID") or ID_ARQUIVO_FLUXO_PADRAO
+    fontes.append((
+        "ID do arquivo + nome da aba",
+        f"https://docs.google.com/spreadsheets/d/{id_arquivo}/gviz/tq"
+        f"?tqx=out:csv&headers=1&sheet={urllib.parse.quote(NOME_ABA_FLUXO)}",
+    ))
+    return fontes
 
 
 def obter_url_csv_fluxo():
-    """URL do CSV publicado: usa o segredo FLUXO_CAIXA_CSV_URL se ele
-    estiver configurado; senão, a última publicação conhecida no código."""
-    try:
-        url_secreta = str(st.secrets.get("FLUXO_CAIXA_CSV_URL", "") or "").strip()
-    except Exception:
-        # Ambiente sem arquivo de secrets configurado -- segue com o padrão.
-        url_secreta = ""
-    return url_secreta or URL_CSV_FLUXO_PADRAO
+    """Primeira fonte da lista -- mantida por compatibilidade com o
+    diagnóstico, que mostra qual link está configurado."""
+    return fontes_csv_fluxo()[0][1]
 
 
 @st.cache_resource(ttl=300)
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
 
-    Lê o CSV PUBLICADO da aba (Arquivo > Compartilhar > Publicar na web >
-    aba "Fluxo de Caixa 2026" > CSV). Esse caminho é o que funciona pra
-    essa planilha: ela é grande demais (perto do limite de 10 milhões de
-    células do Google) pros endpoints normais de export/download, que
-    devolviam erro 432 ou estouravam o tempo. O CSV publicado é servido
-    pronto, sem o Google precisar converter nada na hora -- baixa leve e
-    rápido. Como está marcado "republicar automaticamente quando houver
-    alterações", ele reflete as atualizações da planilha sozinho.
+    Lê o CSV da aba. O caminho publicado é o que funciona melhor pra essa
+    planilha: ela é grande demais (perto do limite de 10 milhões de células
+    do Google) pros endpoints normais de export/download, que devolviam erro
+    432 ou estouravam o tempo. O CSV publicado é servido pronto, sem o Google
+    precisar converter nada na hora -- baixa leve e rápido.
 
-    Retorna (df, erro); erro é None se carregou certo."""
-    try:
-        df = pd.read_csv(obter_url_csv_fluxo())
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-        df.columns = [str(c).strip() for c in df.columns]
-        return df, None
-    except Exception as e:
-        return None, str(e)
+    Se o link publicado falhar (é o que acontece quando a aba é recriada e o
+    gid muda), tenta as fontes seguintes antes de desistir.
+
+    Retorna (df, erro, origem); erro é None se carregou certo."""
+    erros = []
+    for descricao, url in fontes_csv_fluxo():
+        try:
+            df = pd.read_csv(url)
+            df = df.dropna(how="all").dropna(axis=1, how="all")
+            df.columns = [str(c).strip() for c in df.columns]
+            if df.empty:
+                raise ValueError("o CSV veio vazio")
+            ausentes = [c for c in COLUNAS_MINIMAS_FLUXO if c not in df.columns]
+            if ausentes:
+                raise ValueError(
+                    "veio outra aba (faltam as colunas " + ", ".join(ausentes) + ")"
+                )
+            return df, None, descricao
+        except Exception as e:
+            erros.append(f"{descricao}: {e}")
+    return None, " | ".join(erros), None
 
 
 def _detectar_coluna(df, candidatos_nome, tipo_esperado=None):
@@ -3013,7 +3080,35 @@ def _texto_preenchido_fin(serie):
     return ~texto.str.lower().isin(MARCADORES_VAZIOS_FIN)
 
 
-def _parse_datas_fin(serie):
+def _ordem_data_fin(serie, amostra=20000):
+    """Descobre, pelos PRÓPRIOS dados, se a data vem dia-primeiro (30/12/2026)
+    ou mês-primeiro (12/30/2026). Devolve o valor de `dayfirst` a usar.
+
+    Por que não deixar o pandas adivinhar: sem `format`, ele deduz UM formato
+    a partir do primeiro valor preenchido da coluna e aplica na coluna toda.
+    Se esse primeiro valor for ambíguo (1/2/2026 tanto pode ser 1º de fevereiro
+    quanto 2 de janeiro), a coluna inteira é lida pela suposição errada -- foi
+    o que aconteceu com a "Data Liquidação": ela vem em mês-primeiro, o pandas
+    deduziu dia-primeiro pelo primeiro valor e o resultado foi 187 mil datas
+    com dia e mês trocados, mais 264 mil descartadas por "dia" acima de 12.
+
+    A regra aqui é simples e não depende de sorte: mês nunca passa de 12. Se
+    houver algum valor com o PRIMEIRO número acima de 12, a coluna é
+    dia-primeiro; se houver algum com o SEGUNDO acima de 12, é mês-primeiro."""
+    texto = serie.dropna().astype(str).str.strip()
+    if texto.empty:
+        return True
+    partes = texto.head(amostra).str.extract(r"^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}")
+    primeiro = pd.to_numeric(partes[0], errors="coerce")
+    segundo = pd.to_numeric(partes[1], errors="coerce")
+    if (primeiro > 12).any() and not (segundo > 12).any():
+        return True   # dia/mês/ano
+    if (segundo > 12).any() and not (primeiro > 12).any():
+        return False  # mês/dia/ano
+    return True       # tudo ambíguo: mantém o comportamento antigo
+
+
+def _parse_datas_fin(serie, dayfirst=None):
     """Converte uma coluna de datas do CSV publicado, aceitando MAIS DE UM
     formato dentro da MESMA coluna.
 
@@ -3035,19 +3130,21 @@ def _parse_datas_fin(serie):
 
     texto = serie.astype(str).fillna("").str.strip()
     texto = texto.mask(texto.str.lower().isin(MARCADORES_VAZIOS_FIN))
+    if dayfirst is None:
+        dayfirst = _ordem_data_fin(texto)
 
     try:
         # format="mixed" avalia linha a linha, em vez de impor à coluna
         # inteira o formato deduzido da primeira linha preenchida.
-        datas = pd.to_datetime(texto, errors="coerce", dayfirst=True, format="mixed")
+        datas = pd.to_datetime(texto, errors="coerce", dayfirst=dayfirst, format="mixed")
     except (TypeError, ValueError):
         # Pandas antigo, sem format="mixed": faz a conversão normal e depois
         # tenta de novo, uma a uma, só o que sobrou como NaT.
-        datas = pd.to_datetime(texto, errors="coerce", dayfirst=True)
+        datas = pd.to_datetime(texto, errors="coerce", dayfirst=dayfirst)
         sobra = datas.isna() & texto.notna()
         if sobra.any():
             datas.loc[sobra] = texto[sobra].apply(
-                lambda valor: pd.to_datetime(valor, errors="coerce", dayfirst=True)
+                lambda valor: pd.to_datetime(valor, errors="coerce", dayfirst=dayfirst)
             )
 
     # O que ainda não converteu pode ser data em número de série do Excel
@@ -3202,7 +3299,7 @@ def preparar_fluxo_caixa(base_data):
     demais filtros são aplicados depois, sobre o DataFrame já pronto.
 
     Retorna (df, erro, total_lido, linhas_sem_data)."""
-    df_fluxo, erro = obter_dados_fluxo_caixa()
+    df_fluxo, erro, origem_fluxo = obter_dados_fluxo_caixa()
     if erro or df_fluxo is None or df_fluxo.empty:
         return None, erro or "Sem dados", 0, 0, {}
 
@@ -3237,11 +3334,17 @@ def preparar_fluxo_caixa(base_data):
     # leitura mais tolerante, o Fluxo Mensal e o Diário passaram a incluir
     # linhas que a planilha não conta (e a jogar outras em meses diferentes),
     # e os totais deixaram de bater. Mexer aqui muda TODO o painel.
+    # A ordem (dia/mês x mês/dia) é detectada em cada coluna, porque as
+    # duas não vêm iguais: o Vencimento tem valores com dia acima de 12
+    # logo no começo e o pandas acertava sozinho, mas a Data Liquidação
+    # começa com valor ambíguo e vinha sendo lida ao contrário.
+    dayfirst_liq = _ordem_data_fin(df[COL_FIN_DATA_LIQUIDACAO])
+    dayfirst_venc = _ordem_data_fin(df[COL_FIN_VENCIMENTO])
     df[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
-        df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=True
+        df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=dayfirst_liq
     )
     df[COL_FIN_VENCIMENTO] = pd.to_datetime(
-        df[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=True
+        df[COL_FIN_VENCIMENTO], errors="coerce", dayfirst=dayfirst_venc
     )
 
     # ---- LEITURA AMPLA (só para a aba Análises) ----
@@ -3249,7 +3352,7 @@ def preparar_fluxo_caixa(base_data):
     # mesmo campo. Vai para uma coluna à parte, que NÃO entra na Data Efetiva
     # nem em nada do fluxo -- serve só para os cálculos de prazo e de quitado
     # x em aberto, onde o que importa é saber se o título foi pago.
-    df[COL_FIN_LIQ_AMPLA] = _parse_datas_fin(df_fluxo[COL_FIN_DATA_LIQUIDACAO])
+    df[COL_FIN_LIQ_AMPLA] = _parse_datas_fin(df_fluxo[COL_FIN_DATA_LIQUIDACAO], dayfirst_liq)
 
     # Se a planilha tiver mais de uma coluna de liquidação (ex.: "Data
     # Liquidação.1", que o Power Query cria quando há cabeçalho repetido),
@@ -3271,6 +3374,11 @@ def preparar_fluxo_caixa(base_data):
     # ainda não pago).
     nao_convertidas = _texto_preenchido_fin(texto_liq_bruto) & df[COL_FIN_LIQ_AMPLA].isna()
     diagnostico = {
+        "origem_dados": origem_fluxo,
+        "ordem_data": {
+            "Vencimento": "dia/mês/ano" if dayfirst_venc else "mês/dia/ano",
+            "Data Liquidação": "dia/mês/ano" if dayfirst_liq else "mês/dia/ano",
+        },
         "liq_preenchidas": int(df[COL_FIN_DATA_LIQUIDACAO].notna().sum()),
         "liq_preenchidas_ampla": int(df[COL_FIN_LIQ_AMPLA].notna().sum()),
         "liq_nao_convertidas": int(nao_convertidas.sum()),
@@ -3565,10 +3673,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "**A publicação antiga parou de responder** (erro do lado do Google). É o que "
                 "acontece logo depois de atualizar/substituir a base da planilha: o link publicado "
                 "anterior fica órfão e o `gid` muda.\n\n"
-                "**Como resolver:** republique a aba \"Fluxo de Caixa 2026\" em *Arquivo > "
-                "Compartilhar > Publicar na web* (formato CSV), copie o link novo e cole nos "
-                "Secrets do app, em `FLUXO_CAIXA_CSV_URL`. Se o erro persistir com o link novo, "
-                "espere alguns minutos: o Google leva um tempo até servir a publicação recém-criada."
+                "**Por que acontece:** o processo que atualiza a base apaga a aba e cria outra no "
+                "lugar. Para o Google é uma aba nova, com outro `gid` — a publicação antiga fica "
+                "apontando para algo que não existe mais (e a tela *Publicar na web* passa a dizer "
+                "que não está publicado).\n\n"
+                "**Solução definitiva:** cole nos Secrets do app o ID do arquivo, em "
+                "`FLUXO_CAIXA_FILE_ID`. Ele está na barra de endereço da planilha aberta, entre "
+                "`/d/` e `/edit`. Com isso o painel busca a aba pelo NOME e para de depender do gid.\n\n"
+                "**Solução rápida:** republique a aba em *Arquivo > Compartilhar > Publicar na web* "
+                "(formato CSV) e cole o link novo em `FLUXO_CAIXA_CSV_URL`."
             )
         elif "400" in _texto_erro or "404" in _texto_erro:
             st.error(
@@ -3613,10 +3726,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 f"**Linhas lidas do CSV:** {total_linhas_lidas} · "
                 f"**Com data válida:** {len(df_fin)} · **Descartadas por falta de data:** {linhas_sem_data}"
             )
-            _url_em_uso = obter_url_csv_fluxo()
-            _origem_url = "Secrets (FLUXO_CAIXA_CSV_URL)" if _url_em_uso != URL_CSV_FLUXO_PADRAO else "padrão do código"
-            st.write(f"**Link publicado em uso:** {_origem_url}")
-            st.code(_url_em_uso)
+            st.write(f"**Fonte que respondeu:** {diag_fluxo.get('origem_dados') or '—'}")
+            _ordem = diag_fluxo.get("ordem_data") or {}
+            if _ordem:
+                st.caption(
+                    "Formato de data detectado — "
+                    + " · ".join(f"{c}: {v}" for c, v in _ordem.items())
+                )
+            _fontes = fontes_csv_fluxo()
+            st.caption("Ordem de tentativa: " + " → ".join(d for d, _ in _fontes))
+            if not _segredo("FLUXO_CAIXA_FILE_ID"):
+                st.caption(
+                    "Dica: configure `FLUXO_CAIXA_FILE_ID` nos Secrets (o ID do arquivo, entre "
+                    "`/d/` e `/edit` na barra de endereço). Com ele o painel acha a aba pelo nome "
+                    "e deixa de quebrar quando o gid muda."
+                )
+            st.code(_fontes[0][1])
             data_min_diag = df_fin["Data Efetiva"].min()
             data_max_diag = df_fin["Data Efetiva"].max()
             st.write(f"**Período encontrado nos dados:** {data_min_diag:%d/%m/%Y} até {data_max_diag:%d/%m/%Y}")
