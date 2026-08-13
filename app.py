@@ -140,6 +140,53 @@ def html_compacto(html):
     return re.sub(r">\s+<", "><", " ".join(str(html).split()))
 
 
+# Fonte monoespaçada dos números do Diagnóstico Executivo: com ela as casas
+# se alinham na vertical de uma linha para a outra.
+FONTE_MONO = "ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, monospace"
+
+
+def faixa_metricas_html(metricas):
+    """Faixa de indicadores em linha, separados por filete vertical, sem
+    caixas nem ícones. `metricas` é uma lista de tuplas
+    (rótulo, valor, cor do valor, complemento)."""
+    partes = []
+    for i, (rotulo, valor, cor, complemento) in enumerate(metricas):
+        borda = "" if i == 0 else f"border-left:1px solid {COLORS['border']};"
+        recuo = "0 20px 0 0" if i == 0 else "0 20px"
+        partes.append(
+            f'<div style="flex:1; min-width:170px; padding:{recuo} {borda}">'
+            f'<div style="font-size:9.5px; color:{COLORS["text_muted"]}; '
+            f'text-transform:uppercase; letter-spacing:0.9px;">{rotulo}</div>'
+            f'<div style="font-family:{FONTE_MONO}; font-size:21px; font-weight:700; '
+            f'color:{cor}; margin-top:6px; line-height:1.15;">{valor}</div>'
+            f'<div style="font-size:11px; color:{COLORS["text_muted"]}; margin-top:5px; '
+            f'line-height:1.4;">{complemento}</div></div>'
+        )
+    return html_compacto(
+        f'<div style="display:flex; flex-wrap:wrap; gap:14px 0; padding:16px 0; '
+        f'border-top:1px solid {COLORS["border"]}; border-bottom:1px solid {COLORS["border"]}; '
+        f'margin:2px 4px 20px;">{"".join(partes)}</div>'
+    )
+
+
+def aviso_html(rotulo, texto, cor):
+    """Aviso discreto: filete de 2px na cor do alerta, sem o fundo cheio de
+    cor do st.warning/st.error -- que pesava demais no meio da tela."""
+    return html_compacto(
+        f'<div style="background:{COLORS["surface"]}; border:1px solid {COLORS["border"]}; '
+        f'border-left:2px solid {cor}; border-radius:0 6px 6px 0; padding:12px 16px; margin:4px 4px 0;">'
+        f'<div style="font-size:9.5px; font-weight:700; letter-spacing:0.9px; '
+        f'text-transform:uppercase; color:{cor};">{rotulo}</div>'
+        f'<div style="font-size:12.5px; color:{COLORS["text_muted"]}; line-height:1.6; '
+        f'margin-top:5px;">{texto}</div></div>'
+    )
+
+
+def destaque_html(texto):
+    """Trecho em destaque dentro de um aviso (equivale ao **negrito**)."""
+    return f'<strong style="color:{COLORS["text"]}; font-weight:700;">{texto}</strong>'
+
+
 def render_kpi_row(cards):
     """Renderiza uma linha de cartões de KPI em flexbox — usada no cabeçalho fixo (sticky)."""
     html = "".join(kpi_card_html(**c) for c in cards)
@@ -8322,18 +8369,18 @@ if not departamento_ativo and tab_diag is not None:
                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
                 }}
                 .anom-sub {{
-                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-family:{FONTE_MONO};
                     font-size:10.5px; color:{COLORS['text_muted']}; margin-top:4px;
                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
                 }}
                 .anom-sep {{ color:{COLORS['secondary']}; margin:0 7px; }}
                 .anom-num {{ text-align:right; white-space:nowrap; }}
                 .anom-pct {{
-                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-family:{FONTE_MONO};
                     font-size:16.5px; font-weight:700; color:var(--anom-cor); line-height:1.1;
                 }}
                 .anom-sigma {{
-                    font-family:ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+                    font-family:{FONTE_MONO};
                     font-size:10px; color:{COLORS['text_muted']}; margin-top:4px; letter-spacing:0.5px;
                 }}
             </style>
@@ -8494,39 +8541,84 @@ que ainda não entrou.
             fc_receita = dados_fc[0]
             fc_ebitda = dados_fc[1]
 
+            # ---- Faixa de indicadores (sem cartões, só filetes) ----
             st.markdown(
-                render_kpi_row([
-                    dict(label="MESES JÁ REALIZADOS", value=f"{meses_realizados_fc} de {len(colunas_ano_fc)}",
-                         value_color=COLORS["text"],
-                         subtext=f"Faltam {meses_restantes_fc} meses para projetar", icon="📆"),
-                    dict(label="FORECAST DE RECEITA", value=formata_m(fc_receita["Forecast do ano"]),
-                         value_color=COLORS["primary"],
-                         subtext=f"{fc_receita['% do orçado']:.0f}% do orçado do ano", icon="💰"),
-                    dict(label="FORECAST DE EBITDA", value=formata_m(fc_ebitda["Forecast do ano"]),
-                         value_color=cor_variacao(fc_ebitda["Desvio vs. orçado"]),
-                         subtext=f"{fc_ebitda['% do orçado']:.0f}% do orçado do ano", icon="📈"),
-                    dict(label="DESVIO PROJETADO DO EBITDA", value=formata_brl(fc_ebitda["Desvio vs. orçado"]),
-                         value_color=cor_variacao(fc_ebitda["Desvio vs. orçado"]),
-                         subtext="Forecast do ano − orçado do ano", icon="⚖️"),
+                faixa_metricas_html([
+                    ("Meses já realizados", f"{meses_realizados_fc} / {len(colunas_ano_fc)}",
+                     COLORS["text"], f"faltam {meses_restantes_fc} meses para projetar"),
+                    ("Forecast de receita", formata_valor_curto(fc_receita["Forecast do ano"]),
+                     COLORS["primary"], f"{fc_receita['% do orçado']:.0f}% do orçado do ano"),
+                    ("Forecast de EBITDA", formata_valor_curto(fc_ebitda["Forecast do ano"]),
+                     cor_variacao(fc_ebitda["Desvio vs. orçado"]),
+                     f"{fc_ebitda['% do orçado']:.0f}% do orçado do ano"),
+                    ("Desvio projetado", formata_valor_curto(fc_ebitda["Desvio vs. orçado"]),
+                     cor_variacao(fc_ebitda["Desvio vs. orçado"]),
+                     "forecast do ano − orçado do ano"),
                 ]),
                 unsafe_allow_html=True,
             )
 
-            df_fc = pd.DataFrame(dados_fc)
-            st.dataframe(
-                df_fc.style.format({
-                    "Realizado até agora": formata_brl,
-                    "Projeção do restante": formata_brl,
-                    "Forecast do ano": formata_brl,
-                    "Orçado do ano": formata_brl,
-                    "Desvio vs. orçado": formata_brl,
-                    "% do orçado": lambda v: f"{v:.1f}%".replace(".", ","),
-                }).map(cor_valor, subset=["Realizado até agora", "Projeção do restante",
-                                          "Forecast do ano", "Orçado do ano", "Desvio vs. orçado"]),
-                use_container_width=True, hide_index=True,
+            # ---- Tabela em HTML: filetes finos, números monoespaçados ----
+            # O st.dataframe traz grade, cabeçalho cinza e barra de rolagem
+            # para duas linhas de dados -- peso visual demais para o que é,
+            # na prática, uma tabelinha de leitura.
+            _colunas_fc = [
+                ("Realizado até agora", "Realizado até agora"),
+                ("Projeção do restante", "Projeção do restante"),
+                ("Forecast do ano", "Forecast do ano"),
+                ("Orçado do ano", "Orçado do ano"),
+                ("Desvio vs. orçado", "Desvio vs. orçado"),
+            ]
+            _cabecalho_fc = "".join(
+                f'<th style="text-align:right; font-size:9.5px; font-weight:600; '
+                f'letter-spacing:0.8px; text-transform:uppercase; color:{COLORS["text_muted"]}; '
+                f'padding:0 0 10px 18px; white-space:nowrap;">{rotulo}</th>'
+                for rotulo, _ in _colunas_fc
+            )
+            _linhas_fc_html = []
+            for item_fc in dados_fc:
+                _celulas = []
+                for _, chave in _colunas_fc:
+                    valor_celula = item_fc[chave]
+                    cor_celula = (
+                        cor_variacao(valor_celula) if chave == "Desvio vs. orçado"
+                        else COLORS["text"]
+                    )
+                    _celulas.append(
+                        f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:12px; '
+                        f'color:{cor_celula}; padding:12px 0 12px 18px; white-space:nowrap;">'
+                        f'{formata_brl(valor_celula)}</td>'
+                    )
+                pct_fc = item_fc["% do orçado"]
+                pct_fc_texto = f"{pct_fc:.1f}%".replace(".", ",")
+                cor_pct = COLORS["positive"] if pct_fc >= 100 else (
+                    COLORS["warning"] if pct_fc >= 90 else COLORS["negative"]
+                )
+                _linhas_fc_html.append(
+                    f'<tr style="border-top:1px solid {COLORS["border"]};">'
+                    f'<td style="font-size:12.5px; font-weight:600; color:{COLORS["text"]}; '
+                    f'padding:12px 0; white-space:nowrap;">{item_fc["Linha"]}</td>'
+                    + "".join(_celulas)
+                    + f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:13px; '
+                    f'font-weight:700; color:{cor_pct}; padding:12px 0 12px 22px; white-space:nowrap;">'
+                    f'{pct_fc_texto}</td></tr>'
+                )
+            st.markdown(
+                html_compacto(
+                    f'<div style="overflow-x:auto; margin:0 4px 6px;">'
+                    f'<table style="width:100%; border-collapse:collapse;">'
+                    f'<thead><tr><th style="text-align:left; font-size:9.5px; font-weight:600; '
+                    f'letter-spacing:0.8px; text-transform:uppercase; color:{COLORS["text_muted"]}; '
+                    f'padding:0 0 10px;">Linha</th>{_cabecalho_fc}'
+                    f'<th style="text-align:right; font-size:9.5px; font-weight:600; '
+                    f'letter-spacing:0.8px; text-transform:uppercase; color:{COLORS["text_muted"]}; '
+                    f'padding:0 0 10px 22px; white-space:nowrap;">% do orçado</th></tr></thead>'
+                    f'<tbody>{"".join(_linhas_fc_html)}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-            # Gráfico: realizado x projetado x orçado, mês a mês
+            # ---- Gráfico: realizado x projetado x orçado, mês a mês ----
             valores_ebitda_mes = [
                 get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [col]) for col in colunas_ano_fc
             ]
@@ -8544,29 +8636,12 @@ que ainda não entrou.
                 + [realizados_ebitda[-1] if realizados_ebitda else 0]
                 + [media_ebitda_fc] * meses_restantes_fc
             )
-            rotulos_meses_fc = list(m_map.keys())
+            # Rótulos de três letras na horizontal: com o nome do mês inteiro,
+            # o eixo precisava girar 35 graus e virava um leque de texto.
+            rotulos_meses_fc = [nome[:3].upper() for nome in m_map.keys()]
 
             fig_fc = go.Figure()
-            fig_fc.add_trace(go.Scatter(
-                name="Realizado", x=rotulos_meses_fc, y=serie_realizada_graf,
-                mode="lines+markers", line=dict(color=COLORS["primary"], width=3),
-                marker=dict(size=8), connectgaps=False,
-                hovertemplate="Realizado: R$ %{y:,.2f}<extra></extra>",
-            ))
-            fig_fc.add_trace(go.Scatter(
-                name="Projetado (forecast)", x=rotulos_meses_fc, y=serie_projetada_graf,
-                mode="lines+markers", line=dict(color=COLORS["warning"], width=2.5, dash="dot"),
-                marker=dict(size=7), connectgaps=False,
-                hovertemplate="Projetado: R$ %{y:,.2f}<extra></extra>",
-            ))
-            fig_fc.add_trace(go.Scatter(
-                name="Orçado", x=rotulos_meses_fc, y=valores_ebitda_orc,
-                mode="lines", line=dict(color=COLORS["muted_line"], width=2, dash="dash"),
-                hovertemplate="Orçado: R$ %{y:,.2f}<extra></extra>",
-            ))
-            # Faixa entre o pior e o melhor mês já realizado, aplicada aos
-            # meses futuros: mostra a incerteza da projeção em vez de fingir
-            # que o número é exato.
+            # A faixa entra primeiro para ficar ATRÁS das linhas.
             if realizados_ebitda and meses_restantes_fc > 0:
                 _validos_graf = [v for v in realizados_ebitda if v != 0]
                 if _validos_graf:
@@ -8576,27 +8651,61 @@ que ainda não entrou.
                     banda_sup = [None] * (meses_realizados_fc - 1) + \
                         [realizados_ebitda[-1]] + [_melhor] * meses_restantes_fc
                     fig_fc.add_trace(go.Scatter(
-                        name="Faixa de cenários", x=rotulos_meses_fc, y=banda_sup,
-                        mode="lines", line=dict(width=0), showlegend=False,
-                        hoverinfo="skip", connectgaps=False,
+                        x=rotulos_meses_fc, y=banda_sup, mode="lines",
+                        line=dict(width=0), showlegend=False, hoverinfo="skip", connectgaps=False,
                     ))
                     fig_fc.add_trace(go.Scatter(
                         name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
                         mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor="rgba(245,166,35,0.12)", connectgaps=False,
+                        fillcolor="rgba(245,166,35,0.06)", connectgaps=False,
                         hovertemplate="Faixa de cenários<extra></extra>",
                     ))
+            fig_fc.add_trace(go.Scatter(
+                name="Orçado", x=rotulos_meses_fc, y=valores_ebitda_orc,
+                mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
+                hovertemplate="Orçado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_fc.add_trace(go.Scatter(
+                name="Projetado", x=rotulos_meses_fc, y=serie_projetada_graf,
+                mode="lines+markers", line=dict(color=COLORS["warning"], width=2, dash="dot"),
+                marker=dict(size=5), connectgaps=False,
+                hovertemplate="Projetado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_fc.add_trace(go.Scatter(
+                name="Realizado", x=rotulos_meses_fc, y=serie_realizada_graf,
+                mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
+                marker=dict(size=5), connectgaps=False,
+                hovertemplate="Realizado: R$ %{y:,.2f}<extra></extra>",
+            ))
+            # Divisor entre o que já aconteceu e o que é projeção. Em eixo de
+            # categorias, a coordenada numérica é o índice da categoria -- por
+            # isso o 0,5 cai exatamente no meio dos dois meses.
+            if 0 < meses_realizados_fc < len(rotulos_meses_fc):
+                _x_corte = meses_realizados_fc - 0.5
+                fig_fc.add_shape(
+                    type="line", x0=_x_corte, x1=_x_corte, xref="x",
+                    y0=0, y1=1, yref="paper",
+                    line=dict(color=COLORS["border"], width=1, dash="dot"),
+                )
+                fig_fc.add_annotation(
+                    x=_x_corte, xref="x", y=1, yref="paper", yanchor="bottom",
+                    text="projeção →", showarrow=False, xshift=26, yshift=-2,
+                    font=dict(size=9.5, color=COLORS["text_muted"]),
+                )
             estilo_grafico(
-                fig_fc, height=380,
-                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-35,
-                           automargin=True, tickfont=dict(size=9)),
-                yaxis=dict(title=dict(text="EBITDA (R$)", font=dict(size=10, color=COLORS["text_muted"])),
-                           gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5),
-                margin=dict(l=80, r=30, t=25, b=95),
+                fig_fc, height=360,
+                xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True,
+                           tickfont=dict(size=10, color=COLORS["text_muted"])),
+                yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=".2s",
+                           ticksuffix="  ", zerolinecolor=COLORS["border"],
+                           tickfont=dict(size=10, color=COLORS["text_muted"])),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5,
+                            font=dict(size=10, color=COLORS["text_muted"])),
+                margin=dict(l=54, r=24, t=26, b=64),
                 hovermode="x unified",
             )
             st.plotly_chart(fig_fc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.caption("EBITDA mês a mês, em R$. A faixa cobre do pior ao melhor mês já entregue.")
 
             # Cenários: além da média, mostra o que aconteceria no melhor e
             # no pior ritmo já observado -- uma projeção única passa falsa
@@ -8613,30 +8722,32 @@ que ainda não entrou.
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown('<div class="section-title">🎲 Cenários de Fechamento do EBITDA</div>',
                                 unsafe_allow_html=True)
+                    dentro_da_faixa = fc_pessimista <= orcado_ano_fc <= fc_otimista
                     st.markdown(
-                        render_kpi_row([
-                            dict(label="CENÁRIO PESSIMISTA", value=formata_m(fc_pessimista),
-                                 value_color=COLORS["negative"],
-                                 subtext=f"Repetindo o pior mês ({formata_m(pior_mes_fc)}/mês)", icon="🔻"),
-                            dict(label="CENÁRIO BASE", value=formata_m(fc_ebitda["Forecast do ano"]),
-                                 value_color=COLORS["primary"],
-                                 subtext=f"{base_forecast.lower()}", icon="🎯"),
-                            dict(label="CENÁRIO OTIMISTA", value=formata_m(fc_otimista),
-                                 value_color=COLORS["positive"],
-                                 subtext=f"Repetindo o melhor mês ({formata_m(melhor_mes_fc)}/mês)", icon="🔺"),
-                            dict(label="ORÇADO DO ANO", value=formata_m(orcado_ano_fc),
-                                 value_color=COLORS["text_muted"],
-                                 subtext=("Dentro da faixa de cenários"
-                                          if fc_pessimista <= orcado_ano_fc <= fc_otimista
-                                          else "Fora da faixa projetada"), icon="📋"),
+                        faixa_metricas_html([
+                            ("Pessimista", formata_valor_curto(fc_pessimista), COLORS["negative"],
+                             f"repetindo o pior mês ({formata_valor_curto(pior_mes_fc)}/mês)"),
+                            ("Base", formata_valor_curto(fc_ebitda["Forecast do ano"]), COLORS["primary"],
+                             base_forecast.lower()),
+                            ("Otimista", formata_valor_curto(fc_otimista), COLORS["positive"],
+                             f"repetindo o melhor mês ({formata_valor_curto(melhor_mes_fc)}/mês)"),
+                            ("Orçado do ano", formata_valor_curto(orcado_ano_fc), COLORS["text_muted"],
+                             "dentro da faixa de cenários" if dentro_da_faixa
+                             else "fora da faixa projetada"),
                         ]),
                         unsafe_allow_html=True,
                     )
                     if orcado_ano_fc > fc_otimista:
-                        st.error(
-                            "🚨 O orçamento do ano está **acima do melhor mês já entregue** repetido até "
-                            "dezembro. Sem uma mudança relevante na operação, a meta não é alcançável — "
-                            "vale rediscutir o orçamento ou o plano de ação."
+                        st.markdown(
+                            aviso_html(
+                                "Meta fora de alcance",
+                                "O orçamento do ano está "
+                                + destaque_html("acima do melhor mês já entregue")
+                                + " repetido até dezembro. Sem uma mudança relevante na operação, a meta "
+                                "não é alcançável — vale rediscutir o orçamento ou o plano de ação.",
+                                COLORS["negative"],
+                            ),
+                            unsafe_allow_html=True,
                         )
                     elif orcado_ano_fc > fc_ebitda["Forecast do ano"]:
                         esforco_mensal = (orcado_ano_fc - fc_ebitda["Realizado até agora"]) / meses_restantes_fc
@@ -8644,25 +8755,44 @@ que ainda não entrou.
                         aumento_necessario = (
                             (esforco_mensal / media_atual_fc - 1) * 100 if media_atual_fc else 0
                         )
-                        st.warning(
-                            f"⚠️ Para bater a meta, seria preciso entregar {formata_brl(esforco_mensal)} "
-                            f"de EBITDA por mês nos {meses_restantes_fc} meses restantes — "
-                            f"{aumento_necessario:+.0f}% em relação à média atual de "
-                            f"{formata_brl(media_atual_fc)}.".replace("$", "\\$")
+                        st.markdown(
+                            aviso_html(
+                                "Esforço necessário",
+                                "Para bater a meta, seria preciso entregar "
+                                + destaque_html(f"{formata_brl(esforco_mensal)} de EBITDA por mês")
+                                + f" nos {meses_restantes_fc} meses restantes — "
+                                f"{aumento_necessario:+.0f}% em relação à média atual de "
+                                f"{formata_brl(media_atual_fc)}.",
+                                COLORS["warning"],
+                            ),
+                            unsafe_allow_html=True,
                         )
 
             desvio_fc = fc_ebitda["Desvio vs. orçado"]
             if desvio_fc < 0:
-                st.warning(
-                    f"⚠️ Mantido o ritmo atual, o ano deve fechar **{formata_brl(abs(desvio_fc))} abaixo** "
-                    f"do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta). Para chegar ao orçado, "
-                    f"seria preciso gerar {formata_brl(abs(desvio_fc) / max(meses_restantes_fc, 1))} a mais "
-                    f"por mês nos {meses_restantes_fc} meses restantes.".replace("$", "\\$")
+                st.markdown(
+                    aviso_html(
+                        "Fechamento projetado",
+                        "Mantido o ritmo atual, o ano deve fechar "
+                        + destaque_html(f"{formata_brl(abs(desvio_fc))} abaixo")
+                        + f" do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta). Para chegar ao "
+                        f"orçado, seria preciso gerar "
+                        f"{formata_brl(abs(desvio_fc) / max(meses_restantes_fc, 1))} a mais por mês nos "
+                        f"{meses_restantes_fc} meses restantes.",
+                        COLORS["warning"],
+                    ),
+                    unsafe_allow_html=True,
                 )
             else:
-                st.success(
-                    f"✅ Mantido o ritmo atual, o ano deve fechar **{formata_brl(desvio_fc)} acima** do "
-                    f"EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta).".replace("$", "\\$")
+                st.markdown(
+                    aviso_html(
+                        "Fechamento projetado",
+                        "Mantido o ritmo atual, o ano deve fechar "
+                        + destaque_html(f"{formata_brl(desvio_fc)} acima")
+                        + f" do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta).",
+                        COLORS["positive"],
+                    ),
+                    unsafe_allow_html=True,
                 )
             st.caption(
                 "A projeção repete a média dos meses escolhidos para os meses que faltam. É uma leitura de "
