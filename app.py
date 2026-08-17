@@ -2132,9 +2132,7 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
       dono de 6.24.2 pra baixo, mas não de 6.24.1, que é de outra área)."""
     termo = str(termo).strip()
     if termo == "RESTANTE":
-        return _linhas_restantes_de_custo(linhas_disponiveis)
-    if termo == "REFERENCIA":
-        return _linhas_de_referencia_da_dre(linhas_disponiveis)
+        return _linhas_restantes_da_dre(linhas_disponiveis)
     if termo.startswith("FILHAS:"):
         # A linha do grupo MAIS o primeiro nível abaixo dela (6 e 6.1 a
         # 6.25, sem descer para 6.24.2.x). É o recorte do relatório da
@@ -2157,6 +2155,37 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
         return [l for l in linhas_disponiveis if _linha_pertence_ao_grupo(l, prefixo)]
     termo_norm = termo.lower()
     return [l for l in linhas_disponiveis if termo_norm in str(l).strip().lower()]
+
+
+# Pedaços de nome que identificam uma linha CALCULADA pela DRE -- ela é o
+# resultado das linhas acima, não uma conta que alguém gere. Entram na lista
+# do departamento e no relatório, mas ficam fora de qualquer soma: somar
+# "15 - Resultado Antes do Imposto" junto com as contas que o formam
+# duplicaria a DRE inteira dentro do total de um departamento.
+PALAVRAS_LINHA_DE_RESULTADO = (
+    # Receita bruta e líquida: são o ponto de partida da DRE, não despesa.
+    "receita operacional",
+    # Deduções da receita: a DRE já as subtrai para chegar na receita
+    # líquida -- somá-las de novo no total de um departamento cobraria o
+    # mesmo imposto duas vezes.
+    "deduções da receita",
+    "margem de contribui",
+    "ebitda",
+    # "Resultado Antes do Imposto", "Resultado Gerencial", "Resultado
+    # Financeiro": todos são a conta fechada das linhas acima deles.
+    "resultado",
+)
+# Cuidado ao mexer nesta lista: "lucro" já esteve aqui e derrubava a linha
+# "16 - Impostos sobre o Lucro", que é conta de verdade, do total do
+# departamento. A palavra precisa identificar o CÁLCULO, não o assunto.
+
+
+def _eh_linha_de_resultado(nome_linha):
+    """True para as linhas que a DRE calcula (receita, margens, EBITDA,
+    resultados). São exibidas normalmente; o que muda é que nenhum total,
+    gráfico de composição ou indicador as soma."""
+    texto = _normalizar_texto(nome_linha).lower()
+    return any(palavra in texto for palavra in PALAVRAS_LINHA_DE_RESULTADO)
 
 
 def _linhas_com_dono_de_departamento(linhas_disponiveis):
@@ -2182,36 +2211,32 @@ def _linhas_com_dono_de_departamento(linhas_disponiveis):
     return donas
 
 
-def _linhas_restantes_de_custo(linhas_disponiveis):
-    """O que sobra para o ADM/Financeiro: as linhas de custo e despesa
-    (grupos 4, 6 e 8) que nenhum departamento reivindicou.
+def _linhas_restantes_da_dre(linhas_disponiveis):
+    """O que sobra para o ADM/Financeiro: TODA a DRE que nenhum outro
+    departamento reivindicou -- do custo da mercadoria aos impostos sobre o
+    lucro, passando pelas receitas e despesas não operacionais.
 
-    Duas linhas ficam de fora além das que já têm dono:
-    - as ANCESTRAIS de uma linha com dono (ex.: "8 - Despesas Operacionais",
-      "8.3 - Pessoal", "6 - Despesas Variáveis"), porque o valor delas inclui
-      o custo dos outros departamentos -- somá-las aqui atribuiria ao ADM a
-      folha do RH e o frete de Suprimentos;
-    - as de receita e resultado, que não são despesa gerida e entram como
-      referência, num bloco à parte."""
+    Só uma coisa fica de fora além do que já tem dono: as linhas ANCESTRAIS
+    de uma linha com dono (ex.: "8 - Despesas Operacionais", "8.3 - Pessoal",
+    "6 - Despesas Variáveis"). O valor delas inclui o custo dos outros
+    departamentos, e trazê-las para cá atribuiria ao ADM a folha do RH e o
+    frete de Suprimentos.
+
+    As linhas calculadas pela DRE (margens, EBITDA, resultados) ENTRAM na
+    lista -- elas fazem parte do departamento e precisam sair no relatório --
+    mas ficam fora das somas, o que é resolvido em _linhas_raiz_do_conjunto."""
     donas = _linhas_com_dono_de_departamento(linhas_disponiveis)
     numeros_donos = {n for n in (_numero_linha_dre(l) for l in donas) if n}
 
     restantes = []
     for linha in linhas_disponiveis:
-        if linha in donas or not eh_linha_custos_despesas(linha):
+        if linha in donas:
             continue
         numero = _numero_linha_dre(linha)
         if numero and any(dono.startswith(numero + ".") for dono in numeros_donos):
             continue  # é ancestral de linha com dono
         restantes.append(linha)
     return restantes
-
-
-def _linhas_de_referencia_da_dre(linhas_disponiveis):
-    """Receita, margens, EBITDA e depreciação -- tudo que não é custo nem
-    despesa. Não somam no total do departamento; ficam visíveis porque é
-    contra elas que o ADM/Financeiro lê o próprio peso."""
-    return [l for l in linhas_disponiveis if not eh_linha_custos_despesas(l)]
 
 
 def _linhas_raiz_do_conjunto(linhas):
@@ -2224,6 +2249,9 @@ def _linhas_raiz_do_conjunto(linhas):
     mais de uma vez. Usado em qualquer total/soma/gráfico de composição do
     Modo Departamento -- a tabela de detalhe (que lista linha por linha,
     sem somar) continua usando o conjunto completo normalmente."""
+    # Linha calculada pela DRE nunca entra numa soma -- ela já contém as
+    # contas que estão sendo somadas ao lado dela.
+    linhas = [l for l in linhas if not _eh_linha_de_resultado(l)]
     numeros = {l: _numero_linha_dre(l) for l in linhas}
     raizes = []
     for l, num in numeros.items():
@@ -3049,16 +3077,16 @@ MODELOS_RELATORIO = {
         # a DRE ganhar uma linha nova, o recorte se ajusta sozinho, sem
         # ninguém precisar lembrar de vir aqui atualizar duas listas.
         #
-        # Ficam de fora: as linhas dos departamentos marcados como
-        # "linhas_exclusivas" (MKT, Compras, Suprimentos, RH), as ancestrais
-        # delas (a linha "8 - Despesas Operacionais" carrega a folha do RH
-        # dentro) e as de receita/resultado, que entram como referência.
+        # Ficam de fora só as linhas dos departamentos marcados como
+        # "linhas_exclusivas" (MKT, Compras, Suprimentos, RH) e as ancestrais
+        # delas -- a linha "8 - Despesas Operacionais" carrega a folha do RH
+        # dentro. Todo o resto é do ADM: receitas e despesas não operacionais,
+        # impostos sobre o lucro, depreciação, e também as linhas calculadas
+        # (margens, EBITDA, resultados), que aparecem na lista e no relatório
+        # mas não entram em soma nenhuma.
         # A Gerência Comercial não desconta nada: as três linhas dela são um
         # recorte de acompanhamento sobre ramos de outras áreas.
         "linhas_dre": ["RESTANTE"],
-        # Receita, margens, EBITDA e depreciação: não somam no total do
-        # departamento, mas é contra elas que o financeiro lê o próprio peso.
-        "linhas_informativas": ["REFERENCIA"],
         # Os planos de contas que sobram -- os que existem no DIÁRIO sem
         # linha da DRE e que nenhum outro modelo puxou (Mercadorias é de
         # Compras; as benfeitorias, de Suprimentos).
@@ -8754,11 +8782,19 @@ def _painel_dept_adm(ctx):
 
     linhas_cmv = [l for l in raizes if _grupo_raiz(l) == "4"]
     linhas_taxas = [l for l in raizes if _grupo_raiz(l) == "6"]
-    linhas_estrutura = [l for l in raizes if l not in linhas_cmv and l not in linhas_taxas]
+    linhas_estrutura = [l for l in raizes if _grupo_raiz(l) == "8"]
+    # Tudo que fica abaixo da operação: depreciação, receitas e despesas não
+    # operacionais, impostos sobre o lucro. Não acompanha a venda e não é
+    # estrutura -- misturar com os outros três esconderia os três.
+    linhas_fora_da_operacao = [
+        l for l in raizes
+        if l not in linhas_cmv and l not in linhas_taxas and l not in linhas_estrutura
+    ]
 
     cmv, cmv_orc = _real_orc(linhas_cmv)
     taxas, taxas_orc = _real_orc(linhas_taxas)
     estrutura, estrutura_orc = _real_orc(linhas_estrutura)
+    fora_operacao, fora_operacao_orc = _real_orc(linhas_fora_da_operacao)
 
     st.markdown('<div class="section-title">🏦 O custo do ADM/Financeiro por natureza</div>',
                 unsafe_allow_html=True)
@@ -8770,17 +8806,18 @@ def _painel_dept_adm(ctx):
              cor_variacao(taxas_orc - taxas), _pct_receita(taxas)),
             ("Estrutura fixa (grupo 8)", formata_valor_curto(estrutura),
              cor_variacao(estrutura_orc - estrutura), _pct_receita(estrutura)),
-            ("Custo fixo por real vendido",
-             (f"{estrutura / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
-             COLORS["text"], "quanto da venda paga a estrutura"),
+            ("Fora da operação e impostos", formata_valor_curto(fora_operacao),
+             cor_variacao(fora_operacao_orc - fora_operacao),
+             f"{len(linhas_fora_da_operacao)} conta(s) · depreciação, não operacionais, IRPJ/CSLL"),
         ]),
         unsafe_allow_html=True,
     )
     st.caption(
-        "As três naturezas se comportam de formas diferentes e por isso não se lê o desvio "
-        "delas junto: custo da venda e taxas sobem quando a empresa vende mais — desvio ali "
-        "pode ser volume, não descontrole. Estrutura fixa não deveria acompanhar a venda, "
-        "então qualquer alta ali é decisão, não consequência."
+        "As naturezas se comportam de formas diferentes e por isso não se lê o desvio delas "
+        "junto: custo da venda e taxas sobem quando a empresa vende mais — desvio ali pode "
+        "ser volume, não descontrole. Estrutura fixa não deveria acompanhar a venda, então "
+        "qualquer alta ali é decisão. O que está fora da operação segue outra lógica ainda: "
+        "imposto sobre o lucro acompanha o resultado, não a venda."
     )
 
     # ---- Onde o mês fugiu do orçado ----
@@ -8806,7 +8843,9 @@ def _painel_dept_adm(ctx):
         f"As 8 maiores distorções do período, das {len(contas)} contas do departamento, em "
         "valor absoluto — para cima e para baixo, porque gastar bem menos que o previsto "
         "também merece explicação (pode ser conta que ainda não chegou). Desvio positivo é "
-        "gasto abaixo do orçado. A lista completa, na ordem da DRE, está logo abaixo."
+        "gasto abaixo do orçado. As linhas que a DRE calcula (margens, EBITDA, resultados) "
+        "ficam fora deste ranking e de qualquer soma, mas aparecem na lista completa logo "
+        "abaixo e no relatório."
     )
 
     # ---- Carga tributária, quando a DRE tiver a linha de deduções ----
@@ -8821,9 +8860,9 @@ def _painel_dept_adm(ctx):
             carga = f"{deducoes / bruta * 100:.1f}%".replace(".", ",")
             st.caption(
                 f"Carga sobre a venda: {formata_brl(deducoes)} de deduções sobre "
-                f"{formata_brl(bruta)} de receita bruta — {carga}. Não entra no total do "
-                "departamento (é dedução da receita, não despesa), mas aparece no bloco de "
-                "referência mais abaixo."
+                f"{formata_brl(bruta)} de receita bruta — {carga}. A linha aparece na lista "
+                "do departamento, mas não entra no total: ela é dedução da receita, e a DRE "
+                "já a desconta antes de chegar na receita líquida."
             )
 
     # A tabela acima é um ranking; a lista linha a linha do bloco genérico

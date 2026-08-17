@@ -40,8 +40,35 @@ ARVORE = ast.parse(FONTE)
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
 
 
+# Dependencias internas: quem pede a funcao da esquerda precisa das da
+# direita para rodar, mesmo sem saber disso. Sem esta tabela, cada teste teria
+# de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
+# dentro sem mudar de comportamento.
+DEPENDENCIAS = {
+    "_linhas_raiz_do_conjunto": ["_eh_linha_de_resultado", "_normalizar_texto"],
+    "_eh_linha_de_resultado": ["_normalizar_texto"],
+}
+CONSTANTES_DE_DEPENDENCIA = {
+    "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
+}
+
+
 def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
     """Executa apenas as funcoes e constantes pedidas, num espaco isolado."""
+    nomes_funcoes = list(nomes_funcoes)
+    nomes_constantes = list(nomes_constantes)
+    # Fila, e nao um laco unico: a dependencia de uma dependencia tambem
+    # precisa entrar. Sem isso, o detector entrava mas a constante dele nao.
+    fila = list(nomes_funcoes)
+    while fila:
+        nome = fila.pop()
+        for extra in DEPENDENCIAS.get(nome, []):
+            if extra not in nomes_funcoes:
+                nomes_funcoes.append(extra)
+                fila.append(extra)
+        for extra in CONSTANTES_DE_DEPENDENCIA.get(nome, []):
+            if extra not in nomes_constantes:
+                nomes_constantes.append(extra)
     pedacos = []
     for no in ARVORE.body:
         if isinstance(no, ast.FunctionDef) and no.name in nomes_funcoes:
@@ -567,7 +594,13 @@ class TesteAdmFinanceiro(unittest.TestCase):
         "8.3.1 - Salários", "8.3.3.7 - Prêmios / Bônus", "8.5.3 - Combustível",
         "8.6.1 - Material de Escritório", "8.6.6 - Outras Despesas Administrativas",
         "8.6.7 - Tarifas Bancárias", "8.8.1 - Contabilidade",
-        "8.8.2 - Auditoria / Consultoria", "11 - EBITDA", "13 - Depreciação e Amortização",
+        "8.8.2 - Auditoria / Consultoria", "11 - EBITDA",
+        "12 - Resultado Financeiro", "12.1 - Despesas Financeiras",
+        "13 - Depreciação e Amortização",
+        "14 - Outras Receitas e Despesas não Operacionais",
+        "14.3 - Outras Receitas não Operacionais",
+        "15 - Resultado Antes do Imposto", "16 - Impostos sobre o Lucro", "16.1 - IRPJ",
+        "17 - Resultado Gerencial do Período",
     ]
 
     @classmethod
@@ -575,10 +608,10 @@ class TesteAdmFinanceiro(unittest.TestCase):
         cls.ns = carregar(
             ["_normalizar_texto", "_numero_linha_dre", "_linha_pertence_ao_grupo",
              "eh_linha_custos_despesas", "_resolver_termo_departamento",
-             "_linhas_com_dono_de_departamento", "_linhas_restantes_de_custo",
-             "_linhas_de_referencia_da_dre", "_linhas_raiz_do_conjunto",
+             "_linhas_com_dono_de_departamento", "_linhas_restantes_da_dre",
+             "_linhas_raiz_do_conjunto",
              "resolver_planos_forcados"],
-            ["MODELOS_RELATORIO"],
+            ["MODELOS_RELATORIO", "PALAVRAS_LINHA_DE_RESULTADO"],
         )
 
     def _geridas(self):
@@ -611,13 +644,41 @@ class TesteAdmFinanceiro(unittest.TestCase):
                         "8.8.1 - Contabilidade"]:
             self.assertIn(propria, geridas, f"{propria} nao tem dono e sumiu do ADM")
 
-    def test_receita_e_resultado_ficam_so_como_referencia(self):
+    def test_departamento_leva_a_dre_inteira_que_sobra(self):
+        """Nao operacionais, impostos sobre o lucro e ate as linhas de
+        resultado fazem parte do departamento -- em tela e no relatorio."""
         geridas = self._geridas()
-        referencia = self.ns["_resolver_termo_departamento"]("REFERENCIA", self.DRE)
-        for linha in ["1 - Receita Operacional Bruta", "3 - Receita Operacional Liquida",
-                      "11 - EBITDA", "13 - Depreciação e Amortização"]:
-            self.assertNotIn(linha, geridas, "receita/resultado nao pode somar no total")
-            self.assertIn(linha, referencia)
+        for linha in ["13 - Depreciação e Amortização", "12.1 - Despesas Financeiras",
+                      "14 - Outras Receitas e Despesas não Operacionais",
+                      "14.3 - Outras Receitas não Operacionais",
+                      "16 - Impostos sobre o Lucro", "16.1 - IRPJ",
+                      "15 - Resultado Antes do Imposto",
+                      "17 - Resultado Gerencial do Período",
+                      "1 - Receita Operacional Bruta", "11 - EBITDA"]:
+            self.assertIn(linha, geridas, f"{linha} sumiu do ADM/Financeiro")
+
+    def test_linha_calculada_nunca_entra_numa_soma(self):
+        """15 e 17 sao a DRE inteira fechada: soma-las junto com as contas
+        que as formam multiplicaria o total do departamento."""
+        calculadas = ["1 - Receita Operacional Bruta",
+                      "2 - Deduções da Receita Operacional Bruta",
+                      "3 - Receita Operacional Liquida", "5 - Margem de Contribuição 1",
+                      "11 - EBITDA", "12 - Resultado Financeiro",
+                      "15 - Resultado Antes do Imposto",
+                      "17 - Resultado Gerencial do Período"]
+        for linha in calculadas:
+            self.assertTrue(self.ns["_eh_linha_de_resultado"](linha), linha)
+        raizes = self.ns["_linhas_raiz_do_conjunto"](self._geridas())
+        for linha in calculadas:
+            self.assertNotIn(linha, raizes, f"{linha} entrou no total")
+
+    def test_imposto_sobre_o_lucro_e_conta_de_verdade(self):
+        """A palavra "lucro" ja esteve na lista de linhas calculadas e
+        derrubava os impostos do total do departamento."""
+        self.assertFalse(self.ns["_eh_linha_de_resultado"]("16 - Impostos sobre o Lucro"))
+        raizes = self.ns["_linhas_raiz_do_conjunto"](self._geridas())
+        self.assertIn("16 - Impostos sobre o Lucro", raizes)
+        self.assertNotIn("16.1 - IRPJ", raizes, "a filha nao pode somar junto com a mae")
 
     def test_gerencia_comercial_nao_tira_linha_do_adm(self):
         """As tres linhas da Gerencia Comercial sao acompanhamento sobre ramos
