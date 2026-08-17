@@ -355,6 +355,80 @@ class TesteSomaComFilhas(unittest.TestCase):
 
 
 # ============================================================================
+# 5c. GERENCIA COMERCIAL
+# ============================================================================
+class TesteGerenciaComercial(unittest.TestCase):
+    """O bloco reproduz o relatorio que a Controladoria enviava na mao: o
+    Quadro de Metas (3 linhas) e o grupo 6 aberto por sublinha."""
+
+    NOME = "📈 Relatório de Custos - Gerência Comercial"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["_normalizar_texto", "_normalizar_nome_aba", "get_valor_consolidado_multi",
+             "_nome_sem_numero_dre", "_resolver_termo_departamento", "cor_valor",
+             "cor_variacao", "formata_brl", "formata_valor_curto", "faixa_metricas_html",
+             "html_compacto", "_total_dre", "_tabela_departamento", "_painel_dept_comercial"],
+            ["COLORS", "FONTE_MONO", "LINHA_RECEITA_LIQUIDA", "LINHA_DESPESAS_VARIAVEIS",
+             "MODELOS_RELATORIO"],
+            extras={"st": type("st", (), {
+                "markdown": staticmethod(lambda *a, **k: None),
+                "caption": staticmethod(lambda *a, **k: None),
+                "dataframe": staticmethod(lambda d, **k: TesteGerenciaComercial.tabelas.append(d)),
+            })()},
+        )
+
+    def setUp(self):
+        TesteGerenciaComercial.tabelas = []
+
+    def _rodar(self):
+        # Valores consolidados (jan a maio) do relatorio enviado pelo gestor.
+        real = {"6 - Despesas Variáveis": -6_108_698.41,
+                "6.24.2.5 - Encontro de Ciclo": -4_519.40,
+                "6.24.2.6 - Outras Despesas de Marketing": -156_203.19,
+                "8.3.3.7 - Prêmios / Bônus": -176_115.22,
+                "6.1 - Comissões sobre Vendas": -700_432.11,
+                "3 - Receita Operacional Liquida": 75_737_289.82}
+        orc = {"6 - Despesas Variáveis": -7_000_276.88,
+               "6.24.2.5 - Encontro de Ciclo": -28_400.00,
+               "6.24.2.6 - Outras Despesas de Marketing": -393_600.00,
+               "8.3.3.7 - Prêmios / Bônus": -128_357.03,
+               "6.1 - Comissões sobre Vendas": -801_680.80,
+               "3 - Receita Operacional Liquida": 91_012_257.49}
+        aba = lambda d: pd.DataFrame([{"Nome": n, "01/2026": v} for n, v in d.items()])
+        universo = list(real.keys())
+        self.ns["_painel_dept_comercial"]({
+            "departamento": self.NOME, "dfs_real": [aba(real)], "dfs_orc": [aba(orc)],
+            "colunas": ["01/2026"], "linhas_resolvidas": universo,
+            "linhas_raiz": ["6 - Despesas Variáveis", "8.3.3.7 - Prêmios / Bônus"],
+            "linhas_todas": universo, "path_orc": "o", "path_real": "r"})
+        return [t.data for t in TesteGerenciaComercial.tabelas]
+
+    def test_quadro_de_metas_bate_com_o_relatorio(self):
+        metas = self._rodar()[0]
+        total = metas[metas["Linha da DRE"] == "TOTAL"].iloc[0]
+        self.assertAlmostEqual(total["Realizado (R$)"], 336_837.81, places=2)
+        self.assertAlmostEqual(total["Orçado (R$)"], 550_357.03, places=2)
+
+    def test_quadro_de_metas_tem_as_tres_linhas(self):
+        metas = self._rodar()[0]
+        self.assertEqual(len(metas), 4)  # 3 linhas + TOTAL
+
+    def test_grupo_6_fecha_com_o_total(self):
+        grupo = self._rodar()[1]
+        total = grupo[grupo["Linha da DRE"].str.startswith("TOTAL")].iloc[0]
+        self.assertAlmostEqual(total["Realizado (R$)"], 6_108_698.41, places=2)
+        self.assertAlmostEqual(total["Orçado (R$)"], 7_000_276.88, places=2)
+
+    def test_modelo_e_email_cadastrados(self):
+        self.assertIn(self.NOME, FONTE)
+        self.assertIn("gerente.comercial@grupobeea.com.br", FONTE)
+        self.assertIn('"quadro_de_metas"', FONTE)
+        self.assertIn('"todas_as_linhas_no_relatorio"', FONTE)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):

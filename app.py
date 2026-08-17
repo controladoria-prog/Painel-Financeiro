@@ -3053,6 +3053,37 @@ MODELOS_RELATORIO = {
         # "Lançado Manualmente" com o valor da própria linha da DRE.
         "permitir_lancamento_manual": True,
     },
+    "📈 Relatório de Custos - Gerência Comercial": {
+        # O painel do gestor se apoia em duas frentes, como no relatório que a
+        # Controladoria já enviava na mão:
+        #   * o "Quadro de Metas" -- as três linhas que ele acompanha de perto;
+        #   * o grupo 6 - Despesas Variáveis inteiro, com todas as sublinhas.
+        # A 6 já contém 6.24.2.5 e 6.24.2.6 (são netas dela), então a soma do
+        # departamento não conta duas vezes: o painel resolve as linhas-raiz
+        # antes de somar. A 8.3.3.7 é de outro ramo e entra à parte.
+        "linhas_dre": [
+            "6 - Despesas Variáveis",
+            "6.24.2.5 - Encontro de Ciclo",
+            "6.24.2.6 - Outras Despesas de Marketing",
+            "8.3.3.7 - Prêmios / Bônus",
+        ],
+        # As três linhas do Quadro de Metas, na ordem em que aparecem no
+        # relatório enviado ao gestor.
+        "quadro_de_metas": [
+            "6.24.2.5 - Encontro de Ciclo",
+            "6.24.2.6 - Outras Despesas de Marketing",
+            "8.3.3.7 - Prêmios / Bônus",
+        ],
+        # No RELATÓRIO a gerência quer a DRE inteira, com todas as visões e os
+        # lançamentos -- não só as linhas do departamento. O painel continua
+        # focado nas linhas acima; é só a seleção padrão do relatório que abre
+        # com tudo marcado.
+        "todas_as_linhas_no_relatorio": True,
+        # Sem planos forçados: aqui entram apenas os planos que têm linha da
+        # DRE correspondente.
+        "forcar_planos_contas": [],
+        "permitir_lancamento_manual": False,
+    },
     "📣 Relatório de Custos - MKT": {
         "linhas_dre": [
             # PREFIXO:6.24.2 pega a linha "6.24.2 - Marketing Regional -
@@ -6203,6 +6234,7 @@ MAPA_EMAIL_DEPARTAMENTO = {
     "coordenador.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT",
     "gerente.logistica@grupobeea.com.br": "🚚 Relatório de Custos - Suprimentos",
     "pessoas.cultura@grupobeea.com.br": "👥 Relatório de Custos - RH",
+    "gerente.comercial@grupobeea.com.br": "📈 Relatório de Custos - Gerência Comercial",
 }
 
 departamento_ativo = None
@@ -8350,11 +8382,135 @@ def _painel_dept_rh(ctx):
     )
 
 
+# ---------------------------------------------------------------------------
+# GERÊNCIA COMERCIAL
+# ---------------------------------------------------------------------------
+LINHA_DESPESAS_VARIAVEIS = "6 - Despesas Variáveis"
+
+
+def _painel_dept_comercial(ctx):
+    """Reproduz na tela o relatório que a Controladoria mandava na mão: o
+    Quadro de Metas com as três linhas que a gerência acompanha de perto e,
+    logo abaixo, o grupo 6 - Despesas Variáveis aberto por sublinha.
+
+    Os dois blocos aparecem com Orçado, Realizado e Desvio no período -- as
+    mesmas colunas da planilha, só que já somadas no recorte escolhido."""
+    colunas = ctx["colunas"]
+    universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
+
+    def _linhas(termo):
+        return _resolver_termo_departamento(termo, universo)
+
+    def _valores(termo):
+        linhas = _linhas(termo)
+        real = _total_dre(ctx["dfs_real"], linhas, colunas)
+        orc = _total_dre(ctx["dfs_orc"], linhas, colunas)
+        return abs(real), abs(orc)
+
+    # ---- Quadro de Metas ----
+    st.markdown('<div class="section-title">🎯 Quadro de Metas</div>', unsafe_allow_html=True)
+
+    termos_metas = MODELOS_RELATORIO.get(ctx["departamento"], {}).get("quadro_de_metas", [])
+    linhas_metas, meta_real, meta_orc = [], 0.0, 0.0
+    for termo in termos_metas:
+        real, orc = _valores(termo)
+        if not real and not orc:
+            continue
+        meta_real += real
+        meta_orc += orc
+        linhas_metas.append({
+            "Linha da DRE": _nome_sem_numero_dre(termo),
+            "Orçado (R$)": orc,
+            "Realizado (R$)": real,
+            "Desvio (R$)": orc - real,
+            "% do orçado": (real / orc * 100) if orc else float("nan"),
+        })
+    if linhas_metas:
+        linhas_metas.append({
+            "Linha da DRE": "TOTAL",
+            "Orçado (R$)": meta_orc,
+            "Realizado (R$)": meta_real,
+            "Desvio (R$)": meta_orc - meta_real,
+            "% do orçado": (meta_real / meta_orc * 100) if meta_orc else float("nan"),
+        })
+
+    var_real, var_orc = _valores(LINHA_DESPESAS_VARIAVEIS)
+    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
+
+    st.markdown(
+        faixa_metricas_html([
+            ("Quadro de metas · realizado", formata_valor_curto(meta_real),
+             cor_variacao(meta_orc - meta_real),
+             (f"{meta_real / meta_orc * 100:.0f}% do orçado".replace(".", ",")
+              if meta_orc else "sem orçamento no período")),
+            ("Quadro de metas · desvio", formata_valor_curto(meta_orc - meta_real),
+             cor_variacao(meta_orc - meta_real), "positivo = gastou menos que o orçado"),
+            ("Despesas variáveis", formata_valor_curto(var_real),
+             cor_variacao(var_orc - var_real),
+             (f"{var_real / var_orc * 100:.0f}% do orçado".replace(".", ",")
+              if var_orc else "sem orçamento no período")),
+            ("Despesas variáveis / receita",
+             (f"{var_real / receita * 100:.1f}%".replace(".", ",") if receita else "—"),
+             COLORS["text"], "quanto da venda é consumido pelo grupo 6"),
+        ]),
+        unsafe_allow_html=True,
+    )
+    _tabela_departamento(linhas_metas, colunas_percentual=("% do orçado",))
+    st.caption(
+        "As três linhas que a gerência acompanha de perto, no mesmo recorte do relatório "
+        "mensal. Encontro de Ciclo e Outras Despesas de Marketing são netas da 6 - Despesas "
+        "Variáveis; Prêmios / Bônus vem de outro ramo da DRE (8.3.3.7)."
+    )
+
+    # ---- 6 - Despesas Variáveis, aberto por sublinha ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📊 6 - Despesas Variáveis por Linha</div>',
+                unsafe_allow_html=True)
+
+    def _codigo(linha):
+        achado = re.match(r"^\s*(\d+(?:\.\d+)*)", str(linha))
+        return achado.group(1) if achado else ""
+
+    # Só as filhas diretas da 6 (6.1 a 6.25): descer mais somaria neta junto
+    # com filha e a soma da coluna deixaria de fechar com o total do grupo.
+    filhas = sorted(
+        (l for l in universo if re.fullmatch(r"6\.\d+", _codigo(l))),
+        key=lambda l: int(_codigo(l).split(".")[1]),
+    )
+    linhas_var = []
+    for linha in filhas:
+        real = abs(_total_dre(ctx["dfs_real"], [linha], colunas))
+        orc = abs(_total_dre(ctx["dfs_orc"], [linha], colunas))
+        if not real and not orc:
+            continue
+        linhas_var.append({
+            "Linha da DRE": _nome_sem_numero_dre(linha),
+            "Orçado (R$)": orc,
+            "Realizado (R$)": real,
+            "Desvio (R$)": orc - real,
+            "% do grupo": (real / var_real * 100) if var_real else float("nan"),
+        })
+    if linhas_var:
+        linhas_var.append({
+            "Linha da DRE": "TOTAL — 6 Despesas Variáveis",
+            "Orçado (R$)": var_orc,
+            "Realizado (R$)": var_real,
+            "Desvio (R$)": var_orc - var_real,
+            "% do grupo": 100.0 if var_real else float("nan"),
+        })
+    _tabela_departamento(linhas_var, colunas_percentual=("% do grupo",))
+    st.caption(
+        "Todas as sublinhas do grupo 6, como no relatório enviado ao gestor. Linha sem "
+        "movimento e sem orçamento no período fica de fora para não alongar a tabela à toa."
+    )
+
+
 PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
     "📣 Relatório de Custos - MKT": _painel_dept_mkt,
     "🛒 Relatório de Custos - Compras": _painel_dept_compras,
     "🚚 Relatório de Custos - Suprimentos": _painel_dept_suprimentos,
     "👥 Relatório de Custos - RH": _painel_dept_rh,
+    "📈 Relatório de Custos - Gerência Comercial": _painel_dept_comercial,
 }
 
 
@@ -11050,6 +11206,11 @@ with tab5:
     # Antes era uma escolha entre um e outro, e trocar de modelo derrubava a
     # seleção. Agora os dois campos ficam sempre disponíveis: dá para pedir só
     # as linhas, só os planos, ou os dois no mesmo arquivo.
+    # Modelo que pede a DRE inteira (Gerência Comercial) abre com todas as
+    # linhas marcadas; os demais abrem só com as do departamento.
+    if MODELOS_RELATORIO.get(modelo_sel, {}).get("todas_as_linhas_no_relatorio"):
+        default_contas = list(linhas_relatorio)
+
     contas_relatorio = st.multiselect(
         "🔍 Linhas da DRE incluídas no relatório:",
         options=linhas_relatorio,
