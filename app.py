@@ -6516,7 +6516,13 @@ EXCEL_STYLE = {
 }
 
 
-def _fonte_por_valor(valor):
+def _fonte_por_valor(valor, negrito=False):
+    """Verde para positivo, vermelho para negativo. Com `negrito`, devolve a
+    mesma cor em negrito -- usado nas linhas de subtotal, que precisam do
+    destaque sem perder a leitura do sinal."""
+    cor = "FF1B8A5A" if valor >= 0 else "FFC0392B"
+    if negrito:
+        return Font(color=cor, bold=True, size=10.5, name="Calibri")
     return EXCEL_STYLE["font_pos"] if valor >= 0 else EXCEL_STYLE["font_neg"]
 
 
@@ -7389,7 +7395,10 @@ def montar_relatorio_excel(
         desvio = v_real - v_orc
         desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
 
-        fill = EXCEL_STYLE["fill_header"] if destaque else (
+        # Fundo CLARO no subtotal: com o preenchimento escuro do cabeçalho,
+        # o verde do desvio ficava ilegível. O destaque vem do negrito e do
+        # tom azulado, e as cores de sinal continuam sendo lidas.
+        fill = EXCEL_STYLE["fill_total"] if destaque else (
             EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
         )
         valores = [rotulo, v_real, v_orc, desvio, desvio_pct]
@@ -7399,18 +7408,18 @@ def montar_relatorio_excel(
             if fill:
                 cell.fill = fill
             if col == 1:
-                cell.font = EXCEL_STYLE["font_header"] if destaque else EXCEL_STYLE["font_normal"]
+                cell.font = EXCEL_STYLE["font_bold"] if destaque else EXCEL_STYLE["font_normal"]
                 cell.alignment = Alignment(horizontal="left", vertical="center")
             elif col in (2, 3):
-                cell.font = EXCEL_STYLE["font_header"] if destaque else EXCEL_STYLE["font_normal"]
+                cell.font = EXCEL_STYLE["font_bold"] if destaque else EXCEL_STYLE["font_normal"]
                 cell.number_format = '"R$" #,##0.00'
                 cell.alignment = Alignment(horizontal="right")
             elif col == 4:
-                cell.font = _fonte_por_valor(desvio)
+                cell.font = _fonte_por_valor(desvio, negrito=destaque)
                 cell.number_format = '"R$" #,##0.00'
                 cell.alignment = Alignment(horizontal="right")
             else:
-                cell.font = _fonte_por_valor(desvio)
+                cell.font = _fonte_por_valor(desvio, negrito=destaque)
                 cell.number_format = '0.0"%"'
                 cell.alignment = Alignment(horizontal="right")
         linha += 1
@@ -8215,7 +8224,6 @@ def _painel_dept_mkt(ctx):
             "% da receita": (total_inv / total_rec * 100) if total_rec else float("nan"),
         })
 
-    pct_geral = (total_inv / total_rec * 100) if total_rec else 0.0
     loja = next((l for l in linhas_tabela if l["Canal"] == "Loja"), None)
     # Teto do 1% = orçamento do canal Loja na 6.24.2 (o 1% já está nele).
     teto_loja = loja["Orçado (R$)"] if loja else 0.0
@@ -8229,8 +8237,6 @@ def _painel_dept_mkt(ctx):
 
     st.markdown(
         faixa_metricas_html([
-            ("Investimento no período", formata_valor_curto(total_inv), COLORS["text"],
-             f"{pct_geral:.1f}%".replace(".", ",") + " da receita líquida dos canais"),
             ("Canal Loja · consumo do 1%",
              ("—" if pd.isna(consumo_loja) else f"{consumo_loja:.1f}%".replace(".", ",")),
              cor_variacao(folga_loja),
@@ -8287,8 +8293,6 @@ def _painel_dept_compras(ctx):
             ("Mercadorias / receita",
              (f"{mercadorias / receita * 100:.1f}%".replace(".", ",") if receita else "—"),
              COLORS["primary"], "quanto da venda vira compra de mercadoria"),
-            ("Materiais no período", formata_valor_curto(materiais), COLORS["text"],
-             f"{len(ctx['linhas_raiz'])} linha(s) da DRE do modelo"),
             ("Materiais por R$ 1.000 vendidos",
              (formata_brl(materiais / receita * 1000) if receita else "—"),
              cor_variacao(materiais_orc - materiais),
@@ -8331,7 +8335,6 @@ def _painel_dept_suprimentos(ctx):
     colunas = ctx["colunas"]
     receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
     custeio = abs(_total_dre(ctx["dfs_real"], ctx["linhas_raiz"], colunas))
-    custeio_orc = abs(_total_dre(ctx["dfs_orc"], ctx["linhas_raiz"], colunas))
 
     try:
         df_diario = carregar_diario(ctx["path_real"])
@@ -8357,9 +8360,6 @@ def _painel_dept_suprimentos(ctx):
 
     st.markdown(
         faixa_metricas_html([
-            ("Custeio no período", formata_valor_curto(custeio), COLORS["text"],
-             f"orçado {formata_valor_curto(custeio_orc)} · desvio "
-             f"{formata_valor_curto(custeio_orc - custeio)}"),
             ("Investimento (benfeitorias)", formata_valor_curto(investimento), COLORS["primary"],
              "planos de ativo, sem linha da DRE"),
             ("Custo logístico / receita",
@@ -8427,9 +8427,6 @@ def _painel_dept_rh(ctx):
 
     st.markdown(
         faixa_metricas_html([
-            ("Custo total de pessoal", formata_valor_curto(folha_total), COLORS["text"],
-             (f"{folha_total / receita * 100:.1f}% da receita líquida".replace(".", ",")
-              if receita else "sem receita no período")),
             ("Hora extra", formata_valor_curto(hora_extra),
              cor_variacao(-(hora_extra / folha_total * 100 - 5) if folha_total else 0),
              (f"{hora_extra / folha_total * 100:.1f}% da folha".replace(".", ",")
@@ -8529,23 +8526,10 @@ def _painel_dept_comercial(ctx):
             "% do orçado": (meta_real / meta_orc * 100) if meta_orc else float("nan"),
         })
 
-    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
-    st.markdown(
-        faixa_metricas_html([
-            ("Quadro de metas · realizado", formata_valor_curto(meta_real),
-             cor_variacao(meta_orc - meta_real),
-             (f"{meta_real / meta_orc * 100:.0f}% do orçado".replace(".", ",")
-              if meta_orc else "sem orçamento no período")),
-            ("Quadro de metas · orçado", formata_valor_curto(meta_orc), COLORS["text"],
-             f"{len(linhas_metas) - 1 if linhas_metas else 0} linha(s) da DRE"),
-            ("Desvio do quadro", formata_valor_curto(meta_orc - meta_real),
-             cor_variacao(meta_orc - meta_real), "positivo = gastou menos que o orçado"),
-            ("Quadro de metas / receita",
-             (f"{meta_real / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
-             COLORS["text"], "peso do quadro sobre a receita líquida"),
-        ]),
-        unsafe_allow_html=True,
-    )
+    # Sem faixa de indicadores aqui: realizado, orçado, desvio e peso na
+    # receita já estão nos cartões do topo e no bloco "Peso do Departamento".
+    # A tabela abaixo traz o mesmo total, aberto por linha -- repetir os
+    # quatro números numa faixa só fazia a tela dizer três vezes a mesma coisa.
     _tabela_departamento(linhas_metas, colunas_percentual=("% do orçado",))
     st.caption(
         "É este total que o relatório chama de **Despesa Variavel - Quadro de Metas GER.COM.** — "
