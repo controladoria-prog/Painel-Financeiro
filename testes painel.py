@@ -477,6 +477,48 @@ class TesteGerenciaComercial(unittest.TestCase):
             sorted(["6 - Despesas Variáveis", "8.3.3.7 - Prêmios / Bônus"]),
             "os totais do painel contariam o mesmo custo duas vezes")
 
+    def test_bloco_do_departamento_avisa_o_que_ja_mostrou(self):
+        """Cada bloco personalizado devolve o que ja desenhou, e o bloco
+        generico pula isso. Sem essa combinacao, a Gerencia Comercial exibia
+        as mesmas duas tabelas duas vezes na mesma tela."""
+        ns = carregar(
+            ["_normalizar_texto", "_normalizar_nome_aba", "get_valor_consolidado_multi",
+             "_nome_sem_numero_dre", "_resolver_termo_departamento", "_numero_linha_dre",
+             "_linha_pertence_ao_grupo", "_linhas_raiz_do_conjunto", "cor_valor",
+             "cor_variacao", "formata_brl", "formata_valor_curto", "faixa_metricas_html",
+             "html_compacto", "_total_dre", "_tabela_departamento", "_painel_dept_comercial"],
+            ["COLORS", "FONTE_MONO", "LINHA_RECEITA_LIQUIDA", "LINHA_DESPESAS_VARIAVEIS",
+             "MODELOS_RELATORIO"],
+            extras={"st": type("st", (), {
+                "markdown": staticmethod(lambda *a, **k: None),
+                "caption": staticmethod(lambda *a, **k: None),
+                "dataframe": staticmethod(lambda *a, **k: None),
+            })()},
+        )
+        nome = "📈 Relatório de Custos - Gerência Comercial"
+        valores = {"6 - Despesas Variáveis": -9_363_906.38,
+                   "6.1 - Comissões sobre Vendas": -935_381.52,
+                   "6.24.2.5 - Encontro de Ciclo": -4_519.40,
+                   "6.24.2.6 - Outras Despesas de Marketing": -415_547.83,
+                   "8.3.3.7 - Prêmios / Bônus": -301_779.55,
+                   "3 - Receita Operacional Liquida": 75_000_000}
+        aba = pd.DataFrame([{"Nome": n, "01/2026": v} for n, v in valores.items()])
+        universo = list(valores.keys())
+        modelo = ns["MODELOS_RELATORIO"][nome]
+        geridas, informativas = [], []
+        for termo in modelo["linhas_dre"]:
+            geridas.extend(ns["_resolver_termo_departamento"](termo, universo))
+        for termo in modelo.get("linhas_informativas", []):
+            informativas.extend(ns["_resolver_termo_departamento"](termo, universo))
+        cobertura = ns["_painel_dept_comercial"]({
+            "departamento": nome, "dfs_real": [aba], "dfs_orc": [aba], "colunas": ["01/2026"],
+            "linhas_resolvidas": geridas, "linhas_raiz": ns["_linhas_raiz_do_conjunto"](geridas),
+            "linhas_todas": universo, "linhas_informativas": informativas,
+            "path_orc": "o", "path_real": "r"})
+        self.assertEqual(cobertura, {"linhas_dept", "informativas"})
+        self.assertIn('if "linhas_dept" not in _ja_mostrado_dept:', FONTE)
+        self.assertIn('"informativas" not in _ja_mostrado_dept', FONTE)
+
     def test_relatorio_agrupa_o_quadro_de_metas(self):
         """No Excel o Quadro de Metas tem de sair como um bloco proprio, com
         subtotal e as tres linhas recuadas abaixo -- foi assim que o

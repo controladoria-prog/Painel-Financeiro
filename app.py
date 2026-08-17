@@ -8260,6 +8260,9 @@ def _painel_dept_mkt(ctx):
         f"{formata_valor_curto(um_pct_receita_loja)} — comparar com o orçamento mostra se ele "
         "ainda acompanha a venda real."
     )
+    # A tabela acima é por CANAL; a lista linha a linha da DRE continua útil
+    # aqui, então o bloco genérico segue desenhando.
+    return set()
 
 
 # ---------------------------------------------------------------------------
@@ -8320,6 +8323,9 @@ def _painel_dept_compras(ctx):
         "A coluna por R$ 1.000 vendidos é o custo unitário de cada material em relação à venda: "
         "é ela que mostra se o custo piorou, independentemente de a empresa ter vendido mais."
     )
+    # A tabela acima já lista as linhas do departamento com orçado, realizado
+    # e desvio -- e ainda acrescenta o custo por R$ 1.000 vendidos.
+    return {"linhas_dept"}
 
 
 # ---------------------------------------------------------------------------
@@ -8391,6 +8397,7 @@ def _painel_dept_suprimentos(ctx):
         "ele não entra no custeio nem no orçamento das linhas acima, por ser ativo e não despesa "
         "recorrente. Separar os dois evita ler um mês de obra como estouro de custo."
     )
+    return {"linhas_dept"}
 
 
 # ---------------------------------------------------------------------------
@@ -8471,6 +8478,9 @@ def _painel_dept_rh(ctx):
         "Hora extra e rescisões estão em destaque por serem os primeiros indicadores a se mexer "
         "quando a operação aperta."
     )
+    # Aqui a folha aparece agrupada em cinco blocos; a lista linha a linha (são
+    # 41) continua sendo útil logo abaixo, então o genérico segue.
+    return set()
 
 
 # ---------------------------------------------------------------------------
@@ -8540,7 +8550,7 @@ def _painel_dept_comercial(ctx):
     # ---- 6 - Despesas Variáveis, para conhecimento ----
     informativas = ctx.get("linhas_informativas") or []
     if not informativas:
-        return
+        return {"linhas_dept"}
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="section-title">📊 6 - Despesas Variáveis (para conhecimento)</div>',
@@ -8583,6 +8593,9 @@ def _painel_dept_comercial(ctx):
         "com o Quadro de Metas acima e não entram nos indicadores do departamento — estão aqui "
         "para conhecimento. Linha sem movimento e sem orçamento no período fica de fora."
     )
+    # As duas tabelas acima já são exatamente o que o bloco genérico desenharia:
+    # as linhas do departamento e as informativas.
+    return {"linhas_dept", "informativas"}
 
 
 PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
@@ -8595,19 +8608,27 @@ PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
 
 
 def renderizar_painel_personalizado(departamento, ctx):
-    """Desenha o bloco próprio do departamento, quando existir. Departamento
-    sem personalização simplesmente não desenha nada e a tela segue com o
-    bloco genérico, como sempre foi."""
+    """Desenha o bloco próprio do departamento, quando existir, e devolve o
+    conjunto do que ele JÁ MOSTROU -- "linhas_dept" e/ou "informativas".
+
+    Sem isso, a tela repetia: o bloco abre a tabela linha a linha e, logo
+    abaixo, o bloco genérico desenhava as mesmas linhas de novo. Quem lê passa
+    a ignorar as duas. O bloco genérico agora pula o que já foi apresentado.
+
+    Departamento sem personalização não desenha nada, devolve conjunto vazio,
+    e a tela segue com o bloco genérico como sempre foi."""
     funcao = PAINEIS_PERSONALIZADOS_DEPARTAMENTO.get(departamento)
     if not funcao:
-        return
+        return set()
+    ja_mostrado = set()
     try:
-        funcao(ctx)
+        ja_mostrado = funcao(ctx) or set()
     except Exception as erro:
         # Um erro aqui não pode derrubar a visão inteira do departamento -- o
         # bloco genérico logo abaixo continua respondendo.
         st.caption(f"Não consegui montar o bloco personalizado deste departamento ({erro}).")
     st.markdown("<br>", unsafe_allow_html=True)
+    return ja_mostrado
 
 
 if departamento_ativo:
@@ -8689,7 +8710,7 @@ with tab1:
             # ---- Bloco próprio do departamento ----
             # Vem antes da leitura genérica: é o que o gestor daquela área
             # olha primeiro. O comparativo tradicional continua abaixo.
-            renderizar_painel_personalizado(departamento_ativo, {
+            _ja_mostrado_dept = renderizar_painel_personalizado(departamento_ativo, {
                 "departamento": departamento_ativo,
                 "dfs_real": list_df_real,
                 "dfs_orc": list_df_orc,
@@ -8812,37 +8833,41 @@ with tab1:
                 )
                 st.plotly_chart(fig_evol_dept, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div class="section-title">📋 Linhas da DRE do Departamento</div>', unsafe_allow_html=True)
-            linhas_tabela_dept = []
-            for l in linhas_departamento_resolvidas:
-                v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
-                linhas_tabela_dept.append({
-                    "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
-                })
-            df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
-            cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
-            st.dataframe(
-                df_tabela_dept.style.format(
-                    {
-                        "Realizado (R$)": formata_brl,
-                        "Orçado (R$)": formata_brl,
-                        "Desvio (R$)": formata_brl,
-                    }
-                ).map(cor_valor, subset=cols_num_dept),
-                column_config={
-                    "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
-                },
-                width="stretch",
-                hide_index=True,
-            )
+            # Pula o que o bloco do departamento já apresentou logo acima --
+            # desenhar a mesma tabela duas vezes na mesma tela faz a segunda
+            # ser ignorada, e a primeira perder credibilidade junto.
+            if "linhas_dept" not in _ja_mostrado_dept:
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">📋 Linhas da DRE do Departamento</div>', unsafe_allow_html=True)
+                linhas_tabela_dept = []
+                for l in linhas_departamento_resolvidas:
+                    v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
+                    v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                    linhas_tabela_dept.append({
+                        "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
+                    })
+                df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
+                cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
+                st.dataframe(
+                    df_tabela_dept.style.format(
+                        {
+                            "Realizado (R$)": formata_brl,
+                            "Orçado (R$)": formata_brl,
+                            "Desvio (R$)": formata_brl,
+                        }
+                    ).map(cor_valor, subset=cols_num_dept),
+                    column_config={
+                        "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
+                    },
+                    width="stretch",
+                    hide_index=True,
+                )
 
             # ---- Linhas informativas (ex.: no MKT, a gestão GB da
             # indústria) -- não entram em nenhum KPI/gráfico/soma do
             # departamento, mas ficam visíveis aqui só pra conhecimento dos
             # valores, já que aparecem na DRE consolidada. ----
-            if linhas_departamento_informativas:
+            if linhas_departamento_informativas and "informativas" not in _ja_mostrado_dept:
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.markdown(
                     '<div class="section-title">ℹ️ Outras Linhas Relacionadas (fora da gestão do departamento)</div>',
