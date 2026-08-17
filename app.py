@@ -11874,6 +11874,26 @@ if departamento_ativo and tab_apres is not None:
                         value=f"Desvio: {_pct_desvio(sum(_real_mes), sum(_orc_mes)):+.0f}%",
                         key="apres_desvio", max_chars=24,
                     )
+                txt_problema = st.text_input(
+                    "Análise de causa — problema",
+                    value=(
+                        f"Investimento de {_nome_dept_abas} "
+                        f"{_pct_desvio(sum(_real_mes), sum(_orc_mes)):+.0f}% em relação ao "
+                        "orçamento no período"
+                    ),
+                    key="apres_problema",
+                    help="Vai para a cabeça do Ishikawa e para a primeira linha dos 5 Porquês.",
+                )
+                txt_acao = st.text_input(
+                    "Análise de causa — ação principal (5W2H, opcional)",
+                    value="", key="apres_acao",
+                )
+                incluir_causa = st.checkbox(
+                    "Incluir os slides de 5 Porquês, 5W2H e Ishikawa", value=True,
+                    key="apres_incluir_causa",
+                    help=("Saem prontos na estrutura, com o problema preenchido — o resto é "
+                          "escrito na reunião."),
+                )
                 txt_fato = st.text_area(
                     "Desvio — fato (texto de análise)",
                     value=(
@@ -11884,26 +11904,117 @@ if departamento_ativo and tab_apres is not None:
                     key="apres_fato", height=110,
                 )
 
-            # ---- Pré-visualização ----
-            st.markdown('<div class="section-title">👁️ Pré-visualização</div>', unsafe_allow_html=True)
-            _cab_apres = ["DADOS"] + [m.capitalize() for m in _meses_apres] + ["ACUMULADO"]
-            st.caption("Slide 2 — Indicadores do departamento")
-            st.dataframe(pd.DataFrame(linhas_ind_apres, columns=_cab_apres),
-                         use_container_width=True, hide_index=True)
-            st.caption("Slide 3 — EBITDA (margem sobre a receita líquida)")
-            st.dataframe(pd.DataFrame(linhas_ebitda_apres, columns=_cab_apres),
-                         use_container_width=True, hide_index=True)
-            if linhas_canais_apres:
-                st.caption("Slide 4 — Análise de desvio: quadro por canal")
-                st.dataframe(
-                    pd.DataFrame(linhas_canais_apres,
-                                 columns=["CANAL", "INVESTIDO", "ORÇADO", "DESVIO", "% DA RECEITA"]),
-                    use_container_width=True, hide_index=True,
-                )
+            # ---- Pré-visualização, slide a slide ----
+            st.markdown('<div class="section-title">👁️ Pré-visualização dos slides</div>',
+                        unsafe_allow_html=True)
             st.caption(
-                "Os slides de **Próximos Passos e Compromissos** e as duas capas vão como estão "
-                "no modelo — é onde entram os 5 Porquês, o 5W2H e o Ishikawa, preenchidos por quem "
-                "apresenta."
+                "Reprodução do layout na proporção real do arquivo. O servidor do Streamlit não "
+                "tem PowerPoint nem LibreOffice para renderizar o .pptx de verdade, então o que "
+                "aparece aqui é um desenho fiel — cores, posições e conteúdo são os mesmos que "
+                "vão para os slides."
+            )
+            _cab_apres = ["DADOS"] + [m.capitalize() for m in _meses_apres] + ["ACUMULADO"]
+            _cab_canais = ["CANAL", "INVESTIDO", "ORÇADO", "DESVIO", "% DA RECEITA"]
+
+            st.markdown("**Slide 1 — Capa**")
+            st.markdown(
+                _slide_reservado_previa(
+                    "Capa do modelo", f"{txt_periodo} · {txt_foco} · {txt_resp}"),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("**Slide 2 — Indicadores do departamento**")
+            st.markdown(
+                _slide_html_previa(
+                    txt_titulo, txt_subtitulo,
+                    _tabela_html_previa(_cab_apres, linhas_ind_apres, negativo_e_bom=True)),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("**Slide 3 — EBITDA**")
+            st.markdown(
+                _slide_html_previa(
+                    "Indicadores — EBITDA", txt_ebitda_sub,
+                    _tabela_html_previa(_cab_apres, linhas_ebitda_apres)),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("**Slide 4 — Análise de desvio**")
+            _corpo_desvio = (
+                '<div style="display:flex; gap:2%;">'
+                '<div style="width:26%;">'
+                f'<div style="font-size:0.9vw; font-weight:700; color:#1F3864;">{txt_indicador}</div>'
+                f'<div style="font-size:0.75vw; color:#666; margin-bottom:4%;">{txt_dept}</div>'
+                '<div style="display:flex; gap:8%; margin-bottom:3%;">'
+                '<div><div style="font-size:0.7vw; color:#666;">META</div>'
+                f'<div style="font-size:1.3vw; font-weight:800; color:#1F3864;">{txt_meta}</div></div>'
+                '<div><div style="font-size:0.7vw; color:#666;">REALIZADO</div>'
+                f'<div style="font-size:1.3vw; font-weight:800; color:#C00000;">{txt_realizado}</div></div>'
+                '</div>'
+                '<div style="background:#FDECEC; color:#C00000; border-radius:14px; padding:1.5% 3%;'
+                f' font-size:0.8vw; font-weight:700; display:inline-block;">{txt_desvio}</div>'
+                '<div style="font-size:0.72vw; color:#555; margin-top:4%; line-height:1.5;">'
+                f'{txt_fato}</div>'
+                '</div>'
+                '<div style="width:72%;">'
+                f'{_tabela_html_previa(_cab_canais, linhas_canais_apres or [["—"] * 5])}'
+                '</div></div>'
+            )
+            st.markdown(
+                _slide_html_previa("Modelo de Análise de Desvio (> 5%)", "", _corpo_desvio),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("**Slide 5 — Próximos Passos e Compromissos**")
+            st.markdown(
+                _slide_reservado_previa(
+                    "Próximos Passos e Compromissos",
+                    "Vai exatamente como está no modelo — cronograma, ações e responsáveis "
+                    "preenchidos por quem apresenta."),
+                unsafe_allow_html=True,
+            )
+
+            if incluir_causa:
+                st.markdown("**Slide 6 — 5 Porquês**")
+                st.markdown(
+                    _slide_html_previa(
+                        "Análise de Causa — 5 Porquês", "",
+                        _tabela_html_previa(
+                            ["ETAPA", "DESCRIÇÃO"],
+                            [["Problema", txt_problema]]
+                            + [[f"{i}º Por quê?", ""] for i in range(1, 6)]
+                            + [["Causa raiz", ""]],
+                            texto_a_esquerda=True)),
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**Slide 7 — Plano de Ação (5W2H)**")
+                st.markdown(
+                    _slide_html_previa(
+                        "Plano de Ação — 5W2H", "",
+                        _tabela_html_previa(
+                            ["5W2H", "PERGUNTA", "RESPOSTA"],
+                            [["What", "O que será feito?", txt_acao],
+                             ["Why", "Por que será feito?", ""],
+                             ["Where", "Onde será feito?", ""],
+                             ["When", "Quando será feito?", ""],
+                             ["Who", "Quem fará?", ""],
+                             ["How", "Como será feito?", ""],
+                             ["How much", "Quanto vai custar?", ""]],
+                            texto_a_esquerda=True)),
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**Slide 8 — Diagrama de Ishikawa**")
+                st.markdown(
+                    _slide_html_previa(
+                        "Análise de Causa — Diagrama de Ishikawa", "",
+                        _ishikawa_html_previa(txt_problema, CATEGORIAS_ISHIKAWA)),
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("**Slide final — Capa de encerramento**")
+            st.markdown(
+                _slide_reservado_previa("Capa final do modelo", "Vai como está no modelo."),
+                unsafe_allow_html=True,
             )
 
             # ---- Geração ----
@@ -11925,6 +12036,8 @@ if departamento_ativo and tab_apres is not None:
                                 "desvio_realizado": txt_realizado,
                                 "desvio_texto": txt_desvio,
                                 "desvio_fato": txt_fato,
+                                "causa_problema": txt_problema,
+                                "causa_acao": txt_acao,
                             },
                             (_cab_apres, linhas_ind_apres),
                             (_cab_apres, linhas_ebitda_apres),
