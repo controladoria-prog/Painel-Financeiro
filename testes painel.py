@@ -449,6 +449,17 @@ class TesteTravasEstruturais(unittest.TestCase):
                       "o orcado por canal voltou a ler so a linha-mae")
         self.assertIn("_somar_codigo_com_filhas(df_r, CODIGO_MKT_GESTAO_CP", trecho)
 
+    def test_tabela_por_canal_fecha_com_o_cabecalho(self):
+        """Somar a coluna da tabela por canal dava um numero diferente do
+        cartao 'Desvio vs. Orcado' do topo - a diferenca era o que sai do 1%,
+        descontado do investido da Loja mas presente no total do departamento.
+        A linha 'Fora do 1%' e a linha TOTAL fazem os dois blocos conciliarem."""
+        i = FONTE.index("def _painel_dept_mkt(")
+        trecho = FONTE[i:i + 5000]
+        self.assertIn('"Canal": "Fora do 1% (Loja)"', trecho,
+                      "sumiu a linha que concilia o que sai do 1%")
+        self.assertIn('"Canal": "TOTAL"', trecho, "sumiu a linha de total da tabela por canal")
+
     def test_nomes_de_parametro_nao_vazam_entre_funcoes(self):
         """Uma troca de nome em massa ja renomeou height=/width= para
         altura=/largura= em 29 chamadas de grafico e tabela, que esperam os
@@ -473,7 +484,9 @@ class TesteTravasEstruturais(unittest.TestCase):
 
     def test_regra_do_1pct_usa_o_orcado_do_canal_loja(self):
         i = FONTE.index("def _painel_dept_mkt(")
-        trecho = FONTE[i:i + 3500]
+        # a janela cobre a funcao inteira: ela ja cresceu duas vezes
+        fim = FONTE.index("\ndef ", i + 10)
+        trecho = FONTE[i:fim]
         self.assertIn('teto_loja = loja["Orçado (R$)"]', trecho,
                       "o teto do 1% voltou a ser calculado sobre a receita")
 

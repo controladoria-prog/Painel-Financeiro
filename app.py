@@ -8061,6 +8061,34 @@ def _painel_dept_mkt(ctx):
             "% da receita": (investido_abs / abs(receita) * 100) if receita else float("nan"),
         })
 
+    # O que sai do 1% (Encontro de Ciclo e Outras Despesas do canal Loja) foi
+    # descontado do investido da Loja, mas continua dentro do total do
+    # departamento lá em cima. Sem essa linha, somar a coluna dava um número
+    # diferente do cabeçalho e ninguém conseguia conciliar os dois blocos.
+    if fora_do_1pct:
+        linhas_tabela.append({
+            "Canal": "Fora do 1% (Loja)",
+            "Investido (R$)": abs(fora_do_1pct),
+            "Orçado (R$)": 0.0,
+            "Desvio (R$)": -abs(fora_do_1pct),
+            "Receita do canal (R$)": float("nan"),
+            "% da receita": float("nan"),
+        })
+        total_inv += abs(fora_do_1pct)
+
+    if linhas_tabela:
+        _soma_orcado = sum(
+            linha["Orçado (R$)"] for linha in linhas_tabela if not pd.isna(linha["Orçado (R$)"])
+        )
+        linhas_tabela.append({
+            "Canal": "TOTAL",
+            "Investido (R$)": total_inv,
+            "Orçado (R$)": _soma_orcado,
+            "Desvio (R$)": _soma_orcado - total_inv,
+            "Receita do canal (R$)": total_rec,
+            "% da receita": (total_inv / total_rec * 100) if total_rec else float("nan"),
+        })
+
     pct_geral = (total_inv / total_rec * 100) if total_rec else 0.0
     loja = next((l for l in linhas_tabela if l["Canal"] == "Loja"), None)
     # Teto do 1% = orçamento do canal Loja na 6.24.2 (o 1% já está nele).
@@ -8090,6 +8118,8 @@ def _painel_dept_mkt(ctx):
     )
     _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
     st.caption(
+        "A linha TOTAL fecha com os cartões do topo: investido + orçado + desvio do "
+        "departamento. "
         "Investido é a linha 6.24.2 (Gestão CP). **O 1% vale só para o canal Loja**, e o teto dele "
         "é o próprio orçamento daquele canal — o 1% já está embutido ali. VD e ABPR têm orçamento "
         "próprio, à parte dessa regra. No canal Loja, o Encontro de Ciclo e as Outras Despesas de "
