@@ -781,6 +781,44 @@ class TestePrazosDoFluxo(unittest.TestCase):
         trecho = FONTE[i:i + 400]
         self.assertIn("(mask_pagar | mask_receber)", trecho)
 
+    def test_vencimento_e_a_chave_mais_forte(self):
+        """As duas abas trazem o MESMO vencimento -- a diferenca entre elas e
+        so a liquidacao. Cruzar por numero + vencimento + valor evita casar
+        dois titulos do mesmo fornecedor com numeros parecidos."""
+        i = FONTE.index("tentativas = [")
+        trecho = FONTE[i:i + 700]
+        ordem = [n for n in ["por_num_venc_valor", "por_num_venc", "por_num_valor",
+                             "por_venc_valor", "por_num"] if n in trecho]
+        self.assertEqual(ordem[0], "por_num_venc_valor", "a chave mais especifica saiu da frente")
+        self.assertEqual(ordem[-1], "por_num", "so o numero tem de ser a ultima tentativa")
+
+    def test_par_ambiguo_nao_recebe_data(self):
+        """Dois titulos que vencem no mesmo dia pelo mesmo valor, pagos em
+        datas diferentes, nao tem como ser distinguidos: ficam em aberto em
+        vez de receber um chute que estragaria o atraso medio."""
+        diario = pd.DataFrame({
+            "chave_num": ["1005", "1006", "1007"],
+            "venc": pd.to_datetime(["2026-08-20", "2026-08-20", "2026-08-21"]),
+            "valor_abs": ["950.00", "950.00", "300.00"],
+            "data_liq": pd.to_datetime(["2026-08-22", "2026-08-25", "2026-08-21"]),
+        })
+        contagem = diario.groupby(["venc", "valor_abs"])["data_liq"].nunique()
+        unicos = contagem[contagem == 1].index
+        candidatos = diario.set_index(["venc", "valor_abs"])
+        sobrando = candidatos.loc[candidatos.index.isin(unicos)]
+        self.assertEqual(len(sobrando), 1)
+        self.assertEqual(sobrando["chave_num"].iloc[0], "1007")
+
+    def test_titulo_sem_baixa_na_diario_fica_em_aberto(self):
+        """Quem nao foi pago esta sem data na DIARIO tambem -- e tem de
+        continuar aparecendo como em aberto, nao virar pago sem data."""
+        base = pd.DataFrame({
+            "chave_num": ["1001", "1003"],
+            "data_liq": [pd.Timestamp("2026-08-07"), pd.NaT],
+        })
+        validos = base[base["data_liq"].notna()]
+        self.assertEqual(list(validos["chave_num"]), ["1001"])
+
     def test_indicador_nao_se_chama_prazo_medio(self):
         """O calculo e liquidacao menos vencimento, ou seja ATRASO. Chamar de
         prazo medio faz ler "+5 dias" como se a empresa pagasse em 5 dias."""

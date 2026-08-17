@@ -4106,6 +4106,11 @@ def carregar_liquidacoes_diario(path_r):
 
     col_num = _achar_coluna(["numero", "n documento", "documento", "docum", "nro", "nf"])
     col_valor = _achar_coluna(["valor bruto", "valor"])
+    # O VENCIMENTO é a chave mais confiável do cruzamento: é a mesma data nas
+    # duas abas (a diferença entre elas é só a liquidação, que existe numa e
+    # não na outra). Sem ela, dois títulos do mesmo fornecedor com números
+    # parecidos podiam trocar de data entre si.
+    col_venc = _achar_coluna(["vencimento", "vencto", "venc"])
 
     # A coluna de data é escolhida pelo nome, mas só vale se realmente tiver
     # data dentro -- senão seguimos procurando na próxima candidata.
@@ -4124,6 +4129,7 @@ def carregar_liquidacoes_diario(path_r):
     diag["coluna_numero"] = col_num
     diag["coluna_valor"] = col_valor
     diag["coluna_liquidacao"] = col_liq
+    diag["coluna_vencimento"] = col_venc
 
     if col_liq is None:
         diag["erro"] = (
@@ -4144,16 +4150,45 @@ def carregar_liquidacoes_diario(path_r):
         base["valor_abs"] = valores.map(lambda v: f"{v:.2f}" if pd.notna(v) else None)
     else:
         base["valor_abs"] = None
+    if col_venc is not None:
+        base["venc"] = _parse_datas_fin(df[col_venc]).dt.normalize()
+    else:
+        base["venc"] = pd.NaT
 
     base = base[base["chave_num"].notna() & base["data_liq"].notna()]
     diag["lancamentos_com_data"] = len(base)
+    diag["lancamentos_com_vencimento"] = int(base["venc"].notna().sum())
 
-    por_num_valor = (
-        base.dropna(subset=["valor_abs"])
-        .groupby(["chave_num", "valor_abs"], as_index=False)["data_liq"].min()
-    )
-    por_num = base.groupby("chave_num", as_index=False)["data_liq"].min()
-    return {"por_num_valor": por_num_valor, "por_num": por_num}, diag
+    com_venc = base.dropna(subset=["venc"])
+    com_venc_valor = com_venc.dropna(subset=["valor_abs"])
+
+    # Chaves, da mais específica para a mais frouxa. O painel tenta uma a uma
+    # e só desce para a seguinte com o que sobrou sem par.
+    tabelas = {
+        "por_num_venc_valor": com_venc_valor.groupby(
+            ["chave_num", "venc", "valor_abs"], as_index=False)["data_liq"].min(),
+        "por_num_venc": com_venc.groupby(
+            ["chave_num", "venc"], as_index=False)["data_liq"].min(),
+        "por_num_valor": base.dropna(subset=["valor_abs"]).groupby(
+            ["chave_num", "valor_abs"], as_index=False)["data_liq"].min(),
+        "por_num": base.groupby("chave_num", as_index=False)["data_liq"].min(),
+    }
+
+    # Último recurso, para quando o número não bate de jeito nenhum (formato
+    # diferente, prefixo de série, campo vazio): vencimento + valor. Só valem
+    # os pares que apontam para UMA data na DIÁRIO -- se dois títulos vencem
+    # no mesmo dia pelo mesmo valor e foram pagos em datas diferentes, não há
+    # como saber qual é qual, e chutar aqui estragaria o indicador de atraso.
+    if not com_venc_valor.empty:
+        contagem = com_venc_valor.groupby(["venc", "valor_abs"])["data_liq"].nunique()
+        unicos = contagem[contagem == 1].index
+        candidatos = com_venc_valor.set_index(["venc", "valor_abs"])
+        tabelas["por_venc_valor"] = (
+            candidatos.loc[candidatos.index.isin(unicos)]
+            .groupby(["venc", "valor_abs"], as_index=False)["data_liq"].min()
+        )
+        diag["pares_venc_valor_unicos"] = len(tabelas["por_venc_valor"])
+    return tabelas, diag
 
 
 @st.cache_resource(ttl=300, show_spinner="Preparando os dados do fluxo de caixa...")
@@ -4285,20 +4320,45 @@ def preparar_fluxo_caixa(base_data):
                 "_idx": df.index[faltando_pagar],
                 "chave_num": _chave_numero_fin(df.loc[faltando_pagar, COL_FIN_NUMERO]).values,
                 "valor_abs": valores_pagar.map(lambda v: f"{v:.2f}").values,
+                "venc": df.loc[faltando_pagar, COL_FIN_VENCIMENTO].dt.normalize().values,
             })
-            # 1ª tentativa: Número + valor (mais específica).
-            achados = a_cruzar.merge(
-                tabelas_liq["por_num_valor"], on=["chave_num", "valor_abs"], how="left"
-            )
-            # 2ª tentativa, só para o que sobrou: Número sozinho. Cobre os
-            # casos em que o valor da parcela no fluxo não é idêntico ao do
-            # lançamento contábil (juros, desconto, arredondamento).
-            sobra = achados["data_liq"].isna()
-            if sobra.any():
-                complemento = achados.loc[sobra, ["chave_num"]].merge(
-                    tabelas_liq["por_num"], on="chave_num", how="left"
+            achados = a_cruzar.copy()
+            achados["data_liq"] = pd.NaT
+
+            # Tentativas em cascata, da chave mais específica para a mais
+            # frouxa. Cada uma só olha o que sobrou sem par na anterior, e o
+            # VENCIMENTO entra primeiro porque é a data que as duas abas têm
+            # igual -- a diferença entre elas é só a liquidação.
+            tentativas = [
+                ("por_num_venc_valor", ["chave_num", "venc", "valor_abs"]),
+                ("por_num_venc", ["chave_num", "venc"]),
+                ("por_num_valor", ["chave_num", "valor_abs"]),
+                ("por_venc_valor", ["venc", "valor_abs"]),
+                # Número sozinho fica por último: cobre o caso em que o valor
+                # da parcela no fluxo não é idêntico ao do lançamento contábil
+                # (juros, desconto, arredondamento), mas é a chave que mais
+                # arrisca casar dois títulos diferentes.
+                ("por_num", ["chave_num"]),
+            ]
+            diagnostico["liq_por_chave"] = {}
+            for nome_tabela, chaves in tentativas:
+                tabela = tabelas_liq.get(nome_tabela)
+                if tabela is None or tabela.empty:
+                    continue
+                sobra = achados["data_liq"].isna()
+                if not sobra.any():
+                    break
+                complemento = achados.loc[sobra, chaves].merge(
+                    tabela, on=chaves, how="left"
                 )
-                achados.loc[sobra, "data_liq"] = complemento["data_liq"].values
+                # merge pode multiplicar linhas se a tabela tiver a chave
+                # repetida; o groupby acima já garante uma linha por chave,
+                # mas a checagem evita desalinhar o índice em silêncio.
+                if len(complemento) == int(sobra.sum()):
+                    achados.loc[sobra, "data_liq"] = complemento["data_liq"].values
+                    diagnostico["liq_por_chave"][nome_tabela] = int(
+                        complemento["data_liq"].notna().sum()
+                    )
             casados = achados.dropna(subset=["data_liq"])
             if not casados.empty:
                 df.loc[casados["_idx"].values, COL_FIN_LIQ_DIARIO] = casados["data_liq"].values
@@ -4688,8 +4748,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     st.caption(
                         f"DIÁRIO: {_diag_diario.get('linhas_diario', 0)} lançamentos · "
                         f"coluna de baixa: **{_diag_diario.get('coluna_liquidacao')}** · "
-                        f"chave: **{_diag_diario.get('coluna_numero')}** + "
+                        f"chaves disponíveis: **{_diag_diario.get('coluna_numero')}**, "
+                        f"**{_diag_diario.get('coluna_vencimento')}**, "
                         f"**{_diag_diario.get('coluna_valor')}**"
+                    )
+                # Quanto cada chave resolveu. Serve para saber se o
+                # cruzamento está se apoiando na chave específica (número +
+                # vencimento + valor) ou descendo para as mais frouxas --
+                # muita coisa casando só pelo número é sinal de alerta.
+                _por_chave = diag_fluxo.get("liq_por_chave") or {}
+                if _por_chave:
+                    _nomes = {
+                        "por_num_venc_valor": "número + vencimento + valor",
+                        "por_num_venc": "número + vencimento",
+                        "por_num_valor": "número + valor",
+                        "por_venc_valor": "vencimento + valor",
+                        "por_num": "só o número",
+                    }
+                    st.caption(
+                        "Baixas encontradas por chave — "
+                        + " · ".join(
+                            f"{_nomes.get(chave, chave)}: **{qtd}**"
+                            for chave, qtd in _por_chave.items() if qtd
+                        )
                     )
                 if diag_fluxo.get("amostras_sem_match"):
                     st.caption(
