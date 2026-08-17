@@ -6731,6 +6731,32 @@ def _valor_linha_por_codigo(df, codigo, coluna_mes):
     return float(pd.to_numeric(df.loc[mask, coluna_mes], errors="coerce").fillna(0).sum())
 
 
+def _somar_codigo_com_filhas(df, codigo, colunas):
+    """Soma uma linha da DRE pelo código, caindo nas filhas quando a linha-mãe
+    não está preenchida naquela aba.
+
+    Numa DRE a linha-mãe é a soma das filhas, então o total é o mesmo — o que
+    muda é ONDE o número foi lançado, e isso varia de aba para aba. No canal
+    Loja o orçamento de marketing está na própria 6.24.2; em VD CONSOLIDADO
+    ele está nas filhas, e ler só a mãe devolvia zero, fazendo o canal
+    aparecer sem orçamento nenhum.
+
+    Só desce para as filhas quando a mãe vem zerada, então não há risco de
+    contar o mesmo valor duas vezes."""
+    total = sum(_valor_linha_por_codigo(df, codigo, coluna) for coluna in colunas)
+    if total or df is None or getattr(df, "empty", True):
+        return total
+
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    codigos = df[col_nome].astype(str).str.strip().str.extract(r"^(\d+(?:\.\d+)*)", expand=False)
+    # Só o primeiro nível de filhas: descer mais contaria neto junto com filho.
+    filhas = codigos[codigos.fillna("").str.match(rf"^{re.escape(codigo)}\.\d+$")].dropna().unique()
+    return sum(
+        _valor_linha_por_codigo(df, str(filha), coluna)
+        for filha in filhas for coluna in colunas
+    )
+
+
 def _valores_mkt_1pct(dados_visoes, mapa_meses):
     """Calcula, para cada bloco, as listas de REALIZADO / ORÇADO / DIFERENÇA
     mês a mês, mais os valores dos quadros amarelos (o que sai do 1% do canal
@@ -7974,7 +8000,8 @@ def _tabela_departamento(linhas, colunas_percentual=()):
         if coluna in colunas_percentual:
             formatos[coluna] = lambda v: ("—" if pd.isna(v) else f"{v:.1f}%".replace(".", ","))
         elif df[coluna].dtype.kind in "fi":
-            formatos[coluna] = formata_brl
+            # Vazio vira traço: "R$ nan" na tela não diz nada a ninguém.
+            formatos[coluna] = lambda v: ("—" if pd.isna(v) else formata_brl(v))
     estilo = df.style.format(formatos)
     colunas_valor = [c for c in df.columns if df[c].dtype.kind in "fi" and c not in colunas_percentual]
     if colunas_valor:
@@ -8010,23 +8037,27 @@ def _painel_dept_mkt(ctx):
         df_o, df_r = indice.get(_normalizar_nome_aba(aba), (None, None))
         if df_r is None:
             continue
-        investido = sum(_valor_linha_por_codigo(df_r, CODIGO_MKT_GESTAO_CP, c) for c in colunas)
+        investido = _somar_codigo_com_filhas(df_r, CODIGO_MKT_GESTAO_CP, colunas)
         if descontar:
             fora_do_1pct = sum(
                 _valor_linha_por_codigo(df_r, cod, c)
                 for cod in CODIGOS_MKT_FORA_1PCT for c in colunas
             )
             investido -= fora_do_1pct
-        orcado = sum(_valor_linha_por_codigo(df_o, CODIGO_MKT_GESTAO_CP, c) for c in colunas)
+        orcado = _somar_codigo_com_filhas(df_o, CODIGO_MKT_GESTAO_CP, colunas)
         receita = get_valor_consolidado_multi([df_r], LINHA_RECEITA_LIQUIDA, colunas)
         investido_abs, orcado_abs = abs(investido), abs(orcado)
         total_inv += investido_abs
         total_rec += abs(receita)
+        # Canal sem orçamento lançado (é o caso do ABPR) não tem desvio:
+        # mostrar "gastou tudo além do orçado" seria inventar um estouro
+        # contra um orçamento que não existe.
+        sem_orcamento = orcado_abs == 0
         linhas_tabela.append({
             "Canal": rotulo,
             "Investido (R$)": investido_abs,
-            "Orçado (R$)": orcado_abs,
-            "Desvio (R$)": orcado_abs - investido_abs,
+            "Orçado (R$)": float("nan") if sem_orcamento else orcado_abs,
+            "Desvio (R$)": float("nan") if sem_orcamento else (orcado_abs - investido_abs),
             "Receita do canal (R$)": abs(receita),
             "% da receita": (investido_abs / abs(receita) * 100) if receita else float("nan"),
         })

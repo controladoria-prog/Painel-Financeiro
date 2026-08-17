@@ -321,6 +321,40 @@ class TestePlanosDeContas(unittest.TestCase):
 
 
 # ============================================================================
+# 5b. LEITURA DE LINHA DA DRE POR CODIGO
+# ============================================================================
+class TesteSomaComFilhas(unittest.TestCase):
+    """A linha-mae nem sempre esta preenchida: em algumas abas o valor so
+    existe nas filhas. Ler so a mae devolvia zero em silencio."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_valor_linha_por_codigo", "_somar_codigo_com_filhas"])
+
+    def _aba(self, linhas):
+        return pd.DataFrame([{"Nome": n, "01/2026": v} for n, v in linhas])
+
+    def test_usa_a_mae_quando_ela_existe(self):
+        aba = self._aba([("6.24.2 - Marketing", -90_000.0), ("6.24.2.1 - Midia", -50_000.0)])
+        self.assertEqual(
+            self.ns["_somar_codigo_com_filhas"](aba, "6.24.2", ["01/2026"]), -90_000.0)
+
+    def test_desce_para_as_filhas_quando_a_mae_falta(self):
+        aba = self._aba([("6.24.2.1 - Midia", -30_000.0), ("6.24.2.2 - Eventos", -20_000.0)])
+        self.assertEqual(
+            self.ns["_somar_codigo_com_filhas"](aba, "6.24.2", ["01/2026"]), -50_000.0)
+
+    def test_nao_soma_neto_junto_com_filho(self):
+        aba = self._aba([("6.24.2.1 - Midia", -30_000.0), ("6.24.2.1.1 - Radio", -10_000.0)])
+        self.assertEqual(
+            self.ns["_somar_codigo_com_filhas"](aba, "6.24.2", ["01/2026"]), -30_000.0)
+
+    def test_sem_a_conta_devolve_zero(self):
+        aba = self._aba([("9 - Resultado Operacional", 0.0)])
+        self.assertEqual(self.ns["_somar_codigo_com_filhas"](aba, "6.24.2", ["01/2026"]), 0.0)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):
@@ -404,6 +438,16 @@ class TesteTravasEstruturais(unittest.TestCase):
         self.assertLessEqual(
             FONTE.count("components.html("), 2,
             "components.html so pode aparecer dentro de html_embutido")
+
+    def test_orcado_por_canal_desce_para_as_linhas_filhas(self):
+        """Em VD CONSOLIDADO o orcamento de marketing esta lancado nas linhas
+        filhas, nao na 6.24.2. Ler so a mae devolvia zero e o canal aparecia
+        sem orcamento - com o desvio inteiro contado como estouro."""
+        i = FONTE.index("def _painel_dept_mkt(")
+        trecho = FONTE[i:i + 3500]
+        self.assertIn("_somar_codigo_com_filhas(df_o, CODIGO_MKT_GESTAO_CP", trecho,
+                      "o orcado por canal voltou a ler so a linha-mae")
+        self.assertIn("_somar_codigo_com_filhas(df_r, CODIGO_MKT_GESTAO_CP", trecho)
 
     def test_nomes_de_parametro_nao_vazam_entre_funcoes(self):
         """Uma troca de nome em massa ja renomeou height=/width= para
