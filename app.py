@@ -7948,28 +7948,56 @@ def _remover_forma(forma):
         forma._element.getparent().remove(forma._element)
 
 
-def _montar_tabela_pptx(slide, left, top, width, height, cabecalho, linhas):
+def _montar_tabela_pptx(slide, left, top, width, height, cabecalho, linhas,
+                        negativo_e_bom=False, texto_a_esquerda=False):
     """Tabela no estilo das que a apresentação já usa: cabeçalho azul-escuro,
-    primeira coluna à esquerda, valores centralizados."""
+    primeira coluna à esquerda, valores centralizados.
+
+    A tabela ocupa TODO o espaço que a imagem substituída ocupava -- antes as
+    linhas tinham altura fixa e sobrava uma faixa vazia embaixo. A largura da
+    primeira coluna acompanha o número de colunas: com doze meses na tela, uma
+    coluna de rótulo larga demais espremia o resto e quebrava "ACUMULADO" em
+    duas linhas.
+
+    `negativo_e_bom` diz de que lado está o verde: em linha de despesa, gastar
+    menos que o orçado é bom; em margem ou receita, é o contrário."""
     from pptx.util import Pt, Emu
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
+    from pptx.enum.text import MSO_ANCHOR
 
     n_linhas, n_colunas = len(linhas) + 1, len(cabecalho)
     forma = slide.shapes.add_table(n_linhas, n_colunas, left, top, width, height)
     tabela = forma.table
 
-    largura_primeira = int(width * 0.22)
-    tabela.columns[0].width = Emu(largura_primeira)
-    for col in range(1, n_colunas):
-        tabela.columns[col].width = Emu(int((width - largura_primeira) / (n_colunas - 1)))
+    # Altura distribuída pelo espaço disponível, com um mínimo para o texto
+    # não ficar apertado.
+    altura_linha = max(int(height / n_linhas), int(0.32 * 914400))
+    for linha_tabela in tabela.rows:
+        linha_tabela.height = Emu(altura_linha)
 
-    def _escrever(celula, texto, negrito=False, cor=None, fundo=None, alinhamento=PP_ALIGN.CENTER):
-        celula.text = str(texto)
+    # Quanto mais colunas, mais estreita a coluna de rótulo e menor a fonte.
+    proporcao_rotulo = 0.20 if n_colunas <= 8 else (0.14 if n_colunas <= 11 else 0.11)
+    largura_rotulo = int(width * proporcao_rotulo)
+    tabela.columns[0].width = Emu(largura_rotulo)
+    largura_demais = int((width - largura_rotulo) / max(n_colunas - 1, 1))
+    for col in range(1, n_colunas):
+        tabela.columns[col].width = Emu(largura_demais)
+
+    tamanho_fonte = 13 if n_colunas <= 8 else (11 if n_colunas <= 11 else 9.5)
+
+    def _escrever(celula, texto_celula, negrito=False, cor=None, fundo=None,
+                  alinhamento=PP_ALIGN.CENTER, tamanho=None):
+        celula.text = str(texto_celula)
+        celula.vertical_anchor = MSO_ANCHOR.MIDDLE
+        celula.margin_left = Emu(int(0.06 * 914400))
+        celula.margin_right = Emu(int(0.06 * 914400))
+        celula.margin_top = 0
+        celula.margin_bottom = 0
         paragrafo = celula.text_frame.paragraphs[0]
         paragrafo.alignment = alinhamento
         run = paragrafo.runs[0] if paragrafo.runs else paragrafo.add_run()
-        run.font.size = Pt(12)
+        run.font.size = Pt(tamanho or tamanho_fonte)
         run.font.bold = negrito
         run.font.name = "Calibri"
         if cor:
@@ -7985,21 +8013,286 @@ def _montar_tabela_pptx(slide, left, top, width, height, cabecalho, linhas):
             alinhamento=PP_ALIGN.LEFT if col == 0 else PP_ALIGN.CENTER,
         )
 
-    for i, linha in enumerate(linhas, start=1):
-        fundo = COR_LINHA_PAR_PPTX if i % 2 == 0 else "FFFFFF"
+    for i_linha, linha in enumerate(linhas, start=1):
+        fundo = COR_LINHA_PAR_PPTX if i_linha % 2 == 0 else "FFFFFF"
         for col, valor in enumerate(linha):
             cor_texto = None
             if col > 0 and isinstance(valor, str) and valor.strip().startswith(("-", "+")):
-                cor_texto = COR_DESVIO_RUIM_PPTX if valor.strip().startswith("-") else COR_DESVIO_BOM_PPTX
+                negativo = valor.strip().startswith("-")
+                bom = negativo if negativo_e_bom else not negativo
+                cor_texto = COR_DESVIO_BOM_PPTX if bom else COR_DESVIO_RUIM_PPTX
             _escrever(
-                tabela.cell(i, col), valor, negrito=(col == 0), cor=cor_texto, fundo=fundo,
-                alinhamento=PP_ALIGN.LEFT if col == 0 else PP_ALIGN.CENTER,
+                tabela.cell(i_linha, col), valor, negrito=(col == 0), cor=cor_texto, fundo=fundo,
+                alinhamento=(
+                    PP_ALIGN.LEFT if (col == 0 or texto_a_esquerda) else PP_ALIGN.CENTER
+                ),
             )
     return forma
 
 
+# ---------------------------------------------------------------------------
+# SLIDES DE ANÁLISE DE CAUSA (5 Porquês, 5W2H e Ishikawa)
+# ---------------------------------------------------------------------------
+# Não existem no modelo: na reunião, cada gestor monta os seus quando o desvio
+# passa de 5%. Aqui eles saem prontos na estrutura certa, com o problema já
+# preenchido a partir do desvio calculado -- o resto é o gestor quem escreve,
+# porque causa raiz não se deduz de planilha.
+CATEGORIAS_ISHIKAWA = [
+    "Método", "Máquina", "Mão de obra", "Material", "Medição", "Meio ambiente",
+]
+
+
+def _titulo_slide_novo(slide, texto_titulo, largura_slide):
+    from pptx.util import Pt, Emu
+    from pptx.dml.color import RGBColor
+    caixa = slide.shapes.add_textbox(
+        Emu(int(0.63 * 914400)), Emu(int(0.23 * 914400)),
+        Emu(int(largura_slide * 0.6)), Emu(int(0.66 * 914400)),
+    )
+    paragrafo = caixa.text_frame.paragraphs[0]
+    run = paragrafo.add_run()
+    run.text = texto_titulo
+    run.font.size = Pt(28)
+    run.font.bold = True
+    run.font.name = "Calibri"
+    run.font.color.rgb = RGBColor.from_string(COR_CABECALHO_PPTX)
+    return caixa
+
+
+def _rodape_slide_novo(slide, largura_slide, altura_slide):
+    from pptx.util import Pt, Emu
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    caixa = slide.shapes.add_textbox(
+        Emu(int(largura_slide * 0.6)), Emu(altura_slide - int(0.62 * 914400)),
+        Emu(int(largura_slide * 0.37)), Emu(int(0.3 * 914400)),
+    )
+    paragrafo = caixa.text_frame.paragraphs[0]
+    paragrafo.alignment = PP_ALIGN.RIGHT
+    run = paragrafo.add_run()
+    run.text = "Documento Interno - Grupo BEEA © 2026"
+    run.font.size = Pt(11)
+    run.font.name = "Calibri"
+    run.font.color.rgb = RGBColor.from_string("808080")
+
+
+def _criar_slide_5_porques(apresentacao, problema):
+    from pptx.util import Pt, Emu
+    largura, altura = apresentacao.slide_width, apresentacao.slide_height
+    slide = apresentacao.slides.add_slide(apresentacao.slide_masters[0].slide_layouts[6])
+    _titulo_slide_novo(slide, "Análise de Causa — 5 Porquês", largura)
+
+    linhas = [["Problema", problema]]
+    linhas += [[f"{i}º Por quê?", ""] for i in range(1, 6)]
+    linhas += [["Causa raiz", ""]]
+    _montar_tabela_pptx(
+        slide, Emu(int(1.1 * 914400)), Emu(int(1.6 * 914400)),
+        Emu(largura - int(2.2 * 914400)), Emu(int(7.4 * 914400)),
+        ["ETAPA", "DESCRIÇÃO"], linhas,
+        texto_a_esquerda=True,
+    )
+    _rodape_slide_novo(slide, largura, altura)
+    return slide
+
+
+def _criar_slide_5w2h(apresentacao, acao_sugerida):
+    from pptx.util import Emu
+    largura, altura = apresentacao.slide_width, apresentacao.slide_height
+    slide = apresentacao.slides.add_slide(apresentacao.slide_masters[0].slide_layouts[6])
+    _titulo_slide_novo(slide, "Plano de Ação — 5W2H", largura)
+
+    perguntas = [
+        ("What", "O que será feito?", acao_sugerida),
+        ("Why", "Por que será feito?", ""),
+        ("Where", "Onde será feito?", ""),
+        ("When", "Quando será feito?", ""),
+        ("Who", "Quem fará?", ""),
+        ("How", "Como será feito?", ""),
+        ("How much", "Quanto vai custar?", ""),
+    ]
+    _montar_tabela_pptx(
+        slide, Emu(int(1.1 * 914400)), Emu(int(1.6 * 914400)),
+        Emu(largura - int(2.2 * 914400)), Emu(int(7.4 * 914400)),
+        ["5W2H", "PERGUNTA", "RESPOSTA"],
+        [[sigla, pergunta, resposta] for sigla, pergunta, resposta in perguntas],
+        texto_a_esquerda=True,
+    )
+    _rodape_slide_novo(slide, largura, altura)
+    return slide
+
+
+def _criar_slide_ishikawa(apresentacao, problema):
+    """Espinha de peixe desenhada com formas: eixo central, o problema na
+    cabeça e as seis espinhas do 6M, cada uma com uma caixa para as causas."""
+    from pptx.util import Pt, Emu
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+
+    largura, altura = apresentacao.slide_width, apresentacao.slide_height
+    slide = apresentacao.slides.add_slide(apresentacao.slide_masters[0].slide_layouts[6])
+    _titulo_slide_novo(slide, "Análise de Causa — Diagrama de Ishikawa", largura)
+
+    pol = lambda v: Emu(int(v * 914400))
+    eixo_y = altura / 2 + pol(0.4)
+    x_inicio, x_fim = pol(1.2), largura - pol(4.6)
+
+    # Espinha central
+    linha = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, x_inicio, int(eixo_y), x_fim, int(eixo_y))
+    linha.line.color.rgb = RGBColor.from_string(COR_CABECALHO_PPTX)
+    linha.line.width = Pt(3)
+
+    # Cabeça do peixe: o problema
+    cabeca = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE, x_fim, int(eixo_y) - pol(0.9), pol(4.0), pol(1.8))
+    cabeca.fill.solid()
+    cabeca.fill.fore_color.rgb = RGBColor.from_string(COR_CABECALHO_PPTX)
+    cabeca.line.fill.background()
+    quadro = cabeca.text_frame
+    quadro.word_wrap = True
+    quadro.vertical_anchor = MSO_ANCHOR.MIDDLE
+    par = quadro.paragraphs[0]
+    par.alignment = PP_ALIGN.CENTER
+    run = par.add_run()
+    run.text = problema
+    run.font.size = Pt(13)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor.from_string(COR_TEXTO_CLARO_PPTX)
+
+    # Seis espinhas: três acima, três abaixo
+    largura_util = int(x_fim - x_inicio)
+    passo = int(largura_util / 3.4)
+    for indice, categoria in enumerate(CATEGORIAS_ISHIKAWA):
+        acima = indice % 2 == 0
+        coluna = indice // 2
+        x_base = int(x_inicio) + int(passo * (coluna + 0.6))
+        y_caixa = int(eixo_y) - pol(3.1) if acima else int(eixo_y) + pol(0.55)
+
+        diagonal = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT, x_base, int(eixo_y),
+            x_base - pol(0.9), y_caixa + (pol(2.55) if acima else 0),
+        )
+        diagonal.line.color.rgb = RGBColor.from_string("9AA7BA")
+        diagonal.line.width = Pt(1.5)
+
+        caixa = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, x_base - pol(2.5), y_caixa, pol(3.2), pol(2.55))
+        caixa.fill.solid()
+        caixa.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+        caixa.line.color.rgb = RGBColor.from_string(COR_CABECALHO_PPTX)
+        caixa.line.width = Pt(1)
+        quadro = caixa.text_frame
+        quadro.word_wrap = True
+        par = quadro.paragraphs[0]
+        par.alignment = PP_ALIGN.CENTER
+        run = par.add_run()
+        run.text = categoria
+        run.font.size = Pt(13)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor.from_string(COR_CABECALHO_PPTX)
+        # A caixa fica vazia embaixo do título de propósito: é onde o gestor
+        # escreve as causas daquela categoria durante a reunião.
+
+    _rodape_slide_novo(slide, largura, altura)
+    return slide
+
+
+def _slide_html_previa(titulo, subtitulo, corpo_html, rodape="Documento Interno - Grupo BEEA © 2026"):
+    """Um slide desenhado em HTML, na proporção real do arquivo (20 x 11,25).
+
+    Serve para conferir o resultado antes de gerar: o Streamlit Cloud não tem
+    PowerPoint nem LibreOffice para renderizar o .pptx de verdade, então a
+    saída aqui é uma reprodução fiel do layout -- mesmas cores, mesma posição
+    de título, tabela e rodapé."""
+    return f"""
+    <div style="aspect-ratio:20/11.25; background:#FFFFFF; border:1px solid {COLORS['border']};
+                border-radius:8px; padding:2.2% 2.6%; position:relative; overflow:hidden;
+                font-family:Calibri,Inter,sans-serif; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;
+                    border-bottom:2px solid #1F3864; padding-bottom:6px;">
+            <div style="font-size:1.5vw; font-weight:800; color:#1F3864;">{titulo}</div>
+            <div style="font-size:1.3vw; font-weight:800; color:#8A8A8A; letter-spacing:-0.5px;">
+                GRUPO<span style="color:#4A4A4A;">Beea</span></div>
+        </div>
+        {f'<div style="font-size:1.2vw; font-weight:700; color:#1F3864; margin:1.4% 0 1.8%;">{subtitulo}</div>' if subtitulo else '<div style="height:1.8%"></div>'}
+        {corpo_html}
+        <div style="position:absolute; right:2.6%; bottom:2%; font-size:0.75vw; color:#9A9A9A;">{rodape}</div>
+    </div>
+    """
+
+
+def _tabela_html_previa(cabecalho, linhas, negativo_e_bom=False, texto_a_esquerda=False):
+    """A mesma tabela que vai para o slide, desenhada em HTML."""
+    def _cor(valor, coluna):
+        if coluna == 0 or not isinstance(valor, str) or not valor.strip().startswith(("-", "+")):
+            return "#333333"
+        negativo = valor.strip().startswith("-")
+        bom = negativo if negativo_e_bom else not negativo
+        return "#1E7B34" if bom else "#C00000"
+
+    alinha = "left" if texto_a_esquerda else "center"
+    cabecalho_html = "".join(
+        f'<th style="background:#1F3864; color:#FFF; font-size:0.72vw; font-weight:700;'
+        f' padding:0.5% 0.4%; text-align:{"left" if i == 0 else "center"};">{c}</th>'
+        for i, c in enumerate(cabecalho)
+    )
+    corpo = []
+    for i, linha in enumerate(linhas):
+        fundo = "#EAF0F8" if (i + 1) % 2 == 0 else "#FFFFFF"
+        celulas = "".join(
+            f'<td style="background:{fundo}; color:{_cor(v, j)}; font-size:0.72vw;'
+            f' padding:0.55% 0.4%; text-align:{"left" if j == 0 else alinha};'
+            f' font-weight:{"700" if j == 0 else "400"};">{v}</td>'
+            for j, v in enumerate(linha)
+        )
+        corpo.append(f"<tr>{celulas}</tr>")
+    return (
+        '<table style="width:100%; border-collapse:collapse; table-layout:fixed;">'
+        f"<thead><tr>{cabecalho_html}</tr></thead><tbody>{''.join(corpo)}</tbody></table>"
+    )
+
+
+def _ishikawa_html_previa(problema, categorias):
+    """Espinha de peixe da prévia, com as mesmas seis categorias do slide."""
+    def _caixa(nome):
+        return (
+            f'<div style="border:1px solid #1F3864; border-radius:6px; background:#FFF;'
+            f' padding:1.2% 0.8%; text-align:center; font-size:0.8vw; font-weight:700;'
+            f' color:#1F3864; height:78%;">{nome}</div>'
+        )
+    acima = "".join(f'<div style="flex:1; margin:0 0.6%;">{_caixa(c)}</div>' for c in categorias[::2])
+    abaixo = "".join(f'<div style="flex:1; margin:0 0.6%;">{_caixa(c)}</div>' for c in categorias[1::2])
+    return f"""
+    <div style="display:flex; align-items:center; height:74%;">
+        <div style="flex:1;">
+            <div style="display:flex; height:38%;">{acima}</div>
+            <div style="height:4px; background:#1F3864; margin:1.5% 0;"></div>
+            <div style="display:flex; height:38%;">{abaixo}</div>
+        </div>
+        <div style="width:22%; background:#1F3864; color:#FFF; border-radius:10px;
+                    padding:1.6% 1.2%; margin-left:1.5%; font-size:0.78vw; font-weight:700;
+                    text-align:center;">{problema}</div>
+    </div>
+    """
+
+
+def _slide_reservado_previa(titulo, explicacao):
+    """Slides que vão como estão no modelo (capas e próximos passos)."""
+    return f"""
+    <div style="aspect-ratio:20/11.25; background:{COLORS['surface']};
+                border:1px dashed {COLORS['border']}; border-radius:8px;
+                display:flex; flex-direction:column; align-items:center; justify-content:center;
+                text-align:center; padding:2%; margin-bottom:14px;">
+        <div style="font-size:1.1vw; font-weight:700; color:{COLORS['text']};">{titulo}</div>
+        <div style="font-size:0.8vw; color:{COLORS['text_muted']}; margin-top:0.8%; max-width:70%;">
+            {explicacao}</div>
+    </div>
+    """
+
+
 def montar_apresentacao_departamento(caminho_modelo, textos, tabela_indicadores,
-                                     tabela_ebitda, tabela_canais):
+                                     tabela_ebitda, tabela_canais,
+                                     incluir_analise_causa=True):
     """Abre o modelo, preenche e devolve os bytes do .pptx.
 
     `textos` traz o que a pessoa editou na tela; as três tabelas vêm como
@@ -8027,7 +8320,8 @@ def montar_apresentacao_departamento(caminho_modelo, textos, tabela_indicadores,
     if img_ind is not None:
         pos = (img_ind.left, img_ind.top, img_ind.width, img_ind.height)
         _remover_forma(img_ind)
-        _montar_tabela_pptx(ind, *pos, *tabela_indicadores)
+        # Despesa: ficar abaixo do orçado é bom, então o verde vai no negativo.
+        _montar_tabela_pptx(ind, *pos, *tabela_indicadores, negativo_e_bom=True)
 
     # ---- EBITDA ----
     ebitda = slides[2]
@@ -8054,6 +8348,19 @@ def montar_apresentacao_departamento(caminho_modelo, textos, tabela_indicadores,
         pos = (img_desvio_1.left, img_desvio_1.top, img_desvio_1.width, img_desvio_1.height)
         _remover_forma(img_desvio_1)
         _montar_tabela_pptx(desvio, *pos, *tabela_canais)
+
+    # ---- Análise de causa, antes da capa final ----
+    if incluir_analise_causa:
+        problema = textos.get("causa_problema") or textos.get("desvio_texto", "")
+        acao = textos.get("causa_acao", "")
+        _criar_slide_5_porques(apresentacao, problema)
+        _criar_slide_5w2h(apresentacao, acao)
+        _criar_slide_ishikawa(apresentacao, problema)
+        # add_slide joga o slide no fim; a capa final volta para o fim.
+        ordem = apresentacao.slides._sldIdLst
+        capa_final = list(ordem)[5]
+        ordem.remove(capa_final)
+        ordem.append(capa_final)
 
     buffer = io.BytesIO()
     apresentacao.save(buffer)
@@ -11621,8 +11928,9 @@ if departamento_ativo and tab_apres is not None:
                             },
                             (_cab_apres, linhas_ind_apres),
                             (_cab_apres, linhas_ebitda_apres),
-                            (["CANAL", "INVESTIDO", "ORÇADO", "DESVIO", "% DA RECEITA"],
+                            (_cab_canais,
                              linhas_canais_apres or [["—", "—", "—", "—", "—"]]),
+                            incluir_analise_causa=incluir_causa,
                         )
                     except Exception as erro_apres:
                         _bytes_apres = None
