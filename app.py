@@ -2131,6 +2131,23 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
       departamento é dono de todo um ramo da árvore da DRE (ex.: MKT é
       dono de 6.24.2 pra baixo, mas não de 6.24.1, que é de outra área)."""
     termo = str(termo).strip()
+    if termo.startswith("FILHAS:"):
+        # A linha do grupo MAIS o primeiro nível abaixo dela (6 e 6.1 a
+        # 6.25, sem descer para 6.24.2.x). É o recorte do relatório da
+        # Gerência Comercial, que lista o grupo e as sublinhas diretas.
+        alvo = termo.split("FILHAS:", 1)[1].strip()
+        numero_alvo = _numero_linha_dre(alvo) or alvo.split(" ")[0].strip()
+        achadas = []
+        for linha in linhas_disponiveis:
+            numero = _numero_linha_dre(linha)
+            if not numero:
+                continue
+            if numero == numero_alvo:
+                achadas.append(linha)
+            elif (numero.startswith(f"{numero_alvo}.")
+                  and numero.count(".") == numero_alvo.count(".") + 1):
+                achadas.append(linha)
+        return achadas
     if termo.startswith("PREFIXO:"):
         prefixo = termo.split("PREFIXO:", 1)[1].strip()
         return [l for l in linhas_disponiveis if _linha_pertence_ao_grupo(l, prefixo)]
@@ -3062,7 +3079,10 @@ MODELOS_RELATORIO = {
         # departamento não conta duas vezes: o painel resolve as linhas-raiz
         # antes de somar. A 8.3.3.7 é de outro ramo e entra à parte.
         "linhas_dre": [
-            "6 - Despesas Variáveis",
+            # FILHAS: traz "6 - Despesas Variáveis" e as sublinhas diretas
+            # (6.1 a 6.25), que é exatamente o segundo bloco do relatório
+            # que a Controladoria envia à gerência.
+            "FILHAS:6 - Despesas Variáveis",
             "6.24.2.5 - Encontro de Ciclo",
             "6.24.2.6 - Outras Despesas de Marketing",
             "8.3.3.7 - Prêmios / Bônus",
@@ -3074,11 +3094,6 @@ MODELOS_RELATORIO = {
             "6.24.2.6 - Outras Despesas de Marketing",
             "8.3.3.7 - Prêmios / Bônus",
         ],
-        # No RELATÓRIO a gerência quer a DRE inteira, com todas as visões e os
-        # lançamentos -- não só as linhas do departamento. O painel continua
-        # focado nas linhas acima; é só a seleção padrão do relatório que abre
-        # com tudo marcado.
-        "todas_as_linhas_no_relatorio": True,
         # Sem planos forçados: aqui entram apenas os planos que têm linha da
         # DRE correspondente.
         "forcar_planos_contas": [],
@@ -11206,16 +11221,24 @@ with tab5:
     # Antes era uma escolha entre um e outro, e trocar de modelo derrubava a
     # seleção. Agora os dois campos ficam sempre disponíveis: dá para pedir só
     # as linhas, só os planos, ou os dois no mesmo arquivo.
-    # Modelo que pede a DRE inteira (Gerência Comercial) abre com todas as
-    # linhas marcadas; os demais abrem só com as do departamento.
-    if MODELOS_RELATORIO.get(modelo_sel, {}).get("todas_as_linhas_no_relatorio"):
+    # O relatório abre com as linhas do modelo. Quem quiser a DRE inteira
+    # marca a caixa abaixo -- é o caso da gerência, que às vezes pede o
+    # documento completo, com todas as visões e lançamentos.
+    puxar_dre_completa = st.checkbox(
+        "Puxar todas as linhas da DRE", value=False,
+        key=f"dre_completa__{modelo_sel}",
+        help="Desmarcado, o relatório sai só com as linhas do modelo selecionado.",
+    )
+    if puxar_dre_completa:
         default_contas = list(linhas_relatorio)
 
     contas_relatorio = st.multiselect(
         "🔍 Linhas da DRE incluídas no relatório:",
         options=linhas_relatorio,
         default=default_contas,
-        key=f"contas_relatorio__{modelo_sel}",
+        # A chave muda com a caixa acima: sem isso o Streamlit mantém a
+        # seleção antiga e marcar a caixa não teria efeito nenhum.
+        key=f"contas_relatorio__{modelo_sel}__{'todas' if puxar_dre_completa else 'modelo'}",
         help="Deixe vazio se quiser um relatório apenas de planos de contas.",
     )
 

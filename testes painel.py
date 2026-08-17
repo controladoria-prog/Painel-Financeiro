@@ -421,11 +421,41 @@ class TesteGerenciaComercial(unittest.TestCase):
         self.assertAlmostEqual(total["Realizado (R$)"], 6_108_698.41, places=2)
         self.assertAlmostEqual(total["Orçado (R$)"], 7_000_276.88, places=2)
 
+    def test_modelo_seleciona_o_recorte_do_relatorio(self):
+        """Por padrao o relatorio sai com o grupo 6 e as sublinhas diretas
+        (6.1 a 6.25) mais as tres linhas do Quadro de Metas - o mesmo recorte
+        do arquivo que a Controladoria envia. A 6.24.2 (mae das duas linhas de
+        marketing) NAO entra: ela nao esta no relatorio."""
+        ns = carregar(["_numero_linha_dre", "_linha_pertence_ao_grupo",
+                       "_resolver_termo_departamento", "_linhas_raiz_do_conjunto"])
+        dre = ["1 - Receita Operacional Bruta", "6 - Despesas Variáveis"]
+        dre += [f"6.{i} - Linha {i}" for i in range(1, 26)]
+        dre += ["6.24.2 - Marketing Regional - Gestão CP", "6.24.2.5 - Encontro de Ciclo",
+                "6.24.2.6 - Outras Despesas de Marketing", "8.3.3.7 - Prêmios / Bônus"]
+        modelo = ["FILHAS:6 - Despesas Variáveis", "6.24.2.5 - Encontro de Ciclo",
+                  "6.24.2.6 - Outras Despesas de Marketing", "8.3.3.7 - Prêmios / Bônus"]
+        sel = []
+        for termo in modelo:
+            sel.extend(ns["_resolver_termo_departamento"](termo, dre))
+        sel = list(dict.fromkeys(sel))
+        self.assertIn("6 - Despesas Variáveis", sel)
+        self.assertEqual(sum(1 for l in sel if l.startswith("6.") and l.count(".") == 1), 25)
+        self.assertFalse(any(l.startswith("6.24.2 ") for l in sel),
+                         "a linha-mae 6.24.2 nao faz parte do relatorio da gerencia")
+        self.assertIn("8.3.3.7 - Prêmios / Bônus", sel)
+        self.assertEqual(
+            sorted(ns["_linhas_raiz_do_conjunto"](sel)),
+            sorted(["6 - Despesas Variáveis", "8.3.3.7 - Prêmios / Bônus"]),
+            "os totais do painel contariam o mesmo custo duas vezes")
+
+    def test_relatorio_tem_opcao_de_puxar_a_dre_inteira(self):
+        self.assertIn("Puxar todas as linhas da DRE", FONTE)
+        self.assertIn("puxar_dre_completa", FONTE)
+
     def test_modelo_e_email_cadastrados(self):
         self.assertIn(self.NOME, FONTE)
         self.assertIn("gerente.comercial@grupobeea.com.br", FONTE)
         self.assertIn('"quadro_de_metas"', FONTE)
-        self.assertIn('"todas_as_linhas_no_relatorio"', FONTE)
 
 
 # ============================================================================
