@@ -543,6 +543,124 @@ class TesteGerenciaComercial(unittest.TestCase):
 
 
 # ============================================================================
+# 5d. ADM/FINANCEIRO
+# ============================================================================
+class TesteAdmFinanceiro(unittest.TestCase):
+    """O ADM/Financeiro fica com o que sobra da DRE. O recorte e calculado,
+    nao listado a mao -- entao precisa de trava, senao um departamento novo
+    passa a levar linhas embora sem ninguem perceber."""
+
+    DRE = [
+        "1 - Receita Operacional Bruta", "2 - Deduções da Receita Operacional Bruta",
+        "3 - Receita Operacional Liquida", "4 - Custo das Vendas",
+        "4.1 - Custo da Mercadoria Vendida - CMV", "5 - Margem de Contribuição 1",
+        "6 - Despesas Variáveis", "6.1 - Comissões sobre Vendas",
+        "6.2 - Taxa com Cartão de Crédito / Débito", "6.5 - Taxa de Emissão de Boleto",
+        "6.6 - Material de Embalagem", "6.8 - Serviço de Entrega",
+        "6.11 - Catálogos e Revistas", "6.13 - Amostras", "6.14 - Flaconetes",
+        "6.16 - Vitrines", "6.24 - Esforços de Marketing",
+        "6.24.1 - Marketing Regional - Gestão GB", "6.24.2 - Marketing Regional - Gestão CP",
+        "6.24.2.5 - Encontro de Ciclo", "7 - Margem de Contribuição 2",
+        "8 - Despesas Operacionais", "8.1 - Ocupação", "8.1.1 - Aluguel",
+        "8.1.2 - Energia Elétrica", "8.1.3 - Limpeza e Conservação",
+        "8.1.4 - Manutenção e Reparos", "8.2 - Tributos e Taxas", "8.3 - Pessoal",
+        "8.3.1 - Salários", "8.3.3.7 - Prêmios / Bônus", "8.5.3 - Combustível",
+        "8.6.1 - Material de Escritório", "8.6.6 - Outras Despesas Administrativas",
+        "8.6.7 - Tarifas Bancárias", "8.8.1 - Contabilidade",
+        "8.8.2 - Auditoria / Consultoria", "11 - EBITDA", "13 - Depreciação e Amortização",
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["_normalizar_texto", "_numero_linha_dre", "_linha_pertence_ao_grupo",
+             "eh_linha_custos_despesas", "_resolver_termo_departamento",
+             "_linhas_com_dono_de_departamento", "_linhas_restantes_de_custo",
+             "_linhas_de_referencia_da_dre", "_linhas_raiz_do_conjunto",
+             "resolver_planos_forcados"],
+            ["MODELOS_RELATORIO"],
+        )
+
+    def _geridas(self):
+        return self.ns["_resolver_termo_departamento"]("RESTANTE", self.DRE)
+
+    def test_nao_leva_linha_de_outro_departamento(self):
+        geridas = self._geridas()
+        for alheia in ["6.1 - Comissões sobre Vendas", "6.6 - Material de Embalagem",
+                       "6.8 - Serviço de Entrega", "8.1.3 - Limpeza e Conservação",
+                       "8.3 - Pessoal", "8.3.1 - Salários", "8.5.3 - Combustível",
+                       "8.6.1 - Material de Escritório", "8.8.2 - Auditoria / Consultoria",
+                       "6.24.2 - Marketing Regional - Gestão CP",
+                       "6.24.1 - Marketing Regional - Gestão GB"]:
+            self.assertNotIn(alheia, geridas, f"{alheia} ja tem dono")
+
+    def test_nao_leva_linha_ancestral(self):
+        """A linha de grupo carrega o custo dos outros departamentos dentro:
+        se ela entrasse, a folha do RH viraria despesa do ADM."""
+        geridas = self._geridas()
+        for ancestral in ["6 - Despesas Variáveis", "8 - Despesas Operacionais",
+                          "8.1 - Ocupação", "6.24 - Esforços de Marketing"]:
+            self.assertNotIn(ancestral, geridas, f"{ancestral} soma custo de outra area")
+
+    def test_fica_com_o_que_sobra(self):
+        geridas = self._geridas()
+        for propria in ["4 - Custo das Vendas", "6.2 - Taxa com Cartão de Crédito / Débito",
+                        "6.5 - Taxa de Emissão de Boleto", "6.16 - Vitrines",
+                        "8.1.1 - Aluguel", "8.1.2 - Energia Elétrica",
+                        "8.2 - Tributos e Taxas", "8.6.7 - Tarifas Bancárias",
+                        "8.8.1 - Contabilidade"]:
+            self.assertIn(propria, geridas, f"{propria} nao tem dono e sumiu do ADM")
+
+    def test_receita_e_resultado_ficam_so_como_referencia(self):
+        geridas = self._geridas()
+        referencia = self.ns["_resolver_termo_departamento"]("REFERENCIA", self.DRE)
+        for linha in ["1 - Receita Operacional Bruta", "3 - Receita Operacional Liquida",
+                      "11 - EBITDA", "13 - Depreciação e Amortização"]:
+            self.assertNotIn(linha, geridas, "receita/resultado nao pode somar no total")
+            self.assertIn(linha, referencia)
+
+    def test_gerencia_comercial_nao_tira_linha_do_adm(self):
+        """As tres linhas da Gerencia Comercial sao acompanhamento sobre ramos
+        de outras areas -- desconta-las abriria um buraco na DRE."""
+        donas = self.ns["_linhas_com_dono_de_departamento"](self.DRE)
+        self.assertNotIn("6.16 - Vitrines", donas)
+        modelo = self.ns["MODELOS_RELATORIO"]["📈 Relatório de Custos - Gerência Comercial"]
+        self.assertFalse(modelo.get("linhas_exclusivas", False))
+
+    def test_planos_que_sobram(self):
+        diario = pd.DataFrame([
+            {"Plano de Contas": "Mercadorias", "Linha DRE": ""},
+            {"Plano de Contas": "Benfeitorias em imóvel próprio", "Linha DRE": ""},
+            {"Plano de Contas": "Aplicação Financeira", "Linha DRE": ""},
+            {"Plano de Contas": "Energia Elétrica", "Linha DRE": "8.1.2 - Energia Elétrica"},
+        ])
+        achados, _ = self.ns["resolver_planos_forcados"](diario, ["RESTANTE"])
+        self.assertIn("Aplicação Financeira", achados)
+        self.assertNotIn("Mercadorias", achados, "Mercadorias e de Compras")
+        self.assertNotIn("Benfeitorias em imóvel próprio", achados, "benfeitorias sao de Suprimentos")
+        self.assertNotIn("Energia Elétrica", achados, "esse ja tem linha da DRE")
+
+    def test_mapa_de_email_aponta_para_departamento_existente(self):
+        """Um e-mail apontando para um departamento com nome errado nao da
+        erro: a pessoa simplesmente abre na Controladoria e ninguem descobre
+        o porque. Por isso a conferencia e automatica."""
+        trecho = FONTE[FONTE.index("MAPA_EMAIL_DEPARTAMENTO = {"):]
+        trecho = trecho[:trecho.index("\n}")]
+        mapeados = re.findall(r'"([^"]+@[^"]+)":\s*"([^"]+)"', trecho)
+        self.assertGreaterEqual(len(mapeados), 6)
+        for email, departamento in mapeados:
+            self.assertIn(departamento, self.ns["MODELOS_RELATORIO"],
+                          f"{email} aponta para um departamento que nao existe")
+        self.assertIn(("coordenador.financeiro@grupobeea.com.br",
+                       "🏦 Relatório de Custos - ADM/Financeiro"), mapeados)
+
+    def test_modelo_e_painel_cadastrados(self):
+        self.assertIn("🏦 Relatório de Custos - ADM/Financeiro", self.ns["MODELOS_RELATORIO"])
+        self.assertIn("_painel_dept_adm", FONTE)
+        self.assertIn('"🏦 Relatório de Custos - ADM/Financeiro": _painel_dept_adm', FONTE)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):

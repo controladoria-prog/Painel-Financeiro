@@ -2131,6 +2131,10 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
       departamento é dono de todo um ramo da árvore da DRE (ex.: MKT é
       dono de 6.24.2 pra baixo, mas não de 6.24.1, que é de outra área)."""
     termo = str(termo).strip()
+    if termo == "RESTANTE":
+        return _linhas_restantes_de_custo(linhas_disponiveis)
+    if termo == "REFERENCIA":
+        return _linhas_de_referencia_da_dre(linhas_disponiveis)
     if termo.startswith("FILHAS:"):
         # A linha do grupo MAIS o primeiro nível abaixo dela (6 e 6.1 a
         # 6.25, sem descer para 6.24.2.x). É o recorte do relatório da
@@ -2153,6 +2157,61 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
         return [l for l in linhas_disponiveis if _linha_pertence_ao_grupo(l, prefixo)]
     termo_norm = termo.lower()
     return [l for l in linhas_disponiveis if termo_norm in str(l).strip().lower()]
+
+
+def _linhas_com_dono_de_departamento(linhas_disponiveis):
+    """Linhas da DRE que já pertencem a um departamento -- os que estão
+    marcados com "linhas_exclusivas" no modelo (MKT, Compras, Suprimentos e
+    RH). Entram as linhas geridas, as informativas (no MKT é o marketing da
+    indústria, que também não é do ADM) e tudo abaixo delas.
+
+    A Gerência Comercial NÃO entra aqui de propósito: as linhas dela são um
+    recorte de acompanhamento sobre ramos que continuam sendo de outras
+    áreas, então tirá-las do ADM/Financeiro deixaria um buraco na DRE."""
+    donas = set()
+    for modelo in MODELOS_RELATORIO.values():
+        if not modelo.get("linhas_exclusivas"):
+            continue
+        for termo in list(modelo.get("linhas_dre", [])) + list(modelo.get("linhas_informativas", [])):
+            donas.update(_resolver_termo_departamento(termo, linhas_disponiveis))
+
+    numeros_donos = {n for n in (_numero_linha_dre(l) for l in donas) if n}
+    for linha in linhas_disponiveis:
+        if any(_linha_pertence_ao_grupo(linha, numero) for numero in numeros_donos):
+            donas.add(linha)
+    return donas
+
+
+def _linhas_restantes_de_custo(linhas_disponiveis):
+    """O que sobra para o ADM/Financeiro: as linhas de custo e despesa
+    (grupos 4, 6 e 8) que nenhum departamento reivindicou.
+
+    Duas linhas ficam de fora além das que já têm dono:
+    - as ANCESTRAIS de uma linha com dono (ex.: "8 - Despesas Operacionais",
+      "8.3 - Pessoal", "6 - Despesas Variáveis"), porque o valor delas inclui
+      o custo dos outros departamentos -- somá-las aqui atribuiria ao ADM a
+      folha do RH e o frete de Suprimentos;
+    - as de receita e resultado, que não são despesa gerida e entram como
+      referência, num bloco à parte."""
+    donas = _linhas_com_dono_de_departamento(linhas_disponiveis)
+    numeros_donos = {n for n in (_numero_linha_dre(l) for l in donas) if n}
+
+    restantes = []
+    for linha in linhas_disponiveis:
+        if linha in donas or not eh_linha_custos_despesas(linha):
+            continue
+        numero = _numero_linha_dre(linha)
+        if numero and any(dono.startswith(numero + ".") for dono in numeros_donos):
+            continue  # é ancestral de linha com dono
+        restantes.append(linha)
+    return restantes
+
+
+def _linhas_de_referencia_da_dre(linhas_disponiveis):
+    """Receita, margens, EBITDA e depreciação -- tudo que não é custo nem
+    despesa. Não somam no total do departamento; ficam visíveis porque é
+    contra elas que o ADM/Financeiro lê o próprio peso."""
+    return [l for l in linhas_disponiveis if not eh_linha_custos_despesas(l)]
 
 
 def _linhas_raiz_do_conjunto(linhas):
@@ -2983,6 +3042,31 @@ if usuario_atual.get("email"):
 
 
 MODELOS_RELATORIO = {
+    "🏦 Relatório de Custos - ADM/Financeiro": {
+        # O ADM/Financeiro fica com o RESTO: todas as linhas de custo e
+        # despesa que nenhum outro departamento reivindicou. Não há lista
+        # fixa aqui de propósito -- se amanhã o RH assumir mais uma conta ou
+        # a DRE ganhar uma linha nova, o recorte se ajusta sozinho, sem
+        # ninguém precisar lembrar de vir aqui atualizar duas listas.
+        #
+        # Ficam de fora: as linhas dos departamentos marcados como
+        # "linhas_exclusivas" (MKT, Compras, Suprimentos, RH), as ancestrais
+        # delas (a linha "8 - Despesas Operacionais" carrega a folha do RH
+        # dentro) e as de receita/resultado, que entram como referência.
+        # A Gerência Comercial não desconta nada: as três linhas dela são um
+        # recorte de acompanhamento sobre ramos de outras áreas.
+        "linhas_dre": ["RESTANTE"],
+        # Receita, margens, EBITDA e depreciação: não somam no total do
+        # departamento, mas é contra elas que o financeiro lê o próprio peso.
+        "linhas_informativas": ["REFERENCIA"],
+        # Os planos de contas que sobram -- os que existem no DIÁRIO sem
+        # linha da DRE e que nenhum outro modelo puxou (Mercadorias é de
+        # Compras; as benfeitorias, de Suprimentos).
+        "forcar_planos_contas": ["RESTANTE"],
+        # Boa parte das linhas administrativas é lançada direto na linha da
+        # DRE, sem plano de contas correspondente no DIÁRIO.
+        "permitir_lancamento_manual": True,
+    },
     "🛒 Relatório de Custos - Compras": {
         "linhas_dre": [
             "6.6 - Material de Embalagem",
@@ -2994,6 +3078,8 @@ MODELOS_RELATORIO = {
         # não tem uma "Linha DRE" correspondente na Tabela_Contas/DIÁRIO --
         # por isso ele é puxado à parte, direto pelo nome do Plano de Contas,
         # mesmo sem nenhuma linha da DRE selecionada apontar para ele.
+        # Linhas exclusivas: saem do ADM/Financeiro, que fica com o resto.
+        "linhas_exclusivas": True,
         "forcar_planos_contas": ["Mercadorias"],
         "permitir_lancamento_manual": False,
     },
@@ -3010,6 +3096,8 @@ MODELOS_RELATORIO = {
             "8.8.10 - Serviços de Transporte",
             "8.8.11 - Outros Serviços Terceirizados",
         ],
+        # Linhas exclusivas: saem do ADM/Financeiro, que fica com o resto.
+        "linhas_exclusivas": True,
         "forcar_planos_contas": [
             "Adiantamento de Benfeitorias em Imóvel Próprio",
             "Adiantamento de de Benfeitorias em Imóveis de Terceiros",
@@ -3063,6 +3151,8 @@ MODELOS_RELATORIO = {
             "8.6.6 - Outras Despesas Administrativas",
             "8.8.2 - Auditoria / Consultoria",
         ],
+        # Linhas exclusivas: saem do ADM/Financeiro, que fica com o resto.
+        "linhas_exclusivas": True,
         "forcar_planos_contas": [],
         # Várias linhas da DRE do RH não têm um Plano de Contas correspondente
         # no DIÁRIO/Tabela_Contas (o valor é lançado direto na linha). Nesses
@@ -3129,6 +3219,10 @@ MODELOS_RELATORIO = {
         # nos KPIs/gráficos de gestão do departamento, mas aparecem no
         # relatório e num bloco à parte no painel, só pra conhecimento.
         "linhas_informativas": ["PREFIXO:6.24.1"],
+        # Linhas exclusivas: o ramo 6.24 inteiro (gestão CP e gestão GB) sai
+        # do ADM/Financeiro -- marketing é do MKT, mesmo a parte que a
+        # indústria decide.
+        "linhas_exclusivas": True,
         # Aba extra, exclusiva do MKT: o quadro "1% x Outras Despesas de
         # Marketing" (LOJA-1%, VD, ABPR e CONSOLIDADO), no mesmo layout que
         # a Controladoria já mandava para o gestor na mão.
@@ -6263,6 +6357,7 @@ MAPA_EMAIL_DEPARTAMENTO = {
     "gerente.logistica@grupobeea.com.br": "🚚 Relatório de Custos - Suprimentos",
     "pessoas.cultura@grupobeea.com.br": "👥 Relatório de Custos - RH",
     "gerente.comercial@grupobeea.com.br": "📈 Relatório de Custos - Gerência Comercial",
+    "coordenador.financeiro@grupobeea.com.br": "🏦 Relatório de Custos - ADM/Financeiro",
 }
 
 departamento_ativo = None
@@ -7030,6 +7125,24 @@ def resolver_planos_forcados(df_diario, termos):
     disponiveis = (
         df_diario["Plano de Contas"].dropna().astype(str).str.strip().unique().tolist()
     )
+    # "RESTANTE" (ADM/Financeiro): os planos sem linha da DRE que nenhum
+    # outro modelo puxou pelo nome. Sem isso, esses lançamentos não apareciam
+    # em relatório nenhum -- não têm linha da DRE que os alcance, e só os de
+    # Compras e Suprimentos estavam listados à mão.
+    if "RESTANTE" in (termos or []):
+        termos = [t for t in termos if t != "RESTANTE"]
+        ja_reivindicados = set()
+        for modelo in MODELOS_RELATORIO.values():
+            for plano in modelo.get("forcar_planos_contas", []):
+                if plano != "RESTANTE":
+                    ja_reivindicados.add(_normalizar_texto(plano))
+        if "Linha DRE" in df_diario.columns:
+            sem_linha = df_diario[df_diario["Linha DRE"].astype(str).str.strip() == ""]
+            sobrando = [
+                p for p in sem_linha["Plano de Contas"].dropna().astype(str).str.strip().unique()
+                if p and _normalizar_texto(p) not in ja_reivindicados
+            ]
+            termos = list(termos) + sorted(sobrando)
     indice = {_normalizar_texto(p): p for p in disponiveis}
     encontrados, faltando = [], []
     for termo in (termos or []):
@@ -8598,12 +8711,133 @@ def _painel_dept_comercial(ctx):
     return {"linhas_dept", "informativas"}
 
 
+# ---------------------------------------------------------------------------
+# ADM/FINANCEIRO
+# ---------------------------------------------------------------------------
+def _linha_da_dre_por_numero(universo, numero):
+    """Acha no universo a linha cujo número é exatamente `numero` (ex.: "2",
+    para Deduções da Receita). Devolve None se a DRE não tiver essa linha --
+    a estrutura muda de ano para ano e nada aqui pode depender dela existir."""
+    for linha in universo:
+        if _numero_linha_dre(linha) == str(numero):
+            return linha
+    return None
+
+
+def _painel_dept_adm(ctx):
+    """O ADM/Financeiro não tem um ramo próprio na DRE: ele é o que sobra
+    depois que MKT, Compras, Suprimentos e RH pegam os deles. Isso deixa o
+    departamento com contas espalhadas por três grupos, e uma lista solta de
+    linhas na ordem da DRE não responde às duas perguntas do financeiro:
+    quanto do custo acompanha a venda e onde o mês fugiu do previsto.
+
+    Daí o formato: a faixa separa o custo por NATUREZA (mercadoria, taxa da
+    venda, estrutura fixa) e a tabela ordena as contas por DESVIO. A lista
+    completa, na ordem da DRE, continua logo abaixo, no bloco genérico."""
+    colunas = ctx["colunas"]
+    universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
+    raizes = ctx["linhas_raiz"]
+
+    receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
+
+    def _pct_receita(valor):
+        if not receita:
+            return "sem receita no período"
+        return f"{valor / receita * 100:.1f}% da receita".replace(".", ",")
+
+    def _real_orc(linhas):
+        return (abs(_total_dre(ctx["dfs_real"], linhas, colunas)),
+                abs(_total_dre(ctx["dfs_orc"], linhas, colunas)))
+
+    def _grupo_raiz(linha):
+        return (_numero_linha_dre(linha) or "").split(".")[0]
+
+    linhas_cmv = [l for l in raizes if _grupo_raiz(l) == "4"]
+    linhas_taxas = [l for l in raizes if _grupo_raiz(l) == "6"]
+    linhas_estrutura = [l for l in raizes if l not in linhas_cmv and l not in linhas_taxas]
+
+    cmv, cmv_orc = _real_orc(linhas_cmv)
+    taxas, taxas_orc = _real_orc(linhas_taxas)
+    estrutura, estrutura_orc = _real_orc(linhas_estrutura)
+
+    st.markdown('<div class="section-title">🏦 O custo do ADM/Financeiro por natureza</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        faixa_metricas_html([
+            ("Custo da venda (grupo 4)", formata_valor_curto(cmv),
+             cor_variacao(cmv_orc - cmv), _pct_receita(cmv)),
+            ("Taxas sobre a venda (grupo 6)", formata_valor_curto(taxas),
+             cor_variacao(taxas_orc - taxas), _pct_receita(taxas)),
+            ("Estrutura fixa (grupo 8)", formata_valor_curto(estrutura),
+             cor_variacao(estrutura_orc - estrutura), _pct_receita(estrutura)),
+            ("Custo fixo por real vendido",
+             (f"{estrutura / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
+             COLORS["text"], "quanto da venda paga a estrutura"),
+        ]),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "As três naturezas se comportam de formas diferentes e por isso não se lê o desvio "
+        "delas junto: custo da venda e taxas sobem quando a empresa vende mais — desvio ali "
+        "pode ser volume, não descontrole. Estrutura fixa não deveria acompanhar a venda, "
+        "então qualquer alta ali é decisão, não consequência."
+    )
+
+    # ---- Onde o mês fugiu do orçado ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🔎 Contas que mais fugiram do orçado</div>',
+                unsafe_allow_html=True)
+
+    contas = []
+    for linha in raizes:
+        real, orc = _real_orc([linha])
+        if not real and not orc:
+            continue
+        contas.append({
+            "Conta / Linha DRE": _nome_sem_numero_dre(linha),
+            "Orçado (R$)": orc,
+            "Realizado (R$)": real,
+            "Desvio (R$)": orc - real,
+            "% do orçado": (real / orc * 100) if orc else float("nan"),
+        })
+    contas.sort(key=lambda c: abs(c["Desvio (R$)"]), reverse=True)
+    _tabela_departamento(contas[:8], colunas_percentual=("% do orçado",))
+    st.caption(
+        f"As 8 maiores distorções do período, das {len(contas)} contas do departamento, em "
+        "valor absoluto — para cima e para baixo, porque gastar bem menos que o previsto "
+        "também merece explicação (pode ser conta que ainda não chegou). Desvio positivo é "
+        "gasto abaixo do orçado. A lista completa, na ordem da DRE, está logo abaixo."
+    )
+
+    # ---- Carga tributária, quando a DRE tiver a linha de deduções ----
+    linha_deducoes = _linha_da_dre_por_numero(universo, "2")
+    linha_bruta = _linha_da_dre_por_numero(universo, "1")
+    if linha_deducoes and linha_bruta:
+        deducoes = abs(get_valor_consolidado_multi(ctx["dfs_real"], linha_deducoes, colunas,
+                                                   exato_linha_sintetica=True))
+        bruta = abs(get_valor_consolidado_multi(ctx["dfs_real"], linha_bruta, colunas,
+                                                exato_linha_sintetica=True))
+        if bruta:
+            carga = f"{deducoes / bruta * 100:.1f}%".replace(".", ",")
+            st.caption(
+                f"Carga sobre a venda: {formata_brl(deducoes)} de deduções sobre "
+                f"{formata_brl(bruta)} de receita bruta — {carga}. Não entra no total do "
+                "departamento (é dedução da receita, não despesa), mas aparece no bloco de "
+                "referência mais abaixo."
+            )
+
+    # A tabela acima é um ranking; a lista linha a linha do bloco genérico
+    # continua sendo o detalhe, e as linhas de referência saem por lá também.
+    return set()
+
+
 PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
     "📣 Relatório de Custos - MKT": _painel_dept_mkt,
     "🛒 Relatório de Custos - Compras": _painel_dept_compras,
     "🚚 Relatório de Custos - Suprimentos": _painel_dept_suprimentos,
     "👥 Relatório de Custos - RH": _painel_dept_rh,
     "📈 Relatório de Custos - Gerência Comercial": _painel_dept_comercial,
+    "🏦 Relatório de Custos - ADM/Financeiro": _painel_dept_adm,
 }
 
 
@@ -11476,7 +11710,13 @@ with tab5:
                 dados_por_loja=dados_por_loja_rel,
                 mapa_planos_dre=mapa_planos_dre_rel,
                 df_diario=df_diario_rel,
-                forcar_planos_contas=info_modelo_sel.get("forcar_planos_contas", []),
+                # Resolve os planos ANTES de gerar: o ADM/Financeiro pede
+                # "RESTANTE", que só vira lista de nomes depois de olhar a
+                # DIÁRIO. Passar o termo cru faria o gerador procurar um
+                # plano chamado "RESTANTE" e não achar nada.
+                forcar_planos_contas=resolver_planos_forcados(
+                    df_diario_rel, info_modelo_sel.get("forcar_planos_contas", [])
+                )[0],
                 permitir_lancamento_manual=info_modelo_sel.get("permitir_lancamento_manual", False),
                 mapa_loja_centro_custo=mapa_loja_cc_rel,
                 dados_visoes_mkt=dados_visoes_mkt_rel,
