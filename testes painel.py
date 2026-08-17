@@ -722,6 +722,75 @@ class TesteAdmFinanceiro(unittest.TestCase):
 
 
 # ============================================================================
+# 5e. PRAZOS DO FLUXO
+# ============================================================================
+class TestePrazosDoFluxo(unittest.TestCase):
+    """A baixa dos titulos nao vem no CSV do fluxo; ela e buscada na aba
+    DIARIO pelo numero do documento. O cruzamento precisa cobrir os DOIS
+    lados -- quando olhava so o "pagar", o atraso medio no recebimento
+    aparecia vazio na tela."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_normalizar_coluna_fin", "_chave_numero_fin",
+                           "_classificar_movimento_fin"])
+
+    def _cruzar(self):
+        df = pd.DataFrame({
+            "Movimento": ["4 - Contas a Pagar", "2 - Contas a Receber", "1 - Banco"],
+            "Número": ["1001", "5001", ""],
+            "Data Liquidação": [pd.NaT, pd.NaT, pd.NaT],
+            "Vencimento.1": pd.to_datetime(["2026-08-05", "2026-08-03", None]),
+        })
+        diario = pd.DataFrame({
+            "chave_num": ["1001", "5001"],
+            "data_liq": pd.to_datetime(["2026-08-07", "2026-08-06"]),
+        })
+        pagar = df["Movimento"].astype(str).str.contains("pagar", case=False, na=False)
+        receber = df["Movimento"].astype(str).str.contains("receber", case=False, na=False)
+        faltando = (pagar | receber) & df["Data Liquidação"].isna()
+        a_cruzar = pd.DataFrame({
+            "_idx": df.index[faltando],
+            "chave_num": self.ns["_chave_numero_fin"](df.loc[faltando, "Número"]).values,
+        })
+        casados = a_cruzar.merge(diario, on="chave_num", how="left").dropna(subset=["data_liq"])
+        df["Liquidação Efetiva"] = pd.NaT
+        df.loc[casados["_idx"].values, "Liquidação Efetiva"] = casados["data_liq"].values
+        df["Tipo Movimento"] = df["Movimento"].map(self.ns["_classificar_movimento_fin"])
+        return df
+
+    def test_o_receber_tambem_ganha_data_de_baixa(self):
+        df = self._cruzar()
+        entradas = df[df["Tipo Movimento"] == "entrada"]
+        self.assertTrue(entradas["Liquidação Efetiva"].notna().all(),
+                        "titulo a receber ficou sem data de baixa")
+
+    def test_atraso_sai_dos_dois_lados(self):
+        df = self._cruzar()
+        prazo = df[df["Liquidação Efetiva"].notna() & df["Vencimento.1"].notna()].copy()
+        prazo["DiasAteLiquidar"] = (prazo["Liquidação Efetiva"] - prazo["Vencimento.1"]).dt.days
+        for tipo in ("saida", "entrada"):
+            lado = prazo[prazo["Tipo Movimento"] == tipo]
+            self.assertFalse(lado.empty, f"nenhum titulo de {tipo} com prazo calculado")
+            self.assertEqual(lado["DiasAteLiquidar"].mean(), 2 if tipo == "saida" else 3)
+
+    def test_cruzamento_olha_pagar_e_receber(self):
+        """Trava estrutural: se o filtro voltar a ser so o "pagar", o
+        recebimento fica sem data e o indicador zera de novo."""
+        i = FONTE.index("mask_receber = df[COL_FIN_MOVIMENTO]")
+        trecho = FONTE[i:i + 400]
+        self.assertIn("(mask_pagar | mask_receber)", trecho)
+
+    def test_indicador_nao_se_chama_prazo_medio(self):
+        """O calculo e liquidacao menos vencimento, ou seja ATRASO. Chamar de
+        prazo medio faz ler "+5 dias" como se a empresa pagasse em 5 dias."""
+        self.assertIn("ATRASO MÉDIO NO PAGAMENTO", FONTE)
+        self.assertIn("ATRASO MÉDIO NO RECEBIMENTO", FONTE)
+        self.assertNotIn('label="PRAZO MÉDIO DE PAGAMENTO"', FONTE)
+        self.assertNotIn('label="PRAZO MÉDIO DE RECEBIMENTO"', FONTE)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):

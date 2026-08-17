@@ -4256,18 +4256,25 @@ def preparar_fluxo_caixa(base_data):
         "colunas_csv": [str(c) for c in df_fluxo.columns],
     }
 
-    # ---- Data de pagamento das CONTAS A PAGAR: vem da aba DIÁRIO ----
-    # No CSV do Fluxo de Caixa a coluna de liquidação chega SEMPRE vazia para
-    # "4 - Contas a Pagar". Os mesmos lançamentos existem na aba DIÁRIO da
-    # planilha Realizado 2026, e lá a baixa está preenchida -- então cruzamos
-    # os dois pelo Número do documento (com o valor junto, quando bate) e
-    # completamos SÓ o que está vazio. Nada que já veio com data é tocado.
+    # ---- Data de baixa dos TÍTULOS: vem da aba DIÁRIO ----
+    # No CSV do Fluxo de Caixa a coluna de liquidação chega vazia para os
+    # títulos -- tanto "4 - Contas a Pagar" quanto "Contas a Receber". Os
+    # mesmos lançamentos existem na aba DIÁRIO da planilha Realizado 2026, e
+    # lá a baixa está preenchida -- então cruzamos os dois pelo Número do
+    # documento (com o valor junto, quando bate) e completamos SÓ o que está
+    # vazio. Nada que já veio com data é tocado.
+    #
+    # O RECEBER entrou aqui em 17/08/2026: antes o cruzamento olhava só o
+    # "pagar", e por isso o prazo médio de recebimento aparecia vazio na aba
+    # Análises -- não faltava conta recebida, faltava a data de quando.
     mask_pagar = df[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
-    faltando_pagar = mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()
+    mask_receber = df[COL_FIN_MOVIMENTO].astype(str).str.contains("receber", case=False, na=False)
+    faltando_pagar = (mask_pagar | mask_receber) & df[COL_FIN_DATA_LIQUIDACAO].isna()
     # A data encontrada na DIÁRIO NÃO entra na coluna do CSV: vai para uma
     # coluna própria, consumida só pela aba Análises.
     df[COL_FIN_LIQ_DIARIO] = pd.NaT
-    diagnostico["pagar_sem_liq_no_csv"] = int(faltando_pagar.sum())
+    diagnostico["pagar_sem_liq_no_csv"] = int((mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
+    diagnostico["receber_sem_liq_no_csv"] = int((mask_receber & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
     diagnostico["liq_do_diario"] = 0
     if faltando_pagar.any() and COL_FIN_NUMERO in df.columns:
         tabelas_liq, diag_diario = carregar_liquidacoes_diario(path_real)
@@ -4295,6 +4302,10 @@ def preparar_fluxo_caixa(base_data):
             casados = achados.dropna(subset=["data_liq"])
             if not casados.empty:
                 df.loc[casados["_idx"].values, COL_FIN_LIQ_DIARIO] = casados["data_liq"].values
+                casados_receber = df.loc[casados["_idx"].values].index.intersection(
+                    df.index[mask_receber]
+                )
+                diagnostico["liq_do_diario_receber"] = int(len(casados_receber))
             sem_par = achados[achados["data_liq"].isna()]
             diagnostico["liq_do_diario"] = int(len(casados))
             diagnostico["pagar_sem_match"] = int(len(sem_par))
@@ -4662,6 +4673,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             if diag_fluxo.get("pagar_sem_liq_no_csv"):
                 st.write(
                     f"**Contas a pagar sem baixa no CSV:** {diag_fluxo['pagar_sem_liq_no_csv']} · "
+                    f"**A receber sem baixa:** {diag_fluxo.get('receber_sem_liq_no_csv', 0)} · "
                     f"**Baixas trazidas da aba DIÁRIO:** {diag_fluxo.get('liq_do_diario', 0)} · "
                     f"**Sem correspondência:** {diag_fluxo.get('pagar_sem_match', 0)}"
                 )
@@ -6012,8 +6024,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
             saidas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "saida"] if not df_prazo_a.empty else pd.DataFrame()
             entradas_prazo_a = df_prazo_a[df_prazo_a["Tipo Movimento"] == "entrada"] if not df_prazo_a.empty else pd.DataFrame()
 
-            prazo_medio_pagto_a = saidas_prazo_a["DiasAteLiquidar"].mean() if not saidas_prazo_a.empty else None
-            prazo_medio_receb_a = entradas_prazo_a["DiasAteLiquidar"].mean() if not entradas_prazo_a.empty else None
+            # ATENÇÃO ao que estes dois números são: a diferença entre a data
+            # em que o título foi baixado e a data em que ele vencia. Ou seja,
+            # ATRASO médio -- não o PMP/PMR da Controladoria, que se mede da
+            # compra (ou da venda) até o pagamento. O CSV do fluxo não traz
+            # data de emissão do documento, então esse cálculo não é possível
+            # com os dados de hoje. Rotular de "prazo médio" levava a ler um
+            # atraso de 5 dias como se a empresa pagasse em 5 dias.
+            atraso_medio_pagto_a = saidas_prazo_a["DiasAteLiquidar"].mean() if not saidas_prazo_a.empty else None
+            atraso_medio_receb_a = entradas_prazo_a["DiasAteLiquidar"].mean() if not entradas_prazo_a.empty else None
             pct_pago_em_dia_a = (
                 (saidas_prazo_a["DiasAteLiquidar"] <= 0).mean() * 100 if not saidas_prazo_a.empty else None
             )
@@ -6068,17 +6087,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
                 st.markdown(
                     render_kpi_row([
-                        dict(label="PRAZO MÉDIO DE PAGAMENTO",
-                             value=(f"{prazo_medio_pagto_a:+.1f} dias" if prazo_medio_pagto_a is not None else "—"),
-                             value_color=(COLORS["positive"] if (prazo_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
-                             subtext=(f"Entre os {len(saidas_prazo_a)} títulos já pagos"
-                                      if prazo_medio_pagto_a is not None else "Nenhum título pago no recorte"),
+                        dict(label="ATRASO MÉDIO NO PAGAMENTO",
+                             value=(f"{atraso_medio_pagto_a:+.1f} dias" if atraso_medio_pagto_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (atraso_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
+                             subtext=(f"Depois do vencimento · {len(saidas_prazo_a)} títulos pagos"
+                                      if atraso_medio_pagto_a is not None else "Nenhum título pago no recorte"),
                              icon="📤"),
-                        dict(label="PRAZO MÉDIO DE RECEBIMENTO",
-                             value=(f"{prazo_medio_receb_a:+.1f} dias" if prazo_medio_receb_a is not None else "—"),
-                             value_color=(COLORS["positive"] if (prazo_medio_receb_a or 0) <= 0 else COLORS["warning"]),
-                             subtext=(f"Entre os {len(entradas_prazo_a)} já recebidos"
-                                      if prazo_medio_receb_a is not None else "Nenhum recebimento liquidado"),
+                        dict(label="ATRASO MÉDIO NO RECEBIMENTO",
+                             value=(f"{atraso_medio_receb_a:+.1f} dias" if atraso_medio_receb_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (atraso_medio_receb_a or 0) <= 0 else COLORS["warning"]),
+                             subtext=(f"Depois do vencimento · {len(entradas_prazo_a)} títulos recebidos"
+                                      if atraso_medio_receb_a is not None
+                                      else "Sem data de baixa nos títulos a receber"),
                              icon="📥"),
                         dict(label="PAGAMENTOS EM DIA",
                              value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
@@ -6098,10 +6118,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     unsafe_allow_html=True,
                 )
                 st.caption(
-                    "**Prazo médio** considera só o que já foi liquidado, comparando a data de pagamento com a "
-                    "de vencimento: negativo significa antecipar, positivo significa atrasar. **Dias de caixa** "
-                    "estima por quantos dias o saldo atual cobriria as saídas no ritmo médio do período. "
-                    "**Concentração** mostra o quanto do desembolso está espremido em poucos dias."
+                    "**Atraso médio** compara a data em que o título foi baixado com a data em que ele vencia, "
+                    "só entre os já liquidados: negativo é antecipação, positivo é atraso. Não confundir com o "
+                    "PMP/PMR da Controladoria, que se mede da compra (ou da venda) até o pagamento — o CSV do "
+                    "fluxo não traz a data de emissão do documento, então esse cálculo não sai daqui. "
+                    "**Dias de caixa** estima por quantos dias o saldo atual cobriria as saídas no ritmo médio "
+                    "do período. **Concentração** mostra o quanto do desembolso está espremido em poucos dias."
                 )
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -6116,9 +6138,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
                 if diag_fluxo.get("liq_do_diario"):
                     st.caption(
-                        f"A baixa das contas a pagar não vem no CSV do Fluxo de Caixa — "
-                        f"{diag_fluxo['liq_do_diario']} títulos tiveram a data de pagamento "
-                        f"buscada na aba DIÁRIO da planilha Realizado 2026, pelo número do documento."
+                        f"A baixa dos títulos não vem no CSV do Fluxo de Caixa — "
+                        f"{diag_fluxo['liq_do_diario']} tiveram a data buscada na aba DIÁRIO da planilha "
+                        f"Realizado 2026, pelo número do documento"
+                        + (f" ({diag_fluxo['liq_do_diario_receber']} deles a receber)."
+                           if diag_fluxo.get("liq_do_diario_receber") else ".")
                     )
                 st.markdown(
                     render_kpi_row([
