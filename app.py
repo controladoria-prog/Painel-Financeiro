@@ -962,6 +962,28 @@ function _lerCookie(nome) {
 """
 
 
+def html_embutido(codigo, altura=0, largura=None):
+    """Injeta um trecho de HTML/JS num iframe.
+
+    `st.components.v1.html` está marcado para remoção desde 01/06/2026 e o
+    substituto é `st.iframe`. A assinatura mudou entre versões, então aqui a
+    ordem é: tenta o novo, e só volta para o antigo se ele não existir ou
+    recusar a chamada -- assim a troca não derruba a tela em nenhuma versão.
+
+    É por aqui que passam o "lembrar de mim", o aviso de Caps Lock e o relógio
+    do Painel de TV: se algum deles parar de funcionar depois de uma
+    atualização do Streamlit, é neste ponto que se olha primeiro."""
+    try:
+        st.iframe(codigo, height=altura)
+        return
+    except Exception:
+        pass
+    if largura is None:
+        components.html(codigo, height=altura)
+    else:
+        components.html(codigo, height=altura, width=largura)
+
+
 # ---------------------------------------------------------------------------
 # SESSÃO QUE SOBREVIVE AO F5
 # ---------------------------------------------------------------------------
@@ -1062,7 +1084,7 @@ def _salvar_credenciais_no_navegador(email, senha):
     um deles falhar."""
     email_b64 = base64.b64encode(email.encode("utf-8")).decode("ascii")
     senha_b64 = base64.b64encode(senha.encode("utf-8")).decode("ascii")
-    components.html(
+    html_embutido(
         f"""
         <script>
         {_JS_ACHAR_JANELA}
@@ -1079,15 +1101,15 @@ def _salvar_credenciais_no_navegador(email, senha):
         }} catch (e) {{}}
         </script>
         """,
-        height=0,
-        width=0,
+        altura=0,
+        largura=0,
     )
 
 
 def _esquecer_credenciais_no_navegador():
     """Apaga o e-mail/senha salvos no navegador (usado ao clicar em Sair,
     ou quando as credenciais salvas nao sao mais validas)."""
-    components.html(
+    html_embutido(
         f"""
         <script>
         {_JS_ACHAR_JANELA}
@@ -1095,8 +1117,8 @@ def _esquecer_credenciais_no_navegador():
         try {{ document.cookie = '{CHAVE_LOCALSTORAGE_LOGIN}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'; }} catch (e) {{}}
         </script>
         """,
-        height=0,
-        width=0,
+        altura=0,
+        largura=0,
     )
 
 
@@ -1141,7 +1163,7 @@ def _pedir_autofill_via_localstorage():
     credenciais salvas no navegador (localStorage OU cookie, o que estiver
     disponível) e, se houver, recarrega a pagina com elas na URL para
     tentarmos o autologin."""
-    components.html(
+    html_embutido(
         f"""
         <script>
         {_JS_ACHAR_JANELA}
@@ -1170,8 +1192,8 @@ def _pedir_autofill_via_localstorage():
         }} catch (e) {{}}
         </script>
         """,
-        height=0,
-        width=0,
+        altura=0,
+        largura=0,
     )
 
 
@@ -1436,10 +1458,10 @@ try {
 
 
 def _avisar_caps_lock():
-    components.html(
+    html_embutido(
         _JS_CAPS_LOCK.replace("__JANELA__", _JS_ACHAR_JANELA).replace("__COR__", COLORS["warning"]),
-        height=0,
-        width=0,
+        altura=0,
+        largura=0,
     )
 
 
@@ -1453,7 +1475,31 @@ def checar_login():
 
     usuarios = obter_usuarios_cadastrados()
     if not usuarios:
-        return True
+        # Sem usuários cadastrados o painel BLOQUEIA, e não o contrário.
+        # Antes ele liberava o acesso aqui, para não travar numa
+        # configuração incompleta -- só que qualquer falha na leitura dos
+        # Secrets (arquivo com erro de sintaxe, chave renomeada, app
+        # recém-clonado) deixava o financeiro da empresa aberto na
+        # internet. Falhar fechado é o comportamento certo aqui.
+        st.markdown(
+            html_compacto(f"""
+            <div style="max-width:560px; margin:12vh auto; text-align:center;
+                        background:{COLORS['surface']}; border:1px solid {COLORS['border']};
+                        border-radius:12px; padding:34px 30px;">
+                <div style="font-size:17px; font-weight:700; color:{COLORS['text']};
+                            margin-bottom:10px;">Acesso indisponível</div>
+                <div style="font-size:13px; color:{COLORS['text_muted']}; line-height:1.7;">
+                    Nenhum usuário foi encontrado na configuração do app, então o painel
+                    está bloqueado por segurança.<br><br>
+                    Se você administra o painel, confira o bloco <b>[usuarios]</b> nos
+                    <b>Secrets</b> — normalmente é erro de digitação no arquivo ou uma
+                    chave renomeada.
+                </div>
+            </div>
+            """),
+            unsafe_allow_html=True,
+        )
+        return False
 
     if st.session_state.get("usuario_logado"):
         return True
@@ -1572,7 +1618,7 @@ def checar_login():
                 unsafe_allow_html=True,
             )
             entrar_clicado = st.form_submit_button(
-                "Entrar", use_container_width=True, disabled=segundos_espera > 0,
+                "Entrar", width="stretch", disabled=segundos_espera > 0,
             )
         if entrar_clicado:
             validar_login()
@@ -2556,7 +2602,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     with col_head_b:
         # Relógio de verdade "ao vivo": roda dentro de um componente (só ele
         # consegue executar JavaScript de fato) e atualiza a cada segundo.
-        components.html(
+        html_embutido(
             f"""
             <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
                         color:{COLORS['text_muted']}; padding-top:2px;">
@@ -2579,7 +2625,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             setInterval(_tvAtualizarRelogio, 1000);
             </script>
             """,
-            height=54,
+            altura=54,
         )
 
     def _tv_kpi(cor_var, label, valor, sub, accent, icone=""):
@@ -2663,7 +2709,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
             legend=dict(orientation="h", yanchor="bottom", y=-0.16, xanchor="center", x=0.5, font=dict(size=13)),
         )
-        st.plotly_chart(fig_tv_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+        st.plotly_chart(fig_tv_line, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         # ---- Desvio Mensal de EBITDA (barras) — usa o espaço abaixo do
         # gráfico de linha e complementa a evolução com "quanto acima/abaixo
@@ -2691,7 +2737,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             showlegend=False,
             bargap=0.35,
         )
-        st.plotly_chart(fig_tv_desvio, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+        st.plotly_chart(fig_tv_desvio, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
     with cgtv2:
         st.markdown('<div class="tv-section-title">🥧 Composição de Custos & Saídas</div>', unsafe_allow_html=True)
@@ -2707,7 +2753,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
         )
         estilo_grafico(fig_tv_donut, height=200, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig_tv_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+        st.plotly_chart(fig_tv_donut, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         # Detalhamento: cada categoria com % da receita líquida e desvio vs. orçado
         # (é o "mais detalhe de custos" pedido -- não só o donut).
@@ -2817,7 +2863,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # ao sair (Esc). Se o navegador bloquear o pedido automático de tela
     # cheia, mostra um aviso na hora (em vez de falhar calado) recomendando
     # o F11, que é sempre a forma mais confiável.
-    components.html(
+    html_embutido(
         f"""
         <div id="tvFsWrap" style="display:flex; align-items:center; justify-content:center; gap:12px;
                     font-family:{FONT_STACK}; padding-top:6px;">
@@ -2873,7 +2919,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         setInterval(_tvAtualizarUI, 1500);
         </script>
         """,
-        height=44,
+        altura=44,
     )
 
     st.markdown(
@@ -3223,7 +3269,7 @@ if st.session_state["painel_escolhido"] is None:
             """),
             unsafe_allow_html=True,
         )
-        if st.button("Acessar Controladoria", use_container_width=True, key="btn_hub_controladoria"):
+        if st.button("Acessar Controladoria", width="stretch", key="btn_hub_controladoria"):
             st.session_state["painel_escolhido"] = "controladoria"
             st.rerun()
 
@@ -3252,7 +3298,7 @@ if st.session_state["painel_escolhido"] is None:
         # só então batia na tela de bloqueio.
         if st.button(
             "Acessar Financeiro" if _pode_financeiro else "Sem acesso",
-            use_container_width=True, key="btn_hub_financeiro",
+            largura="stretch", key="btn_hub_financeiro",
             disabled=not _pode_financeiro,
         ):
             st.session_state["painel_escolhido"] = "financeiro"
@@ -3266,7 +3312,7 @@ if st.session_state["painel_escolhido"] is None:
     with col_sair_b:
         # A barra lateral fica escondida nesta tela, então o "Sair" precisa
         # existir aqui -- senão quem entrou com a conta errada fica preso.
-        if st.button("Sair", use_container_width=True, key="btn_hub_sair"):
+        if st.button("Sair", width="stretch", key="btn_hub_sair"):
             st.session_state["usuario_logado"] = None
             st.session_state["painel_escolhido"] = None
             limpar_bilhete_sessao()
@@ -4196,7 +4242,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
         col_voltar_esp1, col_voltar, col_voltar_esp2 = st.columns([1, 1.2, 1])
         with col_voltar:
             st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
-            if st.button("← Ir para o Painel de Controladoria", use_container_width=True, type="primary"):
+            if st.button("← Ir para o Painel de Controladoria", width="stretch", type="primary"):
                 st.session_state["painel_escolhido"] = "controladoria"
                 st.rerun()
         st.stop()
@@ -4262,7 +4308,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("**🔄 Dados**")
-    if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True, key="fin_btn_atualizar"):
+    if st.sidebar.button("🔄 Atualizar Dados", width="stretch", key="fin_btn_atualizar"):
         st.cache_data.clear()
         st.cache_resource.clear()
         st.rerun()
@@ -4289,14 +4335,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🔀 Trocar Painel", use_container_width=True, key="fin_btn_trocar"):
+    if st.sidebar.button("🔀 Trocar Painel", width="stretch", key="fin_btn_trocar"):
         st.session_state["painel_escolhido"] = None
         st.rerun()
 
     st.sidebar.markdown("---")
     _perfil_label_fin = "Administrador" if eh_admin else "Visualização"
     st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{_perfil_label_fin}**")
-    if st.sidebar.button("🚪 Sair", use_container_width=True, key="fin_btn_sair"):
+    if st.sidebar.button("🚪 Sair", width="stretch", key="fin_btn_sair"):
         st.session_state["usuario_logado"] = None
         st.session_state["painel_escolhido"] = None
         limpar_bilhete_sessao()
@@ -4469,7 +4515,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "traz -- procure ali a coluna que guarda a data do pagamento."
                 )
                 if diag_fluxo.get("varredura_pagar") is not None:
-                    st.dataframe(diag_fluxo["varredura_pagar"], use_container_width=True, hide_index=True)
+                    st.dataframe(diag_fluxo["varredura_pagar"], width="stretch", hide_index=True)
             if diag_fluxo.get("colunas_csv"):
                 st.caption("**Colunas lidas do CSV:** " + " · ".join(diag_fluxo["colunas_csv"]))
             if diag_fluxo.get("colunas_liq_extras"):
@@ -4479,17 +4525,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
             if diag_fluxo.get("por_movimento") is not None:
                 st.write("**Liquidação por Movimento (pagos/recebidos x em aberto):**")
-                st.dataframe(diag_fluxo["por_movimento"], use_container_width=True, hide_index=True)
+                st.dataframe(diag_fluxo["por_movimento"], width="stretch", hide_index=True)
             st.write("**Movimento → como o painel classificou:**")
             st.dataframe(
                 df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
                 .agg(["count", "sum"]).reset_index()
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
-                use_container_width=True, hide_index=True,
+                largura="stretch", hide_index=True,
             )
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
-            st.dataframe(df_fin.head(15), use_container_width=True, hide_index=True)
+            st.dataframe(df_fin.head(15), width="stretch", hide_index=True)
 
     # Faixa de alertas, no mesmo lugar e no mesmo formato da Controladoria:
     # logo abaixo do contexto e antes das abas.
@@ -4680,7 +4726,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
             st.dataframe(
                 pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-                use_container_width=True,
+                largura="stretch",
             )
             st.caption(
                 "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
@@ -4745,7 +4791,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
                     subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
                 ).apply(_cor_pct_meta_fin, axis=1),
-                use_container_width=True,
+                largura="stretch",
             )
 
             st.caption(
@@ -4844,7 +4890,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     margin=dict(l=70, r=70, t=30, b=90),
                     hovermode="x unified",
                 )
-                st.plotly_chart(fig_es, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.plotly_chart(fig_es, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                 st.caption(
                     "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
                     "(entradas − saídas). Linha laranja = % de sobra, no eixo da direita, com os pontos em verde "
@@ -4873,7 +4919,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
                 pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
                 pivot_ap.index.name = "Movimento"
-                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), use_container_width=True)
+                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), width="stretch")
                 st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
     # ---------------- DIÁRIO ----------------
@@ -5226,9 +5272,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     altura_tabela_d = min(35 * (len(pivot_d) + 1) + 3, 760)
                     st.dataframe(
                         pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
-                        use_container_width=True,
+                        largura="stretch",
                         column_config=config_colunas_d,
-                        height=altura_tabela_d,
+                        altura=altura_tabela_d,
                     )
                     st.caption(
                         "Cada coluna é um dia. **SALDO INICIAL** é o que sobrou do dia anterior: nos dias "
@@ -5346,7 +5392,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             margin=dict(l=80, r=80, t=30, b=95),
                             hovermode="x unified",
                         )
-                        st.plotly_chart(fig_ac, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.plotly_chart(fig_ac, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                         st.caption(
                             "Barras verdes (para cima) = entradas do dia; barras vermelhas (para baixo) = saídas. "
                             "Linha pontilhada laranja = resultado líquido do dia. Linha azul cheia = fluxo "
@@ -5520,7 +5566,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     margin=dict(l=80, r=80, t=25, b=90),
                     hovermode="x unified",
                 )
-                st.plotly_chart(fig_t, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.plotly_chart(fig_t, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
                 with st.expander("📋 Ver a projeção semana a semana"):
                     df_proj_t = pd.DataFrame({
@@ -5536,7 +5582,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "Entradas": formata_brl, "Saídas": formata_brl,
                             "Líquido": formata_brl, "Saldo projetado": formata_brl,
                         }).map(cor_valor, subset=["Entradas", "Saídas", "Líquido", "Saldo projetado"]),
-                        use_container_width=True, hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
+                        largura="stretch", hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
                     )
                 st.caption(
                     "A projeção parte do saldo de caixa/banco mais recente e acumula os lançamentos "
@@ -5651,7 +5697,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                         x=0.5, font=dict(size=9)),
                             margin=dict(l=10, r=10, t=15, b=10),
                         )
-                        st.plotly_chart(fig_conc_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.plotly_chart(fig_conc_canal, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
                 # --- Por modalidade ---
                 with col_conc_b:
@@ -5690,7 +5736,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                         x=0.5, font=dict(size=9)),
                             margin=dict(l=10, r=10, t=15, b=10),
                         )
-                        st.plotly_chart(fig_conc_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.plotly_chart(fig_conc_modal, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
                 # Índice de concentração (HHI simplificado) por canal
                 if not receb_canal.empty:
@@ -5987,7 +6033,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
                             margin=dict(l=10, r=20, t=20, b=30),
                         )
-                        st.plotly_chart(fig_canal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.plotly_chart(fig_canal, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                     else:
                         st.caption("Sem saídas no recorte selecionado.")
 
@@ -6017,7 +6063,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=9)),
                             margin=dict(l=10, r=10, t=20, b=10),
                         )
-                        st.plotly_chart(fig_modal, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                        st.plotly_chart(fig_modal, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                     else:
                         st.caption("Sem movimentação no recorte selecionado.")
 
@@ -6085,7 +6131,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                     "Valor (R$)": formata_brl,
                                     "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                                 }).map(cor_valor, subset=["Valor (R$)"]),
-                                use_container_width=True, hide_index=True,
+                                largura="stretch", hide_index=True,
                             )
                             _fora = [g for g in grupos_ocultos_a if _norm_grupo(g) not in _reincluidos_norm]
                             _legenda_grupo = (
@@ -6340,7 +6386,7 @@ else:
     label_periodo_graf = "Meses Selecionados"
 
 st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
+if st.sidebar.button("🔄 Atualizar Dados", width="stretch"):
     st.cache_data.clear()
     st.cache_resource.clear()
     st.rerun()
@@ -6365,14 +6411,14 @@ st.sidebar.markdown(
 )
 
 st.sidebar.markdown("---")
-if st.sidebar.button("🔀 Trocar Painel", use_container_width=True):
+if st.sidebar.button("🔀 Trocar Painel", width="stretch"):
     st.session_state["painel_escolhido"] = None
     st.rerun()
 
 st.sidebar.markdown("---")
 perfil_label = "Administrador" if eh_admin else "Visualização"
 st.sidebar.caption(f"👤 {usuario_atual['email']}  ·  Perfil: **{perfil_label}**")
-if st.sidebar.button("🚪 Sair", use_container_width=True):
+if st.sidebar.button("🚪 Sair", width="stretch"):
     st.session_state["usuario_logado"] = None
     st.session_state["painel_escolhido"] = None
     limpar_bilhete_sessao()
@@ -7933,7 +7979,7 @@ def _tabela_departamento(linhas, colunas_percentual=()):
     colunas_valor = [c for c in df.columns if df[c].dtype.kind in "fi" and c not in colunas_percentual]
     if colunas_valor:
         estilo = estilo.map(cor_valor, subset=colunas_valor)
-    st.dataframe(estilo, use_container_width=True, hide_index=True)
+    st.dataframe(estilo, width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -8436,7 +8482,7 @@ with tab1:
                         legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=10)),
                         margin=dict(l=10, r=10, t=20, b=10),
                     )
-                    st.plotly_chart(fig_donut_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                    st.plotly_chart(fig_donut_dept, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                 else:
                     st.info("Sem valores no período selecionado para montar o gráfico.")
 
@@ -8467,7 +8513,7 @@ with tab1:
                     legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
                     margin=dict(l=20, r=20, t=30, b=80),
                 )
-                st.plotly_chart(fig_evol_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.plotly_chart(fig_evol_dept, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown('<div class="section-title">📋 Linhas da DRE do Departamento</div>', unsafe_allow_html=True)
@@ -8491,7 +8537,7 @@ with tab1:
                 column_config={
                     "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                 },
-                use_container_width=True,
+                largura="stretch",
                 hide_index=True,
             )
 
@@ -8530,7 +8576,7 @@ with tab1:
                     column_config={
                         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                     },
-                    use_container_width=True,
+                    largura="stretch",
                     hide_index=True,
                 )
 
@@ -8761,11 +8807,11 @@ with tab1:
             )
             estilo_grafico(
                 fig_waterfall,
-                height=400,
+                altura=400,
                 xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True),
                 yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
             )
-            st.plotly_chart(fig_waterfall, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.plotly_chart(fig_waterfall, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         with cg2:
             st.markdown('<div class="section-title">Real vs. Orçado (YTD)</div>', unsafe_allow_html=True)
@@ -8818,7 +8864,7 @@ with tab1:
             )
             estilo_grafico(
                 fig_bar,
-                height=420,
+                altura=420,
                 barmode="group",
                 xaxis=dict(
                     gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
@@ -8828,7 +8874,7 @@ with tab1:
                 legend=dict(orientation="h", yanchor="bottom", y=-0.32, xanchor="center", x=0.5),
                 margin=dict(l=50, r=30, t=30, b=90),
             )
-            st.plotly_chart(fig_bar, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.plotly_chart(fig_bar, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -8873,12 +8919,12 @@ with tab1:
             )
             estilo_grafico(
                 fig_line,
-                height=380,
+                altura=380,
                 xaxis=dict(showgrid=False, zeroline=False, tickangle=-45, tickfont=dict(size=11, color=COLORS["text_muted"]), fixedrange=True),
                 yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, fixedrange=True),
                 legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5, font=dict(color=COLORS["text_muted"])),
             )
-            st.plotly_chart(fig_line, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.plotly_chart(fig_line, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         with cg4:
             st.markdown('<div class="section-title">Composição dos Custos & Saídas</div>', unsafe_allow_html=True)
@@ -8915,10 +8961,10 @@ with tab1:
             )
             estilo_grafico(
                 fig_donut,
-                height=380,
+                altura=380,
                 legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
             )
-            st.plotly_chart(fig_donut, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.plotly_chart(fig_donut, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
 
     # ---------------------------------------------------------------------------
@@ -9133,8 +9179,8 @@ with tab2:
                 }
             ).map(cor_valor, subset=cols_num_dre),
             column_config=column_config_dre,
-            use_container_width=True,
-            height=ALTURA_17_LINHAS,
+            largura="stretch",
+            altura=ALTURA_17_LINHAS,
             hide_index=True,
             on_select="rerun",
             selection_mode="multi-row",
@@ -9175,7 +9221,7 @@ with tab2:
                 {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
             ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]),
             column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
-            use_container_width=True,
+            largura="stretch",
             hide_index=True,
         )
 
@@ -9372,8 +9418,8 @@ with tab3:
         evento_hist = st.dataframe(
             df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
             column_config=col_config_hist,
-            use_container_width=True,
-            height=ALTURA_17_LINHAS,
+            largura="stretch",
+            altura=ALTURA_17_LINHAS,
             hide_index=True,
             on_select="rerun",
             selection_mode="multi-row",
@@ -9421,7 +9467,7 @@ with tab3:
                 cor_valor, subset=colunas_numericas_info
             ),
             column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large", pinned=True)},
-            use_container_width=True,
+            largura="stretch",
             hide_index=True,
         )
 
@@ -9506,7 +9552,7 @@ if departamento_ativo:
                     yaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickfont=dict(size=10)),
                     margin=dict(l=10, r=20, t=20, b=30),
                 )
-                st.plotly_chart(fig_rank_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.plotly_chart(fig_rank_dept, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
             with col_desvio_dept:
                 st.markdown('<div class="section-title">📐 Desvio Mensal vs. Orçado (Ano Completo)</div>', unsafe_allow_html=True)
@@ -9525,7 +9571,7 @@ if departamento_ativo:
                     xaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickfont=dict(size=9), automargin=True),
                     yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
                 )
-                st.plotly_chart(fig_desvio_dept, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+                st.plotly_chart(fig_desvio_dept, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                 st.caption("Barras verdes = departamento gastou menos que o orçado naquele mês. Vermelhas = gastou mais.")
 
             # ---- Insight automático: melhor/pior mês, tendência ----
@@ -9946,7 +9992,7 @@ if not departamento_ativo and tab_diag is not None:
                         "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                         "% acumulado": lambda v: f"{v:.1f}%".replace(".", ","),
                     }).map(cor_valor, subset=["Valor (R$)"]),
-                    use_container_width=True, hide_index=True, height=420,
+                    largura="stretch", hide_index=True, height=420,
                 )
             st.caption(
                 f"A classificação segue a regra 80/15/5: **classe A** são as contas que somam os "
@@ -10146,8 +10192,8 @@ if not departamento_ativo and tab_diag is not None:
                     }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
                     .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
                          subset=["Variação", "Var. %"]),
-                    use_container_width=True, hide_index=True,
-                    height=min(500, 60 + 35 * len(df_anom)),
+                    largura="stretch", hide_index=True,
+                    altura=min(500, 60 + 35 * len(df_anom)),
                 )
 
             with st.expander("❓ Como ler estes números"):
@@ -10423,7 +10469,7 @@ que ainda não entrou.
                 margin=dict(l=54, r=24, t=26, b=64),
                 hovermode="x unified",
             )
-            st.plotly_chart(fig_fc, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+            st.plotly_chart(fig_fc, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
             st.caption("EBITDA mês a mês, em R$. A faixa cobre do pior ao melhor mês já entregue.")
 
             # Cenários: além da média, mostra o que aconteceria no melhor e
@@ -10687,7 +10733,7 @@ if not departamento_ativo:
 
         estilo_grafico(
             fig_comb,
-            height=500,
+            altura=500,
             title=f"Evolução Mensal & Projeção Run-Rate: {metrica_sel}",
             xaxis=dict(gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True),
             yaxis=dict(
@@ -10698,7 +10744,7 @@ if not departamento_ativo:
             legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
             barmode="group",
         )
-        st.plotly_chart(fig_comb, use_container_width=True, config=CONFIG_PLOTLY_TRAVADO)
+        st.plotly_chart(fig_comb, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         st.markdown('<div class="section-title">📋 Detalhamento da Projeção Mensal (R$)</div>', unsafe_allow_html=True)
 
@@ -10718,9 +10764,9 @@ if not departamento_ativo:
                 "Orçado Original": formata_brl,
                 "Desvio (R$)": formata_brl,
             }).map(cor_valor, subset=["Desvio (R$)"]),
-            use_container_width=True,
+            largura="stretch",
             hide_index=True,
-            height=ALTURA_12_LINHAS,
+            altura=ALTURA_12_LINHAS,
         )
 
         # -----------------------------------------------------------------------
@@ -10823,8 +10869,8 @@ if not departamento_ativo:
                 df_dependentes_stress.style.format({
                     "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
                 }).map(cor_valor, subset=["Delta (R$)"]),
-                use_container_width=True, hide_index=True,
-                height=38 + len(df_dependentes_stress) * 35,
+                largura="stretch", hide_index=True,
+                altura=38 + len(df_dependentes_stress) * 35,
             )
 
         st.caption(
@@ -11034,7 +11080,7 @@ with tab5:
     with col_btn:
         gerar_clicado = st.button(
             "📊 Gerar Relatório Excel",
-            use_container_width=True,
+            largura="stretch",
             disabled=(not contas_relatorio and not planos_relatorio) or not lojas_relatorio_sel,
         )
 
@@ -11162,7 +11208,7 @@ if eh_admin and not departamento_ativo:
             {"E-mail": u["email"], "Perfil": u["perfil"]}
             for u in usuarios_atuais.values()
         ]
-        st.dataframe(pd.DataFrame(lista_usuarios), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(lista_usuarios), width="stretch", hide_index=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**➕ Novo usuário de visualização**")
