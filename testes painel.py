@@ -405,6 +405,28 @@ class TesteTravasEstruturais(unittest.TestCase):
             FONTE.count("components.html("), 2,
             "components.html so pode aparecer dentro de html_embutido")
 
+    def test_nomes_de_parametro_nao_vazam_entre_funcoes(self):
+        """Uma troca de nome em massa ja renomeou height=/width= para
+        altura=/largura= em 29 chamadas de grafico e tabela, que esperam os
+        nomes em ingles - o painel so quebrava ao abrir a aba afetada."""
+        arvore = ast.parse(FONTE)
+
+        def nome(no):
+            f = no.func
+            return f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else "")
+
+        errados = []
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.Call):
+                continue
+            args = [kw.arg for kw in no.keywords]
+            if nome(no) == "html_embutido":
+                if "height" in args or "width" in args:
+                    errados.append(f"linha {no.lineno}: html_embutido com height/width")
+            elif "altura" in args or "largura" in args:
+                errados.append(f"linha {no.lineno}: {nome(no)}(...) com altura/largura")
+        self.assertEqual(errados, [], "argumentos com o nome trocado: " + "; ".join(errados[:5]))
+
     def test_regra_do_1pct_usa_o_orcado_do_canal_loja(self):
         i = FONTE.index("def _painel_dept_mkt(")
         trecho = FONTE[i:i + 3500]

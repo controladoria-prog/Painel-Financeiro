@@ -3298,7 +3298,7 @@ if st.session_state["painel_escolhido"] is None:
         # só então batia na tela de bloqueio.
         if st.button(
             "Acessar Financeiro" if _pode_financeiro else "Sem acesso",
-            largura="stretch", key="btn_hub_financeiro",
+            width="stretch", key="btn_hub_financeiro",
             disabled=not _pode_financeiro,
         ):
             st.session_state["painel_escolhido"] = "financeiro"
@@ -4531,7 +4531,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
                 .agg(["count", "sum"]).reset_index()
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
-                largura="stretch", hide_index=True,
+                width="stretch", hide_index=True,
             )
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
@@ -4726,7 +4726,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
             st.dataframe(
                 pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-                largura="stretch",
+                width="stretch",
             )
             st.caption(
                 "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
@@ -4791,7 +4791,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
                     subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
                 ).apply(_cor_pct_meta_fin, axis=1),
-                largura="stretch",
+                width="stretch",
             )
 
             st.caption(
@@ -5272,9 +5272,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     altura_tabela_d = min(35 * (len(pivot_d) + 1) + 3, 760)
                     st.dataframe(
                         pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
-                        largura="stretch",
+                        width="stretch",
                         column_config=config_colunas_d,
-                        altura=altura_tabela_d,
+                        height=altura_tabela_d,
                     )
                     st.caption(
                         "Cada coluna é um dia. **SALDO INICIAL** é o que sobrou do dia anterior: nos dias "
@@ -5582,7 +5582,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "Entradas": formata_brl, "Saídas": formata_brl,
                             "Líquido": formata_brl, "Saldo projetado": formata_brl,
                         }).map(cor_valor, subset=["Entradas", "Saídas", "Líquido", "Saldo projetado"]),
-                        largura="stretch", hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
+                        width="stretch", hide_index=True, height=min(520, 60 + 35 * len(df_proj_t)),
                     )
                 st.caption(
                     "A projeção parte do saldo de caixa/banco mais recente e acumula os lançamentos "
@@ -6131,7 +6131,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                     "Valor (R$)": formata_brl,
                                     "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                                 }).map(cor_valor, subset=["Valor (R$)"]),
-                                largura="stretch", hide_index=True,
+                                width="stretch", hide_index=True,
                             )
                             _fora = [g for g in grupos_ocultos_a if _norm_grupo(g) not in _reincluidos_norm]
                             _legenda_grupo = (
@@ -8537,7 +8537,7 @@ with tab1:
                 column_config={
                     "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                 },
-                largura="stretch",
+                width="stretch",
                 hide_index=True,
             )
 
@@ -8576,7 +8576,7 @@ with tab1:
                     column_config={
                         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                     },
-                    largura="stretch",
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -8807,7 +8807,7 @@ with tab1:
             )
             estilo_grafico(
                 fig_waterfall,
-                altura=400,
+                height=400,
                 xaxis=dict(tickangle=-45, gridcolor="rgba(0,0,0,0)", fixedrange=True, automargin=True),
                 yaxis=dict(showticklabels=False, gridcolor="rgba(0,0,0,0)", fixedrange=True),
             )
@@ -8864,7 +8864,7 @@ with tab1:
             )
             estilo_grafico(
                 fig_bar,
-                altura=420,
+                height=420,
                 barmode="group",
                 xaxis=dict(
                     gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True,
@@ -8919,7 +8919,7 @@ with tab1:
             )
             estilo_grafico(
                 fig_line,
-                altura=380,
+                height=380,
                 xaxis=dict(showgrid=False, zeroline=False, tickangle=-45, tickfont=dict(size=11, color=COLORS["text_muted"]), fixedrange=True),
                 yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, fixedrange=True),
                 legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5, font=dict(color=COLORS["text_muted"])),
@@ -8961,7 +8961,7 @@ with tab1:
             )
             estilo_grafico(
                 fig_donut,
-                altura=380,
+                height=380,
                 legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
             )
             st.plotly_chart(fig_donut, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
@@ -9179,8 +9179,8 @@ with tab2:
                 }
             ).map(cor_valor, subset=cols_num_dre),
             column_config=column_config_dre,
-            largura="stretch",
-            altura=ALTURA_17_LINHAS,
+            width="stretch",
+            height=ALTURA_17_LINHAS,
             hide_index=True,
             on_select="rerun",
             selection_mode="multi-row",
@@ -9221,7 +9221,7 @@ with tab2:
                 {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
             ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]),
             column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
-            largura="stretch",
+            width="stretch",
             hide_index=True,
         )
 
@@ -9418,8 +9418,8 @@ with tab3:
         evento_hist = st.dataframe(
             df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
             column_config=col_config_hist,
-            largura="stretch",
-            altura=ALTURA_17_LINHAS,
+            width="stretch",
+            height=ALTURA_17_LINHAS,
             hide_index=True,
             on_select="rerun",
             selection_mode="multi-row",
@@ -9467,7 +9467,7 @@ with tab3:
                 cor_valor, subset=colunas_numericas_info
             ),
             column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large", pinned=True)},
-            largura="stretch",
+            width="stretch",
             hide_index=True,
         )
 
@@ -9992,7 +9992,7 @@ if not departamento_ativo and tab_diag is not None:
                         "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
                         "% acumulado": lambda v: f"{v:.1f}%".replace(".", ","),
                     }).map(cor_valor, subset=["Valor (R$)"]),
-                    largura="stretch", hide_index=True, height=420,
+                    width="stretch", hide_index=True, height=420,
                 )
             st.caption(
                 f"A classificação segue a regra 80/15/5: **classe A** são as contas que somam os "
@@ -10192,8 +10192,8 @@ if not departamento_ativo and tab_diag is not None:
                     }).map(cor_valor, subset=["Valor do mês", "Média anterior"])
                     .map(lambda v: f"color: {COLORS['negative']}" if v > 0 else f"color: {COLORS['positive']}",
                          subset=["Variação", "Var. %"]),
-                    largura="stretch", hide_index=True,
-                    altura=min(500, 60 + 35 * len(df_anom)),
+                    width="stretch", hide_index=True,
+                    height=min(500, 60 + 35 * len(df_anom)),
                 )
 
             with st.expander("❓ Como ler estes números"):
@@ -10733,7 +10733,7 @@ if not departamento_ativo:
 
         estilo_grafico(
             fig_comb,
-            altura=500,
+            height=500,
             title=f"Evolução Mensal & Projeção Run-Rate: {metrica_sel}",
             xaxis=dict(gridcolor=COLORS["border"], zerolinecolor=COLORS["border"], fixedrange=True),
             yaxis=dict(
@@ -10764,9 +10764,9 @@ if not departamento_ativo:
                 "Orçado Original": formata_brl,
                 "Desvio (R$)": formata_brl,
             }).map(cor_valor, subset=["Desvio (R$)"]),
-            largura="stretch",
+            width="stretch",
             hide_index=True,
-            altura=ALTURA_12_LINHAS,
+            height=ALTURA_12_LINHAS,
         )
 
         # -----------------------------------------------------------------------
@@ -10869,8 +10869,8 @@ if not departamento_ativo:
                 df_dependentes_stress.style.format({
                     "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
                 }).map(cor_valor, subset=["Delta (R$)"]),
-                largura="stretch", hide_index=True,
-                altura=38 + len(df_dependentes_stress) * 35,
+                width="stretch", hide_index=True,
+                height=38 + len(df_dependentes_stress) * 35,
             )
 
         st.caption(
@@ -11080,7 +11080,7 @@ with tab5:
     with col_btn:
         gerar_clicado = st.button(
             "📊 Gerar Relatório Excel",
-            largura="stretch",
+            width="stretch",
             disabled=(not contas_relatorio and not planos_relatorio) or not lojas_relatorio_sel,
         )
 
