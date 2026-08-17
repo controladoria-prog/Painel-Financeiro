@@ -8049,15 +8049,14 @@ def _painel_dept_mkt(ctx):
         investido_abs, orcado_abs = abs(investido), abs(orcado)
         total_inv += investido_abs
         total_rec += abs(receita)
-        # Canal sem orçamento lançado (é o caso do ABPR) não tem desvio:
-        # mostrar "gastou tudo além do orçado" seria inventar um estouro
-        # contra um orçamento que não existe.
-        sem_orcamento = orcado_abs == 0
+        # Canal sem orçamento fica com orçado zero e desvio negativo de
+        # propósito: é assim que se enxerga quanto ele consumiu sem
+        # previsão -- esconder o número tiraria justamente esse controle.
         linhas_tabela.append({
             "Canal": rotulo,
             "Investido (R$)": investido_abs,
-            "Orçado (R$)": float("nan") if sem_orcamento else orcado_abs,
-            "Desvio (R$)": float("nan") if sem_orcamento else (orcado_abs - investido_abs),
+            "Orçado (R$)": orcado_abs,
+            "Desvio (R$)": orcado_abs - investido_abs,
             "Receita do canal (R$)": abs(receita),
             "% da receita": (investido_abs / abs(receita) * 100) if receita else float("nan"),
         })
