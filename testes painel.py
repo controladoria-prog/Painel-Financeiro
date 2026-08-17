@@ -477,6 +477,19 @@ class TesteGerenciaComercial(unittest.TestCase):
             sorted(["6 - Despesas Variáveis", "8.3.3.7 - Prêmios / Bônus"]),
             "os totais do painel contariam o mesmo custo duas vezes")
 
+    def test_relatorio_agrupa_o_quadro_de_metas(self):
+        """No Excel o Quadro de Metas tem de sair como um bloco proprio, com
+        subtotal e as tres linhas recuadas abaixo -- foi assim que o
+        relatorio sempre foi enviado. Sem isso, o Excel lista tudo numa
+        sequencia so e o total do quadro nao aparece em lugar nenhum."""
+        self.assertIn('"bloco_relatorio"', FONTE)
+        self.assertIn("Despesa Variavel - Quadro de Metas GER.COM.", FONTE)
+        i = FONTE.index("def montar_relatorio_excel(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("blocos_agrupados", trecho,
+                      "o gerador do Excel voltou a ignorar os blocos do modelo")
+        self.assertIn("contas_em_bloco", trecho)
+
     def test_relatorio_tem_opcao_de_puxar_a_dre_inteira(self):
         self.assertIn("Puxar todas as linhas da DRE", FONTE)
         self.assertIn("puxar_dre_completa", FONTE)

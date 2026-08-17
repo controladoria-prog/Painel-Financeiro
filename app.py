@@ -3087,6 +3087,18 @@ MODELOS_RELATORIO = {
             "6.24.2.6 - Outras Despesas de Marketing",
             "8.3.3.7 - Prêmios / Bônus",
         ],
+        # No RELATÓRIO em Excel as três linhas acima saem agrupadas sob um
+        # subtotal com este nome -- é o "Despesa Variavel - Quadro de Metas
+        # GER.COM." do arquivo que a Controladoria já enviava. O grupo 6
+        # aparece logo abaixo, separado por uma linha em branco.
+        "bloco_relatorio": {
+            "titulo": "Despesa Variavel - Quadro de Metas GER.COM.",
+            "linhas": [
+                "6.24.2.5 - Encontro de Ciclo",
+                "6.24.2.6 - Outras Despesas de Marketing",
+                "8.3.3.7 - Prêmios / Bônus",
+            ],
+        },
         # O grupo 6 vai junto "para conhecimento", como no relatório: aparece
         # em bloco separado no painel e entra no arquivo do Excel, mas NÃO
         # soma nos totais do departamento -- somar os dois juntos contaria as
@@ -7064,6 +7076,7 @@ def montar_relatorio_excel(
     dados_visoes_mkt=None,
     incluir_aba_mkt_1pct=False,
     planos_filtro=None,
+    blocos_agrupados=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -7100,6 +7113,13 @@ def montar_relatorio_excel(
     # restrita aos planos escolhidos. É o único jeito de o número refletir
     # apenas o que foi selecionado.
     planos_filtro = planos_filtro or []
+    # Blocos do relatório: um subtotal próprio para um punhado de linhas que a
+    # área acompanha junto, seguido das linhas que o compõem. É o formato do
+    # relatório que a Controladoria já enviava na mão -- na Gerência Comercial,
+    # o "Quadro de Metas GER.COM." é a soma de três linhas, e o grupo 6 vem
+    # logo abaixo, separado. Sem isso, o Excel saía com tudo numa lista só e o
+    # total do quadro não aparecia em lugar nenhum.
+    blocos_agrupados = blocos_agrupados or []
     mapa_loja_centro_custo = mapa_loja_centro_custo or {}
     diario_disponivel = df_diario is not None and not df_diario.empty
 
@@ -7320,8 +7340,7 @@ def montar_relatorio_excel(
     ws1.row_dimensions[linha_header].height = 20
     ws1.freeze_panes = f"A{linha_header + 1}"
 
-    linha = linha_header + 1
-    for i, conta in enumerate(contas_sel):
+    def _valores_conta_resumo(conta):
         if planos_filtro:
             v_real = sum(_valores_planos(conta, colunas_ano))
             # O orçamento existe por LINHA da DRE. Numa linha de verdade ele
@@ -7334,21 +7353,56 @@ def montar_relatorio_excel(
         else:
             v_real = get_valor_consolidado_multi(dfs_real, conta, colunas_ano)
             v_orc = get_valor_consolidado_multi(dfs_orc, conta, colunas_ano)
+        return v_real, v_orc
+
+    # Monta a sequência de linhas ANTES de escrever: primeiro cada bloco (o
+    # subtotal e, recuadas, as linhas que o formam), com uma linha em branco
+    # depois; no fim, o que sobrou fora dos blocos.
+    linhas_resumo, contas_em_bloco = [], set()
+    for bloco in blocos_agrupados:
+        alvos = [c for c in contas_sel if c in bloco.get("linhas", [])]
+        if not alvos:
+            continue
+        contas_em_bloco.update(alvos)
+        valores_alvos = [_valores_conta_resumo(c) for c in alvos]
+        linhas_resumo.append((
+            bloco.get("titulo", "TOTAL"),
+            sum(v[0] for v in valores_alvos),
+            sum(v[1] for v in valores_alvos),
+            True,
+        ))
+        for conta, (v_real, v_orc) in zip(alvos, valores_alvos):
+            linhas_resumo.append((f"      {conta}", v_real, v_orc, False))
+        linhas_resumo.append((None, None, None, False))
+
+    for conta in contas_sel:
+        if conta in contas_em_bloco:
+            continue
+        v_real, v_orc = _valores_conta_resumo(conta)
+        linhas_resumo.append((conta, v_real, v_orc, False))
+
+    linha = linha_header + 1
+    for i, (rotulo, v_real, v_orc, destaque) in enumerate(linhas_resumo):
+        if rotulo is None:
+            linha += 1
+            continue
         desvio = v_real - v_orc
         desvio_pct = (desvio / abs(v_orc) * 100) if v_orc != 0 else 0.0
 
-        fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
-        valores = [conta, v_real, v_orc, desvio, desvio_pct]
+        fill = EXCEL_STYLE["fill_header"] if destaque else (
+            EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+        )
+        valores = [rotulo, v_real, v_orc, desvio, desvio_pct]
         for col, val in enumerate(valores, start=1):
             cell = ws1.cell(row=linha, column=col, value=val)
             cell.border = EXCEL_STYLE["border"]
             if fill:
                 cell.fill = fill
             if col == 1:
-                cell.font = EXCEL_STYLE["font_normal"]
+                cell.font = EXCEL_STYLE["font_header"] if destaque else EXCEL_STYLE["font_normal"]
                 cell.alignment = Alignment(horizontal="left", vertical="center")
             elif col in (2, 3):
-                cell.font = EXCEL_STYLE["font_normal"]
+                cell.font = EXCEL_STYLE["font_header"] if destaque else EXCEL_STYLE["font_normal"]
                 cell.number_format = '"R$" #,##0.00'
                 cell.alignment = Alignment(horizontal="right")
             elif col == 4:
@@ -7402,7 +7456,7 @@ def montar_relatorio_excel(
             [loja] if _normalizar_nome_aba(loja) not in _LOJAS_CONSOLIDADAS_NORM
             else _lojas_do_grupo_consolidado(loja)
         )
-        for conta in contas_sel:
+        def _valores_conta_mes(conta):
             if planos_filtro:
                 valores_real = _valores_planos(conta, list(mapa_meses.values()), lojas_do_bloco)
                 # Linha da DRE de verdade mantém o orçado dela; a pseudo-conta
@@ -7417,14 +7471,38 @@ def montar_relatorio_excel(
             else:
                 valores_real = [get_valor_consolidado_multi([df_r_loja], conta, [m_col]) for m_col in mapa_meses.values()]
                 valores_orc = [get_valor_consolidado_multi([df_o_loja], conta, [m_col]) for m_col in mapa_meses.values()]
-            valores_desvio = [vr - vo for vr, vo in zip(valores_real, valores_orc)]
+            return valores_real, valores_orc
 
-            _escrever_linha_flat(ws2, linha, [loja, conta, "Realizado"], valores_real, sum(valores_real))
+        def _escrever_trio(rotulo_conta, valores_real, valores_orc):
+            nonlocal linha
+            valores_desvio = [vr - vo for vr, vo in zip(valores_real, valores_orc)]
+            _escrever_linha_flat(ws2, linha, [loja, rotulo_conta, "Realizado"], valores_real, sum(valores_real))
             linha += 1
-            _escrever_linha_flat(ws2, linha, [loja, conta, "Orçado"], valores_orc, sum(valores_orc), fill=EXCEL_STYLE["fill_zebra"])
+            _escrever_linha_flat(ws2, linha, [loja, rotulo_conta, "Orçado"], valores_orc, sum(valores_orc), fill=EXCEL_STYLE["fill_zebra"])
             linha += 1
-            _escrever_linha_flat(ws2, linha, [loja, conta, "Desvio"], valores_desvio, sum(valores_desvio), colorir_por_sinal=True)
+            _escrever_linha_flat(ws2, linha, [loja, rotulo_conta, "Desvio"], valores_desvio, sum(valores_desvio), colorir_por_sinal=True)
             linha += 1
+
+        # Mesma separação do Resumo: o subtotal do bloco vem primeiro, depois
+        # as linhas que o compõem, e só então o restante das contas.
+        contas_em_bloco_dm = set()
+        for bloco in blocos_agrupados:
+            alvos = [c for c in contas_sel if c in bloco.get("linhas", [])]
+            if not alvos:
+                continue
+            contas_em_bloco_dm.update(alvos)
+            valores_alvos = [_valores_conta_mes(c) for c in alvos]
+            soma_real = [sum(v[0][i] for v in valores_alvos) for i in range(len(mapa_meses))]
+            soma_orc = [sum(v[1][i] for v in valores_alvos) for i in range(len(mapa_meses))]
+            _escrever_trio(bloco.get("titulo", "TOTAL"), soma_real, soma_orc)
+            for conta, (valores_real, valores_orc) in zip(alvos, valores_alvos):
+                _escrever_trio(f"      {conta}", valores_real, valores_orc)
+
+        for conta in contas_sel:
+            if conta in contas_em_bloco_dm:
+                continue
+            valores_real, valores_orc = _valores_conta_mes(conta)
+            _escrever_trio(conta, valores_real, valores_orc)
 
     ultima_linha_dm = linha - 1
     largura_mes = 14
@@ -11336,6 +11414,19 @@ with tab5:
 
     # A ordem importa: se há plano marcado, o relatório é o do plano --
     # foi isso que a pessoa pediu ao filtrar.
+    # O bloco do modelo (ex.: Quadro de Metas da Gerência Comercial) é
+    # resolvido contra as linhas REALMENTE marcadas -- se a pessoa tirar uma
+    # delas do campo acima, ela sai do subtotal também.
+    blocos_relatorio = []
+    _bloco_modelo = MODELOS_RELATORIO.get(modelo_sel, {}).get("bloco_relatorio")
+    if _bloco_modelo:
+        _linhas_bloco = []
+        for termo in _bloco_modelo.get("linhas", []):
+            _linhas_bloco.extend(_resolver_termo_departamento(termo, contas_relatorio))
+        _linhas_bloco = list(dict.fromkeys(_linhas_bloco))
+        if _linhas_bloco:
+            blocos_relatorio = [{"titulo": _bloco_modelo["titulo"], "linhas": _linhas_bloco}]
+
     if gerar_clicado and (contas_relatorio or planos_relatorio):
         with st.spinner("Carregando dados por loja, plano de contas e DIÁRIO..."):
             # Carrega só as lojas/visões escolhidas no filtro acima -- evita
@@ -11382,6 +11473,7 @@ with tab5:
                 dados_visoes_mkt=dados_visoes_mkt_rel,
                 incluir_aba_mkt_1pct=incluir_aba_mkt,
                 planos_filtro=planos_relatorio or None,
+                blocos_agrupados=blocos_relatorio,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
