@@ -3078,22 +3078,23 @@ MODELOS_RELATORIO = {
         # A 6 já contém 6.24.2.5 e 6.24.2.6 (são netas dela), então a soma do
         # departamento não conta duas vezes: o painel resolve as linhas-raiz
         # antes de somar. A 8.3.3.7 é de outro ramo e entra à parte.
+        # O QUADRO DE METAS é o que a gerência gere de fato: o total do
+        # relatório ("Despesa Variavel - Quadro de Metas GER.COM.") é a soma
+        # apenas destas três linhas. São elas que alimentam os indicadores,
+        # os alertas e os totais do departamento.
         "linhas_dre": [
-            # FILHAS: traz "6 - Despesas Variáveis" e as sublinhas diretas
-            # (6.1 a 6.25), que é exatamente o segundo bloco do relatório
-            # que a Controladoria envia à gerência.
-            "FILHAS:6 - Despesas Variáveis",
             "6.24.2.5 - Encontro de Ciclo",
             "6.24.2.6 - Outras Despesas de Marketing",
             "8.3.3.7 - Prêmios / Bônus",
         ],
-        # As três linhas do Quadro de Metas, na ordem em que aparecem no
-        # relatório enviado ao gestor.
-        "quadro_de_metas": [
-            "6.24.2.5 - Encontro de Ciclo",
-            "6.24.2.6 - Outras Despesas de Marketing",
-            "8.3.3.7 - Prêmios / Bônus",
-        ],
+        # O grupo 6 vai junto "para conhecimento", como no relatório: aparece
+        # em bloco separado no painel e entra no arquivo do Excel, mas NÃO
+        # soma nos totais do departamento -- somar os dois juntos contaria as
+        # duas linhas de marketing duas vezes (elas são netas da 6) e
+        # misturaria o que é gerido com o que é só referência.
+        # FILHAS: traz a 6 e as sublinhas diretas (6.1 a 6.25), sem descer
+        # para 6.24.2.x.
+        "linhas_informativas": ["FILHAS:6 - Despesas Variáveis"],
         # Sem planos forçados: aqui entram apenas os planos que têm linha da
         # DRE correspondente.
         "forcar_planos_contas": [],
@@ -8404,37 +8405,38 @@ LINHA_DESPESAS_VARIAVEIS = "6 - Despesas Variáveis"
 
 
 def _painel_dept_comercial(ctx):
-    """Reproduz na tela o relatório que a Controladoria mandava na mão: o
-    Quadro de Metas com as três linhas que a gerência acompanha de perto e,
-    logo abaixo, o grupo 6 - Despesas Variáveis aberto por sublinha.
+    """Reproduz na tela o relatório que a Controladoria envia à gerência, com
+    a mesma separação do arquivo:
 
-    Os dois blocos aparecem com Orçado, Realizado e Desvio no período -- as
-    mesmas colunas da planilha, só que já somadas no recorte escolhido."""
+      * QUADRO DE METAS -- as três linhas que a gerência gere de fato. O total
+        aqui é o mesmo "Despesa Variavel - Quadro de Metas GER.COM." do
+        relatório: a soma só dessas três.
+      * 6 - DESPESAS VARIÁVEIS -- o grupo aberto por sublinha, para
+        conhecimento. Não soma com o quadro acima: duas das três linhas do
+        quadro são netas da 6, e juntar tudo contaria o mesmo custo duas vezes.
+    """
     colunas = ctx["colunas"]
     universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
 
-    def _linhas(termo):
-        return _resolver_termo_departamento(termo, universo)
-
-    def _valores(termo):
-        linhas = _linhas(termo)
-        real = _total_dre(ctx["dfs_real"], linhas, colunas)
-        orc = _total_dre(ctx["dfs_orc"], linhas, colunas)
-        return abs(real), abs(orc)
+    def _valores(linhas):
+        real = abs(_total_dre(ctx["dfs_real"], linhas, colunas))
+        orc = abs(_total_dre(ctx["dfs_orc"], linhas, colunas))
+        return real, orc
 
     # ---- Quadro de Metas ----
-    st.markdown('<div class="section-title">🎯 Quadro de Metas</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🎯 Quadro de Metas — Gerência Comercial</div>',
+                unsafe_allow_html=True)
 
-    termos_metas = MODELOS_RELATORIO.get(ctx["departamento"], {}).get("quadro_de_metas", [])
     linhas_metas, meta_real, meta_orc = [], 0.0, 0.0
-    for termo in termos_metas:
-        real, orc = _valores(termo)
-        if not real and not orc:
+    for termo in MODELOS_RELATORIO.get(ctx["departamento"], {}).get("linhas_dre", []):
+        achadas = _resolver_termo_departamento(termo, universo)
+        if not achadas:
             continue
+        real, orc = _valores(achadas)
         meta_real += real
         meta_orc += orc
         linhas_metas.append({
-            "Linha da DRE": _nome_sem_numero_dre(termo),
+            "Linha da DRE": _nome_sem_numero_dre(achadas[0]),
             "Orçado (R$)": orc,
             "Realizado (R$)": real,
             "Desvio (R$)": orc - real,
@@ -8442,60 +8444,60 @@ def _painel_dept_comercial(ctx):
         })
     if linhas_metas:
         linhas_metas.append({
-            "Linha da DRE": "TOTAL",
+            "Linha da DRE": "TOTAL — Quadro de Metas GER.COM.",
             "Orçado (R$)": meta_orc,
             "Realizado (R$)": meta_real,
             "Desvio (R$)": meta_orc - meta_real,
             "% do orçado": (meta_real / meta_orc * 100) if meta_orc else float("nan"),
         })
 
-    var_real, var_orc = _valores(LINHA_DESPESAS_VARIAVEIS)
     receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
-
     st.markdown(
         faixa_metricas_html([
             ("Quadro de metas · realizado", formata_valor_curto(meta_real),
              cor_variacao(meta_orc - meta_real),
              (f"{meta_real / meta_orc * 100:.0f}% do orçado".replace(".", ",")
               if meta_orc else "sem orçamento no período")),
-            ("Quadro de metas · desvio", formata_valor_curto(meta_orc - meta_real),
+            ("Quadro de metas · orçado", formata_valor_curto(meta_orc), COLORS["text"],
+             f"{len(linhas_metas) - 1 if linhas_metas else 0} linha(s) da DRE"),
+            ("Desvio do quadro", formata_valor_curto(meta_orc - meta_real),
              cor_variacao(meta_orc - meta_real), "positivo = gastou menos que o orçado"),
-            ("Despesas variáveis", formata_valor_curto(var_real),
-             cor_variacao(var_orc - var_real),
-             (f"{var_real / var_orc * 100:.0f}% do orçado".replace(".", ",")
-              if var_orc else "sem orçamento no período")),
-            ("Despesas variáveis / receita",
-             (f"{var_real / receita * 100:.1f}%".replace(".", ",") if receita else "—"),
-             COLORS["text"], "quanto da venda é consumido pelo grupo 6"),
+            ("Quadro de metas / receita",
+             (f"{meta_real / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
+             COLORS["text"], "peso do quadro sobre a receita líquida"),
         ]),
         unsafe_allow_html=True,
     )
     _tabela_departamento(linhas_metas, colunas_percentual=("% do orçado",))
     st.caption(
-        "As três linhas que a gerência acompanha de perto, no mesmo recorte do relatório "
-        "mensal. Encontro de Ciclo e Outras Despesas de Marketing são netas da 6 - Despesas "
-        "Variáveis; Prêmios / Bônus vem de outro ramo da DRE (8.3.3.7)."
+        "É este total que o relatório chama de **Despesa Variavel - Quadro de Metas GER.COM.** — "
+        "a soma apenas destas três linhas. Encontro de Ciclo e Outras Despesas de Marketing são "
+        "netas da 6 - Despesas Variáveis; Prêmios / Bônus vem de outro ramo da DRE (8.3.3.7)."
     )
 
-    # ---- 6 - Despesas Variáveis, aberto por sublinha ----
+    # ---- 6 - Despesas Variáveis, para conhecimento ----
+    informativas = ctx.get("linhas_informativas") or []
+    if not informativas:
+        return
+
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-title">📊 6 - Despesas Variáveis por Linha</div>',
+    st.markdown('<div class="section-title">📊 6 - Despesas Variáveis (para conhecimento)</div>',
                 unsafe_allow_html=True)
 
     def _codigo(linha):
         achado = re.match(r"^\s*(\d+(?:\.\d+)*)", str(linha))
         return achado.group(1) if achado else ""
 
-    # Só as filhas diretas da 6 (6.1 a 6.25): descer mais somaria neta junto
-    # com filha e a soma da coluna deixaria de fechar com o total do grupo.
+    grupo = next((l for l in informativas if _codigo(l) == "6"), None)
     filhas = sorted(
-        (l for l in universo if re.fullmatch(r"6\.\d+", _codigo(l))),
+        (l for l in informativas if re.fullmatch(r"6\.\d+", _codigo(l))),
         key=lambda l: int(_codigo(l).split(".")[1]),
     )
+    grupo_real, grupo_orc = _valores([grupo]) if grupo else (0.0, 0.0)
+
     linhas_var = []
     for linha in filhas:
-        real = abs(_total_dre(ctx["dfs_real"], [linha], colunas))
-        orc = abs(_total_dre(ctx["dfs_orc"], [linha], colunas))
+        real, orc = _valores([linha])
         if not real and not orc:
             continue
         linhas_var.append({
@@ -8503,20 +8505,21 @@ def _painel_dept_comercial(ctx):
             "Orçado (R$)": orc,
             "Realizado (R$)": real,
             "Desvio (R$)": orc - real,
-            "% do grupo": (real / var_real * 100) if var_real else float("nan"),
+            "% do grupo": (real / grupo_real * 100) if grupo_real else float("nan"),
         })
-    if linhas_var:
+    if grupo:
         linhas_var.append({
             "Linha da DRE": "TOTAL — 6 Despesas Variáveis",
-            "Orçado (R$)": var_orc,
-            "Realizado (R$)": var_real,
-            "Desvio (R$)": var_orc - var_real,
-            "% do grupo": 100.0 if var_real else float("nan"),
+            "Orçado (R$)": grupo_orc,
+            "Realizado (R$)": grupo_real,
+            "Desvio (R$)": grupo_orc - grupo_real,
+            "% do grupo": 100.0 if grupo_real else float("nan"),
         })
     _tabela_departamento(linhas_var, colunas_percentual=("% do grupo",))
     st.caption(
-        "Todas as sublinhas do grupo 6, como no relatório enviado ao gestor. Linha sem "
-        "movimento e sem orçamento no período fica de fora para não alongar a tabela à toa."
+        "O grupo inteiro, aberto por sublinha, como no relatório. Estes valores **não somam** "
+        "com o Quadro de Metas acima e não entram nos indicadores do departamento — estão aqui "
+        "para conhecimento. Linha sem movimento e sem orçamento no período fica de fora."
     )
 
 
@@ -8632,6 +8635,7 @@ with tab1:
                 "linhas_resolvidas": linhas_departamento_resolvidas,
                 "linhas_raiz": linhas_departamento_raiz,
                 "linhas_todas": linhas_dre_todas_painel,
+                "linhas_informativas": linhas_departamento_informativas,
                 "path_orc": path_orc,
                 "path_real": path_real,
             })
@@ -11225,9 +11229,11 @@ with tab5:
     # marca a caixa abaixo -- é o caso da gerência, que às vezes pede o
     # documento completo, com todas as visões e lançamentos.
     puxar_dre_completa = st.checkbox(
-        "Puxar todas as linhas da DRE", value=False,
-        key=f"dre_completa__{modelo_sel}",
-        help="Desmarcado, o relatório sai só com as linhas do modelo selecionado.",
+        "Puxar todas as linhas da DRE (dá para tirar as que não quiser depois)",
+        value=False, key=f"dre_completa__{modelo_sel}",
+        help=("Desmarcado, o relatório sai com o recorte do modelo. Marcado, ele começa "
+              "com a DRE inteira e você retira do campo abaixo o que não quiser — o campo "
+              "sempre aceita qualquer linha da DRE, com ou sem esta caixa marcada."),
     )
     if puxar_dre_completa:
         default_contas = list(linhas_relatorio)

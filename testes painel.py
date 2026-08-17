@@ -369,7 +369,8 @@ class TesteGerenciaComercial(unittest.TestCase):
             ["_normalizar_texto", "_normalizar_nome_aba", "get_valor_consolidado_multi",
              "_nome_sem_numero_dre", "_resolver_termo_departamento", "cor_valor",
              "cor_variacao", "formata_brl", "formata_valor_curto", "faixa_metricas_html",
-             "html_compacto", "_total_dre", "_tabela_departamento", "_painel_dept_comercial"],
+             "html_compacto", "_total_dre", "_tabela_departamento", "_painel_dept_comercial",
+             "_numero_linha_dre", "_linha_pertence_ao_grupo", "_linhas_raiz_do_conjunto"],
             ["COLORS", "FONTE_MONO", "LINHA_RECEITA_LIQUIDA", "LINHA_DESPESAS_VARIAVEIS",
              "MODELOS_RELATORIO"],
             extras={"st": type("st", (), {
@@ -381,6 +382,17 @@ class TesteGerenciaComercial(unittest.TestCase):
 
     def setUp(self):
         TesteGerenciaComercial.tabelas = []
+
+    def _resolver(self, universo):
+        """Separa o que a gerencia gere (Quadro de Metas) do que vai junto so
+        para conhecimento (grupo 6), como o painel faz."""
+        modelo = self.ns["MODELOS_RELATORIO"][self.NOME]
+        geridas, informativas = [], []
+        for termo in modelo["linhas_dre"]:
+            geridas.extend(self.ns["_resolver_termo_departamento"](termo, universo))
+        for termo in modelo.get("linhas_informativas", []):
+            informativas.extend(self.ns["_resolver_termo_departamento"](termo, universo))
+        return list(dict.fromkeys(geridas)), list(dict.fromkeys(informativas))
 
     def _rodar(self):
         # Valores consolidados (jan a maio) do relatorio enviado pelo gestor.
@@ -398,22 +410,39 @@ class TesteGerenciaComercial(unittest.TestCase):
                "3 - Receita Operacional Liquida": 91_012_257.49}
         aba = lambda d: pd.DataFrame([{"Nome": n, "01/2026": v} for n, v in d.items()])
         universo = list(real.keys())
+        geridas, informativas = self._resolver(universo)
         self.ns["_painel_dept_comercial"]({
             "departamento": self.NOME, "dfs_real": [aba(real)], "dfs_orc": [aba(orc)],
-            "colunas": ["01/2026"], "linhas_resolvidas": universo,
-            "linhas_raiz": ["6 - Despesas Variáveis", "8.3.3.7 - Prêmios / Bônus"],
-            "linhas_todas": universo, "path_orc": "o", "path_real": "r"})
+            "colunas": ["01/2026"], "linhas_resolvidas": geridas,
+            "linhas_raiz": self.ns["_linhas_raiz_do_conjunto"](geridas),
+            "linhas_todas": universo, "linhas_informativas": informativas,
+            "path_orc": "o", "path_real": "r"})
         return [t.data for t in TesteGerenciaComercial.tabelas]
 
     def test_quadro_de_metas_bate_com_o_relatorio(self):
         metas = self._rodar()[0]
-        total = metas[metas["Linha da DRE"] == "TOTAL"].iloc[0]
+        total = metas[metas["Linha da DRE"].str.startswith("TOTAL")].iloc[0]
         self.assertAlmostEqual(total["Realizado (R$)"], 336_837.81, places=2)
         self.assertAlmostEqual(total["Orçado (R$)"], 550_357.03, places=2)
 
     def test_quadro_de_metas_tem_as_tres_linhas(self):
         metas = self._rodar()[0]
         self.assertEqual(len(metas), 4)  # 3 linhas + TOTAL
+        self.assertTrue(metas.iloc[-1]["Linha da DRE"].startswith("TOTAL"))
+
+    def test_grupo_6_nao_soma_no_total_do_departamento(self):
+        """O grupo 6 vai junto so para conhecimento. Se ele entrasse nas
+        linhas geridas, as duas linhas de marketing (netas da 6) seriam
+        contadas duas vezes e o total do departamento nao bateria com o
+        'Quadro de Metas GER.COM.' do relatorio."""
+        universo = ["6 - Despesas Variáveis", "6.1 - Comissões sobre Vendas",
+                    "6.24.2.5 - Encontro de Ciclo",
+                    "6.24.2.6 - Outras Despesas de Marketing",
+                    "8.3.3.7 - Prêmios / Bônus"]
+        geridas, informativas = self._resolver(universo)
+        self.assertEqual(len(geridas), 3, geridas)
+        self.assertNotIn("6 - Despesas Variáveis", geridas)
+        self.assertIn("6 - Despesas Variáveis", informativas)
 
     def test_grupo_6_fecha_com_o_total(self):
         grupo = self._rodar()[1]
@@ -455,7 +484,7 @@ class TesteGerenciaComercial(unittest.TestCase):
     def test_modelo_e_email_cadastrados(self):
         self.assertIn(self.NOME, FONTE)
         self.assertIn("gerente.comercial@grupobeea.com.br", FONTE)
-        self.assertIn('"quadro_de_metas"', FONTE)
+        self.assertIn('"linhas_informativas"', FONTE)
 
 
 # ============================================================================
