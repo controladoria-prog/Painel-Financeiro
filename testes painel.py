@@ -767,6 +767,81 @@ class TesteAdmFinanceiro(unittest.TestCase):
 
 
 # ============================================================================
+# 5d-bis. COORDENACOES DE LOJA E DE VD
+# ============================================================================
+class TesteCoordenacoes(unittest.TestCase):
+    """As duas coordenacoes leem da receita ao EBITDA e respondem so pelas
+    abas delas."""
+
+    DRE = ["1 - Receita Operacional Bruta", "2 - Deduções da Receita Operacional Bruta",
+           "3 - Receita Operacional Liquida", "4 - Custo das Vendas",
+           "5 - Margem de Contribuição 1", "6 - Despesas Variáveis",
+           "6.1 - Comissões sobre Vendas", "7 - Margem de Contribuição 2",
+           "8 - Despesas Operacionais", "9 - Resultado Operacional", "11 - EBITDA",
+           "12 - Resultado Financeiro", "13 - Depreciação e Amortização",
+           "15 - Resultado Antes do Imposto", "16 - Impostos sobre o Lucro",
+           "17 - Resultado Gerencial do Período"]
+    LOJA = "🏬 Relatório de Custos - Coordenação de Loja"
+    VD = "🚗 Relatório de Custos - Coordenação de VD"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["_normalizar_texto", "_numero_linha_dre", "_linha_pertence_ao_grupo",
+             "_linhas_ate_ebitda", "_resolver_termo_departamento"],
+            ["MODELOS_RELATORIO", "GRUPO_EBITDA_DRE"],
+        )
+
+    def test_para_no_ebitda(self):
+        """Abaixo do 11 fica o que a operacao da loja nao decide: resultado
+        financeiro, depreciacao, imposto sobre o lucro."""
+        achadas = self.ns["_resolver_termo_departamento"]("ATE_EBITDA", self.DRE)
+        numeros = [self.ns["_numero_linha_dre"](l) for l in achadas]
+        self.assertIn("11", numeros)
+        self.assertIn("6.1", numeros, "sublinha do grupo 6 tem de entrar")
+        for abaixo in ["12", "13", "15", "16", "17"]:
+            self.assertNotIn(abaixo, numeros, f"a linha {abaixo} vem depois do EBITDA")
+
+    def test_cada_coordenacao_so_ve_as_abas_dela(self):
+        loja = self.ns["MODELOS_RELATORIO"][self.LOJA]
+        vd = self.ns["MODELOS_RELATORIO"][self.VD]
+        self.assertEqual(len(loja["unidades_permitidas"]), 13)
+        self.assertEqual(len(vd["unidades_permitidas"]), 7)  # 5 VD + 2 ABPR
+        self.assertNotIn("DRE CONSOLIDADO", loja["visoes_permitidas"])
+        self.assertNotIn("DRE CONSOLIDADO", vd["visoes_permitidas"])
+        # Nenhuma unidade pode aparecer nas duas coordenacoes.
+        self.assertFalse(
+            set(loja["unidades_permitidas"]) & set(vd["unidades_permitidas"]),
+            "a mesma loja apareceria nas duas coordenacoes",
+        )
+
+    def test_abas_batem_com_os_grupos_do_relatorio(self):
+        """As listas do modelo tem de ser as MESMAS que o gerador do Excel usa
+        para montar as visoes consolidadas -- se uma loja nova entrar so num
+        lugar, o consolidado e o ranking param de fechar."""
+        i = FONTE.index("def _lojas_do_grupo_consolidado(")
+        trecho = FONTE[i:i + 2000]
+        for loja in self.ns["MODELOS_RELATORIO"][self.LOJA]["unidades_permitidas"]:
+            self.assertIn(loja, trecho, f"{loja} nao esta no grupo do relatorio")
+        for unidade in self.ns["MODELOS_RELATORIO"][self.VD]["unidades_permitidas"]:
+            self.assertIn(unidade, trecho, f"{unidade} nao esta no grupo do relatorio")
+
+    def test_linha_de_percentual_do_ebitda(self):
+        for nome in (self.LOJA, self.VD):
+            self.assertTrue(self.ns["MODELOS_RELATORIO"][nome].get("linha_percentual_ebitda"))
+        i = FONTE.index("if percentual_ebitda is not None:")
+        trecho = FONTE[i:i + 900]
+        self.assertIn("11 - EBITDA (%)", trecho)
+        self.assertIn("pontos percentuais", FONTE,
+                      "a legenda precisa avisar que o desvio da linha e em p.p.")
+
+    def test_barra_lateral_filtra_as_abas(self):
+        self.assertIn("_filtrar_abas_permitidas", FONTE)
+        self.assertIn('_modelo_dept_ativo.get("visoes_permitidas")', FONTE)
+        self.assertIn('_modelo_dept_ativo.get("unidades_permitidas")', FONTE)
+
+
+# ============================================================================
 # 5e. PRAZOS DO FLUXO
 # ============================================================================
 class TestePrazosDoFluxo(unittest.TestCase):

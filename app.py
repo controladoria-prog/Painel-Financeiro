@@ -2155,6 +2155,8 @@ def _resolver_termo_departamento(termo, linhas_disponiveis):
     termo = str(termo).strip()
     if termo == "RESTANTE":
         return _linhas_restantes_da_dre(linhas_disponiveis)
+    if termo == "ATE_EBITDA":
+        return _linhas_ate_ebitda(linhas_disponiveis)
     if termo.startswith("FILHAS:"):
         # A linha do grupo MAIS o primeiro nível abaixo dela (6 e 6.1 a
         # 6.25, sem descer para 6.24.2.x). É o recorte do relatório da
@@ -2231,6 +2233,27 @@ def _linhas_com_dono_de_departamento(linhas_disponiveis):
         if any(_linha_pertence_ao_grupo(linha, numero) for numero in numeros_donos):
             donas.add(linha)
     return donas
+
+
+GRUPO_EBITDA_DRE = 11
+
+
+def _linhas_ate_ebitda(linhas_disponiveis):
+    """Todas as linhas da DRE do grupo 1 até o 11 - EBITDA, inclusive.
+
+    É o recorte de quem opera: da receita até o resultado que a operação
+    gera. O que vem depois -- resultado financeiro, depreciação, não
+    operacionais, imposto sobre o lucro -- não é decisão de quem toca a loja,
+    e deixar na tela só tira atenção do que dá para mudar."""
+    achadas = []
+    for linha in linhas_disponiveis:
+        numero = _numero_linha_dre(linha)
+        if not numero:
+            continue
+        raiz = numero.split(".")[0]
+        if raiz.isdigit() and int(raiz) <= GRUPO_EBITDA_DRE:
+            achadas.append(linha)
+    return achadas
 
 
 def _linhas_restantes_da_dre(linhas_disponiveis):
@@ -3092,6 +3115,39 @@ if usuario_atual.get("email"):
 
 
 MODELOS_RELATORIO = {
+    "🏬 Relatório de Custos - Coordenação de Loja": {
+        # Da receita ao EBITDA: é o que a operação da loja decide. Abaixo do
+        # 11 ficam resultado financeiro, depreciação e imposto sobre o lucro,
+        # que não são decisão de quem toca a loja.
+        "linhas_dre": ["ATE_EBITDA"],
+        # A coordenação enxerga SÓ as lojas. As visões consolidadas da
+        # empresa (DRE CONSOLIDADO, ABPR, VD) não aparecem para ela --
+        # nem na barra lateral, nem no relatório.
+        "visoes_permitidas": ["LJ CONSOLIDADO", "LJ - G&A"],
+        "unidades_permitidas": [
+            "LJ ARAUJO 12606", "LJ ASSAI 23157", "LJ GUAJARA 23809", "LJ IG SHOP 20330",
+            "LJ JATUARANA 6040", "LJ JK 12478", "LJ MACHAD 21462", "LJ MARECHAL 6039",
+            "LJ NV ERA 18539", "LJ PVH1 11927", "LJ PVH2 14625", "LJ QDB 910332", "LJ SETE 6052",
+        ],
+        # Fecha a visão com a linha de % do EBITDA sobre a receita líquida,
+        # como no relatório que a coordenação já recebia.
+        "linha_percentual_ebitda": True,
+        "forcar_planos_contas": [],
+        "permitir_lancamento_manual": True,
+    },
+    "🚗 Relatório de Custos - Coordenação de VD": {
+        # Mesmo recorte da Coordenação de Loja; muda só o conjunto de abas.
+        "linhas_dre": ["ATE_EBITDA"],
+        "visoes_permitidas": ["VD CONSOLIDADO", "ABPR CONSOLIDADO", "ABPR + VD"],
+        "unidades_permitidas": [
+            "VD - GUAJARA 23859", "VD - LESTE 21506", "VD - MACHAD 21691",
+            "VD - MATRIZ 13967", "VD - VST ALEG 21497",
+            "ABPR 23427", "ABPR ZNS 24527",
+        ],
+        "linha_percentual_ebitda": True,
+        "forcar_planos_contas": [],
+        "permitir_lancamento_manual": True,
+    },
     "🏦 Relatório de Custos - ADM/Financeiro": {
         # O ADM/Financeiro fica com o RESTO: todas as linhas de custo e
         # despesa que nenhum outro departamento reivindicou. Não há lista
@@ -6560,6 +6616,30 @@ opcoes_unidades = [a for a in abas_disponiveis if _normalizar_nome_aba(a) not in
 if not opcoes_unidades:
     opcoes_unidades = abas_disponiveis
 
+# Departamento que só responde por um conjunto de abas (as coordenações de
+# Loja e de VD) não deve nem ver as outras: mostrar "DRE CONSOLIDADO" para
+# quem cuida de 13 lojas convida a comparar o que não é dele e a levar para a
+# reunião número que não é da sua responsabilidade.
+_modelo_dept_ativo = MODELOS_RELATORIO.get(departamento_ativo, {}) if departamento_ativo else {}
+
+
+def _filtrar_abas_permitidas(opcoes, permitidas):
+    if not permitidas:
+        return opcoes
+    alvo = {_normalizar_nome_aba(n) for n in permitidas}
+    filtradas = [a for a in opcoes if _normalizar_nome_aba(a) in alvo]
+    # Se o filtro não achar nada (nome de aba mudou na planilha), devolve a
+    # lista original em vez de deixar a barra lateral vazia.
+    return filtradas or opcoes
+
+
+opcoes_consolidadas = _filtrar_abas_permitidas(
+    opcoes_consolidadas, _modelo_dept_ativo.get("visoes_permitidas")
+)
+opcoes_unidades = _filtrar_abas_permitidas(
+    opcoes_unidades, _modelo_dept_ativo.get("unidades_permitidas")
+)
+
 if modo_visao == "Visão Consolidada":
     visao_sel = st.sidebar.selectbox("Selecione a Visão:", opcoes_consolidadas)
     abas_para_carregar = [visao_sel]
@@ -7348,6 +7428,7 @@ def montar_relatorio_excel(
     incluir_aba_mkt_1pct=False,
     planos_filtro=None,
     blocos_agrupados=None,
+    linha_percentual_ebitda=False,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -7652,6 +7733,24 @@ def montar_relatorio_excel(
         v_real, v_orc = _valores_conta_resumo(conta)
         linhas_resumo.append((conta, v_real, v_orc, False))
 
+    # Linha de fechamento das coordenações: o EBITDA em % da receita líquida.
+    # É a leitura que a operação usa -- o valor absoluto do EBITDA sobe junto
+    # com a venda, e só o percentual mostra se a loja ficou mais ou menos
+    # eficiente no mês.
+    percentual_ebitda = None
+    if linha_percentual_ebitda:
+        linha_ebitda = next(
+            (c for c in contas_sel if _numero_linha_dre(c) == str(GRUPO_EBITDA_DRE)), None
+        )
+        linha_receita = next((c for c in contas_sel if _numero_linha_dre(c) == "3"), None)
+        if linha_ebitda and linha_receita:
+            ebitda_real, ebitda_orc = _valores_conta_resumo(linha_ebitda)
+            receita_real, receita_orc = _valores_conta_resumo(linha_receita)
+            percentual_ebitda = (
+                (ebitda_real / receita_real * 100) if receita_real else 0.0,
+                (ebitda_orc / receita_orc * 100) if receita_orc else 0.0,
+            )
+
     linha = linha_header + 1
     for i, (rotulo, v_real, v_orc, destaque) in enumerate(linhas_resumo):
         if rotulo is None:
@@ -7688,6 +7787,41 @@ def montar_relatorio_excel(
                 cell.number_format = '0.0"%"'
                 cell.alignment = Alignment(horizontal="right")
         linha += 1
+
+    if percentual_ebitda is not None:
+        # Uma linha em branco separando: ela não é uma conta como as de cima,
+        # é a leitura percentual do fechamento.
+        linha += 1
+        real_pct, orc_pct = percentual_ebitda
+        # O desvio aqui é em PONTOS PERCENTUAIS, não em reais nem em % do
+        # orçado -- por isso a coluna de reais fica vazia. Escrever a
+        # diferença de dois percentuais na coluna de R$ faria a soma da
+        # coluna deixar de significar coisa alguma.
+        valores_pct = ["11 - EBITDA (%)", real_pct, orc_pct, None, real_pct - orc_pct]
+        for col, val in enumerate(valores_pct, start=1):
+            cell = ws1.cell(row=linha, column=col, value=val)
+            cell.border = EXCEL_STYLE["border"]
+            cell.fill = EXCEL_STYLE["fill_total"]
+            if col == 1:
+                cell.font = EXCEL_STYLE["font_bold"]
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif col == 4:
+                continue
+            else:
+                cell.font = (
+                    EXCEL_STYLE["font_bold"] if col in (2, 3)
+                    else _fonte_por_valor(real_pct - orc_pct, negrito=True)
+                )
+                cell.number_format = '0.0"%"'
+                cell.alignment = Alignment(horizontal="right")
+        linha += 1
+        _escrever_legenda(
+            ws1,
+            "11 - EBITDA (%) = EBITDA dividido pela Receita Operacional Líquida. O desvio da "
+            "última coluna está em pontos percentuais (realizado menos orçado), não em % do "
+            "orçado como nas linhas acima.",
+            linha, 5,
+        )
 
     for col, largura in zip(range(1, 6), [46, 18, 18, 18, 14]):
         ws1.column_dimensions[get_column_letter(col)].width = largura
@@ -9056,6 +9190,159 @@ def _painel_dept_adm(ctx):
     return set()
 
 
+# ---------------------------------------------------------------------------
+# COORDENAÇÕES DE LOJA E DE VD
+# ---------------------------------------------------------------------------
+def _painel_dept_coordenacao(ctx):
+    """Painel das coordenações de Loja e de VD -- as duas leem a mesma coisa,
+    muda só o conjunto de abas que cada uma responde.
+
+    A leitura é a da operação: da receita ao EBITDA, com o percentual de cada
+    etapa sobre a receita líquida. O valor absoluto sobe junto com a venda, e
+    é só o percentual que mostra se a unidade ficou mais ou menos eficiente.
+
+    Abaixo, o ranking por unidade: para quem coordena 13 lojas, a pergunta
+    não é quanto a rede fez, é qual loja está fora da linha."""
+    colunas = ctx["colunas"]
+    universo = ctx.get("linhas_todas") or ctx["linhas_resolvidas"]
+
+    def _linha(numero):
+        return next((l for l in universo if _numero_linha_dre(l) == str(numero)), None)
+
+    def _valor(dfs, linha):
+        if not linha:
+            return 0.0
+        return get_valor_consolidado_multi(dfs, linha, colunas, exato_linha_sintetica=True)
+
+    receita = _valor(ctx["dfs_real"], _linha(3))
+    receita_orc = _valor(ctx["dfs_orc"], _linha(3))
+    ebitda = _valor(ctx["dfs_real"], _linha(GRUPO_EBITDA_DRE))
+    ebitda_orc = _valor(ctx["dfs_orc"], _linha(GRUPO_EBITDA_DRE))
+
+    def _pct(valor, base):
+        return (valor / base * 100) if base else float("nan")
+
+    def _texto_pct(valor, base):
+        return f"{_pct(valor, base):.1f}%".replace(".", ",") if base else "—"
+
+    # ---- Da receita ao EBITDA ----
+    st.markdown('<div class="section-title">🎯 Da Receita ao EBITDA</div>', unsafe_allow_html=True)
+    st.markdown(
+        faixa_metricas_html([
+            ("Receita líquida", formata_valor_curto(receita),
+             cor_variacao(receita - receita_orc),
+             (f"{_pct(receita, receita_orc):.0f}% do orçado".replace(".", ",")
+              if receita_orc else "sem orçamento no período")),
+            ("EBITDA", formata_valor_curto(ebitda), cor_variacao(ebitda - ebitda_orc),
+             (f"{_pct(ebitda, ebitda_orc):.0f}% do orçado".replace(".", ",")
+              if ebitda_orc else "sem orçamento no período")),
+            ("EBITDA %", _texto_pct(ebitda, receita),
+             cor_variacao(_pct(ebitda, receita) - _pct(ebitda_orc, receita_orc)
+                          if receita and receita_orc else 0),
+             (f"orçado {_texto_pct(ebitda_orc, receita_orc)}" if receita_orc
+              else "sem orçamento no período")),
+            ("Desvio do EBITDA", formata_valor_curto(ebitda - ebitda_orc),
+             cor_variacao(ebitda - ebitda_orc), "realizado menos orçado"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    # ---- A DRE da operação, linha a linha, com o peso na receita ----
+    linhas_dre_op, ordem = [], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, GRUPO_EBITDA_DRE]
+    for numero in ordem:
+        linha = _linha(numero)
+        if not linha:
+            continue
+        real = _valor(ctx["dfs_real"], linha)
+        orc = _valor(ctx["dfs_orc"], linha)
+        if not real and not orc:
+            continue
+        linhas_dre_op.append({
+            "Linha da DRE": linha,
+            "Orçado (R$)": orc,
+            "Realizado (R$)": real,
+            "Desvio (R$)": real - orc,
+            # Em módulo: na planilha o custo é negativo, e "-37,3%" para o
+            # CMV faz o leitor parar para interpretar sinal quando a
+            # pergunta é simplesmente quanto da receita aquela linha come.
+            "% da receita": abs(_pct(real, receita)),
+        })
+    _tabela_departamento(linhas_dre_op, colunas_percentual=("% da receita",))
+    st.caption(
+        "O desvio é **realizado menos orçado**, a mesma conta do relatório em Excel: em linha "
+        "de custo, negativo é ter gastado menos que o previsto. A coluna % da receita vem em "
+        "módulo — é o peso da linha sobre a receita líquida, e é ela que diz se a estrutura "
+        "acompanhou o crescimento da venda ou comeu a margem. A última linha é o EBITDA %, "
+        "o fechamento que a coordenação acompanha."
+    )
+
+    # ---- Ranking por unidade ----
+    unidades = MODELOS_RELATORIO.get(ctx["departamento"], {}).get("unidades_permitidas", [])
+    if not unidades:
+        return {"linhas_dept"}
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🏆 Unidades — Receita, EBITDA e Margem</div>',
+                unsafe_allow_html=True)
+
+    try:
+        dfs_orc_un, dfs_real_un = carregar_dados_abas(
+            ctx["path_orc"], ctx["path_real"], unidades
+        )
+    except Exception as erro:
+        st.caption(f"Não consegui abrir as abas das unidades para o ranking ({erro}).")
+        return {"linhas_dept"}
+
+    linhas_unidade = []
+    for nome, df_o, df_r in zip(unidades, dfs_orc_un, dfs_real_un):
+        if df_r is None or df_r.empty:
+            continue
+        rec_u = get_valor_consolidado_multi([df_r], _linha(3), colunas, exato_linha_sintetica=True)
+        ebi_u = get_valor_consolidado_multi([df_r], _linha(GRUPO_EBITDA_DRE), colunas,
+                                            exato_linha_sintetica=True)
+        rec_o = get_valor_consolidado_multi(
+            [df_o] if df_o is not None else [], _linha(3), colunas, exato_linha_sintetica=True)
+        ebi_o = get_valor_consolidado_multi(
+            [df_o] if df_o is not None else [], _linha(GRUPO_EBITDA_DRE), colunas,
+            exato_linha_sintetica=True)
+        if not rec_u and not ebi_u:
+            continue
+        linhas_unidade.append({
+            "Unidade": nome,
+            "Receita (R$)": rec_u,
+            "% da meta de receita": _pct(rec_u, rec_o),
+            "EBITDA (R$)": ebi_u,
+            "EBITDA %": _pct(ebi_u, rec_u),
+            "EBITDA % orçado": _pct(ebi_o, rec_o),
+        })
+
+    if linhas_unidade:
+        linhas_unidade.sort(key=lambda u: (u["EBITDA %"] if u["EBITDA %"] == u["EBITDA %"] else -999),
+                            reverse=True)
+        total_rec = sum(u["Receita (R$)"] for u in linhas_unidade)
+        total_ebi = sum(u["EBITDA (R$)"] for u in linhas_unidade)
+        linhas_unidade.append({
+            "Unidade": f"TOTAL — {len(linhas_unidade)} unidades",
+            "Receita (R$)": total_rec,
+            "% da meta de receita": float("nan"),
+            "EBITDA (R$)": total_ebi,
+            "EBITDA %": _pct(total_ebi, total_rec),
+            "EBITDA % orçado": float("nan"),
+        })
+    _tabela_departamento(
+        linhas_unidade,
+        colunas_percentual=("% da meta de receita", "EBITDA %", "EBITDA % orçado"),
+    )
+    st.caption(
+        "Ordenado pela margem de EBITDA, não pelo faturamento: a loja maior quase sempre "
+        "lidera em receita, e isso não diz se ela é bem operada. Comparar o EBITDA % com o "
+        "orçado da própria unidade evita cobrar de uma loja nova a margem de uma madura. "
+        "O total soma as unidades listadas — pode não bater com a visão consolidada, que "
+        "inclui rateios e a matriz."
+    )
+    return {"linhas_dept"}
+
+
 PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
     "📣 Relatório de Custos - MKT": _painel_dept_mkt,
     "🛒 Relatório de Custos - Compras": _painel_dept_compras,
@@ -9063,6 +9350,8 @@ PAINEIS_PERSONALIZADOS_DEPARTAMENTO = {
     "👥 Relatório de Custos - RH": _painel_dept_rh,
     "📈 Relatório de Custos - Gerência Comercial": _painel_dept_comercial,
     "🏦 Relatório de Custos - ADM/Financeiro": _painel_dept_adm,
+    "🏬 Relatório de Custos - Coordenação de Loja": _painel_dept_coordenacao,
+    "🚗 Relatório de Custos - Coordenação de VD": _painel_dept_coordenacao,
 }
 
 
@@ -11948,6 +12237,7 @@ with tab5:
                 incluir_aba_mkt_1pct=incluir_aba_mkt,
                 planos_filtro=planos_relatorio or None,
                 blocos_agrupados=blocos_relatorio,
+                linha_percentual_ebitda=info_modelo_sel.get("linha_percentual_ebitda", False),
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
