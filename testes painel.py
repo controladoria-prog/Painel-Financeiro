@@ -1179,6 +1179,69 @@ class TesteRevisaoDosPaineis(unittest.TestCase):
 
 
 # ============================================================================
+# 5g. FLUXO MENSAL — SALDO DE ABERTURA
+# ============================================================================
+class TesteSaldoDeAberturaMensal(unittest.TestCase):
+    """Em "Movimentos por Mes", caixa e banco mostram o saldo do PRIMEIRO dia
+    do mes. Todo o resto do painel segue com a posicao de fechamento."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_normalizar_texto", "_classificar_movimento_fin",
+                           "_pivot_fluxo_fin"])
+        linhas = []
+        for dia, saldo in [(1, 500_000.0), (15, 620_000.0), (31, 480_000.0)]:
+            linhas.append({"Data Efetiva": pd.Timestamp(2026, 7, dia),
+                           "Movimento": "1 - Banco", "Valor.1": saldo})
+        for dia, saldo in [(1, 480_000.0), (10, 700_000.0), (18, 655_000.0)]:
+            linhas.append({"Data Efetiva": pd.Timestamp(2026, 8, dia),
+                           "Movimento": "1 - Banco", "Valor.1": saldo})
+        for mes in (7, 8):
+            for dia in (5, 20):
+                linhas.append({"Data Efetiva": pd.Timestamp(2026, mes, dia),
+                               "Movimento": "4 - Contas a Pagar", "Valor.1": -250_000.0})
+        cls.df = pd.DataFrame(linhas)
+        cls.df["PeriodoMes"] = cls.df["Data Efetiva"].dt.to_period("M")
+        cls.meses = sorted(cls.df["PeriodoMes"].unique())
+
+    def _pivo(self, posicao):
+        return self.ns["_pivot_fluxo_fin"](
+            self.df, "PeriodoMes", "Valor.1", "Movimento", self.meses, posicao_saldo=posicao)
+
+    def test_saldo_do_primeiro_dia_do_mes(self):
+        abertura = self._pivo("primeira")
+        self.assertEqual(abertura.loc["1 - Banco"].iloc[0], 500_000.0)
+        self.assertEqual(abertura.loc["1 - Banco"].iloc[1], 480_000.0)
+
+    def test_padrao_continua_sendo_o_fechamento(self):
+        """Quem nao pedir nada tem de continuar recebendo a posicao do ultimo
+        dia -- o resto do painel depende disso."""
+        fechamento = self.ns["_pivot_fluxo_fin"](
+            self.df, "PeriodoMes", "Valor.1", "Movimento", self.meses)
+        self.assertEqual(fechamento.loc["1 - Banco"].iloc[0], 480_000.0)
+        self.assertEqual(fechamento.loc["1 - Banco"].iloc[1], 655_000.0)
+
+    def test_movimentacao_nao_muda_de_base(self):
+        """A troca vale so para linha de SALDO: a pagar e a receber continuam
+        somando o mes inteiro nas duas leituras."""
+        for posicao in ("primeira", "ultima"):
+            pivo = self._pivo(posicao)
+            self.assertEqual(pivo.loc["4 - Contas a Pagar"].iloc[0], -500_000.0)
+
+    def test_so_a_tabela_mensal_usa_a_abertura(self):
+        i = FONTE.index("📋 Movimentos por Mês")
+        trecho = FONTE[max(0, i - 3000):i + 3000]
+        self.assertIn('posicao_saldo="primeira"', trecho)
+        self.assertIn("pivot_m_fechamento = _pivot_fluxo_fin(", trecho)
+        # A reserva de caixa nao pode ter passado a ler a abertura.
+        j = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        reserva = FONTE[max(0, j - 1800):j]
+        self.assertIn("serie_total_geral = pivot_m_fechamento", reserva)
+        # E nenhuma outra chamada do pivo pode ter mudado de base.
+        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 1)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):

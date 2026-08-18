@@ -4054,17 +4054,22 @@ def _avaliar_alertas_fluxo(
     return alertas
 
 
-def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos):
+def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos,
+                     posicao_saldo="ultima"):
     """Monta a tabela Movimento x Período com a agregação CORRETA para cada
     tipo de linha:
 
     - Linhas de FLUXO (a receber / a pagar): SOMA do período. Faz sentido --
       são movimentações que se acumulam ao longo dos dias.
-    - Linhas de SALDO (caixa, banco, aplicação): pega a POSIÇÃO DO ÚLTIMO
-      DIA com movimento dentro daquele período, NÃO a soma. Saldo é uma
-      foto do momento: somar o saldo de todos os dias do mês daria um
-      número gigante e sem sentido (era o que acontecia antes -- o saldo
-      aparecia inflado porque cada dia era somado ao anterior).
+    - Linhas de SALDO (caixa, banco, aplicação): pega a POSIÇÃO de UM dia do
+      período, NÃO a soma. Saldo é uma foto do momento: somar o saldo de
+      todos os dias do mês daria um número gigante e sem sentido (era o que
+      acontecia antes -- o saldo aparecia inflado porque cada dia era somado
+      ao anterior).
+
+    `posicao_saldo` escolhe QUAL dia:
+    - "ultima" (padrão): o último dia com movimento -- onde o mês fechou;
+    - "primeira": o primeiro dia com movimento -- com quanto o mês começou.
     """
     resultado = {}
     for movimento, grupo in df.groupby(coluna_movimento):
@@ -4075,10 +4080,14 @@ def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_p
             if do_periodo.empty:
                 linha[periodo] = 0.0
             elif tipo in ("saldo", "aplicacao"):
-                # posição do último dia com movimento dentro do período
-                ultima_data = do_periodo["Data Efetiva"].max()
+                data_alvo = (
+                    do_periodo["Data Efetiva"].min() if posicao_saldo == "primeira"
+                    else do_periodo["Data Efetiva"].max()
+                )
+                # Soma os canais NAQUELE dia: é a posição total da empresa na
+                # data, não a soma do período.
                 linha[periodo] = do_periodo.loc[
-                    do_periodo["Data Efetiva"] == ultima_data, coluna_valor
+                    do_periodo["Data Efetiva"] == data_alvo, coluna_valor
                 ].sum()
             else:
                 linha[periodo] = do_periodo[coluna_valor].sum()
@@ -5143,22 +5152,37 @@ if st.session_state["painel_escolhido"] == "financeiro":
             meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
             rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
 
-            pivot_m = _pivot_fluxo_fin(df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m)
+            # Aqui, e SÓ aqui, caixa e banco mostram o saldo com que o mês
+            # COMEÇOU -- a posição do primeiro dia. Nesta leitura a pergunta é
+            # "com quanto entrei no mês e o que aconteceu nele", então a
+            # abertura conversa com as movimentações da mesma coluna; a
+            # posição de fechamento já embute essas movimentações e faria o
+            # mesmo dinheiro aparecer duas vezes na leitura da linha.
+            # O bloco de Reserva de Caixa, logo abaixo, segue no fechamento.
+            pivot_m = _pivot_fluxo_fin(
+                df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m,
+                posicao_saldo="primeira",
+            )
+            pivot_m_fechamento = _pivot_fluxo_fin(
+                df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m
+            )
 
             # A coluna final tem significado diferente conforme o tipo de linha:
-            # para fluxo é a SOMA do período; para saldo é a ÚLTIMA posição
-            # (somar saldos de meses diferentes não faria sentido).
+            # para fluxo é a SOMA do período; para saldo é a abertura do
+            # PRIMEIRO mês do recorte -- com quanto o período começou (somar
+            # saldos de meses diferentes não faria sentido).
             totais_finais_m = {}
             for movimento in pivot_m.index:
                 if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
                     serie = pivot_m.loc[movimento]
                     nao_zerados = serie[serie != 0]
-                    totais_finais_m[movimento] = nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0
+                    totais_finais_m[movimento] = nao_zerados.iloc[0] if not nao_zerados.empty else 0.0
                 else:
                     totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
 
             pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
-            pivot_m["TOTAL / ÚLT. POSIÇÃO"] = pd.Series(totais_finais_m)
+            pivot_m_fechamento.columns = list(pivot_m.columns)
+            pivot_m["TOTAL / SALDO DE ABERTURA"] = pd.Series(totais_finais_m)
             pivot_m.index.name = "Movimento"
 
             # TOTAL GERAL: soma de todas as linhas em cada mês -- mesmo cálculo
@@ -5172,10 +5196,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 width="stretch",
             )
             st.caption(
-                "As linhas de **caixa e banco** mostram o **saldo do último dia** de cada mês (é uma posição, "
-                "uma foto do momento). As linhas de **contas a receber e a pagar** mostram a **soma** do mês "
-                "(são movimentações que se acumulam). Por isso a última coluna traz o total acumulado para o "
-                "fluxo e a posição mais recente para o saldo."
+                "As linhas de **caixa e banco** mostram o saldo com que o mês **começou** — a posição do "
+                "primeiro dia. As linhas de **contas a receber e a pagar** mostram a **soma** do mês (são "
+                "movimentações que se acumulam). Ler assim é o que permite acompanhar a conta do mês: "
+                "entrei com este saldo, recebi isto, paguei aquilo. Na última coluna, o fluxo traz o "
+                "acumulado do período e o saldo traz a abertura do primeiro mês. **Só esta tabela usa o "
+                "saldo de abertura** — a Reserva de Caixa abaixo e as demais abas seguem com a posição de "
+                "fechamento."
             )
 
             # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
@@ -5184,11 +5211,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # os recebíveis (caixa + banco + a receber projetado + realizado),
             # e o indicador é a SOBRA sobre esse disponível.
             colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
-            serie_total_geral = linha_total_geral_m[colunas_meses_m]
+            # Base FECHAMENTO, não a abertura da tabela acima: aqui a pergunta
+            # é "com o dinheiro que tenho ao fim do mês, sobra 30% depois de
+            # pagar tudo?". Por isso este bloco monta a própria série em vez
+            # de reaproveitar a linha de TOTAL GERAL da tabela.
+            serie_total_geral = pivot_m_fechamento[colunas_meses_m].sum(axis=0)
 
-            movimentos_a_pagar = [m for m in pivot_m.index if _classificar_movimento_fin(m) == "saida"]
+            movimentos_a_pagar = [
+                m for m in pivot_m_fechamento.index if _classificar_movimento_fin(m) == "saida"
+            ]
             serie_a_pagar = (
-                pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
+                pivot_m_fechamento.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
                 if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
             )
             # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
