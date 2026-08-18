@@ -6569,6 +6569,8 @@ MAPA_EMAIL_DEPARTAMENTO = {
     "pessoas.cultura@grupobeea.com.br": "👥 Relatório de Custos - RH",
     "gerente.comercial@grupobeea.com.br": "📈 Relatório de Custos - Gerência Comercial",
     "coordenador.financeiro@grupobeea.com.br": "🏦 Relatório de Custos - ADM/Financeiro",
+    "coordenador.loja@grupobeea.com.br": "🏬 Relatório de Custos - Coordenação de Loja",
+    "coordenador.vd@grupobeea.com.br": "🚗 Relatório de Custos - Coordenação de VD",
 }
 
 departamento_ativo = None

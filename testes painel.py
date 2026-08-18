@@ -712,12 +712,16 @@ class TesteAdmFinanceiro(unittest.TestCase):
         trecho = FONTE[FONTE.index("MAPA_EMAIL_DEPARTAMENTO = {"):]
         trecho = trecho[:trecho.index("\n}")]
         mapeados = re.findall(r'"([^"]+@[^"]+)":\s*"([^"]+)"', trecho)
-        self.assertGreaterEqual(len(mapeados), 6)
+        self.assertGreaterEqual(len(mapeados), 8)
         for email, departamento in mapeados:
             self.assertIn(departamento, self.ns["MODELOS_RELATORIO"],
                           f"{email} aponta para um departamento que nao existe")
-        self.assertIn(("coordenador.financeiro@grupobeea.com.br",
-                       "🏦 Relatório de Custos - ADM/Financeiro"), mapeados)
+        for email, departamento in [
+            ("coordenador.financeiro@grupobeea.com.br", "🏦 Relatório de Custos - ADM/Financeiro"),
+            ("coordenador.loja@grupobeea.com.br", "🏬 Relatório de Custos - Coordenação de Loja"),
+            ("coordenador.vd@grupobeea.com.br", "🚗 Relatório de Custos - Coordenação de VD"),
+        ]:
+            self.assertIn((email, departamento), mapeados)
 
     def test_celula_vazia_de_linha_dre_e_reconhecida(self):
         """A leitura converte a coluna inteira para texto, entao o NaN do
@@ -759,6 +763,35 @@ class TesteAdmFinanceiro(unittest.TestCase):
         self.assertIn("_planos_sem_linha_dre", trecho)
         self.assertNotIn('"% do bloco"', trecho,
                          "percentual sobre total com sinais opostos nao significa nada")
+
+    def test_todos_passam_pela_tela_de_escolha(self):
+        """A tela de escolha entre Controladoria e Financeiro aparece para
+        TODO usuario logado. O que muda por pessoa e so o acesso ao
+        Financeiro: quem nao esta na lista ve o cartao bloqueado, com o
+        botao desligado. Nao pode existir atalho que mande alguem direto
+        para um painel sem passar por aqui."""
+        i = FONTE.index('if st.session_state["painel_escolhido"] is None:')
+        trecho = FONTE[i:i + 12000]
+        # A unica condicao que governa a tela e "ainda nao escolheu" -- nao
+        # pode haver desvio por e-mail antes dela.
+        antes = FONTE[:i]
+        self.assertNotIn('st.session_state["painel_escolhido"] = "controladoria"', antes,
+                         "alguem esta escolhendo o painel antes da tela aparecer")
+        self.assertIn("_pode_financeiro = _email_hub in EMAILS_FINANCEIRO_PERMITIDOS", trecho)
+        self.assertIn("disabled=not _pode_financeiro", trecho,
+                      "o botao do Financeiro precisa nascer desligado para quem nao tem acesso")
+        self.assertIn("st.stop()", trecho, "a tela precisa parar o resto do app")
+
+    def test_acesso_ao_financeiro_e_por_lista(self):
+        i = FONTE.index("EMAILS_FINANCEIRO_PERMITIDOS = {")
+        trecho = FONTE[i:FONTE.index("}", i)]
+        emails = re.findall(r'"([^"]+@[^"]+)"', trecho)
+        self.assertIn("controladoria@grupobeea.com.br", emails)
+        for de_fora in ["coordenador.loja@grupobeea.com.br",
+                        "coordenador.vd@grupobeea.com.br",
+                        "gerente.comercial@grupobeea.com.br"]:
+            self.assertNotIn(de_fora, emails,
+                             f"{de_fora} nao foi autorizado para o Painel Financeiro")
 
     def test_modelo_e_painel_cadastrados(self):
         self.assertIn("🏦 Relatório de Custos - ADM/Financeiro", self.ns["MODELOS_RELATORIO"])
