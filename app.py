@@ -8839,7 +8839,15 @@ def _painel_dept_mkt(ctx):
         st.caption("Não consegui carregar as visões por canal (LJ, VD e ABPR CONSOLIDADO).")
         return
 
-    indice = {_normalizar_nome_aba(k): v for k, v in dados_canais.items()}
+    # Mesmo tratamento de mês corrente dos cartões do topo. Sem isto, a
+    # coluna Orçado desta tabela vinha cheia e a linha TOTAL não fechava com
+    # o cabeçalho -- foi o que apareceu na tela em 18/08/2026.
+    escalar = ctx.get("escalar_orcado")
+    indice = {}
+    for nome_aba, (df_o, df_r) in dados_canais.items():
+        if escalar and df_o is not None:
+            df_o = escalar([df_o])[0]
+        indice[_normalizar_nome_aba(nome_aba)] = (df_o, df_r)
     colunas = ctx["colunas"]
     linhas_tabela, total_inv, total_rec, fora_do_1pct = [], 0.0, 0.0, 0.0
 
@@ -8929,6 +8937,25 @@ def _painel_dept_mkt(ctx):
     )
     _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",),
                          colunas_menor_e_melhor=("Desvio (R$)",))
+
+    # Conciliação viva: a linha TOTAL desta tabela e os cartões do topo saem
+    # de caminhos diferentes (aqui por canal, lá pelas linhas da DRE) e por
+    # isso um valida o outro. Quando param de bater, é sinal de que os dois
+    # caminhos discordam -- e é melhor a tela dizer isso do que deixar quem
+    # lê descobrir na reunião.
+    _total_linha = next((l for l in linhas_tabela if l["Canal"] == "TOTAL"), None)
+    if _total_linha and ctx.get("total_orcado") is not None:
+        _dif_real = _total_linha["Investido (R$)"] - (ctx.get("total_realizado") or 0.0)
+        _dif_orc = _total_linha["Orçado (R$)"] - (ctx.get("total_orcado") or 0.0)
+        if abs(_dif_real) > 1 or abs(_dif_orc) > 1:
+            st.warning(
+                "A linha TOTAL não está fechando com os cartões do topo: diferença de "
+                f"{formata_brl(_dif_real)} no realizado e {formata_brl(_dif_orc)} no orçado. "
+                "Os dois números saem por caminhos diferentes (aqui por canal, lá pelas linhas "
+                "da DRE), então divergência aponta canal faltando na lista, aba renomeada na "
+                "planilha ou orçamento lançado fora da 6.24.2."
+            )
+
     st.caption(
         "Esta tabela é por CANAL; a lista logo abaixo é por LINHA da DRE — são dois recortes do "
         "mesmo dinheiro, e por isso os números não se somam entre elas. "
@@ -9643,6 +9670,11 @@ def _painel_dept_coordenacao(ctx):
         dfs_orc_un, dfs_real_un = carregar_dados_abas(
             ctx["path_orc"], ctx["path_real"], unidades
         )
+        # O ranking compara realizado com a meta da própria unidade; se o
+        # orçado vier cheio no mês corrente, toda loja aparece atrás da meta
+        # sem estar.
+        if ctx.get("escalar_orcado"):
+            dfs_orc_un = ctx["escalar_orcado"](dfs_orc_un)
     except Exception as erro:
         st.caption(f"Não consegui abrir as abas das unidades para o ranking ({erro}).")
         return {"linhas_dept"}
@@ -9857,6 +9889,18 @@ with tab1:
                 # DIÁRIO no mesmo recorte da DRE que está na tela.
                 "lojas": _lojas_individuais_das_abas(abas_para_carregar),
                 "label_visao": label_visao,
+                # Bloco que carrega planilha por conta própria (MKT por canal,
+                # ranking das coordenações) precisa aplicar o MESMO ajuste de
+                # mês corrente que os cartões acima -- senão a tabela mostra o
+                # orçamento cheio de agosto e o cabeçalho mostra a parte já
+                # decorrida, e os dois não fecham.
+                "escalar_orcado": lambda dfs: _escalar_orcado_mes_corrente(
+                    dfs, cols_kpi, list(m_map.values()), datetime.now(FUSO_BR).date()
+                )[0],
+                # Os totais do cabeçalho, para o bloco conferir se a tabela
+                # dele fecha com o que está lá em cima.
+                "total_realizado": dept_real_abs,
+                "total_orcado": dept_orc_abs,
             })
 
             # ---- Impacto no resultado da empresa (Receita, EBITDA, Custos+Despesas totais) ----

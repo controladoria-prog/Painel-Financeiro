@@ -1128,6 +1128,31 @@ class TesteRevisaoDosPaineis(unittest.TestCase):
         self.assertIn("por_percentual", trecho)
         self.assertIn("piso_relevante", trecho)
 
+    def test_bloco_que_carrega_planilha_usa_a_mesma_regua_de_orcado(self):
+        """MKT (tabela por canal) e as coordenacoes (ranking por unidade)
+        carregam planilha por conta propria. Se nao aplicarem o mesmo ajuste
+        de mes corrente dos cartoes do topo, a tabela mostra o orcamento
+        cheio e o cabecalho a parte decorrida -- foi o que apareceu na tela
+        em 18/08/2026, com R$ 64 mil de diferenca."""
+        self.assertIn('"escalar_orcado": lambda dfs: _escalar_orcado_mes_corrente(', FONTE)
+        i = FONTE.index("def _painel_dept_mkt(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('escalar = ctx.get("escalar_orcado")', trecho)
+        self.assertIn("df_o = escalar([df_o])[0]", trecho)
+        j = FONTE.index("def _painel_dept_coordenacao(")
+        corpo = FONTE[j:FONTE.index("\ndef ", j + 10)]
+        self.assertIn('dfs_orc_un = ctx["escalar_orcado"](dfs_orc_un)', corpo)
+
+    def test_mkt_avisa_quando_a_tabela_nao_fecha(self):
+        """A tabela por canal e os cartoes do topo saem por caminhos
+        diferentes e por isso um valida o outro. Quando divergem, a tela tem
+        de dizer -- melhor que descobrir na reuniao."""
+        i = FONTE.index("def _painel_dept_mkt(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('_total_linha = next((l for l in linhas_tabela if l["Canal"] == "TOTAL")', trecho)
+        self.assertIn("não está fechando com os cartões do topo", trecho)
+        self.assertIn("st.warning(", trecho)
+
     def test_soma_por_plano_passa_pelo_recorte(self):
         """A funcao que soma planos da DIARIO tem de aplicar o recorte por
         loja. Sem esta trava, tirar a chamada nao quebra teste nenhum: o
