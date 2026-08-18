@@ -3132,6 +3132,13 @@ MODELOS_RELATORIO = {
         # Fecha a visão com a linha de % do EBITDA sobre a receita líquida,
         # como no relatório que a coordenação já recebia.
         "linha_percentual_ebitda": True,
+        # Uma aba "Anual - <visão>" para cada visão consolidada do
+        # departamento, no formato mês a mês com Orçado e Realizado.
+        "resumos_anuais_por_visao": True,
+        # Só entram no Excel os lançamentos que passam por alguma linha da
+        # DRE: aqui o relatório é da DRE, e plano sem linha não compõe nada
+        # do que está sendo mostrado.
+        "apenas_planos_com_linha_dre": True,
         "forcar_planos_contas": [],
         "permitir_lancamento_manual": True,
     },
@@ -3145,6 +3152,13 @@ MODELOS_RELATORIO = {
             "ABPR 23427", "ABPR ZNS 24527",
         ],
         "linha_percentual_ebitda": True,
+        # Uma aba "Anual - <visão>" para cada visão consolidada do
+        # departamento, no formato mês a mês com Orçado e Realizado.
+        "resumos_anuais_por_visao": True,
+        # Só entram no Excel os lançamentos que passam por alguma linha da
+        # DRE: aqui o relatório é da DRE, e plano sem linha não compõe nada
+        # do que está sendo mostrado.
+        "apenas_planos_com_linha_dre": True,
         "forcar_planos_contas": [],
         "permitir_lancamento_manual": True,
     },
@@ -7413,6 +7427,138 @@ def planos_do_diario(df_diario, linhas_dre=None):
     return sorted(planos.unique().tolist())
 
 
+def _criar_aba_resumo_anual(wb, nomes_usados, nome_visao, df_orc, df_real,
+                            mapa_meses, contas_sel, gerado_em):
+    """Uma aba por visão consolidada, no formato que a coordenação já usava na
+    mão: as linhas da DRE nas linhas, os meses nas colunas, e cada mês aberto
+    em ORÇADO e REALIZADO. Fecha com o percentual do EBITDA sobre a receita
+    líquida, mês a mês.
+
+    O percentual é a leitura que importa aqui: o EBITDA em reais sobe junto
+    com a venda, e só a margem mostra se a unidade ficou mais eficiente. Ele é
+    calculado mês a mês -- não é a média dos meses, que daria outro número
+    quando o faturamento é desigual entre eles."""
+    nome_aba = _nome_aba_seguro(f"Anual - {nome_visao}", nomes_usados)
+    ws = wb.create_sheet(nome_aba)
+    ws.sheet_properties.tabColor = "FF1B8A5A"
+
+    meses = list(mapa_meses.items())
+    n_col = 1 + len(meses) * 2 + 2  # DRE + (orçado, realizado) por mês + total
+
+    _escrever_titulo(ws, f"Resumo Anual — {nome_visao}", 1, n_col)
+    _escrever_legenda(
+        ws,
+        f"{gerado_em} · Todos os meses disponíveis na planilha, independentemente do período "
+        f"escolhido para as outras abas. Cada mês em Orçado e Realizado; a última linha traz o "
+        f"EBITDA em % da Receita Operacional Líquida, calculado mês a mês.",
+        2, n_col,
+    )
+
+    # Cabeçalho em duas faixas: o mês por cima, Orçado/Realizado por baixo.
+    linha_mes, linha_sub = 4, 5
+    cabecalho = ws.cell(row=linha_mes, column=1, value="DRE")
+    cabecalho.font = EXCEL_STYLE["font_header"]
+    cabecalho.fill = EXCEL_STYLE["fill_header"]
+    cabecalho.border = EXCEL_STYLE["border"]
+    ws.merge_cells(start_row=linha_mes, start_column=1, end_row=linha_sub, end_column=1)
+    cabecalho.alignment = Alignment(horizontal="left", vertical="center")
+
+    col = 2
+    for rotulo, _col_mes in meses + [("TOTAL", None)]:
+        ws.merge_cells(start_row=linha_mes, start_column=col, end_row=linha_mes, end_column=col + 1)
+        celula = ws.cell(row=linha_mes, column=col, value=str(rotulo).upper())
+        celula.font = EXCEL_STYLE["font_header"]
+        celula.fill = EXCEL_STYLE["fill_header"]
+        celula.border = EXCEL_STYLE["border"]
+        celula.alignment = Alignment(horizontal="center", vertical="center")
+        for deslocamento, texto_sub in enumerate(("ORÇADO", "REALIZADO")):
+            sub = ws.cell(row=linha_sub, column=col + deslocamento, value=texto_sub)
+            sub.font = EXCEL_STYLE["font_header"]
+            sub.fill = EXCEL_STYLE["fill_header"]
+            sub.border = EXCEL_STYLE["border"]
+            sub.alignment = Alignment(horizontal="center")
+        col += 2
+    ws.row_dimensions[linha_mes].height = 18
+    ws.freeze_panes = f"B{linha_sub + 1}"
+
+    dfs_r = [df_real] if df_real is not None else []
+    dfs_o = [df_orc] if df_orc is not None else []
+
+    def _serie(dfs, conta):
+        return [get_valor_consolidado_multi(dfs, conta, [c]) for _r, c in meses]
+
+    linha = linha_sub + 1
+    valores_por_conta = {}
+    for i, conta in enumerate(contas_sel):
+        serie_real = _serie(dfs_r, conta)
+        serie_orc = _serie(dfs_o, conta)
+        valores_por_conta[_numero_linha_dre(conta)] = (serie_orc, serie_real)
+        if not any(serie_real) and not any(serie_orc):
+            continue
+        fill = EXCEL_STYLE["fill_zebra"] if i % 2 == 1 else None
+        celula = ws.cell(row=linha, column=1, value=conta)
+        celula.font = EXCEL_STYLE["font_normal"]
+        celula.fill = fill or PatternFill(fill_type=None)
+        celula.border = EXCEL_STYLE["border"]
+        celula.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        col = 2
+        for valor_orc, valor_real in list(zip(serie_orc, serie_real)) + [
+            (sum(serie_orc), sum(serie_real))
+        ]:
+            for deslocamento, valor in enumerate((valor_orc, valor_real)):
+                alvo = ws.cell(row=linha, column=col + deslocamento, value=valor)
+                alvo.font = _fonte_por_valor(valor)
+                alvo.number_format = '"R$" #,##0.00'
+                alvo.border = EXCEL_STYLE["border"]
+                alvo.alignment = Alignment(horizontal="right")
+                if fill:
+                    alvo.fill = fill
+            col += 2
+        linha += 1
+
+    # ---- Linha final: EBITDA em % da receita líquida ----
+    ebitda = valores_por_conta.get(str(GRUPO_EBITDA_DRE))
+    receita = valores_por_conta.get("3")
+    if ebitda and receita:
+        linha += 1
+        celula = ws.cell(row=linha, column=1, value=f"{GRUPO_EBITDA_DRE} - EBITDA (%)")
+        celula.font = EXCEL_STYLE["font_bold"]
+        celula.fill = EXCEL_STYLE["fill_total"]
+        celula.border = EXCEL_STYLE["border"]
+        celula.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+        def _percentuais(indice):
+            # Mês a mês, e o total sobre o total -- não a média dos meses.
+            pares = list(zip(ebitda[indice], receita[indice]))
+            pares.append((sum(ebitda[indice]), sum(receita[indice])))
+            return [(e / r * 100) if r else 0.0 for e, r in pares]
+
+        pct_orc, pct_real = _percentuais(0), _percentuais(1)
+        col = 2
+        for valor_orc, valor_real in zip(pct_orc, pct_real):
+            for deslocamento, valor in enumerate((valor_orc, valor_real)):
+                alvo = ws.cell(row=linha, column=col + deslocamento, value=valor)
+                alvo.font = EXCEL_STYLE["font_bold"]
+                alvo.number_format = '0"%"'
+                alvo.fill = EXCEL_STYLE["fill_total"]
+                alvo.border = EXCEL_STYLE["border"]
+                alvo.alignment = Alignment(horizontal="right")
+            col += 2
+        linha += 2
+        _escrever_legenda(
+            ws,
+            "EBITDA (%) = EBITDA do mês dividido pela Receita Operacional Líquida do mesmo mês. "
+            "A coluna TOTAL usa o acumulado do período, não a média dos meses — com faturamento "
+            "desigual entre eles, as duas contas dão resultados diferentes.",
+            linha, n_col,
+        )
+
+    ws.column_dimensions["A"].width = 42
+    for indice in range(2, n_col + 1):
+        ws.column_dimensions[get_column_letter(indice)].width = 16
+    return nome_aba
+
+
 def montar_relatorio_excel(
     contas_sel,
     dfs_real,
@@ -7431,6 +7577,9 @@ def montar_relatorio_excel(
     planos_filtro=None,
     blocos_agrupados=None,
     linha_percentual_ebitda=False,
+    resumos_anuais=None,
+    mapa_meses_anual=None,
+    apenas_planos_com_linha_dre=False,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -7474,6 +7623,18 @@ def montar_relatorio_excel(
     # logo abaixo, separado. Sem isso, o Excel saía com tudo numa lista só e o
     # total do quadro não aparecia em lugar nenhum.
     blocos_agrupados = blocos_agrupados or []
+    resumos_anuais = resumos_anuais or []
+    # Modelo que só responde por linhas da DRE (as coordenações) não deve
+    # trazer no Excel lançamento que não passa por nenhuma linha -- eles não
+    # compõem nada do que está sendo mostrado e só somam ruído nas abas de
+    # Plano de Contas e Lançamentos.
+    if apenas_planos_com_linha_dre and df_diario is not None and not df_diario.empty:
+        if "Linha DRE" in df_diario.columns:
+            df_diario = df_diario[
+                ~df_diario["Linha DRE"].map(
+                    lambda v: _normalizar_texto(v) in MARCAS_SEM_LINHA_DRE
+                )
+            ]
     mapa_loja_centro_custo = mapa_loja_centro_custo or {}
     diario_disponivel = df_diario is not None and not df_diario.empty
 
@@ -8185,6 +8346,21 @@ def montar_relatorio_excel(
     # cai para `dados_por_loja` se, por algum motivo, ele não vier.
     if incluir_aba_mkt_1pct:
         _criar_aba_mkt_1pct(wb, dados_visoes_mkt or dados_por_loja, mapa_meses, gerado_em)
+
+    # ---------------- ABAS "ANUAL - <visão>" (coordenações) ----------------
+    # Uma por visão consolidada do departamento. Ficam por último para não
+    # empurrar as abas de sempre para o fim do arquivo.
+    if resumos_anuais:
+        nomes_usados_anual = {ws.title for ws in wb.worksheets}
+        for nome_visao in resumos_anuais:
+            dados_visao = (dados_por_loja or {}).get(nome_visao)
+            if not dados_visao:
+                continue
+            df_o_visao, df_r_visao = dados_visao
+            _criar_aba_resumo_anual(
+                wb, nomes_usados_anual, nome_visao, df_o_visao, df_r_visao,
+                mapa_meses_anual or mapa_meses, contas_sel, gerado_em,
+            )
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -12150,7 +12326,14 @@ with tab5:
                 + ". Verifique se o nome mudou na planilha."
             )
 
-    opcoes_lojas_relatorio = list(abas_disponiveis)
+    # O relatório oferece só as abas do departamento, como a barra lateral --
+    # não faz sentido a Coordenação de Loja conseguir gerar um Excel com a
+    # VD dentro, ainda que o painel dela não mostre.
+    _modelo_rel = MODELOS_RELATORIO.get(modelo_sel, {})
+    _abas_do_modelo = list(_modelo_rel.get("visoes_permitidas", [])) + list(
+        _modelo_rel.get("unidades_permitidas", [])
+    )
+    opcoes_lojas_relatorio = _filtrar_abas_permitidas(list(abas_disponiveis), _abas_do_modelo)
     lojas_relatorio_sel = st.multiselect(
         "🏬 Lojas / Visões incluídas no relatório:",
         options=opcoes_lojas_relatorio,
@@ -12191,6 +12374,12 @@ with tab5:
             # Carrega só as lojas/visões escolhidas no filtro acima -- evita
             # gerar um arquivo gigante com todas as 26 abas de uma vez.
             dados_por_loja_rel = carregar_dados_por_loja(path_orc, path_real, lojas_relatorio_sel)
+            # As visões consolidadas do departamento que ganham aba anual --
+            # só as que a pessoa manteve marcadas acima.
+            _visoes_resumo_anual = (
+                [v for v in _modelo_rel.get("visoes_permitidas", []) if v in dados_por_loja_rel]
+                if _modelo_rel.get("resumos_anuais_por_visao") else []
+            )
             df_tabela_contas = carregar_tabela_contas(path_real)
             mapa_planos_dre_rel = montar_mapa_planos_por_dre(df_tabela_contas)
             df_diario_rel = carregar_diario(path_real)
@@ -12240,6 +12429,14 @@ with tab5:
                 planos_filtro=planos_relatorio or None,
                 blocos_agrupados=blocos_relatorio,
                 linha_percentual_ebitda=info_modelo_sel.get("linha_percentual_ebitda", False),
+                resumos_anuais=_visoes_resumo_anual,
+                # O resumo é ANUAL de propósito: mostra todos os meses da
+                # planilha, mesmo quando o resto do relatório está filtrado
+                # por período.
+                mapa_meses_anual=mapa_periodo_rel,
+                apenas_planos_com_linha_dre=info_modelo_sel.get(
+                    "apenas_planos_com_linha_dre", False
+                ),
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 

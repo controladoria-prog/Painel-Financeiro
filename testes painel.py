@@ -868,6 +868,51 @@ class TesteCoordenacoes(unittest.TestCase):
         self.assertIn("pontos percentuais", FONTE,
                       "a legenda precisa avisar que o desvio da linha e em p.p.")
 
+    def test_uma_aba_anual_por_visao_consolidada(self):
+        """Loja tem 2 visoes consolidadas, VD tem 3 -- e cada uma vira uma aba
+        de resumo anual no Excel."""
+        loja = self.ns["MODELOS_RELATORIO"][self.LOJA]
+        vd = self.ns["MODELOS_RELATORIO"][self.VD]
+        self.assertTrue(loja.get("resumos_anuais_por_visao"))
+        self.assertTrue(vd.get("resumos_anuais_por_visao"))
+        self.assertEqual(len(loja["visoes_permitidas"]), 2)
+        self.assertEqual(len(vd["visoes_permitidas"]), 3)
+        self.assertIn("def _criar_aba_resumo_anual(", FONTE)
+        i = FONTE.index("def _criar_aba_resumo_anual(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("ORÇADO", trecho)
+        self.assertIn("REALIZADO", trecho)
+        self.assertIn("EBITDA (%)", trecho)
+
+    def test_percentual_anual_e_mes_a_mes(self):
+        """O EBITDA % de cada mes sai do proprio mes, e o total sai do
+        acumulado -- media dos meses daria outro numero quando o faturamento
+        e desigual entre eles."""
+        ebitda = [419_362.50, 382_194.63, 355_756.86]
+        receita = [1_934_279.55, 1_708_908.50, 2_097_982.47]
+        por_mes = [e / r * 100 for e, r in zip(ebitda, receita)]
+        total = sum(ebitda) / sum(receita) * 100
+        self.assertAlmostEqual(por_mes[0], 21.68, places=1)
+        self.assertNotAlmostEqual(total, sum(por_mes) / 3, places=1)
+        i = FONTE.index("def _criar_aba_resumo_anual(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("pares.append((sum(ebitda[indice]), sum(receita[indice])))", trecho)
+
+    def test_relatorio_so_traz_plano_com_linha_da_dre(self):
+        for nome in (self.LOJA, self.VD):
+            self.assertTrue(
+                self.ns["MODELOS_RELATORIO"][nome].get("apenas_planos_com_linha_dre"))
+        i = FONTE.index("if apenas_planos_com_linha_dre")
+        trecho = FONTE[i:i + 400]
+        self.assertIn("MARCAS_SEM_LINHA_DRE", trecho,
+                      "o filtro precisa usar o mesmo helper de celula vazia")
+
+    def test_relatorio_so_oferece_as_abas_do_departamento(self):
+        i = FONTE.index("opcoes_lojas_relatorio = _filtrar_abas_permitidas")
+        trecho = FONTE[i - 600:i + 200]
+        self.assertIn('_modelo_rel.get("visoes_permitidas"', trecho)
+        self.assertIn('_modelo_rel.get("unidades_permitidas"', trecho)
+
     def test_barra_lateral_filtra_as_abas(self):
         self.assertIn("_filtrar_abas_permitidas", FONTE)
         self.assertIn('_modelo_dept_ativo.get("visoes_permitidas")', FONTE)
