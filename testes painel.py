@@ -18,6 +18,7 @@ executadas com dados montados à mão.
 import ast
 import base64
 import hashlib
+from datetime import date
 import hmac
 import io
 import re
@@ -49,6 +50,12 @@ DEPENDENCIAS = {
     "_eh_linha_de_resultado": ["_normalizar_texto"],
     "resolver_planos_forcados": ["_planos_sem_linha_dre", "_normalizar_texto"],
     "_planos_sem_linha_dre": ["_normalizar_texto"],
+    "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
+    "_cor_valor_invertido": ["cor_valor"],
+}
+CONSTANTES_DE_DEPENDENCIA_CONST = {
+    # Constante que depende de outra constante para ser avaliada.
+    "VISOES_CONSOLIDADAS": ["GRUPO_ABPR", "GRUPO_VD", "GRUPO_LJ_GA", "GRUPO_LJ_CONSOLIDADO"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
@@ -71,6 +78,10 @@ def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
                 nomes_funcoes.append(extra)
                 fila.append(extra)
         for extra in CONSTANTES_DE_DEPENDENCIA.get(nome, []):
+            if extra not in nomes_constantes:
+                nomes_constantes.append(extra)
+    for nome in list(nomes_constantes):
+        for extra in CONSTANTES_DE_DEPENDENCIA_CONST.get(nome, []):
             if extra not in nomes_constantes:
                 nomes_constantes.append(extra)
     pedacos = []
@@ -848,16 +859,51 @@ class TesteCoordenacoes(unittest.TestCase):
             "a mesma loja apareceria nas duas coordenacoes",
         )
 
-    def test_abas_batem_com_os_grupos_do_relatorio(self):
-        """As listas do modelo tem de ser as MESMAS que o gerador do Excel usa
-        para montar as visoes consolidadas -- se uma loja nova entrar so num
-        lugar, o consolidado e o ranking param de fechar."""
-        i = FONTE.index("def _lojas_do_grupo_consolidado(")
-        trecho = FONTE[i:i + 2000]
-        for loja in self.ns["MODELOS_RELATORIO"][self.LOJA]["unidades_permitidas"]:
-            self.assertIn(loja, trecho, f"{loja} nao esta no grupo do relatorio")
-        for unidade in self.ns["MODELOS_RELATORIO"][self.VD]["unidades_permitidas"]:
-            self.assertIn(unidade, trecho, f"{unidade} nao esta no grupo do relatorio")
+    def test_abas_batem_com_as_visoes_consolidadas(self):
+        """As listas do modelo tem de bater com VISOES_CONSOLIDADAS, que e a
+        fonte unica usada pelo painel e pelo Excel -- se uma loja nova entrar
+        so num lugar, o consolidado e o ranking param de fechar."""
+        ns = carregar([], ["VISOES_CONSOLIDADAS"])
+        visoes = ns["VISOES_CONSOLIDADAS"]
+        loja = self.ns["MODELOS_RELATORIO"][self.LOJA]
+        vd = self.ns["MODELOS_RELATORIO"][self.VD]
+        self.assertEqual(sorted(loja["unidades_permitidas"]), sorted(visoes["LJ - G&A"]))
+        self.assertEqual(sorted(vd["unidades_permitidas"]),
+                         sorted(visoes["VD CONSOLIDADO"] + visoes["ABPR CONSOLIDADO"]))
+        for nome_visao in loja["visoes_permitidas"] + vd["visoes_permitidas"]:
+            self.assertIn(nome_visao, visoes, f"{nome_visao} nao existe no mapa de visoes")
+
+    def test_diario_e_recortada_pela_visao(self):
+        """Numero vindo da DIARIO (Mercadorias, benfeitorias, planos fora da
+        DRE) tem de respeitar a visao escolhida -- senao aparece o valor da
+        empresa inteira ao lado de linhas da DRE de uma loja so."""
+        ns = carregar(["_normalizar_nome_aba", "_normalizar_texto",
+                       "_lojas_individuais_das_abas", "_recortar_diario_por_loja"],
+                      ["VISOES_CONSOLIDADAS"])
+        self.assertEqual(ns["_lojas_individuais_das_abas"](["LJ PVH1 11927"]), ["LJ PVH1 11927"])
+        self.assertEqual(len(ns["_lojas_individuais_das_abas"](["LJ - G&A"])), 13)
+        self.assertEqual(ns["_lojas_individuais_das_abas"]([]), [])
+        diario = pd.DataFrame({
+            "Loja": ["LJ PVH1 11927", "LJ SETE 6052", "ABPR 23427"],
+            "Plano de Contas": ["Mercadorias"] * 3,
+            "Valor Bruto": [-100.0, -200.0, -300.0],
+        })
+        recorte = ns["_recortar_diario_por_loja"](diario, ["LJ PVH1 11927"])
+        self.assertEqual(len(recorte), 1)
+        self.assertEqual(recorte["Valor Bruto"].sum(), -100.0)
+        # Nome que nao existe na DIARIO: devolve tudo, nunca zero.
+        self.assertEqual(len(ns["_recortar_diario_por_loja"](diario, ["LOJA QUE NAO EXISTE"])), 3)
+
+    def test_desvio_e_realizado_menos_orcado(self):
+        """Um so significado para "Desvio" na tela inteira: realizado menos
+        orcado, igual ao relatorio em Excel. Positivo = gastou mais."""
+        self.assertIn("Realizado menos orçado · positivo = gastou mais", FONTE)
+        self.assertNotIn('subtext="Positivo = gastou menos que o orçado"', FONTE)
+        self.assertIn("def _cor_valor_invertido(", FONTE)
+        # Nenhum bloco pode ter voltado para orcado menos realizado.
+        for invertido in ['"Desvio (R$)": orc - real,', '"Desvio (R$)": orcado - valor,',
+                          '"Desvio (R$)": v_o - v_r,']:
+            self.assertNotIn(invertido, FONTE, f"convencao antiga de volta: {invertido}")
 
     def test_linha_de_percentual_do_ebitda(self):
         for nome in (self.LOJA, self.VD):
@@ -1024,6 +1070,87 @@ class TestePrazosDoFluxo(unittest.TestCase):
         self.assertIn("ATRASO MÉDIO NO RECEBIMENTO", FONTE)
         self.assertNotIn('label="PRAZO MÉDIO DE PAGAMENTO"', FONTE)
         self.assertNotIn('label="PRAZO MÉDIO DE RECEBIMENTO"', FONTE)
+
+
+# ============================================================================
+# 5f. REVISAO DOS PAINEIS (17/08/2026)
+# ============================================================================
+class TesteRevisaoDosPaineis(unittest.TestCase):
+    """Travas do que a revisao de 17/08 corrigiu -- sao regras que somem
+    facil na proxima mexida e que produzem numero errado sem dar erro."""
+
+    def test_orcado_do_mes_corrente_entra_proporcional(self):
+        ns = carregar(["_fator_proporcional_mes_corrente", "_escalar_orcado_mes_corrente"])
+        orc = [pd.DataFrame({"Nome": ["11 - EBITDA"], "07/2026": [100_000.0],
+                             "08/2026": [310_000.0]})]
+        cols = ["07/2026", "08/2026"]
+        saida, aviso = ns["_escalar_orcado_mes_corrente"](orc, cols, cols, date(2026, 8, 18))
+        self.assertEqual(saida[0]["07/2026"].iloc[0], 100_000.0, "mes fechado nao pode encolher")
+        self.assertAlmostEqual(saida[0]["08/2026"].iloc[0], 310_000 * 18 / 31, places=2)
+        self.assertIn("18 de 31 dias", aviso)
+
+    def test_periodo_fechado_nao_mexe_no_orcado(self):
+        ns = carregar(["_fator_proporcional_mes_corrente", "_escalar_orcado_mes_corrente"])
+        orc = [pd.DataFrame({"Nome": ["11 - EBITDA"], "07/2026": [100_000.0]})]
+        saida, aviso = ns["_escalar_orcado_mes_corrente"](orc, ["07/2026"], ["07/2026"],
+                                                          date(2026, 8, 18))
+        self.assertIs(saida, orc)
+        self.assertEqual(aviso, "")
+
+    def test_mkt_acumula_o_fora_do_1pct(self):
+        """Se um segundo canal passar a descontar, o valor do primeiro nao
+        pode sumir -- o bug seria silencioso."""
+        i = FONTE.index("def _painel_dept_mkt(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("fora_do_1pct += fora_do_canal", trecho)
+        self.assertNotIn("fora_do_1pct = sum(", trecho)
+
+    def test_reguas_do_rh_estao_declaradas(self):
+        ns = carregar([], ["LIMITE_HORA_EXTRA_PCT_FOLHA", "LIMITE_RESCISOES_PCT_FOLHA"])
+        self.assertEqual(ns["LIMITE_HORA_EXTRA_PCT_FOLHA"], 5.0)
+        self.assertEqual(ns["LIMITE_RESCISOES_PCT_FOLHA"], 3.0)
+        i = FONTE.index("def _painel_dept_rh(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertNotIn("* 100 - 5)", trecho, "limite voltou a ficar cravado no codigo")
+        self.assertIn("régua", trecho, "a regua precisa aparecer na tela")
+
+    def test_rh_nao_zera_o_orcado_do_resto(self):
+        i = FONTE.index("def _painel_dept_rh(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("outros_orc = folha_orc_total", trecho)
+        self.assertNotIn('"Orçado (R$)": 0.0,', trecho)
+
+    def test_adm_ranqueia_por_valor_e_por_percentual(self):
+        """So por valor, o custo da venda lidera sempre e enterra as
+        distorcoes cronicas pequenas."""
+        i = FONTE.index("def _painel_dept_adm(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("por_percentual", trecho)
+        self.assertIn("piso_relevante", trecho)
+
+    def test_soma_por_plano_passa_pelo_recorte(self):
+        """A funcao que soma planos da DIARIO tem de aplicar o recorte por
+        loja. Sem esta trava, tirar a chamada nao quebra teste nenhum: o
+        numero fica so maior, e maior parece plausivel."""
+        i = FONTE.index("def _total_planos(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("_recortar_diario_por_loja(df_diario, lojas)", trecho)
+        # E os tres blocos que a usam precisam passar as lojas do contexto.
+        for bloco in ("_painel_dept_compras", "_painel_dept_suprimentos"):
+            j = FONTE.index(f"def {bloco}(")
+            corpo = FONTE[j:FONTE.index("\ndef ", j + 10)]
+            self.assertIn('ctx.get("lojas")', corpo, f"{bloco} soma a empresa inteira")
+        j = FONTE.index("def _painel_dept_adm(")
+        corpo = FONTE[j:FONTE.index("\ndef ", j + 10)]
+        self.assertIn("_recortar_diario_por_loja(df_diario_adm", corpo)
+
+    def test_coordenacao_compara_com_a_mediana(self):
+        """Mediana, nao media: com uma unidade fora da curva a media se
+        desloca e todas as outras parecem boas."""
+        i = FONTE.index("def _painel_dept_coordenacao(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("p.p. vs mediana", trecho)
+        self.assertNotIn("sum(margens) / len(margens)", trecho, "virou media")
 
 
 # ============================================================================

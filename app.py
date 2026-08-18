@@ -2100,6 +2100,49 @@ def _normalizar_texto(txt):
 MARCAS_SEM_LINHA_DRE = {"", "-", "--", "NAN", "NONE", "NAT", "0"}
 
 
+# Quais lojas individuais formam cada visão consolidada. A DIÁRIO só conhece
+# loja individual -- nunca uma visão -- então qualquer soma feita por lá
+# precisa traduzir a visão de volta para as lojas que a compõem. Antes este
+# mapa existia só dentro do gerador do Excel, e por isso os blocos do painel
+# somavam a empresa inteira mesmo com uma loja selecionada na barra lateral.
+GRUPO_ABPR = ["ABPR 23427", "ABPR ZNS 24527"]
+GRUPO_VD = [
+    "VD - GUAJARA 23859", "VD - LESTE 21506", "VD - MACHAD 21691",
+    "VD - MATRIZ 13967", "VD - VST ALEG 21497",
+]
+GRUPO_LJ_GA = [
+    "LJ ARAUJO 12606", "LJ ASSAI 23157", "LJ GUAJARA 23809", "LJ IG SHOP 20330",
+    "LJ JATUARANA 6040", "LJ JK 12478", "LJ MACHAD 21462", "LJ MARECHAL 6039",
+    "LJ NV ERA 18539", "LJ PVH1 11927", "LJ PVH2 14625", "LJ QDB 910332", "LJ SETE 6052",
+]
+GRUPO_LJ_CONSOLIDADO = ["ESCRIT MATRIZ 6037"] + GRUPO_LJ_GA
+
+VISOES_CONSOLIDADAS = {
+    "ABPR CONSOLIDADO": GRUPO_ABPR,
+    "VD CONSOLIDADO": GRUPO_VD,
+    "ABPR + VD": GRUPO_ABPR + GRUPO_VD,
+    "LJ - G&A": GRUPO_LJ_GA,
+    "LJ CONSOLIDADO": GRUPO_LJ_CONSOLIDADO,
+    "CONSOLIDADO - G&A": GRUPO_ABPR + GRUPO_VD + GRUPO_LJ_GA,
+    "DRE CONSOLIDADO": GRUPO_ABPR + GRUPO_VD + GRUPO_LJ_CONSOLIDADO,
+}
+
+
+def _lojas_individuais_das_abas(abas):
+    """Traduz o que está selecionado na barra lateral para lojas individuais.
+
+    Visão consolidada vira as lojas que a formam; loja individual continua
+    ela mesma. Devolve lista vazia quando não há aba nenhuma -- e nesse caso
+    quem chama deve somar tudo, que é o comportamento antigo."""
+    if not abas:
+        return []
+    indice = {_normalizar_nome_aba(k): v for k, v in VISOES_CONSOLIDADAS.items()}
+    lojas = []
+    for aba in abas:
+        lojas.extend(indice.get(_normalizar_nome_aba(aba), [aba]))
+    return list(dict.fromkeys(lojas))
+
+
 def _planos_sem_linha_dre(df_diario):
     """Os planos de contas do DIÁRIO que não têm linha da DRE correspondente.
     São lançamentos que nenhuma linha da DRE alcança -- se ninguém os
@@ -2409,6 +2452,40 @@ def _orcado_proporcional(list_orc, termo, colunas_periodo, meses_cols_ref, data_
         list_orc, termo, [coluna_atual], exato_linha_sintetica=exato
     )
     return valor_fechado + valor_mes_atual * fracao
+
+
+def _escalar_orcado_mes_corrente(list_orc, colunas_periodo, meses_cols_ref, data_hoje):
+    """Devolve cópias dos DataFrames de orçado com a coluna do mês corrente
+    reduzida à fração de dias já decorridos, e um texto explicando o ajuste.
+
+    Por que na FONTE e não em cada conta: o painel de departamento compara
+    orçado e realizado em vários lugares (cartões do topo, bloco próprio,
+    tabelas, gráficos). Ajustar em cada um deles daria a chance de esquecer
+    um, e aí a mesma tela mostraria dois orçados diferentes. Escalando o
+    DataFrame uma vez, tudo que vier depois já lê o número certo.
+
+    Sem mês corrente no período (relatório fechado), devolve a lista original
+    intacta -- nada a ajustar."""
+    coluna_atual, fracao, dia, dias_no_mes = _fator_proporcional_mes_corrente(
+        colunas_periodo, meses_cols_ref, data_hoje
+    )
+    if coluna_atual is None or fracao >= 1:
+        return list_orc, ""
+
+    escalados = []
+    for df in list_orc:
+        if df is None or df.empty or coluna_atual not in df.columns:
+            escalados.append(df)
+            continue
+        copia = df.copy()
+        copia[coluna_atual] = pd.to_numeric(copia[coluna_atual], errors="coerce").fillna(0) * fracao
+        escalados.append(copia)
+    aviso = (
+        f"O mês corrente entra pelo que já passou dele: {dia} de {dias_no_mes} dias "
+        f"({fracao * 100:.0f}% do orçamento do mês). Comparar o realizado parcial contra o "
+        f"orçamento cheio faria todo departamento parecer estar economizando no meio do mês."
+    ).replace(".0%", "%")
+    return escalados, aviso
 
 
 def _mask_loja_por_centro_custo(df_diario, candidatos_loja):
@@ -7684,30 +7761,12 @@ def montar_relatorio_excel(
         - DRE CONSOLIDADO = ABPR CONSOLIDADO + VD CONSOLIDADO + LJ CONSOLIDADO
           (na prática, todas as 21 lojas individuais)
         """
-        grupo_abpr = ["ABPR 23427", "ABPR ZNS 24527"]
-        grupo_vd = [
-            "VD - GUAJARA 23859", "VD - LESTE 21506", "VD - MACHAD 21691",
-            "VD - MATRIZ 13967", "VD - VST ALEG 21497",
-        ]
-        grupo_lj_ga = [
-            "LJ ARAUJO 12606", "LJ ASSAI 23157", "LJ GUAJARA 23809", "LJ IG SHOP 20330",
-            "LJ JATUARANA 6040", "LJ JK 12478", "LJ MACHAD 21462", "LJ MARECHAL 6039",
-            "LJ NV ERA 18539", "LJ PVH1 11927", "LJ PVH2 14625", "LJ QDB 910332", "LJ SETE 6052",
-        ]
-        grupo_lj_consolidado = ["ESCRIT MATRIZ 6037"] + grupo_lj_ga
-        grupo_dre_consolidado = grupo_abpr + grupo_vd + grupo_lj_consolidado
-        grupo_consolidado_ga = grupo_abpr + grupo_vd + grupo_lj_ga
-
-        mapa_grupos = {
-            "ABPR CONSOLIDADO": grupo_abpr,
-            "VD CONSOLIDADO": grupo_vd,
-            "ABPR + VD": grupo_abpr + grupo_vd,
-            "LJ - G&A": grupo_lj_ga,
-            "LJ CONSOLIDADO": grupo_lj_consolidado,
-            "CONSOLIDADO - G&A": grupo_consolidado_ga,
-            "DRE CONSOLIDADO": grupo_dre_consolidado,
+        # Fonte única: VISOES_CONSOLIDADAS, no topo do arquivo. Enquanto este
+        # mapa era duplicado aqui dentro, o painel e o Excel podiam discordar
+        # sobre quais lojas formam uma visão.
+        mapa_grupos_normalizado = {
+            _normalizar_nome_aba(k): v for k, v in VISOES_CONSOLIDADAS.items()
         }
-        mapa_grupos_normalizado = {_normalizar_nome_aba(k): v for k, v in mapa_grupos.items()}
         lojas_definidas = mapa_grupos_normalizado.get(_normalizar_nome_aba(nome_grupo), [])
         # Só devolve lojas que realmente existem entre as lojas individuais carregadas.
         return [l for l in lojas_definidas if l in lojas_individuais]
@@ -8686,24 +8745,56 @@ def _total_dre(dfs, linhas, colunas):
     )
 
 
-def _total_planos(df_diario, termos, colunas_mes):
+def _recortar_diario_por_loja(df_diario, lojas):
+    """Deixa na DIÁRIO só os lançamentos das lojas indicadas.
+
+    Sem isto, um número vindo da DIÁRIO (Mercadorias, benfeitorias, planos
+    fora da DRE) mostrava a empresa inteira mesmo com uma loja escolhida na
+    barra lateral -- e ficava lado a lado, na mesma tela, com números da DRE
+    que respeitavam o recorte. Lista vazia significa "sem recorte"."""
+    if df_diario is None or df_diario.empty or not lojas:
+        return df_diario
+    coluna = next((c for c in ("Loja", "Centro de Custos") if c in df_diario.columns), None)
+    if not coluna:
+        return df_diario
+    alvo = {_normalizar_nome_aba(l) for l in lojas}
+    recorte = df_diario[df_diario[coluna].map(_normalizar_nome_aba).isin(alvo)]
+    # Se o recorte não achar nada, é sinal de que os nomes não batem entre a
+    # DIÁRIO e as abas. Melhor devolver tudo (com o número grande, que salta
+    # aos olhos) do que devolver zero, que passa por "não teve gasto".
+    return recorte if not recorte.empty else df_diario
+
+
+def _total_planos(df_diario, termos, colunas_mes, lojas=None):
     """Soma, na aba DIÁRIO, os lançamentos dos planos de contas indicados --
-    caminho para os itens que não têm linha da DRE (Mercadorias, benfeitorias)."""
+    caminho para os itens que não têm linha da DRE (Mercadorias, benfeitorias).
+    `lojas` recorta pela visão selecionada."""
     if df_diario is None or df_diario.empty or not termos:
         return 0.0
     encontrados, _ = resolver_planos_forcados(df_diario, termos)
     if not encontrados:
         return 0.0
     alvo = {_normalizar_texto(p) for p in encontrados}
-    bloco = df_diario[df_diario["Plano de Contas"].map(_normalizar_texto).isin(alvo)]
+    bloco = _recortar_diario_por_loja(df_diario, lojas)
+    bloco = bloco[bloco["Plano de Contas"].map(_normalizar_texto).isin(alvo)]
     if colunas_mes and "Mês" in bloco.columns:
         bloco = bloco[bloco["Mês"].isin(colunas_mes)]
     return float(bloco["Valor Bruto"].sum())
 
 
-def _tabela_departamento(linhas, colunas_percentual=()):
+def _cor_valor_invertido(val):
+    """Verde quando NEGATIVO. Serve para a coluna de desvio em linha de custo,
+    onde o desvio é realizado menos orçado: gastar acima do previsto dá número
+    positivo, e positivo ali não é boa notícia."""
+    return cor_valor(-val if pd.notna(val) else val)
+
+
+def _tabela_departamento(linhas, colunas_percentual=(), colunas_menor_e_melhor=()):
     """Mostra uma tabela do bloco personalizado com o mesmo desenho das
-    outras: valores em reais, percentuais com vírgula e cor por sinal."""
+    outras: valores em reais, percentuais com vírgula e cor por sinal.
+
+    `colunas_menor_e_melhor` inverte a cor das colunas indicadas -- é o caso
+    do desvio de custo, onde o número positivo significa ter gastado mais."""
     if not linhas:
         return
     df = pd.DataFrame(linhas)
@@ -8715,9 +8806,16 @@ def _tabela_departamento(linhas, colunas_percentual=()):
             # Vazio vira traço: "R$ nan" na tela não diz nada a ninguém.
             formatos[coluna] = lambda v: ("—" if pd.isna(v) else formata_brl(v))
     estilo = df.style.format(formatos)
-    colunas_valor = [c for c in df.columns if df[c].dtype.kind in "fi" and c not in colunas_percentual]
+    colunas_valor = [
+        c for c in df.columns
+        if df[c].dtype.kind in "fi" and c not in colunas_percentual
+        and c not in colunas_menor_e_melhor
+    ]
     if colunas_valor:
         estilo = estilo.map(cor_valor, subset=colunas_valor)
+    invertidas = [c for c in colunas_menor_e_melhor if c in df.columns]
+    if invertidas:
+        estilo = estilo.map(_cor_valor_invertido, subset=invertidas)
     st.dataframe(estilo, width="stretch", hide_index=True)
 
 
@@ -8751,11 +8849,15 @@ def _painel_dept_mkt(ctx):
             continue
         investido = _somar_codigo_com_filhas(df_r, CODIGO_MKT_GESTAO_CP, colunas)
         if descontar:
-            fora_do_1pct = sum(
+            # ACUMULA, não atribui: hoje só o canal Loja desconta, mas no dia
+            # em que um segundo canal entrar nessa regra, atribuir aqui faria
+            # o valor do primeiro sumir sem erro nenhum aparecer.
+            fora_do_canal = sum(
                 _valor_linha_por_codigo(df_r, cod, c)
                 for cod in CODIGOS_MKT_FORA_1PCT for c in colunas
             )
-            investido -= fora_do_1pct
+            fora_do_1pct += fora_do_canal
+            investido -= fora_do_canal
         orcado = _somar_codigo_com_filhas(df_o, CODIGO_MKT_GESTAO_CP, colunas)
         receita = get_valor_consolidado_multi([df_r], LINHA_RECEITA_LIQUIDA, colunas)
         investido_abs, orcado_abs = abs(investido), abs(orcado)
@@ -8768,7 +8870,7 @@ def _painel_dept_mkt(ctx):
             "Canal": rotulo,
             "Investido (R$)": investido_abs,
             "Orçado (R$)": orcado_abs,
-            "Desvio (R$)": orcado_abs - investido_abs,
+            "Desvio (R$)": investido_abs - orcado_abs,
             "Receita do canal (R$)": abs(receita),
             "% da receita": (investido_abs / abs(receita) * 100) if receita else float("nan"),
         })
@@ -8782,7 +8884,7 @@ def _painel_dept_mkt(ctx):
             "Canal": "Fora do 1% (Loja)",
             "Investido (R$)": abs(fora_do_1pct),
             "Orçado (R$)": 0.0,
-            "Desvio (R$)": -abs(fora_do_1pct),
+            "Desvio (R$)": abs(fora_do_1pct),
             "Receita do canal (R$)": float("nan"),
             "% da receita": float("nan"),
         })
@@ -8796,7 +8898,7 @@ def _painel_dept_mkt(ctx):
             "Canal": "TOTAL",
             "Investido (R$)": total_inv,
             "Orçado (R$)": _soma_orcado,
-            "Desvio (R$)": _soma_orcado - total_inv,
+            "Desvio (R$)": total_inv - _soma_orcado,
             "Receita do canal (R$)": total_rec,
             "% da receita": (total_inv / total_rec * 100) if total_rec else float("nan"),
         })
@@ -8825,8 +8927,11 @@ def _painel_dept_mkt(ctx):
         ]),
         unsafe_allow_html=True,
     )
-    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
+        "Esta tabela é por CANAL; a lista logo abaixo é por LINHA da DRE — são dois recortes do "
+        "mesmo dinheiro, e por isso os números não se somam entre elas. "
         "A linha TOTAL fecha com os cartões do topo: investido + orçado + desvio do "
         "departamento. "
         "Investido é a linha 6.24.2 (Gestão CP). **O 1% vale só para o canal Loja**, e o teto dele "
@@ -8856,6 +8961,11 @@ def _painel_dept_compras(ctx):
     colunas = ctx["colunas"]
     receita = abs(get_valor_consolidado_multi(ctx["dfs_real"], LINHA_RECEITA_LIQUIDA, colunas))
     cmv = abs(get_valor_consolidado_multi(ctx["dfs_real"], "4 - Custo das Vendas", colunas))
+    # Mercadorias não tem linha da DRE, então não tem orçamento próprio. A
+    # referência possível é o orçado do Custo das Vendas, que é onde ela
+    # desemboca -- sem isso o indicador mostrava tamanho, mas não dizia se
+    # estava acima ou abaixo do previsto, que é o que o comprador precisa.
+    cmv_orc = abs(get_valor_consolidado_multi(ctx["dfs_orc"], "4 - Custo das Vendas", colunas))
     materiais = abs(_total_dre(ctx["dfs_real"], ctx["linhas_raiz"], colunas))
     materiais_orc = abs(_total_dre(ctx["dfs_orc"], ctx["linhas_raiz"], colunas))
 
@@ -8863,13 +8973,14 @@ def _painel_dept_compras(ctx):
         df_diario = carregar_diario(ctx["path_real"])
     except Exception:
         df_diario = None
-    mercadorias = abs(_total_planos(df_diario, ["Mercadorias"], colunas))
+    mercadorias = abs(_total_planos(df_diario, ["Mercadorias"], colunas, ctx.get("lojas")))
 
     st.markdown(
         faixa_metricas_html([
-            ("Mercadorias no período", formata_valor_curto(mercadorias), COLORS["text"],
-             (f"{mercadorias / cmv * 100:.1f}% do custo das vendas".replace(".", ",")
-              if cmv else "sem CMV no período")),
+            ("Mercadorias no período", formata_valor_curto(mercadorias),
+             cor_variacao(cmv_orc - mercadorias) if cmv_orc else COLORS["text"],
+             (f"{mercadorias / cmv_orc * 100:.0f}% do CMV orçado".replace(".", ",")
+              if cmv_orc else "sem orçamento de CMV no período")),
             ("Mercadorias / receita",
              (f"{mercadorias / receita * 100:.1f}%".replace(".", ",") if receita else "—"),
              COLORS["primary"], "quanto da venda vira compra de mercadoria"),
@@ -8889,12 +9000,13 @@ def _painel_dept_compras(ctx):
             "Material": _nome_sem_numero_dre(linha),
             "Realizado (R$)": valor,
             "Orçado (R$)": orcado,
-            "Desvio (R$)": orcado - valor,
+            "Desvio (R$)": valor - orcado,
             "Por R$ 1.000 vendidos": (valor / receita * 1000) if receita else float("nan"),
             "% da receita": (valor / receita * 100) if receita else float("nan"),
         })
     linhas_tabela.sort(key=lambda item: item["Realizado (R$)"], reverse=True)
-    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",))
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% da receita",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
         "Mercadorias vem da aba DIÁRIO, pelo plano de contas — não existe linha da DRE para ela. "
         "A coluna por R$ 1.000 vendidos é o custo unitário de cada material em relação à venda: "
@@ -8925,7 +9037,7 @@ def _painel_dept_suprimentos(ctx):
         df_diario = None
     planos_investimento = MODELOS_RELATORIO.get(
         ctx["departamento"], {}).get("forcar_planos_contas", [])
-    investimento = abs(_total_planos(df_diario, planos_investimento, colunas))
+    investimento = abs(_total_planos(df_diario, planos_investimento, colunas, ctx.get("lojas")))
 
     def _linhas_por_termo(*termos):
         # Procura na lista completa da DRE: buscar só dentro das linhas do
@@ -8936,10 +9048,12 @@ def _painel_dept_suprimentos(ctx):
             achadas.extend(_resolver_termo_departamento(termo, universo))
         return list(dict.fromkeys(achadas))
 
-    logistica = abs(_total_dre(
-        ctx["dfs_real"], _linhas_por_termo("6.8 - Serviço de Entrega", "8.8.10 - Serviços de Transporte"), colunas))
-    frota = abs(_total_dre(
-        ctx["dfs_real"], _linhas_por_termo("8.5.3 - Combustível", "8.5.4 - Manutenção Veículos"), colunas))
+    linhas_logistica = _linhas_por_termo("6.8 - Serviço de Entrega", "8.8.10 - Serviços de Transporte")
+    linhas_frota = _linhas_por_termo("8.5.3 - Combustível", "8.5.4 - Manutenção Veículos")
+    logistica = abs(_total_dre(ctx["dfs_real"], linhas_logistica, colunas))
+    logistica_orc = abs(_total_dre(ctx["dfs_orc"], linhas_logistica, colunas))
+    frota = abs(_total_dre(ctx["dfs_real"], linhas_frota, colunas))
+    frota_orc = abs(_total_dre(ctx["dfs_orc"], linhas_frota, colunas))
 
     st.markdown(
         faixa_metricas_html([
@@ -8947,9 +9061,16 @@ def _painel_dept_suprimentos(ctx):
              "planos de ativo, sem linha da DRE"),
             ("Custo logístico / receita",
              (f"{logistica / receita * 100:.2f}%".replace(".", ",") if receita else "—"),
-             COLORS["text"], f"entrega + transporte: {formata_valor_curto(logistica)}"),
-            ("Custo de frota", formata_valor_curto(frota), COLORS["text"],
-             "combustível + manutenção de veículos"),
+             cor_variacao(logistica_orc - logistica) if logistica_orc else COLORS["text"],
+             (f"{formata_valor_curto(logistica)} · orçado {formata_valor_curto(logistica_orc)}"
+              if logistica_orc else f"{formata_valor_curto(logistica)} · sem orçamento")),
+            ("Custo de frota", formata_valor_curto(frota),
+             cor_variacao(frota_orc - frota) if frota_orc else COLORS["text"],
+             (f"orçado {formata_valor_curto(frota_orc)}" if frota_orc
+              else "combustível + manutenção, sem orçamento")),
+            ("Custeio por R$ 1.000 vendidos",
+             (formata_brl(custeio / receita * 1000) if receita else "—"),
+             COLORS["text"], "frete e combustível sobem com o volume — este número não"),
         ]),
         unsafe_allow_html=True,
     )
@@ -8964,11 +9085,12 @@ def _painel_dept_suprimentos(ctx):
             "Item de custeio": _nome_sem_numero_dre(linha),
             "Realizado (R$)": valor,
             "Orçado (R$)": orcado,
-            "Desvio (R$)": orcado - valor,
+            "Desvio (R$)": valor - orcado,
             "% do custeio": (valor / custeio * 100) if custeio else float("nan"),
         })
     linhas_tabela.sort(key=lambda item: item["Realizado (R$)"], reverse=True)
-    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custeio",))
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custeio",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
         "O investimento em benfeitorias e padronização vem da aba DIÁRIO, pelos planos de contas — "
         "ele não entra no custeio nem no orçamento das linhas acima, por ser ativo e não despesa "
@@ -8980,6 +9102,13 @@ def _painel_dept_suprimentos(ctx):
 # ---------------------------------------------------------------------------
 # RH
 # ---------------------------------------------------------------------------
+# Réguas do RH, à vista em vez de cravadas no meio do código. São
+# referências de leitura, não metas da empresa: acima disso o número fica
+# vermelho para puxar o olho, e a legenda diz qual é o limite.
+LIMITE_HORA_EXTRA_PCT_FOLHA = 5.0
+LIMITE_RESCISOES_PCT_FOLHA = 3.0
+
+
 def _painel_dept_rh(ctx):
     """As 41 linhas de RH viram cinco blocos. Hora extra e rescisões ganham
     indicador próprio porque são os dois termômetros de gestão de pessoal:
@@ -9012,12 +9141,16 @@ def _painel_dept_rh(ctx):
     st.markdown(
         faixa_metricas_html([
             ("Hora extra", formata_valor_curto(hora_extra),
-             cor_variacao(-(hora_extra / folha_total * 100 - 5) if folha_total else 0),
+             cor_variacao(-(hora_extra / folha_total * 100 - LIMITE_HORA_EXTRA_PCT_FOLHA)
+                          if folha_total else 0),
              (f"{hora_extra / folha_total * 100:.1f}% da folha".replace(".", ",")
+              + f" · régua {LIMITE_HORA_EXTRA_PCT_FOLHA:.0f}%"
               if folha_total else "—")),
             ("Rescisões e multa de FGTS", formata_valor_curto(rescisoes),
-             cor_variacao(-(rescisoes / folha_total * 100 - 5) if folha_total else 0),
+             cor_variacao(-(rescisoes / folha_total * 100 - LIMITE_RESCISOES_PCT_FOLHA)
+                          if folha_total else 0),
              (f"{rescisoes / folha_total * 100:.1f}% da folha".replace(".", ",")
+              + f" · régua {LIMITE_RESCISOES_PCT_FOLHA:.0f}%"
               if folha_total else "—")),
             ("Comissões sobre vendas",
              formata_valor_curto(next((v for r, v, _ in valores_blocos if r.startswith("Comissões")), 0.0)),
@@ -9034,26 +9167,33 @@ def _painel_dept_rh(ctx):
             "Bloco": rotulo,
             "Realizado (R$)": valor,
             "Orçado (R$)": orcado,
-            "Desvio (R$)": orcado - valor,
+            "Desvio (R$)": valor - orcado,
             "% do custo de pessoal": (valor / folha_total * 100) if folha_total else float("nan"),
             "% da receita": (valor / receita * 100) if receita else float("nan"),
         })
     outros = folha_total - sum(v for _, v, _ in valores_blocos)
+    # O orçado do resto também é o resto do orçado -- antes entrava zero, e
+    # a linha aparecia com um desvio cheio que não significava nada.
+    folha_orc_total = abs(_total_dre(ctx["dfs_orc"], ctx["linhas_raiz"], colunas))
+    outros_orc = folha_orc_total - sum(o for _, _, o in valores_blocos)
     if abs(outros) > 0.01:
         linhas_tabela.append({
             "Bloco": "Outras despesas com pessoal",
             "Realizado (R$)": outros,
-            "Orçado (R$)": 0.0,
-            "Desvio (R$)": -outros,
+            "Orçado (R$)": outros_orc,
+            "Desvio (R$)": outros - outros_orc,
             "% do custo de pessoal": (outros / folha_total * 100) if folha_total else float("nan"),
             "% da receita": (outros / receita * 100) if receita else float("nan"),
         })
-    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custo de pessoal", "% da receita"))
+    _tabela_departamento(linhas_tabela, colunas_percentual=("% do custo de pessoal", "% da receita"),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
         "Os blocos usam as linhas-mãe da DRE (8.3.1 a 8.3.4), que já somam as filhas — "
         "\"Outras despesas com pessoal\" é o que sobra do total do modelo fora desses blocos. "
         "Hora extra e rescisões estão em destaque por serem os primeiros indicadores a se mexer "
-        "quando a operação aperta."
+        f"quando a operação aperta. As réguas de cor são {LIMITE_HORA_EXTRA_PCT_FOLHA:.0f}% da "
+        f"folha para hora extra e {LIMITE_RESCISOES_PCT_FOLHA:.0f}% para rescisões — referências "
+        "de leitura, não metas da empresa; se a sua for outra, é uma linha para mudar no código."
     )
     # Aqui a folha aparece agrupada em cinco blocos; a lista linha a linha (são
     # 41) continua sendo útil logo abaixo, então o genérico segue.
@@ -9101,7 +9241,7 @@ def _painel_dept_comercial(ctx):
             "Linha da DRE": _nome_sem_numero_dre(achadas[0]),
             "Orçado (R$)": orc,
             "Realizado (R$)": real,
-            "Desvio (R$)": orc - real,
+            "Desvio (R$)": real - orc,
             "% do orçado": (real / orc * 100) if orc else float("nan"),
         })
     if linhas_metas:
@@ -9109,19 +9249,35 @@ def _painel_dept_comercial(ctx):
             "Linha da DRE": "TOTAL — Quadro de Metas GER.COM.",
             "Orçado (R$)": meta_orc,
             "Realizado (R$)": meta_real,
-            "Desvio (R$)": meta_orc - meta_real,
+            "Desvio (R$)": meta_real - meta_orc,
             "% do orçado": (meta_real / meta_orc * 100) if meta_orc else float("nan"),
         })
 
-    # Sem faixa de indicadores aqui: realizado, orçado, desvio e peso na
+    # Um único indicador, e de propósito: realizado, orçado, desvio e peso na
     # receita já estão nos cartões do topo e no bloco "Peso do Departamento".
-    # A tabela abaixo traz o mesmo total, aberto por linha -- repetir os
-    # quatro números numa faixa só fazia a tela dizer três vezes a mesma coisa.
-    _tabela_departamento(linhas_metas, colunas_percentual=("% do orçado",))
+    # O que faltava era o RITMO -- quanto do orçamento já foi gasto contra
+    # quanto do período já passou. É a leitura de quem administra um
+    # orçamento fechado e precisa saber se ele chega até dezembro.
+    _consumo = (meta_real / meta_orc * 100) if meta_orc else float("nan")
+    _hoje_com = datetime.now(FUSO_BR).date()
+    _decorrido = _hoje_com.timetuple().tm_yday / (366 if _hoje_com.year % 4 == 0 else 365) * 100
+    st.markdown(
+        faixa_metricas_html([
+            ("Consumo do orçamento",
+             ("—" if pd.isna(_consumo) else f"{_consumo:.0f}%".replace(".", ",")),
+             cor_variacao(-(_consumo - _decorrido) if not pd.isna(_consumo) else 0),
+             f"{_decorrido:.0f}% do ano já passou".replace(".", ",")),
+        ]),
+        unsafe_allow_html=True,
+    )
+    _tabela_departamento(linhas_metas, colunas_percentual=("% do orçado",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
         "É este total que o relatório chama de **Despesa Variavel - Quadro de Metas GER.COM.** — "
         "a soma apenas destas três linhas. Encontro de Ciclo e Outras Despesas de Marketing são "
-        "netas da 6 - Despesas Variáveis; Prêmios / Bônus vem de outro ramo da DRE (8.3.3.7)."
+        "netas da 6 - Despesas Variáveis; Prêmios / Bônus vem de outro ramo da DRE (8.3.3.7). "
+        "O consumo do orçamento compara com o quanto do ANO já passou — se o período filtrado "
+        "for menor que o ano, os dois números não são comparáveis entre si."
     )
 
     # ---- 6 - Despesas Variáveis, para conhecimento ----
@@ -9153,7 +9309,7 @@ def _painel_dept_comercial(ctx):
             "Linha da DRE": _nome_sem_numero_dre(linha),
             "Orçado (R$)": orc,
             "Realizado (R$)": real,
-            "Desvio (R$)": orc - real,
+            "Desvio (R$)": real - orc,
             "% do grupo": (real / grupo_real * 100) if grupo_real else float("nan"),
         })
     if grupo:
@@ -9161,10 +9317,11 @@ def _painel_dept_comercial(ctx):
             "Linha da DRE": "TOTAL — 6 Despesas Variáveis",
             "Orçado (R$)": grupo_orc,
             "Realizado (R$)": grupo_real,
-            "Desvio (R$)": grupo_orc - grupo_real,
+            "Desvio (R$)": grupo_real - grupo_orc,
             "% do grupo": 100.0 if grupo_real else float("nan"),
         })
-    _tabela_departamento(linhas_var, colunas_percentual=("% do grupo",))
+    _tabela_departamento(linhas_var, colunas_percentual=("% do grupo",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
         "O grupo inteiro, aberto por sublinha, como no relatório. Estes valores **não somam** "
         "com o Quadro de Metas acima e não entram nos indicadores do departamento — estão aqui "
@@ -9270,18 +9427,36 @@ def _painel_dept_adm(ctx):
             "Conta / Linha DRE": _nome_sem_numero_dre(linha),
             "Orçado (R$)": orc,
             "Realizado (R$)": real,
-            "Desvio (R$)": orc - real,
+            "Desvio (R$)": real - orc,
             "% do orçado": (real / orc * 100) if orc else float("nan"),
         })
-    contas.sort(key=lambda c: abs(c["Desvio (R$)"]), reverse=True)
-    _tabela_departamento(contas[:8], colunas_percentual=("% do orçado",))
+    # Dois critérios, porque um só esconde metade do problema. Por valor, o
+    # CMV lidera sempre -- ele é dez vezes maior que qualquer outra conta, e o
+    # ranking vira uma lista com uma linha útil. Por percentual, aparecem as
+    # distorções crônicas e pequenas: a tarifa que dobrou, o serviço que subiu
+    # 60%. O piso de valor evita que uma conta de R$ 300 com 400% de estouro
+    # ocupe a lista.
+    piso_relevante = max(receita * 0.0005, 5_000.0) if receita else 5_000.0
+    por_valor = sorted(contas, key=lambda c: abs(c["Desvio (R$)"]), reverse=True)[:5]
+    nomes_por_valor = {c["Conta / Linha DRE"] for c in por_valor}
+    por_percentual = [
+        c for c in contas
+        if c["Conta / Linha DRE"] not in nomes_por_valor
+        and c["Orçado (R$)"] >= piso_relevante
+        and not pd.isna(c["% do orçado"])
+    ]
+    por_percentual.sort(key=lambda c: abs(c["% do orçado"] - 100), reverse=True)
+    _tabela_departamento(por_valor + por_percentual[:5], colunas_percentual=("% do orçado",),
+                         colunas_menor_e_melhor=("Desvio (R$)",))
     st.caption(
-        f"As 8 maiores distorções do período, das {len(contas)} contas do departamento, em "
-        "valor absoluto — para cima e para baixo, porque gastar bem menos que o previsto "
-        "também merece explicação (pode ser conta que ainda não chegou). Desvio positivo é "
-        "gasto abaixo do orçado. As linhas que a DRE calcula (margens, EBITDA, resultados) "
-        "ficam fora deste ranking e de qualquer soma, mas aparecem na lista completa logo "
-        "abaixo e no relatório."
+        f"Das {len(contas)} contas do departamento: as 5 maiores distorções **em reais** e, "
+        f"abaixo delas, as 5 maiores **em percentual** entre as contas com orçamento acima de "
+        f"{formata_valor_curto(piso_relevante)}. Os dois critérios existem porque o custo da "
+        "venda é grande o bastante para liderar sempre o ranking em reais e enterrar as "
+        "distorções pequenas e crônicas. Desvio positivo é gasto acima do orçado — para os dois "
+        "lados, porque gastar bem menos que o previsto também merece explicação. As linhas que a "
+        "DRE calcula (margens, EBITDA, resultados) ficam fora daqui e de qualquer soma, mas "
+        "aparecem na lista completa logo abaixo e no relatório."
     )
 
     # ---- Planos de contas fora da DRE ----
@@ -9302,6 +9477,7 @@ def _painel_dept_adm(ctx):
             if plano != "RESTANTE"
         }
     ]
+    df_diario_adm = _recortar_diario_por_loja(df_diario_adm, ctx.get("lojas"))
     if planos_soltos and df_diario_adm is not None and not df_diario_adm.empty:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-title">🧾 Planos de Contas Fora da DRE</div>',
@@ -9497,6 +9673,20 @@ def _painel_dept_coordenacao(ctx):
     if linhas_unidade:
         linhas_unidade.sort(key=lambda u: (u["EBITDA %"] if u["EBITDA %"] == u["EBITDA %"] else -999),
                             reverse=True)
+        # Distância para a MEDIANA da rede, não para a média: com uma unidade
+        # muito fora da curva, a média se desloca e todas as outras parecem
+        # boas. A mediana não se mexe. É a leitura que responde "quem está
+        # fora do normal daqui", que a lista ordenada sozinha não dá.
+        margens = sorted(u["EBITDA %"] for u in linhas_unidade if u["EBITDA %"] == u["EBITDA %"])
+        mediana = (
+            margens[len(margens) // 2] if len(margens) % 2
+            else (margens[len(margens) // 2 - 1] + margens[len(margens) // 2]) / 2
+        ) if margens else float("nan")
+        for unidade in linhas_unidade:
+            unidade["p.p. vs mediana"] = (
+                unidade["EBITDA %"] - mediana if unidade["EBITDA %"] == unidade["EBITDA %"]
+                else float("nan")
+            )
         total_rec = sum(u["Receita (R$)"] for u in linhas_unidade)
         total_ebi = sum(u["EBITDA (R$)"] for u in linhas_unidade)
         linhas_unidade.append({
@@ -9506,16 +9696,21 @@ def _painel_dept_coordenacao(ctx):
             "EBITDA (R$)": total_ebi,
             "EBITDA %": _pct(total_ebi, total_rec),
             "EBITDA % orçado": float("nan"),
+            "p.p. vs mediana": float("nan"),
         })
     _tabela_departamento(
         linhas_unidade,
-        colunas_percentual=("% da meta de receita", "EBITDA %", "EBITDA % orçado"),
+        colunas_percentual=("% da meta de receita", "EBITDA %", "EBITDA % orçado",
+                            "p.p. vs mediana"),
     )
     st.caption(
         "Ordenado pela margem de EBITDA, não pelo faturamento: a loja maior quase sempre "
         "lidera em receita, e isso não diz se ela é bem operada. Comparar o EBITDA % com o "
         "orçado da própria unidade evita cobrar de uma loja nova a margem de uma madura. "
-        "O total soma as unidades listadas — pode não bater com a visão consolidada, que "
+        + (f"A coluna p.p. vs mediana mede a distância para a mediana da rede "
+           f"({mediana:.1f}%)".replace(".", ",") + " — negativo é estar abaixo do normal daqui. "
+           if margens else "")
+        + "O total soma as unidades listadas — pode não bater com a visão consolidada, que "
         "inclui rateios e a matriz."
     )
     return {"linhas_dept"}
@@ -9605,17 +9800,23 @@ with tab1:
                 "O texto das linhas pode estar um pouco diferente do esperado."
             )
         else:
+            # Orçado ajustado ao mês corrente, UMA vez, na fonte: daqui para
+            # baixo todo número desta tela (cartões, bloco do departamento,
+            # tabelas) lê o mesmo orçamento.
+            list_df_orc_dept, _aviso_proporcional = _escalar_orcado_mes_corrente(
+                list_df_orc, cols_kpi, list(m_map.values()), datetime.now(FUSO_BR).date()
+            )
             dept_real = sum(
                 get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True)
                 for l in linhas_departamento_raiz
             )
             dept_orc = sum(
-                get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True)
+                get_valor_consolidado_multi(list_df_orc_dept, l, cols_kpi, exato_linha_sintetica=True)
                 for l in linhas_departamento_raiz
             )
             dept_real_abs = abs(dept_real)
             dept_orc_abs = abs(dept_orc)
-            desvio_dept = dept_orc_abs - dept_real_abs  # gasto menor que orçado é favorável
+            desvio_dept = dept_real_abs - dept_orc_abs  # positivo = gastou mais que o orçado
             pct_atg_dept = (dept_real_abs / dept_orc_abs * 100) if dept_orc_abs else 0
 
             st.markdown(
@@ -9624,13 +9825,17 @@ with tab1:
                          value_color=COLORS["text"], subtext=f"{len(linhas_departamento_resolvidas)} linha(s) da DRE", icon="💸"),
                     dict(label="TOTAL ORÇADO (PERÍODO)", value=formata_brl(dept_orc_abs),
                          value_color=COLORS["text_muted"], subtext="Referência do orçamento", icon="🎯"),
-                    dict(label="DESVIO vs. ORÇADO", value=formata_brl(desvio_dept), value_color=cor_variacao(desvio_dept),
-                         subtext="Positivo = gastou menos que o orçado", subtext_color=cor_variacao(desvio_dept), icon="⚖️"),
+                    dict(label="DESVIO vs. ORÇADO", value=formata_brl(desvio_dept),
+                         value_color=cor_variacao(-desvio_dept),
+                         subtext="Realizado menos orçado · positivo = gastou mais",
+                         subtext_color=cor_variacao(-desvio_dept), icon="⚖️"),
                     dict(label="% DO ORÇADO CONSUMIDO", value=f"{pct_atg_dept:.1f}%", value_color=cor_variacao(-(pct_atg_dept - 100)),
                          subtext=f"Período: {label_periodo_kpi}", icon="📊"),
                 ]),
                 unsafe_allow_html=True,
             )
+            if _aviso_proporcional:
+                st.caption(_aviso_proporcional)
             st.markdown("<br>", unsafe_allow_html=True)
 
             # ---- Bloco próprio do departamento ----
@@ -9639,7 +9844,7 @@ with tab1:
             _ja_mostrado_dept = renderizar_painel_personalizado(departamento_ativo, {
                 "departamento": departamento_ativo,
                 "dfs_real": list_df_real,
-                "dfs_orc": list_df_orc,
+                "dfs_orc": list_df_orc_dept,
                 "colunas": cols_kpi,
                 "linhas_resolvidas": linhas_departamento_resolvidas,
                 "linhas_raiz": linhas_departamento_raiz,
@@ -9647,6 +9852,11 @@ with tab1:
                 "linhas_informativas": linhas_departamento_informativas,
                 "path_orc": path_orc,
                 "path_real": path_real,
+                # As lojas individuais por trás do que está selecionado na
+                # barra lateral -- é o que permite aos blocos somarem a
+                # DIÁRIO no mesmo recorte da DRE que está na tela.
+                "lojas": _lojas_individuais_das_abas(abas_para_carregar),
+                "label_visao": label_visao,
             })
 
             # ---- Impacto no resultado da empresa (Receita, EBITDA, Custos+Despesas totais) ----
@@ -9768,9 +9978,9 @@ with tab1:
                 linhas_tabela_dept = []
                 for l in linhas_departamento_resolvidas:
                     v_r = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                    v_o = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                    v_o = abs(get_valor_consolidado_multi(list_df_orc_dept, l, cols_kpi, exato_linha_sintetica=True))
                     linhas_tabela_dept.append({
-                        "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_o - v_r,
+                        "Conta / Linha DRE": l, "Realizado (R$)": v_r, "Orçado (R$)": v_o, "Desvio (R$)": v_r - v_o,
                     })
                 df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
                 cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
@@ -9781,7 +9991,8 @@ with tab1:
                             "Orçado (R$)": formata_brl,
                             "Desvio (R$)": formata_brl,
                         }
-                    ).map(cor_valor, subset=cols_num_dept),
+                    ).map(cor_valor, subset=[c for c in cols_num_dept if c != "Desvio (R$)"])
+                     .map(_cor_valor_invertido, subset=["Desvio (R$)"]),
                     column_config={
                         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                     },
@@ -9807,10 +10018,10 @@ with tab1:
                 linhas_tabela_info = []
                 for l in linhas_departamento_informativas:
                     v_r_info = abs(get_valor_consolidado_multi(list_df_real, l, cols_kpi, exato_linha_sintetica=True))
-                    v_o_info = abs(get_valor_consolidado_multi(list_df_orc, l, cols_kpi, exato_linha_sintetica=True))
+                    v_o_info = abs(get_valor_consolidado_multi(list_df_orc_dept, l, cols_kpi, exato_linha_sintetica=True))
                     linhas_tabela_info.append({
                         "Conta / Linha DRE": l, "Realizado (R$)": v_r_info, "Orçado (R$)": v_o_info,
-                        "Desvio (R$)": v_o_info - v_r_info,
+                        "Desvio (R$)": v_r_info - v_o_info,
                     })
                 df_tabela_info = pd.DataFrame(linhas_tabela_info)
                 st.dataframe(
@@ -9820,7 +10031,8 @@ with tab1:
                             "Orçado (R$)": formata_brl,
                             "Desvio (R$)": formata_brl,
                         }
-                    ).map(cor_valor, subset=cols_num_dept),
+                    ).map(cor_valor, subset=[c for c in cols_num_dept if c != "Desvio (R$)"])
+                     .map(_cor_valor_invertido, subset=["Desvio (R$)"]),
                     column_config={
                         "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
                     },
@@ -10462,12 +10674,13 @@ with tab2:
             v_o_info_dre = abs(get_valor_consolidado_multi(list_df_orc, l, cols_graficos, exato_linha_sintetica=True))
             linhas_tabela_info_dre.append({
                 "Conta / Linha DRE": l, "Realizado (R$)": v_r_info_dre, "Orçado (R$)": v_o_info_dre,
-                "Desvio (R$)": v_o_info_dre - v_r_info_dre,
+                "Desvio (R$)": v_r_info_dre - v_o_info_dre,
             })
         st.dataframe(
             pd.DataFrame(linhas_tabela_info_dre).style.format(
                 {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
-            ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]),
+            ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)"])
+             .map(_cor_valor_invertido, subset=["Desvio (R$)"]),
             column_config={"Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large")},
             width="stretch",
             hide_index=True,
