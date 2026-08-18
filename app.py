@@ -2093,6 +2093,28 @@ def _normalizar_texto(txt):
     return re.sub(r"\s+", " ", str(txt or "").strip().upper())
 
 
+# Célula vazia na coluna "Linha DRE" chega aqui de várias formas: string
+# vazia, "-", ou o texto "nan"/"none" -- porque a leitura converte a coluna
+# inteira para texto e o NaN do pandas vira a palavra "nan". Testar só por
+# string vazia deixava passar quase tudo.
+MARCAS_SEM_LINHA_DRE = {"", "-", "--", "NAN", "NONE", "NAT", "0"}
+
+
+def _planos_sem_linha_dre(df_diario):
+    """Os planos de contas do DIÁRIO que não têm linha da DRE correspondente.
+    São lançamentos que nenhuma linha da DRE alcança -- se ninguém os
+    reivindicar, não aparecem em relatório nenhum."""
+    if df_diario is None or df_diario.empty:
+        return []
+    if "Linha DRE" not in df_diario.columns or "Plano de Contas" not in df_diario.columns:
+        return []
+    sem_linha = df_diario["Linha DRE"].map(
+        lambda v: _normalizar_texto(v) in MARCAS_SEM_LINHA_DRE
+    )
+    planos = df_diario.loc[sem_linha, "Plano de Contas"].dropna().astype(str).str.strip()
+    return sorted({p for p in planos if p})
+
+
 def _normalizar_nome_aba(nome):
     """Normaliza nome de ABA especificamente para reconhecer visões
     consolidadas (ex.: "CONSOLIDADO - G&A") mesmo com pequenas diferenças de
@@ -7269,13 +7291,10 @@ def resolver_planos_forcados(df_diario, termos):
             for plano in modelo.get("forcar_planos_contas", []):
                 if plano != "RESTANTE":
                     ja_reivindicados.add(_normalizar_texto(plano))
-        if "Linha DRE" in df_diario.columns:
-            sem_linha = df_diario[df_diario["Linha DRE"].astype(str).str.strip() == ""]
-            sobrando = [
-                p for p in sem_linha["Plano de Contas"].dropna().astype(str).str.strip().unique()
-                if p and _normalizar_texto(p) not in ja_reivindicados
-            ]
-            termos = list(termos) + sorted(sobrando)
+        termos = list(termos) + [
+            p for p in _planos_sem_linha_dre(df_diario)
+            if _normalizar_texto(p) not in ja_reivindicados
+        ]
     indice = {_normalizar_texto(p): p for p in disponiveis}
     encontrados, faltando = [], []
     for termo in (termos or []):
@@ -8952,6 +8971,68 @@ def _painel_dept_adm(ctx):
         "ficam fora deste ranking e de qualquer soma, mas aparecem na lista completa logo "
         "abaixo e no relatório."
     )
+
+    # ---- Planos de contas fora da DRE ----
+    # Esses lançamentos não têm linha da DRE que os alcance e nenhum outro
+    # departamento os reivindicou. Sem este bloco eles não apareciam em lugar
+    # nenhum do painel -- e é dinheiro que saiu (ou entrou) do mesmo jeito.
+    try:
+        df_diario_adm = carregar_diario(ctx["path_real"])
+    except Exception:
+        df_diario_adm = None
+
+    planos_soltos = [
+        p for p in _planos_sem_linha_dre(df_diario_adm)
+        if _normalizar_texto(p) not in {
+            _normalizar_texto(plano)
+            for modelo in MODELOS_RELATORIO.values()
+            for plano in modelo.get("forcar_planos_contas", [])
+            if plano != "RESTANTE"
+        }
+    ]
+    if planos_soltos and df_diario_adm is not None and not df_diario_adm.empty:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">🧾 Planos de Contas Fora da DRE</div>',
+                    unsafe_allow_html=True)
+
+        bloco = df_diario_adm[
+            df_diario_adm["Plano de Contas"].map(_normalizar_texto).isin(
+                {_normalizar_texto(p) for p in planos_soltos}
+            )
+        ]
+        if colunas and "Mês" in bloco.columns:
+            bloco = bloco[bloco["Mês"].isin(colunas)]
+
+        linhas_planos, total_planos = [], 0.0
+        if not bloco.empty:
+            somas = bloco.groupby("Plano de Contas")["Valor Bruto"].agg(["sum", "count"])
+            somas = somas[somas["sum"] != 0].sort_values("sum", key=abs, ascending=False)
+            total_planos = float(somas["sum"].sum())
+            # Sem coluna de percentual aqui: o bloco mistura entrada e saída
+            # (resgate de aplicação convive com pagamento de empréstimo), e
+            # percentual sobre um total líquido de sinais opostos dá número
+            # sem significado -- uma entrada aparecia com participação
+            # negativa. O que interessa é o valor e o sinal.
+            for plano, linha in somas.iterrows():
+                linhas_planos.append({
+                    "Plano de Contas": plano,
+                    "Lançamentos": int(linha["count"]),
+                    "Valor (R$)": float(linha["sum"]),
+                })
+        if linhas_planos:
+            linhas_planos.append({
+                "Plano de Contas": "TOTAL FORA DA DRE (líquido)",
+                "Lançamentos": int(somas["count"].sum()),
+                "Valor (R$)": total_planos,
+            })
+        _tabela_departamento(linhas_planos)
+        st.caption(
+            f"{len(planos_soltos)} plano(s) de contas do DIÁRIO sem linha da DRE correspondente e "
+            "não reivindicados por outro departamento — aplicações, empréstimos, transferências e "
+            "afins. O sinal segue o lançamento: positivo entrou, negativo saiu. Não somam com os "
+            "grupos acima nem com o total do departamento, porque não passam pela DRE; entram no "
+            "relatório em Excel, na aba Plano de Contas."
+        )
 
     # ---- Carga tributária, quando a DRE tiver a linha de deduções ----
     linha_deducoes = _linha_da_dre_por_numero(universo, "2")

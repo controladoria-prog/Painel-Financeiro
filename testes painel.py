@@ -47,9 +47,13 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 DEPENDENCIAS = {
     "_linhas_raiz_do_conjunto": ["_eh_linha_de_resultado", "_normalizar_texto"],
     "_eh_linha_de_resultado": ["_normalizar_texto"],
+    "resolver_planos_forcados": ["_planos_sem_linha_dre", "_normalizar_texto"],
+    "_planos_sem_linha_dre": ["_normalizar_texto"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
+    "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
+    "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
 
 
@@ -714,6 +718,47 @@ class TesteAdmFinanceiro(unittest.TestCase):
                           f"{email} aponta para um departamento que nao existe")
         self.assertIn(("coordenador.financeiro@grupobeea.com.br",
                        "🏦 Relatório de Custos - ADM/Financeiro"), mapeados)
+
+    def test_celula_vazia_de_linha_dre_e_reconhecida(self):
+        """A leitura converte a coluna inteira para texto, entao o NaN do
+        pandas vira a palavra "nan". Testar so por string vazia deixava
+        quase todos os planos fora da DRE passarem batido."""
+        ns = carregar(["_normalizar_texto", "_planos_sem_linha_dre"],
+                      ["MARCAS_SEM_LINHA_DRE"])
+        diario = pd.DataFrame({
+            "Plano de Contas": ["Aplicação Financeira", "Empréstimos", "Energia Elétrica",
+                                "Distribuição de Lucros", "Transferência"],
+            "Linha DRE": [float("nan"), "", "8.1.2 - Energia Elétrica", "-", "nan"],
+        })
+        diario["Linha DRE"] = diario["Linha DRE"].astype(str).str.strip()
+        achados = ns["_planos_sem_linha_dre"](diario)
+        self.assertIn("Aplicação Financeira", achados)
+        self.assertIn("Distribuição de Lucros", achados)
+        self.assertIn("Transferência", achados)
+        self.assertNotIn("Energia Elétrica", achados, "esse tem linha da DRE")
+
+    def test_planos_de_outro_departamento_ficam_de_fora(self):
+        ns = carregar(["_normalizar_texto", "_planos_sem_linha_dre",
+                       "resolver_planos_forcados"],
+                      ["MARCAS_SEM_LINHA_DRE", "MODELOS_RELATORIO"])
+        diario = pd.DataFrame({
+            "Plano de Contas": ["Aplicação Financeira", "Mercadorias",
+                                "Adiantamento de Benfeitorias em Imóvel Próprio"],
+            "Linha DRE": ["", "", ""],
+        })
+        achados, _ = ns["resolver_planos_forcados"](diario, ["RESTANTE"])
+        self.assertIn("Aplicação Financeira", achados)
+        self.assertNotIn("Mercadorias", achados, "Mercadorias e de Compras")
+        self.assertNotIn("Adiantamento de Benfeitorias em Imóvel Próprio", achados,
+                         "benfeitorias sao de Suprimentos")
+
+    def test_bloco_de_planos_aparece_no_painel(self):
+        self.assertIn("Planos de Contas Fora da DRE", FONTE)
+        i = FONTE.index("def _painel_dept_adm(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("_planos_sem_linha_dre", trecho)
+        self.assertNotIn('"% do bloco"', trecho,
+                         "percentual sobre total com sinais opostos nao significa nada")
 
     def test_modelo_e_painel_cadastrados(self):
         self.assertIn("🏦 Relatório de Custos - ADM/Financeiro", self.ns["MODELOS_RELATORIO"])
