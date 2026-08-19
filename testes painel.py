@@ -1252,10 +1252,10 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         cls.ns = carregar(
             ["_normalizar_texto", "_classificar_movimento_fin", "_dias_da_meta_no_mes",
              "montar_linhas_de_meta", "_aplicar_meta_como_falta", "_total_geral_sem_meta",
-             "_ordenar_movimentos_fin"],
+             "_ordenar_movimentos_fin", "_peso_ordem_movimento_fin"],
             ["METAS_RECEBER", "DIAS_DA_SEMANA_POR_MODALIDADE", "MOV_RECEBER_META",
              "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO", "RENOMEAR_MOVIMENTO_FIN",
-             "ORDEM_MOVIMENTOS_FIN", "COL_FIN_MOVIMENTO", "COL_FIN_CANAL",
+             "COL_FIN_MOVIMENTO", "COL_FIN_CANAL",
              "COL_FIN_MODALIDADE", "COL_FIN_VALOR", "COL_FIN_VENCIMENTO",
              "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_EFETIVA"],
         )
@@ -1325,14 +1325,61 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertAlmostEqual(total, 4_000_000.0 + 6_000_000.0 - 3_500_000.0, places=2)
 
     def test_ordem_de_leitura_das_linhas(self):
+        """Sequencia fixa: o dinheiro que ja esta, o que deve entrar, o que
+        sai. Os nomes vem da planilha como "1.1.Caixa" e "1.Banco", entao
+        ordenar pelo numero colocaria o Banco na frente do Caixa."""
+        embaralhado = ["2 - Contas a Receber Meta", "3 - Contas a Receber",
+                       "3.1 - Contas a Receber Liquidado", "1.1.Caixa", "1.Banco",
+                       "4 - Contas a Pagar"]
+        self.assertEqual(
+            self.ns["_ordenar_movimentos_fin"](embaralhado),
+            ["1.1.Caixa", "1.Banco", "2 - Contas a Receber Meta", "3 - Contas a Receber",
+             "3.1 - Contas a Receber Liquidado", "4 - Contas a Pagar"],
+        )
+
+    def test_ordem_tolera_outras_grafias(self):
+        """A ordenacao olha o conteudo do nome, nao o texto exato -- se a
+        planilha mudar "1.Banco" para "1 - Banco Bradesco", a ordem segue."""
         ordem = self.ns["_ordenar_movimentos_fin"](
-            ["4 - Contas a Pagar", "3.1 - Contas a Receber Liquidado",
-             "1 - Banco", "3 - Contas a Receber", "2 - Contas a Receber Meta"])
-        self.assertEqual(ordem[:3], ["2 - Contas a Receber Meta", "3 - Contas a Receber",
-                                     "3.1 - Contas a Receber Liquidado"])
-        self.assertLess(ordem.index("3.1 - Contas a Receber Liquidado"),
-                        ordem.index("4 - Contas a Pagar"),
-                        "o liquidado tem de ficar acima do contas a pagar")
+            ["4 - Contas a Pagar", "9 - Aplicação Financeira", "1 - Banco Bradesco",
+             "1.1 - Caixa Geral", "3 - Contas a Receber"])
+        self.assertEqual(ordem[0], "1.1 - Caixa Geral")
+        self.assertEqual(ordem[1], "1 - Banco Bradesco")
+        self.assertEqual(ordem[-1], "9 - Aplicação Financeira",
+                         "movimento desconhecido tem de cair no fim, nunca no meio")
+
+    def test_liquidado_nao_troca_de_lugar_com_a_vencer(self):
+        """O nome do liquidado tambem contem "receber": se a checagem vier
+        na ordem errada, as duas linhas trocam de posicao."""
+        self.assertEqual(self.ns["_peso_ordem_movimento_fin"]("3 - Contas a Receber"), 3)
+        self.assertEqual(
+            self.ns["_peso_ordem_movimento_fin"]("3.1 - Contas a Receber Liquidado"), 4)
+
+    def test_diario_ordena_a_meta_junto_com_as_outras(self):
+        """No diario a meta e montada a parte, entao ela poderia ser
+        empilhada por cima de caixa e banco. Este teste roda a MESMA
+        expressao de ordenacao do painel e confere onde a meta cai."""
+        achado = re.search(
+            r"linhas_do_canal\.sort\(\s*key=(lambda item:.+?)\s*\n\s*\)", FONTE, re.S)
+        self.assertIsNotNone(achado, "o diario deixou de ordenar as linhas do canal")
+        chave = eval(  # noqa: S307 - a expressao vem do proprio app
+            achado.group(1),
+            {"_peso_ordem_movimento_fin": self.ns["_peso_ordem_movimento_fin"], "str": str},
+        )
+        # Nomes SEM numero de propósito: com "1.1.Caixa" e "1.Banco" a ordem
+        # alfabetica coincide com a certa por acaso, e o teste passaria mesmo
+        # se a ordenacao voltasse a ser por nome. Aqui alfabetico poria Banco
+        # antes de Caixa e "A pagar" antes de tudo.
+        linhas = [("Contas a Pagar", None), ("Banco Itaú", None),
+                  ("Contas a Receber", None), ("Caixa Geral", None),
+                  (self.ns["MOV_RECEBER_META"], None),
+                  ("Contas a Receber Liquidado", None)]
+        linhas.sort(key=chave)
+        self.assertEqual(
+            [nome for nome, _ in linhas],
+            ["Caixa Geral", "Banco Itaú", "2 - Contas a Receber Meta", "Contas a Receber",
+             "Contas a Receber Liquidado", "Contas a Pagar"],
+        )
 
     def test_as_duas_linhas_de_a_receber_nao_se_repetem(self):
         """Titulo com baixa vai para a linha de liquidado, na data da baixa;

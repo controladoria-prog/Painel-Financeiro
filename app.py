@@ -4291,15 +4291,36 @@ def tabela_com_somador(df, chave, estilo=None, altura=None, ajuda_colunas=None):
     )
 
 
-ORDEM_MOVIMENTOS_FIN = [MOV_RECEBER_META, MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
+def _peso_ordem_movimento_fin(nome_movimento):
+    """Posição fixa de cada movimento na tabela, na ordem em que a área lê o
+    fluxo: o dinheiro que já está (caixa, banco), depois o que deve entrar
+    (meta, a vencer, liquidado) e por fim o que sai (a pagar).
+
+    A ordenação é por CONTEÚDO do nome, não por texto exato: na planilha as
+    linhas se chamam "1.1.Caixa" e "1.Banco", e ordenar pelo número faria o
+    Banco vir antes do Caixa. Movimento desconhecido cai no fim, em ordem
+    alfabética, em vez de sumir ou embaralhar os outros."""
+    texto = _normalizar_texto(nome_movimento).lower()
+    if "caixa" in texto:
+        return 0
+    if "banco" in texto:
+        return 1
+    if "meta" in texto:
+        return 2
+    # Liquidado ANTES de "receber": o nome dele também contém "receber", e na
+    # ordem errada as duas linhas trocariam de lugar.
+    if "liquidad" in texto:
+        return 4
+    if "receber" in texto:
+        return 3
+    if "pagar" in texto:
+        return 5
+    return 6
 
 
 def _ordenar_movimentos_fin(indice):
-    """Coloca as três linhas de contas a receber na ordem de leitura (meta,
-    a vencer, liquidado) e deixa o resto como veio -- o que joga o
-    "4 - Contas a Pagar" para depois delas, como na planilha."""
-    ordem = {nome: i for i, nome in enumerate(ORDEM_MOVIMENTOS_FIN)}
-    return sorted(indice, key=lambda nome: (ordem.get(nome, len(ordem) + 1), str(nome)))
+    """Ordena os movimentos da tabela pela sequência de leitura fixa."""
+    return sorted(indice, key=lambda nome: (_peso_ordem_movimento_fin(nome), str(nome)))
 
 
 def _aplicar_meta_como_falta(pivot):
@@ -5966,10 +5987,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
                         estilo_linhas_d.append(("canal", canal))
 
-                        # A meta abre o bloco do canal, como no mensal: primeiro
-                        # quanto falta, depois o que está a vencer e o que já
-                        # entrou. Aqui ela já vem líquida do que foi realizado
-                        # NAQUELE dia, para responder "quanto ainda falta hoje".
+                        # A meta entra na MESMA fila das outras linhas do
+                        # canal, e não por cima delas: a ordem de leitura é
+                        # caixa, banco, meta, a vencer, liquidado, a pagar.
+                        # Ela já vem líquida do que foi realizado NAQUELE dia,
+                        # para responder "quanto ainda falta receber hoje".
+                        linhas_do_canal = [
+                            (movimento, _agrega_por_dia(
+                                df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]))
+                            for movimento in df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
+                        ]
                         if not df_metas_d.empty:
                             df_meta_canal = df_metas_d[
                                 df_metas_d[COL_FIN_CANAL].astype(str) == canal
@@ -5982,19 +6009,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                     )
                                 ]
                                 serie_realizado = _agrega_por_dia(realizado_canal).abs()
-                                linhas_tabela_d.append(
-                                    (serie_meta - serie_realizado).clip(lower=0)
+                                linhas_do_canal.append(
+                                    (MOV_RECEBER_META, (serie_meta - serie_realizado).clip(lower=0))
                                 )
-                                indices_tabela_d.append(
-                                    _rotulo_unico_d(f"    {MOV_RECEBER_META}", len(indices_tabela_d))
-                                )
-                                estilo_linhas_d.append(("movimento", MOV_RECEBER_META))
 
-                        for movimento in _ordenar_movimentos_fin(
-                            df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
-                        ):
-                            df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
-                            linhas_tabela_d.append(_agrega_por_dia(df_mov))
+                        linhas_do_canal.sort(
+                            key=lambda item: (_peso_ordem_movimento_fin(item[0]), str(item[0]))
+                        )
+                        for movimento, serie in linhas_do_canal:
+                            linhas_tabela_d.append(serie)
                             indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
                             estilo_linhas_d.append(("movimento", movimento))
 
