@@ -53,12 +53,15 @@ DEPENDENCIAS = {
     "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
     "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
     "guardar_memoria": ["memoria_em_uso_mb"],
+    "meta_diaria_que_ainda_falta": [],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
 }
 CONSTANTES_DE_DEPENDENCIA_CONST = {
     # Constante que depende de outra constante para ser avaliada.
     "VISOES_CONSOLIDADAS": ["GRUPO_ABPR", "GRUPO_VD", "GRUPO_LJ_GA", "GRUPO_LJ_CONSOLIDADO"],
+    "RENOMEAR_MOVIMENTO_FIN": ["MOV_RECEBER_META", "MOV_RECEBER_AVENCER",
+                               "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
@@ -1639,6 +1642,72 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         ns_local["tabela_selecionavel"](df, chave="t")
         self.assertNotIn("\u200b", capturado["codigo"])
         self.assertIn(">1.1.Caixa<", capturado["codigo"])
+
+
+# ============================================================================
+# 5m. NOMES DAS LINHAS E A VIRADA DA META
+# ============================================================================
+class TesteNomesEVirada(unittest.TestCase):
+
+    def test_nomes_das_linhas_do_fluxo(self):
+        ns = carregar([], ["MOV_RECEBER_META", "MOV_RECEBER_AVENCER",
+                           "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR",
+                           "RENOMEAR_MOVIMENTO_FIN"])
+        self.assertEqual(ns["MOV_RECEBER_META"], "2 - Contas a Receber Meta")
+        self.assertEqual(ns["MOV_RECEBER_AVENCER"], "2.1 - Contas a Receber")
+        self.assertEqual(ns["MOV_RECEBER_LIQUIDADO"], "2.2 - Contas a Receber Liquidado")
+        self.assertEqual(ns["MOV_PAGAR"], "3 - Contas a Pagar")
+        # A planilha continua escrevendo do jeito antigo: a traducao precisa
+        # existir, senao o contas a pagar entra com o numero velho.
+        self.assertEqual(ns["RENOMEAR_MOVIMENTO_FIN"]["4 - contas a pagar"], "3 - Contas a Pagar")
+
+    def test_ordem_continua_valendo_com_os_nomes_novos(self):
+        ns = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                       "_ordenar_movimentos_fin"])
+        self.assertEqual(
+            ns["_ordenar_movimentos_fin"](
+                ["3 - Contas a Pagar", "2.2 - Contas a Receber Liquidado", "1.Banco",
+                 "2.1 - Contas a Receber", "2 - Contas a Receber Meta", "1.1.Caixa"]),
+            ["1.1.Caixa", "1.Banco", "2 - Contas a Receber Meta", "2.1 - Contas a Receber",
+             "2.2 - Contas a Receber Liquidado", "3 - Contas a Pagar"])
+
+    def _falta(self, meta, realizado, inicio="2026-08-03"):
+        ns = carregar(["meta_diaria_que_ainda_falta"])
+        dias = pd.date_range(inicio, periods=len(meta), freq="D")
+        return ns["meta_diaria_que_ainda_falta"](
+            pd.Series(meta, index=dias), pd.Series(realizado, index=dias)), dias
+
+    def test_meta_zera_a_partir_do_dia_em_que_foi_batida(self):
+        """O a receber e posicionado pelo VENCIMENTO, entao boa parte do mes
+        ja esta programada. Sem olhar o mes inteiro, dias la na frente
+        continuavam cobrando meta mesmo com a meta do mes ja superada -- e o
+        mensal, que soma tudo, ja mostrava zero. Duas telas discordando."""
+        falta, dias = self._falta([100.0] * 10, [400.0, 0, 0, 700.0] + [0.0] * 6)
+        self.assertEqual(falta.iloc[0], 0.0, "o recebido do dia abate a meta do dia")
+        self.assertEqual(falta.iloc[1], 100.0, "antes da virada, o rateio continua valendo")
+        self.assertEqual(list(falta.iloc[3:]), [0.0] * 7, "da virada em diante, zero")
+
+    def test_cada_mes_e_avaliado_por_si(self):
+        """Agosto batido nao pode zerar setembro: sao metas diferentes."""
+        ns = carregar(["meta_diaria_que_ainda_falta"])
+        dias = list(pd.date_range("2026-08-03", periods=10, freq="D")) + \
+            list(pd.date_range("2026-09-01", periods=5, freq="D"))
+        meta = pd.Series([100.0] * 10 + [200.0] * 5, index=dias)
+        real = pd.Series([400.0, 0, 0, 700.0] + [0.0] * 6 + [0.0] * 5, index=dias)
+        falta = ns["meta_diaria_que_ainda_falta"](meta, real)
+        self.assertEqual(list(falta.iloc[3:10]), [0.0] * 7, "agosto tinha de estar zerado")
+        self.assertTrue((falta.iloc[10:] > 0).all(), "setembro ainda tem meta a cobrar")
+
+    def test_linha_da_meta_some_quando_zerada_no_intervalo(self):
+        """Se no recorte visivel a meta ja foi batida em todos os dias, a
+        linha nao acrescenta nada -- e some. Volta se o periodo alcancar um
+        mes em que ainda falta."""
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn("serie_falta_dc = falta if falta.any() else None", trecho)
+        self.assertIn("if serie_falta_dc is not None:", trecho)
+        j = FONTE.index("falta_meta_canal = meta_diaria_que_ainda_falta(")
+        self.assertIn("if falta_meta_canal.any():", FONTE[j:j + 500])
 
 
 # ============================================================================

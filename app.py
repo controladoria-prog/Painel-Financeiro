@@ -3969,12 +3969,18 @@ def _dia_valido_no_mes(valor, ultimo_dia_mes):
 #   3 - Contas a Receber             -> a vencer e ainda não liquidado
 #   3.1 - Contas a Receber Liquidado -> o que já entrou, na data em que entrou
 MOV_RECEBER_META = "2 - Contas a Receber Meta"
-MOV_RECEBER_AVENCER = "3 - Contas a Receber"
-MOV_RECEBER_LIQUIDADO = "3.1 - Contas a Receber Liquidado"
+MOV_RECEBER_AVENCER = "2.1 - Contas a Receber"
+MOV_RECEBER_LIQUIDADO = "2.2 - Contas a Receber Liquidado"
+MOV_PAGAR = "3 - Contas a Pagar"
 
+# De como a planilha escreve para como o painel mostra. A numeração do
+# painel agrupa as três linhas de a receber sob o 2, e por isso o contas a
+# pagar desce de 4 para 3.
 RENOMEAR_MOVIMENTO_FIN = {
     "2 - contas a receber projetado": MOV_RECEBER_META,
     "3 - contas a receber realizado": MOV_RECEBER_AVENCER,
+    "3.1 - contas a receber liquidado": MOV_RECEBER_LIQUIDADO,
+    "4 - contas a pagar": MOV_PAGAR,
 }
 
 # Metas mensais de recebimento por canal e modalidade (R$). Os valores da
@@ -4365,6 +4371,44 @@ def _avaliar_alertas_fluxo(
                 break  # um aviso por canal: o primeiro dia que fura
 
     return alertas
+
+
+def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia):
+    """A meta do dia, já descontando o que foi recebido -- e ZERADA a partir
+    do dia em que a meta do MÊS foi batida.
+
+    O que ela resolve: o contas a receber é posicionado pelo vencimento, e
+    boa parte do mês já está programada. A meta, por outro lado, é rateada
+    dia a dia. Sem olhar o mês inteiro, dias lá na frente continuavam
+    cobrando meta mesmo depois de a meta do mês já ter sido superada -- e o
+    mensal, que soma tudo, já mostrava zero. Ficavam duas telas discordando.
+
+    A conta é por MÊS: soma-se o realizado em ordem de data e procura-se o
+    dia em que esse acumulado alcança a meta do mês. Desse dia em diante a
+    linha zera. Antes dele, continua valendo o rateio do dia menos o que
+    entrou naquele dia.
+
+    Recebe e devolve séries indexadas por dia (Timestamp). Os valores são
+    tratados em módulo -- sinal aqui não tem significado."""
+    meta = meta_por_dia.abs()
+    realizado = realizado_por_dia.abs().reindex(meta.index, fill_value=0.0)
+    resultado = (meta - realizado).clip(lower=0)
+
+    dias = pd.to_datetime(pd.Series(meta.index, index=meta.index))
+    for _mes, indices in meta.groupby(dias.dt.to_period("M")).groups.items():
+        indices = list(indices)
+        meta_do_mes = float(meta.loc[indices].sum())
+        if meta_do_mes <= 0:
+            continue
+        acumulado = realizado.loc[indices].cumsum()
+        batidos = acumulado[acumulado >= meta_do_mes]
+        if batidos.empty:
+            continue
+        # Do dia da virada em diante não se cobra mais nada: no conjunto do
+        # mês a meta já foi alcançada.
+        virada = batidos.index[0]
+        resultado.loc[[i for i in indices if i >= virada]] = 0.0
+    return resultado
 
 
 def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos,
@@ -6415,9 +6459,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                 )
                             ]
                             serie_realizado = _agrega_por_dia(realizado_canal).abs()
-                            linhas_do_canal.append(
-                                (MOV_RECEBER_META, (serie_meta - serie_realizado).clip(lower=0))
-                            )
+                            falta_meta_canal = meta_diaria_que_ainda_falta(
+                                serie_meta, serie_realizado)
+                            # Zerada no intervalo inteiro, a linha não
+                            # acrescenta nada: some. Volta sozinha se o
+                            # período incluir um mês em que ainda falta.
+                            if falta_meta_canal.any():
+                                linhas_do_canal.append((MOV_RECEBER_META, falta_meta_canal))
 
                     linhas_do_canal.sort(
                         key=lambda item: (_peso_ordem_movimento_fin(item[0]), str(item[0]))
@@ -6744,13 +6792,20 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             pais_dc.append(posicao_mae)
 
                 # Meta: quanto ainda falta receber em cada dia.
+                serie_falta_dc = None
                 if not df_dc_metas.empty:
                     serie_meta = _serie_por_dia(df_dc_metas).abs()
                     realizado_receber = df_dc_real[
                         df_dc_real[COL_FIN_MOVIMENTO].astype(str).isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
                     ]
-                    falta = (serie_meta - _serie_por_dia(realizado_receber).abs()).clip(lower=0)
+                    falta = meta_diaria_que_ainda_falta(
+                        serie_meta, _serie_por_dia(realizado_receber))
+                    # Zerada no intervalo inteiro, a linha não acrescenta
+                    # nada: some. Volta sozinha se o período alcançar um mês
+                    # em que ainda falta receber.
+                    serie_falta_dc = falta if falta.any() else None
+                if serie_falta_dc is not None:
                     posicao_meta = len(linhas_dc)
                     linhas_dc.append(falta)
                     indices_dc.append(MOV_RECEBER_META)
