@@ -1025,50 +1025,44 @@ class TestePrazosDoFluxo(unittest.TestCase):
             self.assertFalse(lado.empty, f"nenhum titulo de {tipo} com prazo calculado")
             self.assertEqual(lado["DiasAteLiquidar"].mean(), 2 if tipo == "saida" else 3)
 
-    def test_cruzamento_olha_pagar_e_receber(self):
-        """Trava estrutural: se o filtro voltar a ser so o "pagar", o
-        recebimento fica sem data e o indicador zera de novo."""
+    def test_as_duas_pontas_olham_a_mesma_coluna(self):
+        """A pagar e a receber precisam ler a MESMA coluna de baixa; se uma
+        delas olhar outra fonte, os dois lados param de conversar."""
         i = FONTE.index("mask_receber = df[COL_FIN_MOVIMENTO]")
-        trecho = FONTE[i:i + 400]
-        self.assertIn("(mask_pagar | mask_receber)", trecho)
+        trecho = FONTE[i - 300:i + 600]
+        self.assertIn("pagar_sem_liq_no_csv", trecho)
+        self.assertIn("receber_sem_liq_no_csv", trecho)
+        self.assertIn("COL_FIN_DATA_LIQUIDACAO", trecho)
 
-    def test_vencimento_e_a_chave_mais_forte(self):
-        """As duas abas trazem o MESMO vencimento -- a diferenca entre elas e
-        so a liquidacao. Cruzar por numero + vencimento + valor evita casar
-        dois titulos do mesmo fornecedor com numeros parecidos."""
-        i = FONTE.index("tentativas = [")
-        trecho = FONTE[i:i + 700]
-        ordem = [n for n in ["por_num_venc_valor", "por_num_venc", "por_num_valor",
-                             "por_venc_valor", "por_num"] if n in trecho]
-        self.assertEqual(ordem[0], "por_num_venc_valor", "a chave mais especifica saiu da frente")
-        self.assertEqual(ordem[-1], "por_num", "so o numero tem de ser a ultima tentativa")
+    def test_baixa_vem_da_propria_aba_do_fluxo(self):
+        """A aba Fluxo de Caixa 2026 passou a trazer a Data de Liquidacao
+        preenchida, entao o confronto vencimento x liquidacao e feito ali
+        mesmo. O cruzamento com a aba DIARIO -- que casava por numero,
+        vencimento e valor -- foi removido e nao pode voltar sem decisao."""
+        for resto in ("carregar_liquidacoes_diario", "COL_FIN_LIQ_DIARIO",
+                      "liq_do_diario", "por_num_venc_valor", "pagar_sem_match"):
+            self.assertNotIn(resto, FONTE, f"sobrou pedaco do cruzamento: {resto}")
+        i = FONTE.index("df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_DATA_LIQUIDACAO]")
+        trecho = FONTE[i:i + 300]
+        self.assertIn("COL_FIN_LIQ_AMPLA", trecho,
+                      "a leitura tolerante da MESMA coluna continua valendo")
 
-    def test_par_ambiguo_nao_recebe_data(self):
-        """Dois titulos que vencem no mesmo dia pelo mesmo valor, pagos em
-        datas diferentes, nao tem como ser distinguidos: ficam em aberto em
-        vez de receber um chute que estragaria o atraso medio."""
-        diario = pd.DataFrame({
-            "chave_num": ["1005", "1006", "1007"],
-            "venc": pd.to_datetime(["2026-08-20", "2026-08-20", "2026-08-21"]),
-            "valor_abs": ["950.00", "950.00", "300.00"],
-            "data_liq": pd.to_datetime(["2026-08-22", "2026-08-25", "2026-08-21"]),
+    def test_titulo_sem_baixa_fica_no_vencimento(self):
+        """Sem data de liquidacao o titulo esta em aberto: continua
+        posicionado no vencimento, que e a programacao."""
+        df = pd.DataFrame({
+            "Movimento": ["4 - Contas a Pagar"] * 3,
+            "Vencimento.1": pd.to_datetime(["2026-08-31"] * 3),
+            "Data Liquidação": pd.to_datetime(["2026-08-24", None, None]),
+            "Valor.1": [-300_000.0, -60_000.0, -40_000.0],
         })
-        contagem = diario.groupby(["venc", "valor_abs"])["data_liq"].nunique()
-        unicos = contagem[contagem == 1].index
-        candidatos = diario.set_index(["venc", "valor_abs"])
-        sobrando = candidatos.loc[candidatos.index.isin(unicos)]
-        self.assertEqual(len(sobrando), 1)
-        self.assertEqual(sobrando["chave_num"].iloc[0], "1007")
-
-    def test_titulo_sem_baixa_na_diario_fica_em_aberto(self):
-        """Quem nao foi pago esta sem data na DIARIO tambem -- e tem de
-        continuar aparecendo como em aberto, nao virar pago sem data."""
-        base = pd.DataFrame({
-            "chave_num": ["1001", "1003"],
-            "data_liq": [pd.Timestamp("2026-08-07"), pd.NaT],
-        })
-        validos = base[base["data_liq"].notna()]
-        self.assertEqual(list(validos["chave_num"]), ["1001"])
+        df["Liquidação Efetiva"] = df["Data Liquidação"]
+        df["Data Efetiva"] = df["Vencimento.1"]
+        com_baixa = df["Liquidação Efetiva"].notna()
+        df.loc[com_baixa, "Data Efetiva"] = df.loc[com_baixa, "Liquidação Efetiva"]
+        por_dia = df.groupby(df["Data Efetiva"].dt.date)["Valor.1"].sum()
+        self.assertAlmostEqual(por_dia[date(2026, 8, 24)], -300_000.0, places=2)
+        self.assertAlmostEqual(por_dia[date(2026, 8, 31)], -100_000.0, places=2)
 
     def test_indicador_nao_se_chama_prazo_medio(self):
         """O calculo e liquidacao menos vencimento, ou seja ATRASO. Chamar de
@@ -1682,11 +1676,11 @@ class TesteContasAPagarEfetivo(unittest.TestCase):
         self.assertIn('df.loc[_pagar_com_baixa, "Data Efetiva"] = df.loc[_pagar_com_baixa, COL_FIN_LIQ_EFETIVA]',
                       trecho)
         self.assertIn("COL_FIN_LIQ_EFETIVA].notna()", trecho)
-        # A liquidacao efetiva tem de existir para o painel todo, nao so na
-        # aba Analises -- e ela junta CSV, leitura ampla e DIARIO.
+        # A liquidacao efetiva vale para o painel todo, nao so na aba
+        # Analises, e junta as duas leituras da coluna do CSV.
         j = FONTE.index("df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_DATA_LIQUIDACAO]")
         montagem = FONTE[j:j + 400]
-        self.assertIn("COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO", montagem)
+        self.assertIn("COL_FIN_LIQ_AMPLA", montagem)
 
     def test_a_receber_usa_a_mesma_fonte_de_baixa(self):
         """As duas pontas precisam olhar a mesma coluna; se o a receber
@@ -1819,7 +1813,7 @@ class TesteMemoriaELeitura(unittest.TestCase):
         dos dados e elas se acumulam ate o app cair."""
         import re as _re
         for funcao in ("carregar_dados_abas", "carregar_dados_por_loja", "carregar_diario",
-                       "preparar_fluxo_caixa", "carregar_liquidacoes_diario"):
+                       "preparar_fluxo_caixa"):
             i = FONTE.index(f"def {funcao}(")
             decorador = FONTE[max(0, i - 400):i]
             achado = _re.search(r"@st\.cache_\w+\([^)]*\)\s*$", decorador)
@@ -1916,7 +1910,7 @@ class TesteTravasEstruturais(unittest.TestCase):
 
     def test_caches_de_dados_tem_validade(self):
         for funcao in ("obter_caminhos_excel", "obter_dados_fluxo_caixa",
-                       "preparar_fluxo_caixa", "carregar_liquidacoes_diario"):
+                       "preparar_fluxo_caixa"):
             i = FONTE.index(f"def {funcao}(")
             decorador = FONTE[max(0, i - 260):i]
             self.assertIn("ttl=", decorador, f"{funcao} ficou sem ttl no cache")

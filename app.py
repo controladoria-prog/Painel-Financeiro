@@ -3805,7 +3805,7 @@ COL_FIN_VENCIMENTO = "Vencimento.1"
 # (Fluxo Mensal, Fluxo Diário, Tesouraria, base de data, NCG) continua
 # olhando exclusivamente a "Data Liquidação" que vem no próprio CSV --
 # misturar as duas fazia sumir do fluxo o que já estava pago.
-COL_FIN_LIQ_DIARIO = "Data Liquidação (DIÁRIO)"
+
 # Outra coluna criada pelo painel: a MESMA "Data Liquidação" do CSV, só que
 # lida de forma ampla (aceitando mais de um formato de data no campo).
 # Também é usada SÓ na aba Análises -- ver comentário da conversão de datas.
@@ -4102,7 +4102,7 @@ def _avaliar_alertas_fluxo(
     # conta a pagar pareceria em aberto, porque o CSV não traz a baixa delas.
     def _liquidacao_efetiva(bloco):
         liq = bloco[COL_FIN_DATA_LIQUIDACAO]
-        for coluna in (COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO):
+        for coluna in (COL_FIN_LIQ_AMPLA,):
             if coluna in bloco.columns:
                 liq = liq.fillna(bloco[coluna])
         return liq
@@ -4863,136 +4863,6 @@ def _chave_numero_fin(serie):
 TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
 
 
-@st.cache_resource(ttl=900, max_entries=2, show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
-def carregar_liquidacoes_diario(path_r):
-    """Lê a aba DIÁRIO da planilha Realizado 2026 e devolve as datas de
-    pagamento por documento, prontas para cruzar com o CSV do Fluxo de Caixa.
-
-    Motivo: no CSV publicado, "4 - Contas a Pagar" vem SEM data de liquidação
-    (conferido na planilha). Os mesmos lançamentos aparecem na DIÁRIO, e lá a
-    baixa existe -- é de lá que sai a data de pagamento usada no painel.
-
-    Devolve (tabelas, diagnóstico). `tabelas` traz duas chaves de cruzamento:
-    "por_num_valor" (Número + valor, mais específica) e "por_num" (só o
-    Número, usada para o que não casou na primeira). Em ambas, quando o mesmo
-    documento tem mais de uma baixa, fica a data MAIS ANTIGA."""
-    diag = {}
-    df = None
-    for nome_aba in ("DIÁRIO", "DIARIO", "Diário", "Diario"):
-        try:
-            df = pd.read_excel(path_r, sheet_name=nome_aba)
-            break
-        except Exception:
-            continue
-    if df is None or df.empty:
-        diag["erro"] = "Não encontrei a aba DIÁRIO na planilha Realizado (ou ela está vazia)."
-        return None, diag
-
-    df.columns = [str(c).strip() for c in df.columns]
-    diag["colunas_diario"] = list(df.columns)
-    diag["linhas_diario"] = len(df)
-
-    def _achar_coluna(termos):
-        # Primeiro procura o nome exato, depois aceita nome que contenha o
-        # termo -- assim "Número" ganha de "Número do Lote", por exemplo.
-        nomes = {coluna: _normalizar_coluna_fin(coluna) for coluna in df.columns}
-        for termo in termos:
-            for coluna, nome in nomes.items():
-                if nome == termo:
-                    return coluna
-        for termo in termos:
-            for coluna, nome in nomes.items():
-                if termo in nome:
-                    return coluna
-        return None
-
-    col_num = _achar_coluna(["numero", "n documento", "documento", "docum", "nro", "nf"])
-    col_valor = _achar_coluna(["valor bruto", "valor"])
-    # O VENCIMENTO é a chave mais confiável do cruzamento: é a mesma data nas
-    # duas abas (a diferença entre elas é só a liquidação, que existe numa e
-    # não na outra). Sem ela, dois títulos do mesmo fornecedor com números
-    # parecidos podiam trocar de data entre si.
-    col_venc = _achar_coluna(["vencimento", "vencto", "venc"])
-
-    # A coluna de data é escolhida pelo nome, mas só vale se realmente tiver
-    # data dentro -- senão seguimos procurando na próxima candidata.
-    col_liq, serie_liq = None, None
-    for termo in TERMOS_COL_LIQUIDACAO_DIARIO:
-        for coluna in df.columns:
-            if termo not in _normalizar_coluna_fin(coluna):
-                continue
-            datas = _parse_datas_fin(df[coluna])
-            if datas.notna().any():
-                col_liq, serie_liq = coluna, datas
-                break
-        if col_liq:
-            break
-
-    diag["coluna_numero"] = col_num
-    diag["coluna_valor"] = col_valor
-    diag["coluna_liquidacao"] = col_liq
-    diag["coluna_vencimento"] = col_venc
-
-    if col_liq is None:
-        diag["erro"] = (
-            "Não achei na DIÁRIO nenhuma coluna com data de pagamento "
-            "(procurei por: " + ", ".join(TERMOS_COL_LIQUIDACAO_DIARIO) + ")."
-        )
-        return None, diag
-    if col_num is None:
-        diag["erro"] = "Não achei na DIÁRIO a coluna de Número do documento, que é a chave do cruzamento."
-        return None, diag
-
-    base = pd.DataFrame({
-        "chave_num": _chave_numero_fin(df[col_num]),
-        "data_liq": serie_liq,
-    })
-    if col_valor is not None:
-        valores = pd.to_numeric(df[col_valor], errors="coerce").abs().round(2)
-        base["valor_abs"] = valores.map(lambda v: f"{v:.2f}" if pd.notna(v) else None)
-    else:
-        base["valor_abs"] = None
-    if col_venc is not None:
-        base["venc"] = _parse_datas_fin(df[col_venc]).dt.normalize()
-    else:
-        base["venc"] = pd.NaT
-
-    base = base[base["chave_num"].notna() & base["data_liq"].notna()]
-    diag["lancamentos_com_data"] = len(base)
-    diag["lancamentos_com_vencimento"] = int(base["venc"].notna().sum())
-
-    com_venc = base.dropna(subset=["venc"])
-    com_venc_valor = com_venc.dropna(subset=["valor_abs"])
-
-    # Chaves, da mais específica para a mais frouxa. O painel tenta uma a uma
-    # e só desce para a seguinte com o que sobrou sem par.
-    tabelas = {
-        "por_num_venc_valor": com_venc_valor.groupby(
-            ["chave_num", "venc", "valor_abs"], as_index=False)["data_liq"].min(),
-        "por_num_venc": com_venc.groupby(
-            ["chave_num", "venc"], as_index=False)["data_liq"].min(),
-        "por_num_valor": base.dropna(subset=["valor_abs"]).groupby(
-            ["chave_num", "valor_abs"], as_index=False)["data_liq"].min(),
-        "por_num": base.groupby("chave_num", as_index=False)["data_liq"].min(),
-    }
-
-    # Último recurso, para quando o número não bate de jeito nenhum (formato
-    # diferente, prefixo de série, campo vazio): vencimento + valor. Só valem
-    # os pares que apontam para UMA data na DIÁRIO -- se dois títulos vencem
-    # no mesmo dia pelo mesmo valor e foram pagos em datas diferentes, não há
-    # como saber qual é qual, e chutar aqui estragaria o indicador de atraso.
-    if not com_venc_valor.empty:
-        contagem = com_venc_valor.groupby(["venc", "valor_abs"])["data_liq"].nunique()
-        unicos = contagem[contagem == 1].index
-        candidatos = com_venc_valor.set_index(["venc", "valor_abs"])
-        tabelas["por_venc_valor"] = (
-            candidatos.loc[candidatos.index.isin(unicos)]
-            .groupby(["venc", "valor_abs"], as_index=False)["data_liq"].min()
-        )
-        diag["pares_venc_valor_unicos"] = len(tabelas["por_venc_valor"])
-    return tabelas, diag
-
-
 @st.cache_resource(ttl=300, max_entries=2, show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
@@ -5104,74 +4974,18 @@ def preparar_fluxo_caixa(base_data):
     # O RECEBER entrou aqui em 17/08/2026: antes o cruzamento olhava só o
     # "pagar", e por isso o prazo médio de recebimento aparecia vazio na aba
     # Análises -- não faltava conta recebida, faltava a data de quando.
+    # ---- Quem já foi baixado, pela coluna do próprio CSV ----
+    # A aba "Fluxo de Caixa 2026" passou a trazer a Data de Liquidação
+    # preenchida, então o confronto vencimento x liquidação é feito ali
+    # mesmo. Antes o painel ia buscar essa data na aba DIÁRIO, cruzando por
+    # número, vencimento e valor -- um caminho com várias chaves e margem de
+    # erro que deixou de ser necessário.
     mask_pagar = df[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
     mask_receber = df[COL_FIN_MOVIMENTO].astype(str).str.contains("receber", case=False, na=False)
-    faltando_pagar = (mask_pagar | mask_receber) & df[COL_FIN_DATA_LIQUIDACAO].isna()
-    # A data encontrada na DIÁRIO NÃO entra na coluna do CSV: vai para uma
-    # coluna própria, consumida só pela aba Análises.
-    df[COL_FIN_LIQ_DIARIO] = pd.NaT
-    diagnostico["pagar_sem_liq_no_csv"] = int((mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
-    diagnostico["receber_sem_liq_no_csv"] = int((mask_receber & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
-    diagnostico["liq_do_diario"] = 0
-    if faltando_pagar.any() and COL_FIN_NUMERO in df.columns:
-        tabelas_liq, diag_diario = carregar_liquidacoes_diario(path_real)
-        diagnostico["diario"] = diag_diario
-        if tabelas_liq is not None:
-            valores_pagar = df.loc[faltando_pagar, COL_FIN_VALOR].abs().round(2)
-            a_cruzar = pd.DataFrame({
-                "_idx": df.index[faltando_pagar],
-                "chave_num": _chave_numero_fin(df.loc[faltando_pagar, COL_FIN_NUMERO]).values,
-                "valor_abs": valores_pagar.map(lambda v: f"{v:.2f}").values,
-                "venc": df.loc[faltando_pagar, COL_FIN_VENCIMENTO].dt.normalize().values,
-            })
-            achados = a_cruzar.copy()
-            achados["data_liq"] = pd.NaT
-
-            # Tentativas em cascata, da chave mais específica para a mais
-            # frouxa. Cada uma só olha o que sobrou sem par na anterior, e o
-            # VENCIMENTO entra primeiro porque é a data que as duas abas têm
-            # igual -- a diferença entre elas é só a liquidação.
-            tentativas = [
-                ("por_num_venc_valor", ["chave_num", "venc", "valor_abs"]),
-                ("por_num_venc", ["chave_num", "venc"]),
-                ("por_num_valor", ["chave_num", "valor_abs"]),
-                ("por_venc_valor", ["venc", "valor_abs"]),
-                # Número sozinho fica por último: cobre o caso em que o valor
-                # da parcela no fluxo não é idêntico ao do lançamento contábil
-                # (juros, desconto, arredondamento), mas é a chave que mais
-                # arrisca casar dois títulos diferentes.
-                ("por_num", ["chave_num"]),
-            ]
-            diagnostico["liq_por_chave"] = {}
-            for nome_tabela, chaves in tentativas:
-                tabela = tabelas_liq.get(nome_tabela)
-                if tabela is None or tabela.empty:
-                    continue
-                sobra = achados["data_liq"].isna()
-                if not sobra.any():
-                    break
-                complemento = achados.loc[sobra, chaves].merge(
-                    tabela, on=chaves, how="left"
-                )
-                # merge pode multiplicar linhas se a tabela tiver a chave
-                # repetida; o groupby acima já garante uma linha por chave,
-                # mas a checagem evita desalinhar o índice em silêncio.
-                if len(complemento) == int(sobra.sum()):
-                    achados.loc[sobra, "data_liq"] = complemento["data_liq"].values
-                    diagnostico["liq_por_chave"][nome_tabela] = int(
-                        complemento["data_liq"].notna().sum()
-                    )
-            casados = achados.dropna(subset=["data_liq"])
-            if not casados.empty:
-                df.loc[casados["_idx"].values, COL_FIN_LIQ_DIARIO] = casados["data_liq"].values
-                casados_receber = df.loc[casados["_idx"].values].index.intersection(
-                    df.index[mask_receber]
-                )
-                diagnostico["liq_do_diario_receber"] = int(len(casados_receber))
-            sem_par = achados[achados["data_liq"].isna()]
-            diagnostico["liq_do_diario"] = int(len(casados))
-            diagnostico["pagar_sem_match"] = int(len(sem_par))
-            diagnostico["amostras_sem_match"] = sem_par["chave_num"].dropna().unique()[:5].tolist()
+    diagnostico["pagar_sem_liq_no_csv"] = int(
+        (mask_pagar & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
+    diagnostico["receber_sem_liq_no_csv"] = int(
+        (mask_receber & df[COL_FIN_DATA_LIQUIDACAO].isna()).sum())
 
     # Se NENHUMA conta a pagar tiver data de liquidação, o problema não é de
     # leitura: a data de pagamento está em outra coluna (ou não vem no
@@ -5184,7 +4998,7 @@ def preparar_fluxo_caixa(base_data):
     liquidados_pagar = int(df.loc[mask_pagar_diag, COL_FIN_DATA_LIQUIDACAO].notna().sum())
     diagnostico["pagar_titulos"] = int(mask_pagar_diag.sum())
     diagnostico["pagar_liquidados"] = liquidados_pagar
-    if mask_pagar_diag.any() and liquidados_pagar == 0 and not diagnostico.get("liq_do_diario"):
+    if mask_pagar_diag.any() and liquidados_pagar == 0:
         linhas_varredura = []
         for coluna in df_fluxo.columns:
             serie_pagar = df_fluxo.loc[mask_pagar_diag, coluna]
@@ -5205,15 +5019,13 @@ def preparar_fluxo_caixa(base_data):
         diagnostico["varredura_pagar"] = pd.DataFrame(linhas_varredura)
 
 
-    # ---- Liquidação efetiva: a melhor data de baixa que existe ----
-    # Ordem: a do próprio CSV, depois a leitura ampla dele, depois a que veio
-    # da aba DIÁRIO pelo cruzamento acima. Antes isto era montado só dentro da
-    # aba Análises; agora vale para o painel todo, porque o contas a pagar
-    # passou a depender dela.
+    # ---- Liquidação efetiva: a data de baixa do próprio CSV ----
+    # Duas leituras da MESMA coluna: a direta e a tolerante (que aceita
+    # formatos misturados no campo). Vale para o painel inteiro -- é ela que
+    # posiciona o contas a pagar no dia em que o dinheiro saiu.
     df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_DATA_LIQUIDACAO]
-    for coluna_extra in (COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO):
-        if coluna_extra in df.columns:
-            df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_LIQ_EFETIVA].fillna(df[coluna_extra])
+    if COL_FIN_LIQ_AMPLA in df.columns:
+        df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_LIQ_EFETIVA].fillna(df[COL_FIN_LIQ_AMPLA])
 
     if str(base_data).startswith("Vencimento"):
         df["Data Efetiva"] = df[COL_FIN_VENCIMENTO].fillna(df[COL_FIN_DATA_LIQUIDACAO])
@@ -5610,56 +5422,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
             if diag_fluxo.get("pagar_sem_liq_no_csv"):
                 st.write(
-                    f"**Contas a pagar sem baixa no CSV:** {diag_fluxo['pagar_sem_liq_no_csv']} · "
-                    f"**A receber sem baixa:** {diag_fluxo.get('receber_sem_liq_no_csv', 0)} · "
-                    f"**Baixas trazidas da aba DIÁRIO:** {diag_fluxo.get('liq_do_diario', 0)} · "
-                    f"**Sem correspondência:** {diag_fluxo.get('pagar_sem_match', 0)}"
+                    f"**Contas a pagar sem baixa:** {diag_fluxo['pagar_sem_liq_no_csv']} · "
+                    f"**A receber sem baixa:** {diag_fluxo.get('receber_sem_liq_no_csv', 0)}"
                 )
-                _diag_diario = diag_fluxo.get("diario", {})
-                if _diag_diario.get("erro"):
-                    st.warning(
-                        _diag_diario["erro"]
-                        + " Colunas encontradas na DIÁRIO: "
-                        + ", ".join(str(c) for c in _diag_diario.get("colunas_diario", []))
-                    )
-                elif _diag_diario:
-                    st.caption(
-                        f"DIÁRIO: {_diag_diario.get('linhas_diario', 0)} lançamentos · "
-                        f"coluna de baixa: **{_diag_diario.get('coluna_liquidacao')}** · "
-                        f"chaves disponíveis: **{_diag_diario.get('coluna_numero')}**, "
-                        f"**{_diag_diario.get('coluna_vencimento')}**, "
-                        f"**{_diag_diario.get('coluna_valor')}**"
-                    )
-                # Quanto cada chave resolveu. Serve para saber se o
-                # cruzamento está se apoiando na chave específica (número +
-                # vencimento + valor) ou descendo para as mais frouxas --
-                # muita coisa casando só pelo número é sinal de alerta.
-                _por_chave = diag_fluxo.get("liq_por_chave") or {}
-                if _por_chave:
-                    _nomes = {
-                        "por_num_venc_valor": "número + vencimento + valor",
-                        "por_num_venc": "número + vencimento",
-                        "por_num_valor": "número + valor",
-                        "por_venc_valor": "vencimento + valor",
-                        "por_num": "só o número",
-                    }
-                    st.caption(
-                        "Baixas encontradas por chave — "
-                        + " · ".join(
-                            f"{_nomes.get(chave, chave)}: **{qtd}**"
-                            for chave, qtd in _por_chave.items() if qtd
-                        )
-                    )
-                if diag_fluxo.get("amostras_sem_match"):
-                    st.caption(
-                        "Exemplos de documentos que não acharam par na DIÁRIO: "
-                        + ", ".join(str(v) for v in diag_fluxo["amostras_sem_match"])
-                    )
-            if (
-                diag_fluxo.get("pagar_titulos")
-                and not diag_fluxo.get("pagar_liquidados")
-                and not diag_fluxo.get("liq_do_diario")
-            ):
+                st.caption(
+                    "São os títulos em aberto: sem data na coluna Data de Liquidação da aba "
+                    "Fluxo de Caixa 2026, eles continuam posicionados no vencimento."
+                )
+            if diag_fluxo.get("pagar_titulos") and not diag_fluxo.get("pagar_liquidados"):
                 st.error(
                     f"**Nenhuma das {diag_fluxo['pagar_titulos']} contas a pagar tem data de liquidação "
                     "na coluna lida.** Não é erro de leitura: a coluna está vazia para essas linhas. "
@@ -7321,14 +7091,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     f'(posição em {hoje_analise:%d/%m/%Y} · prazo interno de {PRAZO_INTERNO_DIAS} dias)</span></div>',
                     unsafe_allow_html=True,
                 )
-                if diag_fluxo.get("liq_do_diario"):
-                    st.caption(
-                        f"A baixa dos títulos não vem no CSV do Fluxo de Caixa — "
-                        f"{diag_fluxo['liq_do_diario']} tiveram a data buscada na aba DIÁRIO da planilha "
-                        f"Realizado 2026, pelo número do documento"
-                        + (f" ({diag_fluxo['liq_do_diario_receber']} deles a receber)."
-                           if diag_fluxo.get("liq_do_diario_receber") else ".")
-                    )
+                st.caption(
+                    "A data de baixa vem da coluna Data de Liquidação da própria aba "
+                    "Fluxo de Caixa 2026. Título sem data nela é título em aberto."
+                )
                 st.markdown(
                     render_kpi_row([
                         dict(label="TOTAL A PAGAR NO RECORTE", value=formata_brl(total_pagar_a),
