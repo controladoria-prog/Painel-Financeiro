@@ -1242,6 +1242,122 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
 
 
 # ============================================================================
+# 5h. METAS DE RECEBIMENTO E AS TRES LINHAS DE A RECEBER
+# ============================================================================
+class TesteMetasDeRecebimento(unittest.TestCase):
+    """A meta e balizador: aparece como QUANTO FALTA e nunca soma em total."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["_normalizar_texto", "_classificar_movimento_fin", "_dias_da_meta_no_mes",
+             "montar_linhas_de_meta", "_aplicar_meta_como_falta", "_total_geral_sem_meta",
+             "_ordenar_movimentos_fin"],
+            ["METAS_RECEBER", "DIAS_DA_SEMANA_POR_MODALIDADE", "MOV_RECEBER_META",
+             "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO", "RENOMEAR_MOVIMENTO_FIN",
+             "ORDEM_MOVIMENTOS_FIN", "COL_FIN_MOVIMENTO", "COL_FIN_CANAL",
+             "COL_FIN_MODALIDADE", "COL_FIN_VALOR", "COL_FIN_VENCIMENTO",
+             "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_EFETIVA"],
+        )
+
+    def test_meta_mensal_bate_com_a_planilha_do_gestor(self):
+        """A soma dos dias tem de devolver a meta do mes -- os centavos do
+        arredondamento vao no ultimo dia, entao nada se perde."""
+        metas = self.ns["METAS_RECEBER"]
+        esperado = {("HUB LOGISTICO", 9): 2_850_343.42, ("LOJA", 9): 2_713_551.41,
+                    ("VENDA DIRETA", 9): 5_318_893.86, ("LOJA", 7): 1_982_539.27}
+        for (canal, mes), alvo in esperado.items():
+            soma = sum(v.get((2026, mes), 0.0) for v in metas[canal].values())
+            self.assertAlmostEqual(soma, alvo, delta=0.02, msg=f"{canal} mes {mes}")
+
+    def test_soma_dos_dias_devolve_o_mes(self):
+        colunas = [self.ns["COL_FIN_MOVIMENTO"], self.ns["COL_FIN_CANAL"],
+                   self.ns["COL_FIN_MODALIDADE"], self.ns["COL_FIN_VALOR"], "Data Efetiva",
+                   self.ns["COL_FIN_VENCIMENTO"], self.ns["COL_FIN_DATA_LIQUIDACAO"],
+                   self.ns["COL_FIN_LIQ_EFETIVA"], "Liquidado", "Tipo Movimento"]
+        diarias = self.ns["montar_linhas_de_meta"](colunas)
+        setembro = diarias[diarias["Data Efetiva"].dt.to_period("M") == pd.Period("2026-09")]
+        self.assertAlmostEqual(setembro[self.ns["COL_FIN_VALOR"]].sum(), 10_882_788.68, delta=0.05)
+
+    def test_boleto_garantido_so_cai_em_terca_e_quinta(self):
+        dias = self.ns["_dias_da_meta_no_mes"](2026, 9, "Boleto Garantido")
+        self.assertEqual({d.weekday() for d in dias}, {1, 3})
+        # As demais modalidades usam dia util, sem fim de semana.
+        uteis = self.ns["_dias_da_meta_no_mes"](2026, 9, "Débito")
+        self.assertEqual({d.weekday() for d in uteis}, {0, 1, 2, 3, 4})
+
+    def test_meta_e_um_tipo_proprio_fora_dos_totais(self):
+        """O nome contem "receber"; sem tratamento proprio ela seria
+        classificada como entrada e entraria em todo indicador do painel."""
+        self.assertEqual(self.ns["_classificar_movimento_fin"]("2 - Contas a Receber Meta"), "meta")
+        self.assertEqual(self.ns["_classificar_movimento_fin"]("3 - Contas a Receber"), "entrada")
+        self.assertEqual(
+            self.ns["_classificar_movimento_fin"]("3.1 - Contas a Receber Liquidado"), "entrada")
+
+    def _pivo(self, avencer, liquidado, meta=10_882_788.68):
+        return pd.DataFrame({"Setembro": {
+            self.ns["MOV_RECEBER_META"]: meta,
+            self.ns["MOV_RECEBER_AVENCER"]: avencer,
+            self.ns["MOV_RECEBER_LIQUIDADO"]: liquidado,
+            "4 - Contas a Pagar": -3_500_000.00,
+        }})
+
+    def test_meta_mostra_quanto_falta(self):
+        ajustado, cheia = self.ns["_aplicar_meta_como_falta"](
+            self._pivo(4_000_000.0, 6_000_000.0))
+        self.assertAlmostEqual(ajustado.loc[self.ns["MOV_RECEBER_META"], "Setembro"],
+                               882_788.68, places=2)
+        self.assertAlmostEqual(cheia["Setembro"], 10_882_788.68, places=2)
+
+    def test_meta_zera_quando_batida_e_nao_fica_negativa(self):
+        batida, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_882_788.68))
+        self.assertAlmostEqual(batida.loc[self.ns["MOV_RECEBER_META"], "Setembro"], 0.0, places=2)
+        # Um real abaixo da meta: e um real que tem de aparecer.
+        quase, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_882_787.68))
+        self.assertAlmostEqual(quase.loc[self.ns["MOV_RECEBER_META"], "Setembro"], 1.0, places=2)
+        # Passando da meta continua zero, nunca negativo.
+        passou, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 9_000_000.0))
+        self.assertEqual(passou.loc[self.ns["MOV_RECEBER_META"], "Setembro"], 0.0)
+
+    def test_total_geral_ignora_a_meta(self):
+        pivo = self._pivo(4_000_000.0, 6_000_000.0)
+        total = self.ns["_total_geral_sem_meta"](pivo)["Setembro"]
+        self.assertAlmostEqual(total, 4_000_000.0 + 6_000_000.0 - 3_500_000.0, places=2)
+
+    def test_ordem_de_leitura_das_linhas(self):
+        ordem = self.ns["_ordenar_movimentos_fin"](
+            ["4 - Contas a Pagar", "3.1 - Contas a Receber Liquidado",
+             "1 - Banco", "3 - Contas a Receber", "2 - Contas a Receber Meta"])
+        self.assertEqual(ordem[:3], ["2 - Contas a Receber Meta", "3 - Contas a Receber",
+                                     "3.1 - Contas a Receber Liquidado"])
+        self.assertLess(ordem.index("3.1 - Contas a Receber Liquidado"),
+                        ordem.index("4 - Contas a Pagar"),
+                        "o liquidado tem de ficar acima do contas a pagar")
+
+    def test_as_duas_linhas_de_a_receber_nao_se_repetem(self):
+        """Titulo com baixa vai para a linha de liquidado, na data da baixa;
+        sem baixa fica na linha a vencer, na data de vencimento. Se as duas
+        seguissem o mesmo eixo, o mesmo titulo apareceria duas vezes."""
+        i = FONTE.index("_e_receber = df[COL_FIN_MOVIMENTO] == MOV_RECEBER_AVENCER")
+        trecho = FONTE[i:i + 900]
+        self.assertIn("MOV_RECEBER_LIQUIDADO", trecho)
+        self.assertIn('_e_receber & _tem_baixa, "Data Efetiva"', trecho)
+        self.assertIn('_e_receber & ~_tem_baixa, "Data Efetiva"', trecho)
+
+    def test_meta_da_planilha_e_descartada(self):
+        i = FONTE.index("_metas_antigas = int(")
+        trecho = FONTE[i:i + 300]
+        self.assertIn("df = df[df[COL_FIN_MOVIMENTO] != MOV_RECEBER_META]", trecho)
+        self.assertIn("montar_linhas_de_meta(df.columns)", FONTE)
+
+    def test_somador_de_selecao_nas_duas_tabelas(self):
+        self.assertIn("def tabela_com_somador(", FONTE)
+        self.assertIn('chave="somador_mensal"', FONTE)
+        self.assertIn('chave="somador_diario"', FONTE)
+        self.assertIn('selection_mode=["multi-row", "multi-column"]', FONTE)
+
+
+# ============================================================================
 # 6. FORMATACAO
 # ============================================================================
 class TesteFormatacao(unittest.TestCase):
@@ -1352,6 +1468,8 @@ class TesteTravasEstruturais(unittest.TestCase):
         altura=/largura= em 29 chamadas de grafico e tabela, que esperam os
         nomes em ingles - o painel so quebrava ao abrir a aba afetada."""
         arvore = ast.parse(FONTE)
+        # Funcoes escritas por nos, cujos parametros sao em portugues.
+        FUNCOES_EM_PORTUGUES = {"html_embutido", "tabela_com_somador"}
 
         def nome(no):
             f = no.func
@@ -1362,9 +1480,11 @@ class TesteTravasEstruturais(unittest.TestCase):
             if not isinstance(no, ast.Call):
                 continue
             args = [kw.arg for kw in no.keywords]
-            if nome(no) == "html_embutido":
+            if nome(no) in FUNCOES_EM_PORTUGUES:
+                # Funcoes nossas: aqui o portugues e o certo, e o ingles e
+                # que seria o erro.
                 if "height" in args or "width" in args:
-                    errados.append(f"linha {no.lineno}: html_embutido com height/width")
+                    errados.append(f"linha {no.lineno}: {nome(no)} com height/width")
             elif "altura" in args or "largura" in args:
                 errados.append(f"linha {no.lineno}: {nome(no)}(...) com altura/largura")
         self.assertEqual(errados, [], "argumentos com o nome trocado: " + "; ".join(errados[:5]))

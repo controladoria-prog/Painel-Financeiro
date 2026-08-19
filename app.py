@@ -3771,8 +3771,127 @@ def _dia_valido_no_mes(valor, ultimo_dia_mes):
         return False
 
 
+# ---------------------------------------------------------------------------
+# METAS DE RECEBIMENTO E AS TRÊS LINHAS DE CONTAS A RECEBER
+# ---------------------------------------------------------------------------
+# A planilha traz "2 - Contas a Receber Projetado" e "3 - Contas a Receber
+# Realizado". No painel os nomes mudam e uma linha nova entra:
+#   2 - Contas a Receber Meta        -> o balizador; NÃO soma em total nenhum
+#   3 - Contas a Receber             -> a vencer e ainda não liquidado
+#   3.1 - Contas a Receber Liquidado -> o que já entrou, na data em que entrou
+MOV_RECEBER_META = "2 - Contas a Receber Meta"
+MOV_RECEBER_AVENCER = "3 - Contas a Receber"
+MOV_RECEBER_LIQUIDADO = "3.1 - Contas a Receber Liquidado"
+
+RENOMEAR_MOVIMENTO_FIN = {
+    "2 - contas a receber projetado": MOV_RECEBER_META,
+    "3 - contas a receber realizado": MOV_RECEBER_AVENCER,
+}
+
+# Metas mensais de recebimento por canal e modalidade (R$). Os valores da
+# coluna "Projetado" da planilha são DESCARTADOS -- estes aqui é que valem.
+# Chave do mês: (ano, mês).
+METAS_RECEBER = {
+    "HUB LOGISTICO": {
+        "Débito": {(2026, 7): 77_404.54, (2026, 8): 72_414.89, (2026, 9): 77_901.96,
+                   (2026, 10): 83_026.09, (2026, 11): 83_026.09, (2026, 12): 69_943.17},
+        "Boleto Garantido": {(2026, 7): 910_956.85, (2026, 8): 1_838_897.04,
+                             (2026, 9): 2_619_828.66, (2026, 10): 2_958_458.15,
+                             (2026, 11): 3_074_991.99, (2026, 12): 3_173_902.62},
+        "Crédito à Vista": {(2026, 7): 12_745.61, (2026, 8): 12_666.20, (2026, 9): 11_849.71,
+                            (2026, 10): 12_747.59, (2026, 11): 13_586.09, (2026, 12): 13_586.09},
+        "Crédito Parcelado": {(2026, 8): 80_368.13, (2026, 9): 140_763.09,
+                              (2026, 10): 180_907.04, (2026, 11): 217_079.52,
+                              (2026, 12): 249_005.87},
+    },
+    "LOJA": {
+        "Débito": {(2026, 7): 1_106_290.84, (2026, 8): 1_245_777.21, (2026, 9): 1_085_880.28,
+                   (2026, 10): 1_102_890.38, (2026, 11): 1_363_803.43, (2026, 12): 2_349_303.58},
+        "Crédito Parcelado": {(2026, 7): 404_473.61, (2026, 8): 916_807.95,
+                              (2026, 9): 1_164_795.10, (2026, 10): 1_281_575.63,
+                              (2026, 11): 1_304_708.48, (2026, 12): 975_794.15},
+        "Crédito à Vista": {(2026, 7): 471_774.82, (2026, 8): 411_049.02, (2026, 9): 462_876.03,
+                            (2026, 10): 403_465.36, (2026, 11): 409_785.56, (2026, 12): 506_729.38},
+    },
+    "VENDA DIRETA": {
+        "Débito": {(2026, 7): 303_243.69, (2026, 8): 283_695.99, (2026, 9): 305_192.37,
+                   (2026, 10): 325_266.91, (2026, 11): 325_266.91, (2026, 12): 274_012.66},
+        "Boleto Garantido": {(2026, 7): 1_582_766.96, (2026, 8): 3_177_665.26,
+                             (2026, 9): 4_583_064.20, (2026, 10): 5_282_634.16,
+                             (2026, 11): 5_517_863.63, (2026, 12): 5_684_680.42},
+        "Crédito à Vista": {(2026, 7): 62_540.94, (2026, 8): 62_151.30, (2026, 9): 58_144.90,
+                            (2026, 10): 62_550.69, (2026, 11): 66_665.06, (2026, 12): 66_665.06},
+        "Crédito Parcelado": {(2026, 8): 221_298.72, (2026, 9): 372_492.38,
+                              (2026, 10): 470_763.75, (2026, 11): 561_093.74,
+                              (2026, 12): 641_833.40},
+    },
+}
+
+# Modalidade que só cai em dias específicos da semana (0 = segunda).
+# Boleto Garantido é recebido às terças e quintas, então a meta diária dele
+# não pode ser espalhada pelos outros dias -- apareceria dinheiro previsto
+# em dia que nunca recebe nada.
+DIAS_DA_SEMANA_POR_MODALIDADE = {"boleto garantido": (1, 3)}
+
+
+def _dias_da_meta_no_mes(ano, mes, modalidade):
+    """Os dias em que a meta daquela modalidade pode cair: dias úteis do mês
+    (sem sábado e domingo) e, quando a modalidade tem dia fixo, só nesses
+    dias da semana."""
+    dias_alvo = DIAS_DA_SEMANA_POR_MODALIDADE.get(_normalizar_texto(modalidade).lower())
+    dias = pd.date_range(
+        start=pd.Timestamp(ano, mes, 1),
+        end=pd.Timestamp(ano, mes, 1) + pd.offsets.MonthEnd(0),
+        freq="D",
+    )
+    if dias_alvo is not None:
+        return [d for d in dias if d.weekday() in dias_alvo]
+    return [d for d in dias if d.weekday() < 5]
+
+
+def montar_linhas_de_meta(colunas_modelo):
+    """Transforma METAS_RECEBER em lançamentos DIÁRIOS, para que a visão
+    mensal e a diária saiam da mesma fonte -- somar os dias devolve o mês.
+
+    O valor do mês é dividido pelos dias em que aquela modalidade recebe, e a
+    sobra de centavos vai no último dia, para o mês fechar no valor exato da
+    meta em vez de perder alguns centavos no arredondamento."""
+    linhas = []
+    for canal, modalidades in METAS_RECEBER.items():
+        for modalidade, por_mes in modalidades.items():
+            for (ano, mes), valor in por_mes.items():
+                dias = _dias_da_meta_no_mes(ano, mes, modalidade)
+                if not dias or not valor:
+                    continue
+                por_dia = round(valor / len(dias), 2)
+                for i, dia in enumerate(dias):
+                    parcela = por_dia if i < len(dias) - 1 else round(valor - por_dia * (len(dias) - 1), 2)
+                    linhas.append({
+                        COL_FIN_MOVIMENTO: MOV_RECEBER_META,
+                        COL_FIN_CANAL: canal,
+                        COL_FIN_MODALIDADE: modalidade,
+                        COL_FIN_VALOR: parcela,
+                        "Data Efetiva": dia,
+                        COL_FIN_VENCIMENTO: dia,
+                        COL_FIN_DATA_LIQUIDACAO: pd.NaT,
+                        COL_FIN_LIQ_EFETIVA: pd.NaT,
+                        "Liquidado": False,
+                        "Tipo Movimento": "meta",
+                    })
+    df_meta = pd.DataFrame(linhas)
+    # Devolve com as mesmas colunas do fluxo, para poder concatenar sem
+    # desalinhar nada.
+    for coluna in colunas_modelo:
+        if coluna not in df_meta.columns:
+            df_meta[coluna] = pd.NA
+    return df_meta[list(colunas_modelo)] if not df_meta.empty else df_meta
+
+
 def _classificar_movimento_fin(nome_movimento):
     """Classifica cada Movimento em uma de quatro categorias:
+    - "meta": a meta de recebimento. Aparece nas tabelas como balizador,
+      mas fica FORA de qualquer soma, total ou indicador -- não é dinheiro,
+      é o alvo.
     - "aplicacao": aplicações financeiras -- ficam FORA de todos os totais,
       somas e tabelas principais do painel (a pedido da área), aparecendo
       só num bloco separado, para conhecimento.
@@ -3781,6 +3900,11 @@ def _classificar_movimento_fin(nome_movimento):
     Saldo e fluxo nunca são somados juntos: um é posição, o outro é
     movimentação, e misturar os dois gera um total sem significado."""
     texto = str(nome_movimento).strip().lower()
+    # META antes de tudo: o nome contém "receber", e sem esta linha ela seria
+    # classificada como entrada e entraria em todos os totais do painel --
+    # o oposto do que ela é. Meta é balizador, não dinheiro.
+    if "meta" in texto:
+        return "meta"
     if "aplica" in texto:
         return "aplicacao"
     if any(p in texto for p in ["caixa", "banco"]):
@@ -4096,6 +4220,114 @@ def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_p
     pivot = pd.DataFrame.from_dict(resultado, orient="index")
     pivot = pivot.reindex(columns=ordem_periodos, fill_value=0.0)
     return pivot
+
+
+def tabela_com_somador(df, chave, estilo=None, altura=None, ajuda_colunas=None):
+    """Mostra a tabela e, abaixo dela, a SOMA do que estiver selecionado.
+
+    O Streamlit deixa selecionar linhas e colunas (não célula solta), então a
+    soma é do cruzamento: marque as linhas dos três canais e as colunas dos
+    dias que quiser, e o número embaixo é a soma daquele retângulo. Sem
+    seleção, não aparece nada -- a tabela fica igual a antes.
+
+    Serve para a pergunta do dia a dia: "quanto dá o contas a pagar dos três
+    canais nesta semana?", que antes só saía somando na mão ou exportando.
+    """
+    try:
+        evento = st.dataframe(
+            estilo if estilo is not None else df,
+            width="stretch",
+            height=altura,
+            column_config=ajuda_colunas,
+            key=chave,
+            on_select="rerun",
+            selection_mode=["multi-row", "multi-column"],
+        )
+    except Exception:
+        # Streamlit mais antigo: sem seleção, mas a tabela continua na tela.
+        st.dataframe(
+            estilo if estilo is not None else df,
+            width="stretch", height=altura, column_config=ajuda_colunas,
+        )
+        return
+
+    selecao = getattr(evento, "selection", None) or {}
+    linhas_sel = list(selecao.get("rows", []) or [])
+    colunas_sel = list(selecao.get("columns", []) or [])
+    if not linhas_sel and not colunas_sel:
+        return
+
+    recorte = df
+    if linhas_sel:
+        recorte = recorte.iloc[linhas_sel]
+    if colunas_sel:
+        existentes = [c for c in colunas_sel if c in recorte.columns]
+        if existentes:
+            recorte = recorte[existentes]
+
+    numeros = recorte.select_dtypes(include="number")
+    if numeros.empty:
+        return
+    valores = numeros.to_numpy().ravel()
+    total = float(pd.Series(valores).dropna().sum())
+    quantidade = int(pd.Series(valores).notna().sum())
+    st.markdown(
+        f'<div style="display:flex;gap:22px;align-items:baseline;padding:8px 12px;'
+        f'background:{COLORS["surface_alt"]};border:1px solid {COLORS["border"]};'
+        f'border-radius:8px;margin-top:-6px;">'
+        f'<span style="font-size:11px;letter-spacing:0.9px;color:{COLORS["text_muted"]};'
+        f'text-transform:uppercase;">Soma da seleção</span>'
+        f'<span style="font-family:{FONTE_MONO};font-size:17px;font-weight:700;'
+        f'color:{cor_valor(total).split(":")[-1].strip().rstrip(";")};">{formata_brl(total)}</span>'
+        f'<span style="font-size:11px;color:{COLORS["text_muted"]};">{quantidade} célula(s) · '
+        f'média {formata_brl(total / quantidade) if quantidade else "—"}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+ORDEM_MOVIMENTOS_FIN = [MOV_RECEBER_META, MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
+
+
+def _ordenar_movimentos_fin(indice):
+    """Coloca as três linhas de contas a receber na ordem de leitura (meta,
+    a vencer, liquidado) e deixa o resto como veio -- o que joga o
+    "4 - Contas a Pagar" para depois delas, como na planilha."""
+    ordem = {nome: i for i, nome in enumerate(ORDEM_MOVIMENTOS_FIN)}
+    return sorted(indice, key=lambda nome: (ordem.get(nome, len(ordem) + 1), str(nome)))
+
+
+def _aplicar_meta_como_falta(pivot):
+    """Substitui a linha de META pelo que AINDA FALTA receber no período:
+    meta menos o que já está a vencer e o que já foi liquidado, com piso em
+    zero.
+
+    É assim que a área lê a meta: não interessa o alvo cheio, e sim quanto
+    falta para bater. Quando a soma das duas linhas de a receber alcança a
+    meta, esta linha zera; se ficar R$ 1,00 abaixo, é R$ 1,00 que aparece
+    aqui. Passar da meta não vira número negativo -- o excedente já está
+    visível nas linhas de a receber, e negativo aqui daria a impressão de
+    dívida.
+
+    Devolve (pivot ajustado, série da meta cheia) -- a meta original ainda
+    serve para a legenda dizer qual era o alvo."""
+    if MOV_RECEBER_META not in pivot.index:
+        return pivot, None
+    meta_cheia = pivot.loc[MOV_RECEBER_META].copy()
+    realizado = pd.Series(0.0, index=pivot.columns)
+    for linha in (MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO):
+        if linha in pivot.index:
+            realizado = realizado + pivot.loc[linha].abs()
+    ajustado = pivot.copy()
+    ajustado.loc[MOV_RECEBER_META] = (meta_cheia.abs() - realizado).clip(lower=0)
+    return ajustado, meta_cheia
+
+
+def _total_geral_sem_meta(pivot):
+    """TOTAL GERAL some tudo MENOS a linha de meta: ela é alvo, não dinheiro.
+    Somá-la faria o total do mês contar duas vezes o mesmo recebimento."""
+    linhas = [i for i in pivot.index if _classificar_movimento_fin(i) != "meta"]
+    return pivot.loc[linhas].sum(axis=0)
 
 
 def _saldo_posicao_atual_fin(df, coluna_valor):
@@ -4586,12 +4818,51 @@ def preparar_fluxo_caixa(base_data):
     else:
         df["Data Efetiva"] = df[COL_FIN_DATA_LIQUIDACAO].fillna(df[COL_FIN_VENCIMENTO])
 
+    # ---- As três linhas de contas a receber ----
+    # A planilha traz duas ("Projetado" e "Realizado"); o painel mostra três,
+    # com regras próprias que NÃO dependem da escolha de base de data acima:
+    #
+    #   3 - Contas a Receber            -> por VENCIMENTO, só o que ainda não
+    #                                      foi liquidado (o que falta entrar);
+    #   3.1 - Contas a Receber Liquidado-> por LIQUIDAÇÃO, o que já entrou, no
+    #                                      dia em que entrou. Um título que
+    #                                      vencia dia 25 e foi antecipado para
+    #                                      o dia 20 aparece no dia 20;
+    #   2 - Contas a Receber Meta       -> descartado da planilha e remontado
+    #                                      a partir de METAS_RECEBER.
+    #
+    # Fixar a data destas duas linhas é o que faz uma não repetir a outra: se
+    # ambas seguissem o mesmo eixo, o mesmo título apareceria nas duas.
+    df[COL_FIN_MOVIMENTO] = df[COL_FIN_MOVIMENTO].astype(str).map(
+        lambda nome: RENOMEAR_MOVIMENTO_FIN.get(nome.strip().lower(), nome)
+    )
+    _e_receber = df[COL_FIN_MOVIMENTO] == MOV_RECEBER_AVENCER
+    _tem_baixa = df[COL_FIN_DATA_LIQUIDACAO].notna()
+    df.loc[_e_receber & _tem_baixa, COL_FIN_MOVIMENTO] = MOV_RECEBER_LIQUIDADO
+    df.loc[_e_receber & _tem_baixa, "Data Efetiva"] = df.loc[
+        _e_receber & _tem_baixa, COL_FIN_DATA_LIQUIDACAO
+    ]
+    df.loc[_e_receber & ~_tem_baixa, "Data Efetiva"] = df.loc[
+        _e_receber & ~_tem_baixa, COL_FIN_VENCIMENTO
+    ]
+    # A meta da planilha vai fora: os valores agora vêm de METAS_RECEBER.
+    _metas_antigas = int((df[COL_FIN_MOVIMENTO] == MOV_RECEBER_META).sum())
+    df = df[df[COL_FIN_MOVIMENTO] != MOV_RECEBER_META]
+    diagnostico["metas_descartadas_da_planilha"] = _metas_antigas
+
     total_lido = len(df)
     df = df.dropna(subset=["Data Efetiva"])
     sem_data = total_lido - len(df)
 
     df["Tipo Movimento"] = df[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin)
     df["Liquidado"] = df[COL_FIN_DATA_LIQUIDACAO].notna()
+
+    # As metas entram como lançamentos diários, geradas na hora: assim a
+    # visão mensal é a soma da diária, sem dois caminhos de cálculo.
+    df_metas = montar_linhas_de_meta(df.columns)
+    if not df_metas.empty:
+        df = pd.concat([df, df_metas], ignore_index=True)
+    diagnostico["linhas_de_meta_geradas"] = len(df_metas)
     # Colunas de texto viram "category": ocupam bem menos memória e deixam
     # os agrupamentos por canal/modalidade bem mais rápidos.
     for coluna_texto in (COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_MOVIMENTO):
@@ -5103,18 +5374,24 @@ if st.session_state["painel_escolhido"] == "financeiro":
             saidas_fin = df_fin_view.loc[df_fin_view["Tipo Movimento"] == "saida", COL_FIN_VALOR].sum()
             fluxo_liquido_fin = entradas_fin + saidas_fin  # saídas já vêm negativas
 
-            # "Ainda a receber" = o que está classificado como PROJETADO na coluna
-            # Movimento. Antes isso era deduzido da coluna "Data Liquidação" estar
-            # vazia, mas boa parte dos lançamentos marcados como "Realizado" vem sem
-            # essa data preenchida na planilha -- e assim eles entravam aqui por
-            # engano, inflando o número. O Movimento é a classificação confiável.
-            mascara_projetado_fin = df_fin_view[COL_FIN_MOVIMENTO].astype(str).str.contains(
-                "projetad", case=False, na=False
-            )
-            a_receber_projetado_fin = df_fin_view.loc[
-                (df_fin_view["Tipo Movimento"] == "entrada") & mascara_projetado_fin, COL_FIN_VALOR
+            # As duas metades do a receber, pelo MOVIMENTO (a classificação
+            # confiável): o que ainda vai vencer e o que já foi liquidado.
+            # Antes isso era deduzido de a coluna "Data Liquidação" estar
+            # vazia, mas boa parte dos lançamentos vem sem essa data
+            # preenchida na planilha, e eles entravam no lado errado.
+            a_receber_avencer_fin = df_fin_view.loc[
+                df_fin_view[COL_FIN_MOVIMENTO].astype(str) == MOV_RECEBER_AVENCER, COL_FIN_VALOR
             ].sum()
-            a_receber_realizado_fin = entradas_fin - a_receber_projetado_fin
+            a_receber_liquidado_fin = df_fin_view.loc[
+                df_fin_view[COL_FIN_MOVIMENTO].astype(str) == MOV_RECEBER_LIQUIDADO, COL_FIN_VALOR
+            ].sum()
+            # Meta do período e quanto ainda falta para bater.
+            meta_periodo_fin = abs(df_fin_periodo.loc[
+                df_fin_periodo["Tipo Movimento"] == "meta", COL_FIN_VALOR
+            ].sum())
+            falta_meta_fin = max(
+                meta_periodo_fin - abs(a_receber_avencer_fin) - abs(a_receber_liquidado_fin), 0.0
+            )
 
             st.markdown(
                 f'<div class="section-title">📊 Resumo do Período '
@@ -5134,9 +5411,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                          value_color=COLORS["negative"], subtext="Contas a pagar no período", icon="📤"),
                     dict(label="FLUXO LÍQUIDO DO PERÍODO", value=formata_brl(fluxo_liquido_fin),
                          value_color=cor_variacao(fluxo_liquido_fin), subtext="Entradas − saídas", icon="⚖️"),
-                    dict(label="A RECEBER PROJETADO", value=formata_brl(a_receber_projetado_fin),
+                    dict(label="A RECEBER (A VENCER)", value=formata_brl(a_receber_avencer_fin),
                          value_color=COLORS["warning"],
-                         subtext=f"Realizado no período: {formata_brl(a_receber_realizado_fin)}", icon="⏳"),
+                         subtext=(f"Liquidado: {formata_brl(a_receber_liquidado_fin)} · "
+                                  + (f"faltam {formata_brl(falta_meta_fin)} para a meta"
+                                     if meta_periodo_fin else "sem meta no período")), icon="⏳"),
                 ]),
                 unsafe_allow_html=True,
             )
@@ -5167,6 +5446,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m
             )
 
+            pivot_m, meta_cheia_m = _aplicar_meta_como_falta(pivot_m)
+            pivot_m_fechamento, _ = _aplicar_meta_como_falta(pivot_m_fechamento)
+            pivot_m = pivot_m.reindex(_ordenar_movimentos_fin(pivot_m.index))
+            pivot_m_fechamento = pivot_m_fechamento.reindex(
+                _ordenar_movimentos_fin(pivot_m_fechamento.index)
+            )
+
             # A coluna final tem significado diferente conforme o tipo de linha:
             # para fluxo é a SOMA do período; para saldo é a abertura do
             # PRIMEIRO mês do recorte -- com quanto o período começou (somar
@@ -5185,15 +5471,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
             pivot_m["TOTAL / SALDO DE ABERTURA"] = pd.Series(totais_finais_m)
             pivot_m.index.name = "Movimento"
 
-            # TOTAL GERAL: soma de todas as linhas em cada mês -- mesmo cálculo
-            # do "Total Geral" da tabela dinâmica da planilha.
-            linha_total_geral_m = pivot_m.sum(axis=0)
+            # TOTAL GERAL: soma de todas as linhas em cada mês, EXCETO a meta.
+            linha_total_geral_m = _total_geral_sem_meta(pivot_m)
             pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
 
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
-            st.dataframe(
-                pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-                width="stretch",
+            tabela_com_somador(
+                pivot_m_exibicao, chave="somador_mensal",
+                estilo=pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
+            )
+            st.caption(
+                "Clique nos nomes das linhas e nos cabeçalhos das colunas para somar só o que "
+                "interessa — a soma do que ficar selecionado aparece logo abaixo da tabela."
             )
             st.caption(
                 "As linhas de **caixa e banco** mostram o saldo com que o mês **começou** — a posição do "
@@ -5204,6 +5493,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "saldo de abertura** — a Reserva de Caixa abaixo e as demais abas seguem com a posição de "
                 "fechamento."
             )
+            if meta_cheia_m is not None:
+                st.caption(
+                    "**2 - Contas a Receber Meta** mostra **quanto ainda falta** para bater a meta do mês: "
+                    "a meta menos o que está a vencer e o que já foi liquidado. Quando a linha zera, a meta "
+                    "foi atingida; o que passar dela aparece nas linhas de a receber, não aqui. Esta linha "
+                    "não entra no TOTAL GERAL nem em indicador nenhum — é balizador, não dinheiro. Meta "
+                    "cheia do período: "
+                    + " · ".join(
+                        f"{mes} {formata_brl(abs(valor))}"
+                        for mes, valor in meta_cheia_m.items() if valor
+                    )
+                )
 
             # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
             # A regra da área: pagando todas as contas do mês, ainda tem que
@@ -5451,6 +5752,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_d_completo = df_d_completo[df_d_completo[COL_FIN_MODALIDADE].astype(str) == modal_sel_d]
             # Aplicações ficam fora, igual ao resto do painel
             df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "aplicacao"]
+            # A META também sai daqui: ela não é dinheiro, é alvo. Se ficasse,
+            # entraria no saldo inicial de cada dia e no TOTAL GERAL, e o
+            # caixa apareceria com um dinheiro que ainda nem existe. Ela volta
+            # mais abaixo, como linha própria dentro de cada canal.
+            df_d_metas = df_d_completo[df_d_completo["Tipo Movimento"] == "meta"].copy()
+            df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "meta"]
             df_d_completo["DiaOrd"] = df_d_completo["Data Efetiva"].dt.normalize()
             saldo_inicial_por_dia, total_por_dia = calcular_saldo_inicial_diario(
                 df_d_completo, COL_FIN_VALOR
@@ -5634,14 +5941,53 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     indices_tabela_d.append(_rotulo_unico_d("SALDO INICIAL", len(indices_tabela_d)))
                     estilo_linhas_d.append(("saldo_inicial", "SALDO INICIAL"))
 
-                    canais_ordenados_d = sorted(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
+                    # As metas do mesmo recorte, para entrarem como linha
+                    # dentro do canal a que pertencem.
+                    df_metas_d = df_d_metas[
+                        df_d_metas["Data Efetiva"].dt.to_period("M") == periodo_d
+                    ].copy()
+                    if not df_metas_d.empty:
+                        df_metas_d["DiaOrd"] = df_metas_d["Data Efetiva"].dt.normalize()
+
+                    canais_ordenados_d = sorted(
+                        set(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
+                        | set(df_metas_d[COL_FIN_CANAL].dropna().astype(str).unique()
+                              if not df_metas_d.empty else [])
+                    )
                     for canal in canais_ordenados_d:
                         df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
+                        # O subtotal do canal NÃO inclui a meta -- ela é alvo.
                         linhas_tabela_d.append(_agrega_por_dia(df_canal))
                         indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
                         estilo_linhas_d.append(("canal", canal))
 
-                        for movimento in sorted(df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()):
+                        # A meta abre o bloco do canal, como no mensal: primeiro
+                        # quanto falta, depois o que está a vencer e o que já
+                        # entrou. Aqui ela já vem líquida do que foi realizado
+                        # NAQUELE dia, para responder "quanto ainda falta hoje".
+                        if not df_metas_d.empty:
+                            df_meta_canal = df_metas_d[
+                                df_metas_d[COL_FIN_CANAL].astype(str) == canal
+                            ]
+                            if not df_meta_canal.empty:
+                                serie_meta = _agrega_por_dia(df_meta_canal).abs()
+                                realizado_canal = df_canal[
+                                    df_canal[COL_FIN_MOVIMENTO].astype(str).isin(
+                                        [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
+                                    )
+                                ]
+                                serie_realizado = _agrega_por_dia(realizado_canal).abs()
+                                linhas_tabela_d.append(
+                                    (serie_meta - serie_realizado).clip(lower=0)
+                                )
+                                indices_tabela_d.append(
+                                    _rotulo_unico_d(f"    {MOV_RECEBER_META}", len(indices_tabela_d))
+                                )
+                                estilo_linhas_d.append(("movimento", MOV_RECEBER_META))
+
+                        for movimento in _ordenar_movimentos_fin(
+                            df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
+                        ):
                             df_mov = df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]
                             linhas_tabela_d.append(_agrega_por_dia(df_mov))
                             indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
@@ -5746,18 +6092,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # com valor fixo, sobrava uma faixa vazia embaixo quando a
                     # tabela tinha menos linhas do que o previsto.
                     altura_tabela_d = min(35 * (len(pivot_d) + 1) + 3, 760)
-                    st.dataframe(
-                        pivot_d.style.format(formata_brl).apply(_estilo_tabela_diaria, axis=None),
-                        width="stretch",
-                        column_config=config_colunas_d,
-                        height=altura_tabela_d,
+                    tabela_com_somador(
+                        pivot_d, chave="somador_diario",
+                        estilo=pivot_d.style.format(formata_brl).apply(
+                            _estilo_tabela_diaria, axis=None),
+                        altura=altura_tabela_d, ajuda_colunas=config_colunas_d,
                     )
                     st.caption(
                         "Cada coluna é um dia. **SALDO INICIAL** é o que sobrou do dia anterior: nos dias "
                         "que ainda não tiveram caixa e banco preenchidos, ele carrega o fechamento do dia "
                         "anterior e entra no TOTAL GERAL; no dia em que a posição é preenchida, ele zera, "
                         "porque o saldo real já está nas linhas de caixa/banco. As linhas em destaque são "
-                        "os canais (com o subtotal do canal) e, recuadas abaixo, os movimentos de cada um. "
+                        "os canais (com o subtotal do canal) e, recuadas abaixo, os movimentos de cada um — "
+                        "a linha **2 - Contas a Receber Meta** mostra quanto ainda falta receber naquele dia "
+                        "para bater a meta, e não entra no subtotal do canal nem no TOTAL GERAL. "
+                        "Clique nos nomes das linhas e nos cabeçalhos dos dias para ver a soma da seleção "
+                        "logo abaixo da tabela. "
                         "Na última coluna: contas a receber/pagar trazem a **soma do período**, caixa/banco "
                         "o **saldo do último dia** com movimento, SALDO INICIAL o saldo de abertura do "
                         "recorte e TOTAL GERAL o **saldo projetado no fim** dele."
