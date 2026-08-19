@@ -4480,8 +4480,49 @@ def _pais_reordenados(pais, ordem):
     return [None if pais[antiga] is None else nova_posicao[pais[antiga]] for antiga in ordem]
 
 
+# Nome do parâmetro na URL que guarda quais linhas do Diário Consolidado
+# estão abertas. Vive na URL, e não na sessão, porque o clique na seta
+# precisa chegar ao servidor para a tabela ser redesenhada mais alta -- e o
+# caminho que funciona de dentro do quadro é navegar a página.
+PARAM_LINHAS_ABERTAS = "abrir"
+# Separador da lista na URL. Vírgula não serve: nome de linha tem vírgula
+# ("Crédito à Vista, parcelado"), e o til não aparece em nenhum deles.
+SEPARADOR_LINHAS_ABERTAS = "~"
+
+
+def linhas_abertas_da_url():
+    """Quais linhas do Diário Consolidado estão abertas, segundo a URL.
+
+    A escolha vive na URL porque o clique na seta acontece dentro do quadro
+    da tabela, e o único caminho dali até o servidor é recarregar a página
+    com a informação no endereço."""
+    bruto = st.query_params.get(PARAM_LINHAS_ABERTAS) or ""
+    return [l for l in str(bruto).split(SEPARADOR_LINHAS_ABERTAS) if l.strip()]
+
+
+def guardar_periodo_na_url(chave, data_ini=None, data_fim=None):
+    """Guarda na URL o período escolhido e devolve o que estiver lá.
+
+    Recarregar a página começa uma sessão nova e apaga o que estava nos
+    campos -- sem isto, clicar numa seta jogaria as datas de volta para o
+    padrão, e a pessoa perderia o recorte a cada abertura de linha."""
+    chave_ini, chave_fim = f"{chave}_ini", f"{chave}_fim"
+    if data_ini and data_fim:
+        st.query_params[chave_ini] = data_ini.isoformat()
+        st.query_params[chave_fim] = data_fim.isoformat()
+        return data_ini, data_fim
+
+    def _ler(nome):
+        try:
+            return datetime.fromisoformat(str(st.query_params.get(nome))).date()
+        except (TypeError, ValueError):
+            return None
+
+    return _ler(chave_ini), _ler(chave_fim)
+
+
 def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
-                       pais=None, filhas_abertas=False):
+                       pais=None, filhas_abertas=False, comandos_abrir=None):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -4509,11 +4550,16 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       JavaScript. É instantâneo, mas a altura do quadro já foi definida na
       hora de desenhar -- abrir empurra o conteúdo para dentro da rolagem.
     - True: quem escolheu o que abrir foi o Streamlit, então as filhas já
-      chegam aqui visíveis e a altura as conta. A tabela CRESCE ao abrir, que
-      é o que a área pediu; o preço é um redesenho a cada marcação.
+      chegam aqui visíveis e a altura as conta. A tabela CRESCE ao abrir.
+
+    `comandos_abrir` liga a seta ao servidor: um dicionário
+    {rótulo da linha: True se está aberta}. A seta vira um comando que
+    recarrega a página com aquela linha marcada na URL, e aí a tabela é
+    redesenhada mais alta. É a única forma de a altura acompanhar: o quadro
+    onde a tabela vive tem altura fixa, definida no momento de desenhar, e
+    não obedece a pedido de crescer vindo de dentro.
     """
     import html as _html
-    import json as _json
 
     pais = list(pais or [None] * len(df))
     # A altura acompanha as linhas VISÍVEIS de saída (as filhas nascem
@@ -4545,9 +4591,20 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         if pais[posicao] is not None and not filhas_abertas:
             # Nasce escondida; o clique na mãe é que revela.
             atributos_linha += f' data-pai="{pais[posicao]}" style="display:none"'
-        seta = ('<span class="seta" data-abre="{}">▸</span>'.format(posicao)
-                if posicao in tem_filhas and not filhas_abertas
-                else '<span class="seta vazia"></span>')
+        rotulo_cru = str(rotulo).replace("\u200b", "").strip()
+        if comandos_abrir is not None and rotulo_cru in comandos_abrir:
+            # Comando de abrir/fechar: recarrega a página com a linha marcada
+            # (ou desmarcada) na URL.
+            aberta = comandos_abrir[rotulo_cru]
+            seta = (
+                f'<span class="seta comando{" aberta" if aberta else ""}" '
+                f'data-linha="{_html.escape(rotulo_cru, quote=True)}" '
+                f'title="{"Fechar" if aberta else "Abrir"} o detalhe">▸</span>'
+            )
+        elif posicao in tem_filhas and not filhas_abertas:
+            seta = f'<span class="seta" data-abre="{posicao}">▸</span>'
+        else:
+            seta = '<span class="seta vazia"></span>' 
         celulas = [f'<th class="rotulo">{seta}{_html.escape(texto_rotulo)}</th>']
         for indice_col, coluna in enumerate(df.columns):
             valor = df.iloc[posicao, indice_col]
@@ -4639,6 +4696,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
            color:{COLORS['text_muted']}; }}
   .seta.vazia {{ cursor:default; }}
   .seta.aberta {{ transform:rotate(90deg); }}
+  .seta.comando {{ color:{COLORS['primary']}; font-weight:700; }}
+  .seta.comando:hover {{ color:{COLORS['text']}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;
@@ -4706,17 +4765,35 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   }});
 
   // ---- abrir e fechar as filhas ----
+  // Ao abrir uma linha a tabela precisa CRESCER, não rolar. O caminho que
+  // funciona é mexer no próprio elemento do quadro: esta página é servida
+  // pelo atributo srcdoc, então ela e a página de fora são a mesma origem e
+  // `window.frameElement` está acessível daqui. A mensagem de pedir altura
+  // (streamlit:setFrameHeight) fica como segunda tentativa -- ela só é
+  // escutada por componentes de verdade, não por um HTML embutido, e foi por
+  // isso que sozinha não resolveu.
+  const ALTURA_LINHA = {ALTURA_LINHA_TABELA_PX};
+  const ALTURA_CABECALHO = {ALTURA_CABECALHO_TABELA_PX};
+  const RESERVA_ROLAGEM = {reserva_rolagem};
+  const ALTURA_BARRA = {ALTURA_BARRA_SOMA_PX};
+
   function avisarAltura() {{
-    // Pede à página para acompanhar o tamanho. Onde a mensagem não for
-    // entendida, a própria caixa rola -- por isso isto pode falhar em
-    // silêncio sem quebrar nada.
+    const visiveis = Array.from(document.querySelectorAll('tbody tr'))
+      .filter(linha => linha.style.display !== 'none').length;
+    const alturaCaixa = ALTURA_CABECALHO + ALTURA_LINHA * visiveis + RESERVA_ROLAGEM + 2;
+    const rolagem = document.getElementById('rolagem');
+    if (rolagem) rolagem.style.height = alturaCaixa + 'px';
+
+    const alturaTotal = alturaCaixa + ALTURA_BARRA + 10;
     try {{
-      const alturaAtual = document.documentElement.scrollHeight;
+      if (window.frameElement) window.frameElement.style.height = alturaTotal + 'px';
+    }} catch (erro) {{ /* sem acesso ao quadro: a caixa rola, como antes */ }}
+    try {{
       window.parent.postMessage(
-        {{ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: alturaAtual }},
+        {{ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: alturaTotal }},
         '*'
       );
-    }} catch (erro) {{ /* sem problema: a caixa tem rolagem própria */ }}
+    }} catch (erro) {{ /* idem */ }}
   }}
 
   const caixa = document.getElementById('rolagem');
@@ -4732,6 +4809,31 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                           + {reserva_rolagem} + 2) + 'px';
     avisarAltura();
   }}
+
+  // ---- seta que abre pelo servidor ----
+  // Navega a PÁGINA (não só o quadro) com a linha marcada na URL. É o que
+  // permite a tabela voltar mais alta: a altura do quadro é decidida ao
+  // desenhar, e um pedido de crescer vindo daqui de dentro é ignorado.
+  document.querySelectorAll('.seta.comando').forEach(seta => {{
+    seta.addEventListener('click', evento => {{
+      evento.stopPropagation();
+      try {{
+        const janela = window.top || window.parent;
+        const url = new URL(janela.location.href);
+        const atuais = (url.searchParams.get('{PARAM_LINHAS_ABERTAS}') || '')
+          .split('{SEPARADOR_LINHAS_ABERTAS}').filter(Boolean);
+        const linha = seta.dataset.linha;
+        const posicao = atuais.indexOf(linha);
+        if (posicao >= 0) {{ atuais.splice(posicao, 1); }} else {{ atuais.push(linha); }}
+        if (atuais.length) {{
+          url.searchParams.set('{PARAM_LINHAS_ABERTAS}', atuais.join('{SEPARADOR_LINHAS_ABERTAS}'));
+        }} else {{
+          url.searchParams.delete('{PARAM_LINHAS_ABERTAS}');
+        }}
+        janela.location.href = url.toString();
+      }} catch (erro) {{ /* sem acesso à página: a seta apenas não responde */ }}
+    }});
+  }});
 
   document.querySelectorAll('.seta[data-abre]').forEach(seta => {{
     seta.addEventListener('click', evento => {{
@@ -6424,6 +6526,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # Mesmo recorte por datas do Fluxo Diário: o período pode
             # atravessar meses.
             _hoje_dc = datetime.now(FUSO_BR).date()
+            # A URL manda no padrão: se a pessoa já escolheu um período e
+            # clicou numa seta, a página recarrega e o seletor precisa
+            # nascer com a escolha dela, não com o mês corrente.
+            _ini_url_dc, _fim_url_dc = guardar_periodo_na_url("dc")
             abrir_por_dc = st.radio(
                 "Ao abrir uma linha, mostrar",
                 ["Detalhe da linha", "Canal"],
@@ -6434,11 +6540,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
             data_ini_dc, data_fim_dc = seletor_periodo_dias(
                 datas_disp_dc, "dc_periodo",
-                padrao_ini=pd.Timestamp(_hoje_dc).replace(day=1).date(),
-                padrao_fim=(pd.Timestamp(_hoje_dc) + pd.offsets.MonthEnd(0)).date(),
+                padrao_ini=_ini_url_dc or pd.Timestamp(_hoje_dc).replace(day=1).date(),
+                padrao_fim=_fim_url_dc or (pd.Timestamp(_hoje_dc) + pd.offsets.MonthEnd(0)).date(),
                 ajuda="O período pode atravessar meses — ex.: 20/07 a 15/08.",
             )
             rotulo_periodo_dc = rotulo_periodo_dias(data_ini_dc, data_fim_dc)
+            guardar_periodo_na_url("dc", data_ini_dc, data_fim_dc)
 
             df_dc = df_fin[
                 (df_fin["Data Efetiva"].dt.normalize() >= pd.Timestamp(data_ini_dc))
@@ -6491,22 +6598,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 movimentos_dc = _ordenar_movimentos_fin(
                     df_dc_real[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
                 )
-                # Quais linhas estão abertas. A escolha é do lado do Streamlit,
-                # e não um clique só de JavaScript, porque a altura do quadro é
-                # definida na hora de desenhar: abrindo por aqui, a tabela
-                # cresce junto e continua sem rolagem vertical -- que é o
-                # ponto de tudo isso. O preço é um redesenho a cada marcação.
-                abriveis_dc = list(movimentos_dc)
-                if not df_dc_metas.empty:
-                    abriveis_dc.append(MOV_RECEBER_META)
-                abertas_dc = st.multiselect(
-                    "Abrir o detalhe de", _ordenar_movimentos_fin(abriveis_dc),
-                    key="abertas_diario_consolidado",
-                    help=("Cada linha marcada aqui se abre na tabela e o quadro cresce junto, "
-                          "sem rolagem. Contas a receber abre por modalidade, contas a pagar "
-                          "por grupo de despesa — ou tudo por canal, conforme a escolha acima."),
-                )
-
+                # Quais linhas estão abertas vem da URL: é o clique na seta,
+                # dentro da própria linha, que coloca (ou tira) o nome dela de
+                # lá. O caminho passa pelo servidor de propósito -- a altura
+                # do quadro é decidida ao desenhar, então só redesenhando a
+                # tabela ela cresce, em vez de ganhar rolagem.
+                abertas_dc = linhas_abertas_da_url()
                 for movimento in movimentos_dc:
                     recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO].astype(str) == movimento]
                     posicao_mae = len(linhas_dc)
@@ -6579,20 +6676,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_dc.columns = [rotulos_dias_dc[d] for d in dias_dc]
                 ordem_dc = _ordenar_com_filhas(indices_dc, pais_dc, tipos_dc)
                 pivot_dc = pivot_dc.iloc[ordem_dc]
+                abriveis_dc = list(movimentos_dc)
+                if not df_dc_metas.empty:
+                    abriveis_dc.append(MOV_RECEBER_META)
                 tabela_selecionavel(
                     pivot_dc, chave="tabela_diario_consolidado",
                     tipos_linha=[tipos_dc[i] for i in ordem_dc],
                     pais=_pais_reordenados(pais_dc, ordem_dc),
                     filhas_abertas=True,
+                    comandos_abrir={linha: linha in abertas_dc for linha in abriveis_dc},
                     rotulo_canto="Movimento",
                 )
                 st.caption(
-                    f"Período: {rotulo_periodo_dc}. "
                     f"A empresa inteira, dia a dia ({rotulo_periodo_dc}): as mesmas linhas do "
-                    "Fluxo Mensal, com os dias nas colunas e sem separar por canal. Use o campo "
-                    "**Abrir o detalhe de** para abrir as linhas que interessam — a tabela cresce "
-                    "junto, sem rolagem. **2 - Contas a Receber Meta** mostra quanto ainda falta "
-                    "no dia e não entra no TOTAL GERAL."
+                    "Fluxo Mensal, com os dias nas colunas e sem separar por canal. Clique no "
+                    "**▸** da linha para abrir o detalhe — a tabela cresce junto, sem rolagem. "
+                    "Abrir e fechar recarrega a página, e é isso que permite o quadro mudar de "
+                    "tamanho; o período escolhido é preservado. Contas a receber abre por "
+                    "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
+                    "conforme a escolha acima. **2 - Contas a Receber Meta** mostra quanto ainda "
+                    "falta no dia e não entra no TOTAL GERAL."
                 )
 
     # ---------------- TESOURARIA ----------------

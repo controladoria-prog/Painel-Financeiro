@@ -18,7 +18,7 @@ executadas com dados montados à mão.
 import ast
 import base64
 import hashlib
-from datetime import date
+from datetime import date, datetime
 import hmac
 import io
 import re
@@ -65,8 +65,10 @@ CONSTANTES_DE_DEPENDENCIA = {
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
                             "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
-                            "FUNDO_TABELA_FLUXO"],
+                            "FUNDO_TABELA_FLUXO", "PARAM_LINHAS_ABERTAS",
+                            "SEPARADOR_LINHAS_ABERTAS"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
+    "linhas_abertas_da_url": ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
 
@@ -1764,77 +1766,106 @@ class TesteDiarioConsolidado(unittest.TestCase):
             pais=ns_local["_pais_reordenados"](self.PAIS, ordem))
         return capturado, ns_local
 
-    def test_filhas_nascem_fechadas_e_a_mae_tem_seta(self):
-        capturado, _ = self._montar()
-        html = capturado["codigo"]
-        self.assertEqual(html.count('style="display:none"'), 4, "filha aberta por padrao")
-        self.assertEqual(len(re.findall(r'data-abre="\d+"', html)), 2,
-                         "so as duas maes com filhas podem ter seta")
-        self.assertIn("data-pai=", html)
-
-    def test_altura_conta_so_as_linhas_de_primeiro_nivel(self):
-        """Com as filhas fechadas, reservar altura para elas deixaria um
-        vazio embaixo da tabela."""
-        capturado, ns_local = self._montar()
-        maes = sum(1 for p in self.PAIS if p is None)
-        esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
-                    + ns_local["ALTURA_LINHA_TABELA_PX"] * maes
-                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 10 + 2)
-        self.assertEqual(capturado["altura"], esperado)
-
-    def test_tabela_cresce_ao_abrir_uma_linha(self):
-        """A altura do quadro é definida na hora de desenhar. Se a expansão
-        fosse só um clique de JavaScript, abrir uma linha empurraria o
-        conteudo para dentro da rolagem -- o oposto do pedido. Com as filhas
-        ja abertas, cada uma acrescenta uma linha de altura."""
+    def _montar(self, abertas=()):
+        """Monta a tabela como a aba monta: as filhas so entram para as
+        linhas marcadas como abertas."""
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
                              "_rotulo_unico_tabela", "_ordenar_com_filhas",
                              "_pais_reordenados", "formata_brl", "tabela_selecionavel"], [])
         capturado = {}
-
         ns_local["html_embutido"] = dubla_html_embutido(capturado)
-        maes = ["1.1.Caixa", "4 - Contas a Pagar", "TOTAL GERAL"]
-        filhas = {"1.1.Caixa": ["HUB", "LOJA", "VD"]}
+        filhas_de = {"4 - Contas a Pagar": ["Frete", "Energia"],
+                     "3 - Contas a Receber": ["Débito", "Boleto Garantido"]}
+        indices, tipos, pais = [], [], []
+        for mae in ["SALDO INICIAL", "1.1.Caixa", "3 - Contas a Receber",
+                    "4 - Contas a Pagar", "TOTAL GERAL"]:
+            posicao = len(indices)
+            indices.append(mae)
+            tipos.append("saldo_inicial" if mae == "SALDO INICIAL"
+                         else "total" if mae == "TOTAL GERAL" else "movimento")
+            pais.append(None)
+            if mae in abertas:
+                for filha in filhas_de.get(mae, []):
+                    indices.append(filha)
+                    tipos.append("movimento")
+                    pais.append(posicao)
+        ordem = ns_local["_ordenar_com_filhas"](indices, pais, tipos)
+        df = pd.DataFrame([[1.0] * 31] * len(indices),
+                          index=[ns_local["_rotulo_unico_tabela"](indices[p], p) for p in ordem],
+                          columns=[f"D{i}" for i in range(31)])
+        ns_local["tabela_selecionavel"](
+            df, chave="t", tipos_linha=[tipos[p] for p in ordem],
+            pais=ns_local["_pais_reordenados"](pais, ordem), filhas_abertas=True,
+            comandos_abrir={mae: mae in abertas for mae in filhas_de})
+        return capturado, ns_local
 
-        def altura(abertas):
-            indices, tipos, pais = [], [], []
-            for mae in maes:
-                posicao = len(indices)
-                indices.append(mae)
-                tipos.append("total" if mae == "TOTAL GERAL" else "movimento")
-                pais.append(None)
-                if mae in abertas:
-                    for filha in filhas.get(mae, []):
-                        indices.append(filha)
-                        tipos.append("movimento")
-                        pais.append(posicao)
-            ordem = ns_local["_ordenar_com_filhas"](indices, pais, tipos)
-            df = pd.DataFrame([[1.0] * 31] * len(indices),
-                              index=[ns_local["_rotulo_unico_tabela"](indices[p], p)
-                                     for p in ordem],
-                              columns=[f"D{i}" for i in range(31)])
-            ns_local["tabela_selecionavel"](
-                df, chave="t", tipos_linha=[tipos[p] for p in ordem],
-                pais=ns_local["_pais_reordenados"](pais, ordem), filhas_abertas=True)
-            return capturado["altura"]
-
-        fechado = altura(set())
-        aberto = altura({"1.1.Caixa"})
-        self.assertEqual(aberto - fechado, ns_local["ALTURA_LINHA_TABELA_PX"] * 3,
-                         "abrir uma linha com 3 filhas tem de crescer 3 linhas")
-        self.assertNotIn('style="display:none"', capturado["codigo"],
-                         "filha marcada para abrir nao pode nascer escondida")
-        self.assertFalse(capturado["redimensionavel"],
-                         "com a altura ja pronta, nao precisa pedir para o quadro crescer")
-
-    def test_o_que_abre_e_escolhido_no_streamlit(self):
-        """Trava estrutural: se a escolha voltar a ser so do JavaScript, a
-        altura para de acompanhar e a rolagem volta."""
+    def test_seta_fica_na_propria_linha(self):
+        """A escolha do que abrir fica DENTRO da tabela, na setinha da
+        linha -- nao num campo separado acima dela."""
+        capturado, _ = self._montar()
+        html = capturado["codigo"]
+        self.assertEqual(len(re.findall(r'class="seta comando', html)), 2,
+                         "so as maes com detalhe podem ter seta")
+        self.assertIn("data-linha=", html)
         i = FONTE.index("with tab_fin_consolidado:")
         trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
-        self.assertIn('key="abertas_diario_consolidado"', trecho)
-        self.assertIn("movimento in abertas_dc", trecho)
-        self.assertIn("filhas_abertas=True", trecho)
+        self.assertNotIn("st.multiselect", trecho,
+                         "voltou o campo separado para escolher o que abrir")
+
+    def test_clique_na_seta_faz_o_quadro_crescer(self):
+        """A altura do quadro e decidida ao desenhar: um pedido de crescer
+        vindo de dentro dele e ignorado. Por isso o clique navega a pagina e
+        a tabela volta redesenhada -- com as filhas contando na altura."""
+        fechado, ns_local = self._montar()
+        aberto, _ = self._montar({"4 - Contas a Pagar"})
+        self.assertEqual(aberto["altura"] - fechado["altura"],
+                         ns_local["ALTURA_LINHA_TABELA_PX"] * 2,
+                         "abrir uma linha com 2 filhas tem de crescer 2 linhas")
+        self.assertNotIn('style="display:none"', aberto["codigo"],
+                         "filha de linha aberta nao pode nascer escondida")
+        self.assertIn("janela.location.href = url.toString()", aberto["codigo"],
+                      "o clique precisa navegar a pagina")
+
+    def test_seta_da_linha_aberta_vem_girada(self):
+        aberto, _ = self._montar({"4 - Contas a Pagar"})
+        self.assertIn("seta comando aberta", aberto["codigo"])
+
+    def test_separador_da_url_nao_quebra_nome_com_virgula(self):
+        """Nome de modalidade tem virgula; com virgula de separador, uma
+        linha aberta viraria duas e nenhuma seria encontrada."""
+        ns_local = carregar(["linhas_abertas_da_url"],
+                            ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"])
+        self.assertNotEqual(ns_local["SEPARADOR_LINHAS_ABERTAS"], ",")
+        ns_local["st"] = type("st", (), {"query_params": {
+            ns_local["PARAM_LINHAS_ABERTAS"]:
+                "3 - Contas a Receber~Crédito à Vista, parcelado"}})()
+        self.assertEqual(ns_local["linhas_abertas_da_url"](),
+                         ["3 - Contas a Receber", "Crédito à Vista, parcelado"])
+
+    def test_periodo_sobrevive_ao_clique_na_seta(self):
+        """Abrir uma linha recarrega a pagina, e recarregar apaga o que
+        estava nos campos. Sem guardar o periodo na URL, cada abertura
+        jogaria as datas de volta para o padrao."""
+        ns_local = carregar(["guardar_periodo_na_url"], [])
+        guardadas = {}
+        ns_local["st"] = type("st", (), {"query_params": guardadas})()
+        ns_local["datetime"] = datetime
+        ns_local["guardar_periodo_na_url"]("dc", date(2026, 7, 20), date(2026, 8, 15))
+        self.assertEqual(guardadas, {"dc_ini": "2026-07-20", "dc_fim": "2026-08-15"})
+        self.assertEqual(ns_local["guardar_periodo_na_url"]("dc"),
+                         (date(2026, 7, 20), date(2026, 8, 15)))
+        guardadas.clear()
+        self.assertEqual(ns_local["guardar_periodo_na_url"]("dc"), (None, None),
+                         "URL sem o periodo nao pode explodir")
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn('guardar_periodo_na_url("dc", data_ini_dc, data_fim_dc)', trecho)
+        self.assertIn("abertas_dc = linhas_abertas_da_url()", trecho)
+        # Sem esta condicao, TODAS as linhas abririam sempre -- a tabela
+        # nasceria com 60 linhas e o clique na seta nao faria diferenca.
+        self.assertIn("if movimento in abertas_dc and coluna_abertura in recorte.columns:",
+                      trecho, "a abertura deixou de respeitar a URL")
+        self.assertIn("if MOV_RECEBER_META in abertas_dc else []", trecho)
 
     def test_periodo_por_datas_nas_duas_abas_diarias(self):
         """As duas abas diarias usam o mesmo seletor de duas datas, que pode
