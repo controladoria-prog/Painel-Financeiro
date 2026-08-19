@@ -64,7 +64,7 @@ CONSTANTES_DE_DEPENDENCIA = {
     "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
-                            "ALTURA_BARRA_ROLAGEM_PX"],
+                            "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
@@ -1433,8 +1433,11 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         capturado = {}
         ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
             codigo=codigo, altura=altura)
-        df = pd.DataFrame([[1.0, 2.0]] * n_linhas,
-                          index=[f"L{i}" for i in range(n_linhas)], columns=["a", "b"])
+        # Colunas suficientes para haver rolagem horizontal, que e o caso das
+        # tabelas de verdade (14 a 31 dias no diario).
+        colunas = [f"C{i}" for i in range(20)]
+        df = pd.DataFrame([[1.0] * len(colunas)] * n_linhas,
+                          index=[f"L{i}" for i in range(n_linhas)], columns=colunas)
         ns_local["tabela_selecionavel"](df, chave="t")
         return capturado, ns_local
 
@@ -1464,6 +1467,40 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                     + ns_local["ALTURA_BARRA_ROLAGEM_PX"]
                     + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
         self.assertEqual(capturado["altura"], esperado)
+
+    def test_so_as_linhas_de_consolidacao_ganham_destaque(self):
+        """O tom claro marca saldo inicial, canais e total. Linha comum fica
+        no fundo escuro -- com tudo claro, nada se destaca."""
+        capturado, ns_local = self._altura_para(3)
+        css = capturado["codigo"].split("<div")[0]
+        cores = ns_local["COLORS"]
+
+        def fundo(classe):
+            achado = re.search(rf"\.linha-{classe} td[^{{]*{{\s*background:([^;]+);", css)
+            return achado.group(1).strip() if achado else None
+
+        self.assertEqual(fundo("movimento"), cores["bg"], "linha comum tem de ser escura")
+        for destaque in ("canal", "total", "saldo_inicial"):
+            self.assertEqual(fundo(destaque), cores["surface_alt"], destaque)
+
+    def test_folga_da_rolagem_so_quando_ha_rolagem(self):
+        """Com poucas colunas nao aparece barra horizontal, e reservar o
+        espaco dela deixava uma faixa vazia embaixo da ultima linha."""
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            altura=altura)
+
+        def altura(n_colunas):
+            df = pd.DataFrame([[1.0] * n_colunas] * 7,
+                              index=[f"L{i}" for i in range(7)],
+                              columns=[f"C{i}" for i in range(n_colunas)])
+            ns_local["tabela_selecionavel"](df, chave=f"t{n_colunas}")
+            return capturado["altura"]
+
+        poucas = altura(7)   # mensal
+        muitas = altura(31)  # diario
+        self.assertEqual(muitas - poucas, ns_local["ALTURA_BARRA_ROLAGEM_PX"])
 
     def test_tabela_usa_a_mesma_fonte_das_outras(self):
         """O iframe nao herda a fonte da pagina. Com monoespacada nos valores

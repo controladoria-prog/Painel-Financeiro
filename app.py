@@ -4348,6 +4348,9 @@ ALTURA_BARRA_SOMA_PX = 46
 # Sem reservar esse espaço, sobra sempre um filete de rolagem vertical --
 # foi exatamente o que apareceu na tela com as 21 linhas cravadas.
 ALTURA_BARRA_ROLAGEM_PX = 18
+# Até esta quantidade de colunas a tabela cabe na largura da tela e não
+# aparece barra horizontal -- é o caso do fluxo mensal, com 6 ou 7 meses.
+COLUNAS_SEM_ROLAGEM_HORIZONTAL = 9
 # O iframe não herda a fonte da página, então a pilha precisa ser declarada
 # lá dentro -- é a mesma que o Streamlit usa nas outras tabelas do painel.
 FONTE_PADRAO_TABELA = ('"Source Sans Pro", -apple-system, BlinkMacSystemFont, '
@@ -4411,9 +4414,14 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         linhas_html.append(f'<tr>{"".join(celulas)}</tr>')
 
     cabecalho = "".join(f'<th class="cabecalho">{_html.escape(c)}</th>' for c in colunas)
+    # A folga da barra horizontal só entra quando ela vai existir mesmo. No
+    # mensal são 6 ou 7 colunas, que cabem na tela: reservar o espaço ali
+    # deixava uma faixa vazia embaixo da última linha.
+    reserva_rolagem = (ALTURA_BARRA_ROLAGEM_PX
+                       if len(df.columns) > COLUNAS_SEM_ROLAGEM_HORIZONTAL else 0)
     altura_rolagem = (ALTURA_CABECALHO_TABELA_PX
                       + ALTURA_LINHA_TABELA_PX * linhas_visiveis
-                      + ALTURA_BARRA_ROLAGEM_PX)
+                      + reserva_rolagem)
     altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 10
 
     codigo = f"""
@@ -4423,7 +4431,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
          font-family:{FONTE_PADRAO_TABELA}; }}
   .rolagem {{ height:{altura_rolagem}px; overflow:auto;
               border:1px solid {COLORS['border']}; border-radius:10px;
-              background:{COLORS['surface']}; }}
+              background:{COLORS['bg']}; }}
   /* Fonte e cores iguais às demais tabelas do painel: a de valores NÃO é
      monoespaçada, senão esta tabela destoa de todas as outras da tela. */
   table {{ border-collapse:separate; border-spacing:0; width:100%;
@@ -4436,8 +4444,11 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   th.cabecalho {{ position:sticky; top:0; z-index:3; text-align:right;
                   background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
                   font-size:12.5px; font-weight:400; }}
+  /* Linha comum fica no fundo escuro da página; só as de consolidação
+     (saldo inicial, canais e total) ganham o tom mais claro. É o que faz o
+     olho achar os totais sem precisar ler a tabela toda. */
   th.rotulo {{ position:sticky; left:0; z-index:2; text-align:left;
-               background:{COLORS['surface']}; font-weight:400;
+               background:{COLORS['bg']}; font-weight:400;
                color:{COLORS['text']};
                min-width:240px; max-width:240px; overflow:hidden;
                text-overflow:ellipsis; }}
@@ -4453,6 +4464,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         font-weight:800; border-top:2px solid {COLORS['primary']}; }}
   .linha-saldo_inicial td, .linha-saldo_inicial th.rotulo {{
         background:{COLORS['surface_alt']}; font-weight:700; }}
+  .linha-movimento td, .linha-movimento th.rotulo {{ background:{COLORS['bg']}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;
