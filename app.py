@@ -4475,14 +4475,19 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   .pos {{ color:{COLORS['positive']}; }}
   .neg {{ color:{COLORS['negative']}; }}
   .vazio {{ color:{COLORS['text_muted']}; cursor:default; }}
-  .linha-canal td, .linha-canal th.rotulo {{ background:{COLORS['surface_alt']};
-        font-weight:700; }}
-  .linha-total td, .linha-total th.rotulo {{ background:{COLORS['surface_alt']};
-        font-weight:800; border-top:2px solid {COLORS['primary']}; }}
-  .linha-saldo_inicial td, .linha-saldo_inicial th.rotulo {{
-        background:{COLORS['surface_alt']}; font-weight:700; }}
-  .linha-movimento td, .linha-movimento th.rotulo {{
-        background:{FUNDO_TABELA_FLUXO}; }}
+  /* O preenchimento do destaque vai só nos VALORES. A coluna de nomes fica
+     no preto como todas as outras -- ela já se distingue pelo negrito, e
+     pintá-la criava uma faixa clara atravessando a tabela que competia com
+     os números, que são o que se lê ali. */
+  .linha-canal td {{ background:{COLORS['surface_alt']}; font-weight:700; }}
+  .linha-canal th.rotulo {{ font-weight:700; }}
+  .linha-total td {{ background:{COLORS['surface_alt']}; font-weight:800;
+        border-top:2px solid {COLORS['primary']}; }}
+  .linha-total th.rotulo {{ font-weight:800;
+        border-top:2px solid {COLORS['primary']}; }}
+  .linha-saldo_inicial td {{ background:{COLORS['surface_alt']}; font-weight:700; }}
+  .linha-saldo_inicial th.rotulo {{ font-weight:700; }}
+  .linha-movimento td {{ background:{FUNDO_TABELA_FLUXO}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;

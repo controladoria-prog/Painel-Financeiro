@@ -1575,6 +1575,19 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         for destaque in (".linha-canal td", ".linha-total td", ".linha-saldo_inicial td"):
             self.assertEqual(self._fundo_do_seletor(css, destaque), claro, destaque)
 
+    def test_destaque_nao_pinta_a_coluna_de_nomes(self):
+        """O preenchimento fica nos VALORES. Pintar tambem a coluna de nomes
+        criava uma faixa clara atravessando a tabela, competindo com os
+        numeros -- que sao o que se le ali. O nome se distingue pelo negrito."""
+        capturado, _ = self._medir(5, 5)
+        css = capturado["codigo"].split("<div")[0]
+        for tipo in ("canal", "total", "saldo_inicial"):
+            seletor = f".linha-{tipo} th.rotulo"
+            self.assertIsNone(self._fundo_do_seletor(css, seletor),
+                              f"{seletor} nao pode ter preenchimento")
+            self.assertIn(f"{seletor} {{", re.sub(r"/\*.*?\*/", "", css, flags=re.S),
+                          f"{seletor} precisa existir para manter o negrito")
+
     def test_folga_da_rolagem_so_quando_ha_rolagem(self):
         """Com poucas colunas nao aparece barra horizontal, e reservar o
         espaco dela deixava uma faixa vazia embaixo da ultima linha."""
