@@ -4363,7 +4363,50 @@ FONTE_PADRAO_TABELA = ('"Source Sans Pro", -apple-system, BlinkMacSystemFont, '
                        '"Segoe UI", Roboto, sans-serif')
 
 
-def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto=""):
+def _rotulo_unico_tabela(texto_rotulo, posicao):
+    """Rótulos repetidos (o mesmo canal em blocos diferentes, a mesma
+    modalidade sob duas mães) quebram o índice do DataFrame. Espaços
+    invisíveis no fim tornam cada um único sem mudar o que se lê -- e a
+    tabela os remove antes de desenhar."""
+    return f"{texto_rotulo}{'\u200b' * posicao}"
+
+
+def _ordenar_com_filhas(indices, pais, tipos):
+    """Ordena as MÃES pela sequência de leitura do fluxo e mantém cada filha
+    logo abaixo da sua. Devolve a nova ordem como lista de posições.
+
+    Sem isto, ordenar a tabela embaralharia mães e filhas: a filha iria para
+    junto de outra linha e passaria a compor um total que não é o dela."""
+    filhas_de = {}
+    for posicao, pai in enumerate(pais):
+        if pai is not None:
+            filhas_de.setdefault(pai, []).append(posicao)
+
+    def peso(posicao):
+        tipo = tipos[posicao]
+        if tipo == "saldo_inicial":
+            return (-1, "")
+        if tipo == "total":
+            return (99, "")
+        return (_peso_ordem_movimento_fin(indices[posicao]), str(indices[posicao]))
+
+    ordem = []
+    for posicao in sorted((p for p, pai in enumerate(pais) if pai is None), key=peso):
+        ordem.append(posicao)
+        ordem.extend(filhas_de.get(posicao, []))
+    return ordem
+
+
+def _pais_reordenados(pais, ordem):
+    """Depois de reordenar as linhas, o índice da mãe muda de lugar. Esta
+    função reescreve as referências para a posição NOVA -- sem ela, o clique
+    de abrir mostraria as filhas de outra linha."""
+    nova_posicao = {antiga: nova for nova, antiga in enumerate(ordem)}
+    return [None if pais[antiga] is None else nova_posicao[pais[antiga]] for antiga in ordem]
+
+
+def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
+                       pais=None):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -4381,17 +4424,28 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
 
     `tipos_linha` é uma lista com o papel de cada linha ("saldo_inicial",
     "canal", "movimento", "total"), na mesma ordem do índice, e serve para o
-    destaque visual. `linhas_visiveis` define a altura: com 21, o mês inteiro
-    cabe na tela sem rolagem vertical.
+    destaque visual. `linhas_visiveis` define a altura.
+
+    `pais` permite hierarquia: uma lista do mesmo tamanho do índice, onde cada
+    item é a POSIÇÃO da linha-mãe ou None para linha de primeiro nível. As
+    filhas nascem escondidas e a mãe ganha um ▸ para abrir. É assim que o
+    diário consolidado deixa abrir contas a receber por modalidade e contas a
+    pagar por grupo de despesa sem transformar a tela numa lista de 60 linhas.
     """
     import html as _html
     import json as _json
 
-    # A altura acompanha o número de linhas: a área não quer rolagem
-    # vertical nenhuma nestas tabelas. O teto existe só para o caso extremo
-    # (uma visão com dezenas de linhas não pode virar uma página infinita).
-    linhas_visiveis = min(max(int(linhas_visiveis or 0), len(df)), TETO_LINHAS_TABELA)
+    pais = list(pais or [None] * len(df))
+    # A altura acompanha as linhas VISÍVEIS de saída (as filhas nascem
+    # fechadas). Ao abrir uma mãe, o JS avisa a página para crescer; onde
+    # isso não funcionar, a própria caixa rola. O teto existe só para o caso
+    # extremo -- uma visão com dezenas de linhas não pode virar uma página
+    # infinita.
+    linhas_de_primeiro_nivel = sum(1 for p in pais if p is None)
+    linhas_visiveis = min(max(int(linhas_visiveis or 0), linhas_de_primeiro_nivel),
+                          TETO_LINHAS_TABELA)
     tipos_linha = list(tipos_linha or ["movimento"] * len(df))
+    tem_filhas = {p for p in pais if p is not None}
     colunas = [str(c) for c in df.columns]
     linhas_html = []
 
@@ -4405,7 +4459,15 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         # chegava a valer -- as linhas de consolidação ficavam iguais às
         # outras, que foi o que apareceu na tela.
         classe = f"linha-{tipo}"
-        celulas = [f'<th class="rotulo">{_html.escape(texto_rotulo)}</th>']
+        if pais[posicao] is not None:
+            classe += " linha-filha"
+        atributos_linha = f' data-pos="{posicao}"'
+        if pais[posicao] is not None:
+            # Nasce escondida; o clique na mãe é que revela.
+            atributos_linha += f' data-pai="{pais[posicao]}" style="display:none"'
+        seta = ('<span class="seta" data-abre="{}">▸</span>'.format(posicao)
+                if posicao in tem_filhas else '<span class="seta vazia"></span>')
+        celulas = [f'<th class="rotulo">{seta}{_html.escape(texto_rotulo)}</th>']
         for indice_col, coluna in enumerate(df.columns):
             valor = df.iloc[posicao, indice_col]
             try:
@@ -4420,7 +4482,9 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                 f'<td class="{sinal}" data-v="{numero:.2f}" '
                 f'data-l="{posicao}" data-c="{indice_col}">{formata_brl(numero)}</td>'
             )
-        linhas_html.append(f'<tr class="{classe}">{"".join(celulas)}</tr>')
+        linhas_html.append(
+            f'<tr class="{classe}"{atributos_linha}>{"".join(celulas)}</tr>'
+        )
 
     cabecalho = "".join(f'<th class="cabecalho">{_html.escape(c)}</th>' for c in colunas)
     # A folga da barra horizontal só entra quando ela vai existir mesmo. No
@@ -4488,6 +4552,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   .linha-saldo_inicial td {{ background:{COLORS['surface_alt']}; font-weight:700; }}
   .linha-saldo_inicial th.rotulo {{ font-weight:700; }}
   .linha-movimento td {{ background:{FUNDO_TABELA_FLUXO}; }}
+  .linha-filha th.rotulo {{ padding-left:34px; color:{COLORS['text_muted']}; }}
+  .linha-filha td {{ color:{COLORS['text_muted']}; }}
+  .seta {{ display:inline-block; width:16px; cursor:pointer; user-select:none;
+           color:{COLORS['text_muted']}; }}
+  .seta.vazia {{ cursor:default; }}
+  .seta.aberta {{ transform:rotate(90deg); }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;
@@ -4553,6 +4623,34 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   document.addEventListener('keydown', e => {{
     if (e.key === 'Escape') {{ limpar(); atualizar(); }}
   }});
+
+  // ---- abrir e fechar as filhas ----
+  function avisarAltura() {{
+    // Pede à página para acompanhar o tamanho. Onde a mensagem não for
+    // entendida, a própria caixa rola -- por isso isto pode falhar em
+    // silêncio sem quebrar nada.
+    try {{
+      const alturaAtual = document.documentElement.scrollHeight;
+      window.parent.postMessage(
+        {{ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: alturaAtual }},
+        '*'
+      );
+    }} catch (erro) {{ /* sem problema: a caixa tem rolagem própria */ }}
+  }}
+
+  document.querySelectorAll('.seta[data-abre]').forEach(seta => {{
+    seta.addEventListener('click', evento => {{
+      evento.stopPropagation();
+      const posicao = seta.dataset.abre;
+      const abrindo = !seta.classList.contains('aberta');
+      seta.classList.toggle('aberta', abrindo);
+      document.querySelectorAll(`tr[data-pai="${{posicao}}"]`).forEach(filha => {{
+        filha.style.display = abrindo ? '' : 'none';
+      }});
+      avisarAltura();
+    }});
+  }});
+  avisarAltura();
 }})();
 </script>
 """
@@ -5599,8 +5697,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
     _renderizar_painel_alertas(_alertas_fin, titulo="Alertas do Fluxo de Caixa")
 
-    tab_fin_mensal, tab_fin_diario, tab_fin_tesouraria, tab_fin_analises = st.tabs(
-        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "🏦 Tesouraria", "📊 Análises"]
+    (tab_fin_mensal, tab_fin_diario, tab_fin_consolidado,
+     tab_fin_tesouraria, tab_fin_analises) = st.tabs(
+        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "📆 Diário Consolidado",
+         "🏦 Tesouraria", "📊 Análises"]
     )
 
     # ---------------- MENSAL ----------------
@@ -6519,6 +6619,174 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             "O gráfico mostra sempre o **mês inteiro**, mesmo quando a tabela acima está "
                             "recortada em alguns dias."
                         )
+
+
+    # ---------------- DIÁRIO CONSOLIDADO ----------------
+    with tab_fin_consolidado:
+        # A pergunta desta aba é diferente da do Fluxo Diário: lá a leitura é
+        # por canal, aqui é a empresa inteira dia a dia -- as linhas do
+        # mensal, mas com os dias nas colunas. E, quando algum número chamar
+        # atenção, dá para abrir a linha e ver do que ele é feito, sem trocar
+        # de tela.
+        st.markdown('<div class="section-title">📆 Diário Consolidado</div>',
+                    unsafe_allow_html=True)
+
+        meses_disponiveis_dc = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
+        if not meses_disponiveis_dc:
+            st.info("Sem lançamentos com data para montar a visão consolidada.")
+        else:
+            rotulos_dc = [_rotulo_mes_pt_extenso(p) for p in meses_disponiveis_dc]
+            _mes_corrente_dc = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
+            padrao_dc = (meses_disponiveis_dc.index(_mes_corrente_dc)
+                         if _mes_corrente_dc in meses_disponiveis_dc
+                         else len(meses_disponiveis_dc) - 1)
+            col_mes_dc, col_abrir_dc = st.columns([2, 3])
+            with col_mes_dc:
+                mes_sel_dc = st.selectbox("Mês", rotulos_dc, index=padrao_dc,
+                                          key="mes_diario_consolidado")
+            with col_abrir_dc:
+                abrir_por_dc = st.radio(
+                    "Ao abrir uma linha, mostrar",
+                    ["Detalhe da linha", "Canal"],
+                    horizontal=True, key="abrir_por_diario_consolidado",
+                    help=("Detalhe da linha abre contas a receber por modalidade e contas a "
+                          "pagar por grupo de despesa — cada linha pela dimensão que faz "
+                          "sentido para ela. Canal abre todas por HUB, Loja e Venda Direta."),
+                )
+            periodo_dc = meses_disponiveis_dc[rotulos_dc.index(mes_sel_dc)]
+
+            df_dc = df_fin[df_fin["Data Efetiva"].dt.to_period("M") == periodo_dc].copy()
+            df_dc = df_dc[df_dc["Tipo Movimento"] != "aplicacao"]
+            df_dc["DiaOrd"] = df_dc["Data Efetiva"].dt.normalize()
+            dias_dc = sorted(df_dc["DiaOrd"].dropna().unique())
+
+            if not dias_dc:
+                st.info("Sem movimentação neste mês.")
+            else:
+                rotulos_dias_dc = {d: pd.Timestamp(d).strftime("%d/%m") for d in dias_dc}
+
+                def _serie_por_dia(recorte):
+                    """Soma por dia, sempre com todos os dias do recorte."""
+                    if recorte.empty:
+                        return pd.Series(0.0, index=dias_dc)
+                    soma = recorte.groupby("DiaOrd")[COL_FIN_VALOR].sum()
+                    return soma.reindex(dias_dc, fill_value=0.0)
+
+                # A meta sai das somas (é alvo, não dinheiro) e volta como
+                # linha própria, já como "quanto ainda falta" naquele dia.
+                df_dc_metas = df_dc[df_dc["Tipo Movimento"] == "meta"]
+                df_dc_real = df_dc[df_dc["Tipo Movimento"] != "meta"]
+
+                saldo_inicial_dc, _total_dia_dc = calcular_saldo_inicial_diario(
+                    df_dc_real, COL_FIN_VALOR
+                )
+                linhas_dc, indices_dc, tipos_dc, pais_dc = [], [], [], []
+
+                linhas_dc.append(pd.Series(
+                    [saldo_inicial_dc.get(d, 0.0) for d in dias_dc], index=dias_dc))
+                indices_dc.append("SALDO INICIAL")
+                tipos_dc.append("saldo_inicial")
+                pais_dc.append(None)
+
+                # Qual coluna abre cada linha. "Detalhe da linha" usa a
+                # dimensão que faz sentido para cada uma; "Canal" iguala
+                # todas, para comparar as três frentes na mesma régua.
+                def _coluna_de_abertura(movimento):
+                    if abrir_por_dc == "Canal":
+                        return COL_FIN_CANAL
+                    if _classificar_movimento_fin(movimento) == "saida":
+                        return COL_FIN_GRUPO_DESPESA
+                    if "receber" in _normalizar_texto(movimento).lower():
+                        return COL_FIN_MODALIDADE
+                    return COL_FIN_CANAL
+
+                movimentos_dc = _ordenar_movimentos_fin(
+                    df_dc_real[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
+                )
+                for movimento in movimentos_dc:
+                    recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO].astype(str) == movimento]
+                    posicao_mae = len(linhas_dc)
+                    linhas_dc.append(_serie_por_dia(recorte))
+                    indices_dc.append(movimento)
+                    tipos_dc.append("movimento")
+                    pais_dc.append(None)
+
+                    coluna_abertura = _coluna_de_abertura(movimento)
+                    if coluna_abertura in recorte.columns:
+                        for detalhe in sorted(
+                            recorte[coluna_abertura].dropna().astype(str).str.strip().unique()
+                        ):
+                            if not detalhe:
+                                continue
+                            filho = recorte[
+                                recorte[coluna_abertura].astype(str).str.strip() == detalhe
+                            ]
+                            serie_filho = _serie_por_dia(filho)
+                            if not serie_filho.any():
+                                continue
+                            linhas_dc.append(serie_filho)
+                            indices_dc.append(detalhe)
+                            tipos_dc.append("movimento")
+                            pais_dc.append(posicao_mae)
+
+                # Meta: quanto ainda falta receber em cada dia.
+                if not df_dc_metas.empty:
+                    serie_meta = _serie_por_dia(df_dc_metas).abs()
+                    realizado_receber = df_dc_real[
+                        df_dc_real[COL_FIN_MOVIMENTO].astype(str).isin(
+                            [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
+                    ]
+                    falta = (serie_meta - _serie_por_dia(realizado_receber).abs()).clip(lower=0)
+                    posicao_meta = len(linhas_dc)
+                    linhas_dc.append(falta)
+                    indices_dc.append(MOV_RECEBER_META)
+                    tipos_dc.append("movimento")
+                    pais_dc.append(None)
+                    coluna_meta = (COL_FIN_CANAL if abrir_por_dc == "Canal"
+                                   else COL_FIN_MODALIDADE)
+                    for detalhe in sorted(
+                        df_dc_metas[coluna_meta].dropna().astype(str).str.strip().unique()
+                    ):
+                        filho = df_dc_metas[
+                            df_dc_metas[coluna_meta].astype(str).str.strip() == detalhe
+                        ]
+                        serie_filho = _serie_por_dia(filho).abs()
+                        if not serie_filho.any():
+                            continue
+                        linhas_dc.append(serie_filho)
+                        indices_dc.append(detalhe)
+                        tipos_dc.append("movimento")
+                        pais_dc.append(posicao_meta)
+
+                # TOTAL GERAL: saldo inicial + tudo que não é meta.
+                total_dc = linhas_dc[0].copy()
+                for serie, pai, rotulo in zip(linhas_dc[1:], pais_dc[1:], indices_dc[1:]):
+                    if pai is None and rotulo != MOV_RECEBER_META:
+                        total_dc = total_dc + serie
+                linhas_dc.append(total_dc)
+                indices_dc.append("TOTAL GERAL")
+                tipos_dc.append("total")
+                pais_dc.append(None)
+
+                # As mães vêm na ordem de leitura; as filhas seguem a mãe.
+                pivot_dc = pd.DataFrame(linhas_dc)
+                pivot_dc.index = [_rotulo_unico_tabela(r, i) for i, r in enumerate(indices_dc)]
+                pivot_dc.columns = [rotulos_dias_dc[d] for d in dias_dc]
+                ordem_dc = _ordenar_com_filhas(indices_dc, pais_dc, tipos_dc)
+                pivot_dc = pivot_dc.iloc[ordem_dc]
+                tabela_selecionavel(
+                    pivot_dc, chave="tabela_diario_consolidado",
+                    tipos_linha=[tipos_dc[i] for i in ordem_dc],
+                    pais=_pais_reordenados(pais_dc, ordem_dc),
+                    rotulo_canto="Movimento",
+                )
+                st.caption(
+                    "A empresa inteira, dia a dia: as mesmas linhas do Fluxo Mensal, com os dias "
+                    "nas colunas e sem separar por canal. Clique no **▸** para abrir a linha — "
+                    "contas a receber por modalidade, contas a pagar por grupo de despesa, ou "
+                    "tudo por canal, conforme a escolha acima. **2 - Contas a Receber Meta** "
+                    "mostra quanto ainda falta no dia e não entra no TOTAL GERAL."
+                )
 
     # ---------------- TESOURARIA ----------------
     with tab_fin_tesouraria:

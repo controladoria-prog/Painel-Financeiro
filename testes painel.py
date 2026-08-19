@@ -1697,6 +1697,104 @@ class TesteContasAPagarEfetivo(unittest.TestCase):
 
 
 # ============================================================================
+# 5k. DIARIO CONSOLIDADO — HIERARQUIA COM EXPANDIR
+# ============================================================================
+class TesteDiarioConsolidado(unittest.TestCase):
+    """A empresa inteira dia a dia, com as linhas abrindo em modalidade,
+    grupo de despesa ou canal."""
+
+    INDICES = ["SALDO INICIAL", "4 - Contas a Pagar", "Frete", "Energia", "1.1.Caixa",
+               "3 - Contas a Receber", "Débito", "Boleto Garantido", "TOTAL GERAL"]
+    PAIS = [None, None, 1, 1, None, None, 5, 5, None]
+    TIPOS = ["saldo_inicial", "movimento", "movimento", "movimento", "movimento",
+             "movimento", "movimento", "movimento", "total"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_normalizar_texto", "_classificar_movimento_fin",
+                           "_peso_ordem_movimento_fin", "_rotulo_unico_tabela",
+                           "_ordenar_com_filhas", "_pais_reordenados"])
+
+    def test_filha_fica_logo_abaixo_da_mae(self):
+        """Ordenar so as maes embaralharia as filhas: a filha iria para junto
+        de outra linha e passaria a compor um total que nao e o dela."""
+        ordem = self.ns["_ordenar_com_filhas"](self.INDICES, self.PAIS, self.TIPOS)
+        nomes = [self.INDICES[p] for p in ordem]
+        self.assertEqual(nomes[0], "SALDO INICIAL")
+        self.assertEqual(nomes[-1], "TOTAL GERAL")
+        self.assertEqual(nomes[nomes.index("3 - Contas a Receber") + 1:][:2],
+                         ["Débito", "Boleto Garantido"])
+        self.assertEqual(nomes[nomes.index("4 - Contas a Pagar") + 1:][:2],
+                         ["Frete", "Energia"])
+
+    def test_referencia_da_mae_acompanha_a_reordenacao(self):
+        """Depois de reordenar, o indice da mae muda de lugar: sem reescrever
+        a referencia, o clique de abrir mostraria as filhas de outra linha."""
+        ordem = self.ns["_ordenar_com_filhas"](self.INDICES, self.PAIS, self.TIPOS)
+        novos = self.ns["_pais_reordenados"](self.PAIS, ordem)
+        for nova, antiga in enumerate(ordem):
+            if novos[nova] is None:
+                self.assertIsNone(self.PAIS[antiga])
+            else:
+                mae_antes = self.INDICES[self.PAIS[antiga]]
+                mae_depois = self.INDICES[ordem[novos[nova]]]
+                self.assertEqual(mae_antes, mae_depois, self.INDICES[antiga])
+
+    def test_rotulo_repetido_nao_quebra_o_indice(self):
+        """A mesma modalidade pode aparecer sob duas maes; rotulo repetido
+        quebra o indice do DataFrame."""
+        rotulos = [self.ns["_rotulo_unico_tabela"]("Débito", i) for i in range(3)]
+        self.assertEqual(len(set(rotulos)), 3)
+        self.assertTrue(all(r.replace("\u200b", "") == "Débito" for r in rotulos))
+
+    def _montar(self):
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "_ordenar_com_filhas",
+                             "_pais_reordenados", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            codigo=codigo, altura=altura)
+        ordem = ns_local["_ordenar_com_filhas"](self.INDICES, self.PAIS, self.TIPOS)
+        df = pd.DataFrame([[1.0, 2.0]] * len(self.INDICES),
+                          index=[ns_local["_rotulo_unico_tabela"](self.INDICES[p], p)
+                                 for p in ordem],
+                          columns=["18/08", "19/08"])
+        ns_local["tabela_selecionavel"](
+            df, chave="t", tipos_linha=[self.TIPOS[p] for p in ordem],
+            pais=ns_local["_pais_reordenados"](self.PAIS, ordem))
+        return capturado, ns_local
+
+    def test_filhas_nascem_fechadas_e_a_mae_tem_seta(self):
+        capturado, _ = self._montar()
+        html = capturado["codigo"]
+        self.assertEqual(html.count('style="display:none"'), 4, "filha aberta por padrao")
+        self.assertEqual(len(re.findall(r'data-abre="\d+"', html)), 2,
+                         "so as duas maes com filhas podem ter seta")
+        self.assertIn("data-pai=", html)
+
+    def test_altura_conta_so_as_linhas_de_primeiro_nivel(self):
+        """Com as filhas fechadas, reservar altura para elas deixaria um
+        vazio embaixo da tabela."""
+        capturado, ns_local = self._montar()
+        maes = sum(1 for p in self.PAIS if p is None)
+        esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
+                    + ns_local["ALTURA_LINHA_TABELA_PX"] * maes
+                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 10 + 2)
+        self.assertEqual(capturado["altura"], esperado)
+
+    def test_aba_existe_com_as_duas_formas_de_abrir(self):
+        self.assertIn("📆 Diário Consolidado", FONTE)
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn("COL_FIN_GRUPO_DESPESA", trecho, "contas a pagar abre por grupo")
+        self.assertIn("COL_FIN_MODALIDADE", trecho, "contas a receber abre por modalidade")
+        self.assertIn("COL_FIN_CANAL", trecho, "falta a opcao de abrir por canal")
+        self.assertIn('"Detalhe da linha", "Canal"', trecho)
+        # A meta nao pode entrar no total desta aba tambem.
+        self.assertIn('rotulo != MOV_RECEBER_META', trecho)
+
+
+# ============================================================================
 # 5i. MEMORIA E LEITURA DAS PLANILHAS
 # ============================================================================
 class TesteMemoriaELeitura(unittest.TestCase):
