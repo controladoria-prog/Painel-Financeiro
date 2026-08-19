@@ -4351,6 +4351,12 @@ ALTURA_BARRA_ROLAGEM_PX = 18
 # Até esta quantidade de colunas a tabela cabe na largura da tela e não
 # aparece barra horizontal -- é o caso do fluxo mensal, com 6 ou 7 meses.
 COLUNAS_SEM_ROLAGEM_HORIZONTAL = 9
+# Fundo das linhas comuns das tabelas do fluxo: PRETO, não a cor da página.
+# O painel tem fundo azulado; deixar a tabela transparente fazia as linhas
+# comuns puxarem esse azul e o destaque das consolidações se perder no meio.
+# O preto é o que separa "dado" de "total" sem precisar de mais nenhuma
+# marcação. Para suavizar, basta trocar aqui.
+FUNDO_TABELA_FLUXO = "#000000"
 # O iframe não herda a fonte da página, então a pilha precisa ser declarada
 # lá dentro -- é a mesma que o Streamlit usa nas outras tabelas do painel.
 FONTE_PADRAO_TABELA = ('"Source Sans Pro", -apple-system, BlinkMacSystemFont, '
@@ -4430,12 +4436,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:transparent;
          font-family:{FONTE_PADRAO_TABELA}; }}
-  /* Sem fundo próprio: o que aparece é a cor da página, e só as linhas de
-     consolidação recebem preenchimento. Pintar a caixa inteira era o que
-     deixava a tabela com aquele tom azulado por baixo de tudo. */
+  /* Preto no corpo, tom claro só nas consolidações. */
   .rolagem {{ height:{altura_rolagem}px; overflow:auto;
               border:1px solid {COLORS['border']}; border-radius:10px;
-              background:transparent; }}
+              background:{FUNDO_TABELA_FLUXO}; }}
   /* Fonte e cores iguais às demais tabelas do painel: a de valores NÃO é
      monoespaçada, senão esta tabela destoa de todas as outras da tela. */
   table {{ border-collapse:separate; border-spacing:0; width:100%;
@@ -4455,11 +4459,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   /* Linha comum fica no fundo escuro da página; só as de consolidação
      (saldo inicial, canais e total) ganham o tom mais claro. É o que faz o
      olho achar os totais sem precisar ler a tabela toda. */
-  /* A coluna de rótulo é a única que precisa ser opaca mesmo numa linha
-     comum: ela fica fixa na rolagem horizontal, e transparente deixaria os
-     valores passarem por baixo do texto. */
+  /* A coluna de rótulo fica fixa na rolagem horizontal, então precisa de
+     fundo opaco -- sem ele, os valores passariam por baixo do texto. */
   th.rotulo {{ position:sticky; left:0; z-index:2; text-align:left;
-               background:{COLORS['bg']}; font-weight:400;
+               background:{FUNDO_TABELA_FLUXO}; font-weight:400;
                color:{COLORS['text']};
                min-width:240px; max-width:240px; overflow:hidden;
                text-overflow:ellipsis; }}
@@ -4475,8 +4478,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         font-weight:800; border-top:2px solid {COLORS['primary']}; }}
   .linha-saldo_inicial td, .linha-saldo_inicial th.rotulo {{
         background:{COLORS['surface_alt']}; font-weight:700; }}
-  .linha-movimento td {{ background:transparent; }}
-  .linha-movimento th.rotulo {{ background:{COLORS['bg']}; }}
+  .linha-movimento td, .linha-movimento th.rotulo {{
+        background:{FUNDO_TABELA_FLUXO}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;

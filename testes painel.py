@@ -64,7 +64,8 @@ CONSTANTES_DE_DEPENDENCIA = {
     "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
-                            "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL"],
+                            "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
+                            "FUNDO_TABELA_FLUXO"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
@@ -1496,33 +1497,45 @@ class TesteMetasDeRecebimento(unittest.TestCase):
             self.assertEqual(altura_caixa - conteudo, folga_esperada,
                              f"{n_linhas} linhas x {n_colunas} colunas")
 
-    def test_fundo_da_tabela_nao_pinta_nada_por_baixo(self):
-        """A caixa nao pode ter cor propria: era ela que deixava a tabela
-        inteira com tom azulado por tras das linhas."""
-        capturado, _ = self._medir(5, 5)
+    @staticmethod
+    def _fundo_do_seletor(css, seletor):
+        """Le o background de UM bloco do CSS. Casar por regex solta pega a
+        regra vizinha e da falso positivo -- foi o que aconteceu quando este
+        teste dizia que o cabecalho era preto sem ele ser."""
+        # Tira os comentarios antes: um deles tem virgula, e a virgula e o
+        # separador de seletores -- sem limpar, o bloco certo nao e achado.
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for bloco in css.split("}"):
+            if "{" not in bloco:
+                continue
+            alvos = [s.strip() for s in bloco.split("{")[0].split(",")]
+            if seletor not in alvos:
+                continue
+            achado = re.search(r"background:([^;]+);", bloco)
+            if achado:
+                return achado.group(1).strip()
+        return None
+
+    def test_corpo_da_tabela_e_preto(self):
+        """O painel tem fundo azulado. Deixar a tabela transparente fazia as
+        linhas comuns puxarem esse azul e o destaque das consolidacoes se
+        perder no meio -- o corpo tem de ser preto."""
+        capturado, ns_local = self._medir(5, 5)
         css = capturado["codigo"].split("<div")[0]
-        self.assertEqual(
-            re.search(r"\.rolagem \{[^}]*background:([^;]+);", css, re.S).group(1).strip(),
-            "transparent")
-        self.assertEqual(
-            re.search(r"\.linha-movimento td \{ background:([^;]+);", css).group(1).strip(),
-            "transparent")
+        preto = ns_local["FUNDO_TABELA_FLUXO"]
+        self.assertEqual(preto, "#000000")
+        self.assertEqual(self._fundo_do_seletor(css, ".rolagem"), preto)
+        self.assertEqual(self._fundo_do_seletor(css, ".linha-movimento td"), preto)
+        self.assertEqual(self._fundo_do_seletor(css, "th.rotulo"), preto)
 
-    def test_so_as_linhas_de_consolidacao_ganham_destaque(self):
-        """O tom claro marca saldo inicial, canais e total. Linha comum fica
-        no fundo escuro -- com tudo claro, nada se destaca."""
-        capturado, ns_local = self._altura_para(3)
+    def test_consolidacoes_e_cabecalho_ficam_no_tom_claro(self):
+        capturado, ns_local = self._medir(5, 5)
         css = capturado["codigo"].split("<div")[0]
-        cores = ns_local["COLORS"]
-
-        def fundo(classe):
-            achado = re.search(rf"\.linha-{classe} td[^{{]*{{\s*background:([^;]+);", css)
-            return achado.group(1).strip() if achado else None
-
-        # Linha comum nao pinta nada: deixa a cor da pagina aparecer.
-        self.assertEqual(fundo("movimento"), "transparent", "linha comum nao pode ter fundo")
-        for destaque in ("canal", "total", "saldo_inicial"):
-            self.assertEqual(fundo(destaque), cores["surface_alt"], destaque)
+        claro = ns_local["COLORS"]["surface_alt"]
+        self.assertEqual(self._fundo_do_seletor(css, "th.cabecalho"), claro)
+        self.assertEqual(self._fundo_do_seletor(css, "th.canto"), claro)
+        for destaque in (".linha-canal td", ".linha-total td", ".linha-saldo_inicial td"):
+            self.assertEqual(self._fundo_do_seletor(css, destaque), claro, destaque)
 
     def test_folga_da_rolagem_so_quando_ha_rolagem(self):
         """Com poucas colunas nao aparece barra horizontal, e reservar o
