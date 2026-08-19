@@ -1983,6 +1983,39 @@ class TesteDiarioConsolidado(unittest.TestCase):
                             for i, mae in enumerate(filhas_de)})
         return capturado, ns_local
 
+    def test_toda_funcao_chamada_existe(self):
+        """Teste que so procura o TEXTO da chamada passa mesmo quando a
+        funcao nunca foi definida -- e o app quebra no ar com NameError.
+        Aconteceu com _agrega_no_mes_cheio em 19/08/2026: o script que a
+        criaria abortou, so a chamada entrou, e a trava estrutural (que
+        procurava a chamada) continuou verde."""
+        import builtins
+
+        arvore = ast.parse(FONTE)
+        definidos = set(dir(builtins))
+        for no in ast.walk(arvore):
+            if isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                definidos.add(no.name)
+                definidos.update(a.arg for a in getattr(no.args, "args", []))
+                definidos.update(a.arg for a in getattr(no.args, "kwonlyargs", []))
+            elif isinstance(no, ast.Name) and isinstance(no.ctx, ast.Store):
+                definidos.add(no.id)
+            elif isinstance(no, (ast.Import, ast.ImportFrom)):
+                for alias in no.names:
+                    definidos.add((alias.asname or alias.name).split(".")[0])
+            elif isinstance(no, ast.ExceptHandler) and no.name:
+                definidos.add(no.name)
+
+        faltando = {}
+        for no in ast.walk(arvore):
+            if isinstance(no, ast.Call) and isinstance(no.func, ast.Name):
+                if no.func.id not in definidos:
+                    faltando.setdefault(no.func.id, no.lineno)
+        self.assertEqual(
+            faltando, {},
+            "funcao chamada e nunca definida: "
+            + ", ".join(f"{n}() na linha {l}" for n, l in faltando.items()))
+
     def test_javascript_gerado_nao_tem_erro_de_sintaxe(self):
         """Um erro de sintaxe no JS nao quebra so o trecho errado: impede o
         script INTEIRO de rodar, e a tabela vira uma imagem -- sem clique,

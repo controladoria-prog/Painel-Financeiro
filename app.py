@@ -6407,6 +6407,28 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     serie = df_origem.groupby("DiaOrd")[COL_FIN_VALOR].sum()
                     return serie.reindex(dias_ordenados_d, fill_value=0.0)
 
+                # Os MESES que o recorte encosta. A conta da meta precisa de
+                # todos os dias deles, inclusive os que estão fora da tela.
+                _meses_na_tela_d = {pd.Timestamp(d).to_period("M") for d in dias_ordenados_d}
+
+                def _agrega_no_mes_cheio(df_origem):
+                    """Soma por dia cobrindo o MÊS INTEIRO, e não só o recorte.
+
+                    Serve para a meta: com o período começando no dia 18,
+                    somar só o recorte esconde o que entrou do dia 1 ao 17 e
+                    a meta reaparece nos dias seguintes como se nada tivesse
+                    sido recebido."""
+                    if df_origem is None or df_origem.empty:
+                        return pd.Series(dtype="float64")
+                    dentro = df_origem[
+                        df_origem["Data Efetiva"].dt.to_period("M").isin(_meses_na_tela_d)
+                    ]
+                    if dentro.empty:
+                        return pd.Series(dtype="float64")
+                    return dentro.groupby(
+                        dentro["Data Efetiva"].dt.normalize()
+                    )[COL_FIN_VALOR].sum()
+
                 linhas_tabela_d = []
                 indices_tabela_d = []
                 estilo_linhas_d = []
