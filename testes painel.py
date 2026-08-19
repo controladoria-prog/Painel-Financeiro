@@ -1468,6 +1468,69 @@ class TesteMetasDeRecebimento(unittest.TestCase):
 
 
 # ============================================================================
+# 5j. CONTAS A PAGAR — PROGRAMADO NO FUTURO, EFETIVO NO PASSADO
+# ============================================================================
+class TesteContasAPagarEfetivo(unittest.TestCase):
+    """Titulo ja pago entra no dia do pagamento; em aberto fica no
+    vencimento. Sem isso, um dia com R$ 1 milhao vencendo aparecia com o
+    milhao inteiro mesmo tendo sido pago dias antes."""
+
+    COL_VAL, COL_VENC, COL_LIQ = "Valor.1", "Vencimento.1", "Data Liquidação"
+    COL_EFET, COL_MOV = "Liquidação Efetiva", "Movimento"
+
+    def _base(self):
+        return pd.DataFrame({
+            self.COL_MOV: ["4 - Contas a Pagar"] * 5,
+            self.COL_VENC: pd.to_datetime(["2026-07-31"] * 4 + ["2026-09-15"]),
+            self.COL_LIQ: pd.to_datetime(["2026-07-31", "2026-07-28", "2026-07-24", None, None]),
+            self.COL_VAL: [-290_000.0, -350_000.0, -300_000.0, -60_000.0, -400_000.0],
+        })
+
+    def _aplicar(self, df):
+        df[self.COL_EFET] = df[self.COL_LIQ]
+        df["Data Efetiva"] = df[self.COL_VENC].fillna(df[self.COL_LIQ])
+        e_pagar = df[self.COL_MOV].str.contains("pagar", case=False)
+        com_baixa = e_pagar & df[self.COL_EFET].notna()
+        df.loc[com_baixa, "Data Efetiva"] = df.loc[com_baixa, self.COL_EFET]
+        return df.groupby(df["Data Efetiva"].dt.date)[self.COL_VAL].sum()
+
+    def test_pago_antes_sai_do_dia_do_vencimento(self):
+        por_dia = self._aplicar(self._base())
+        self.assertAlmostEqual(por_dia[date(2026, 7, 31)], -350_000.0, places=2)
+        self.assertAlmostEqual(por_dia[date(2026, 7, 28)], -350_000.0, places=2)
+        self.assertAlmostEqual(por_dia[date(2026, 7, 24)], -300_000.0, places=2)
+
+    def test_em_aberto_continua_no_vencimento(self):
+        por_dia = self._aplicar(self._base())
+        self.assertAlmostEqual(por_dia[date(2026, 9, 15)], -400_000.0, places=2)
+
+    def test_total_do_periodo_nao_muda(self):
+        """Mover de dia nao pode criar nem sumir com dinheiro."""
+        df = self._base()
+        total_antes = df[self.COL_VAL].sum()
+        self.assertAlmostEqual(self._aplicar(df).sum(), total_antes, places=2)
+
+    def test_regra_esta_no_preparo_e_usa_a_liquidacao_efetiva(self):
+        i = FONTE.index("_pagar_com_baixa = _e_pagar")
+        trecho = FONTE[i - 900:i + 600]
+        self.assertIn('df.loc[_pagar_com_baixa, "Data Efetiva"] = df.loc[_pagar_com_baixa, COL_FIN_LIQ_EFETIVA]',
+                      trecho)
+        self.assertIn("COL_FIN_LIQ_EFETIVA].notna()", trecho)
+        # A liquidacao efetiva tem de existir para o painel todo, nao so na
+        # aba Analises -- e ela junta CSV, leitura ampla e DIARIO.
+        j = FONTE.index("df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_DATA_LIQUIDACAO]")
+        montagem = FONTE[j:j + 400]
+        self.assertIn("COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO", montagem)
+
+    def test_a_receber_usa_a_mesma_fonte_de_baixa(self):
+        """As duas pontas precisam olhar a mesma coluna; se o a receber
+        olhasse so o CSV, perderia as baixas que vieram da DIARIO."""
+        i = FONTE.index("_e_receber = df[COL_FIN_MOVIMENTO] == MOV_RECEBER_AVENCER")
+        trecho = FONTE[i:i + 700]
+        self.assertIn("_tem_baixa = df[COL_FIN_LIQ_EFETIVA].notna()", trecho)
+
+
+# ============================================================================
 # 5i. MEMORIA E LEITURA DAS PLANILHAS
 # ============================================================================
 class TesteMemoriaELeitura(unittest.TestCase):

@@ -4953,10 +4953,42 @@ def preparar_fluxo_caixa(base_data):
         diagnostico["varredura_pagar"] = pd.DataFrame(linhas_varredura)
 
 
+    # ---- Liquidação efetiva: a melhor data de baixa que existe ----
+    # Ordem: a do próprio CSV, depois a leitura ampla dele, depois a que veio
+    # da aba DIÁRIO pelo cruzamento acima. Antes isto era montado só dentro da
+    # aba Análises; agora vale para o painel todo, porque o contas a pagar
+    # passou a depender dela.
+    df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_DATA_LIQUIDACAO]
+    for coluna_extra in (COL_FIN_LIQ_AMPLA, COL_FIN_LIQ_DIARIO):
+        if coluna_extra in df.columns:
+            df[COL_FIN_LIQ_EFETIVA] = df[COL_FIN_LIQ_EFETIVA].fillna(df[coluna_extra])
+
     if str(base_data).startswith("Vencimento"):
         df["Data Efetiva"] = df[COL_FIN_VENCIMENTO].fillna(df[COL_FIN_DATA_LIQUIDACAO])
     else:
         df["Data Efetiva"] = df[COL_FIN_DATA_LIQUIDACAO].fillna(df[COL_FIN_VENCIMENTO])
+
+    # ---- CONTAS A PAGAR: programado no futuro, efetivo no passado ----
+    # O vencimento sozinho mentia sobre o passado: um dia com R$ 1 milhão
+    # vencendo, mas cujos títulos foram pagos dias antes, aparecia com o
+    # milhão inteiro naquele dia e sem nada nos dias em que o dinheiro
+    # realmente saiu. Agora o título que JÁ FOI PAGO entra no dia do
+    # pagamento; o que ainda não foi continua no vencimento, que é a
+    # programação. A base de data escolhida na barra lateral não muda esta
+    # regra -- ela existe justamente para o passado ficar fiel ao extrato.
+    _e_pagar = df["Tipo Movimento"] == "saida" if "Tipo Movimento" in df.columns else (
+        df[COL_FIN_MOVIMENTO].astype(str).str.contains("pagar", case=False, na=False)
+    )
+    _pagar_com_baixa = _e_pagar & df[COL_FIN_LIQ_EFETIVA].notna()
+    _antes = df.loc[_pagar_com_baixa, "Data Efetiva"]
+    df.loc[_pagar_com_baixa, "Data Efetiva"] = df.loc[_pagar_com_baixa, COL_FIN_LIQ_EFETIVA]
+    df.loc[_e_pagar & ~_pagar_com_baixa, "Data Efetiva"] = df.loc[
+        _e_pagar & ~_pagar_com_baixa, COL_FIN_VENCIMENTO
+    ].fillna(df.loc[_e_pagar & ~_pagar_com_baixa, "Data Efetiva"])
+    diagnostico["pagar_com_baixa"] = int(_pagar_com_baixa.sum())
+    diagnostico["pagar_mudou_de_dia"] = int(
+        (_antes.dt.normalize() != df.loc[_pagar_com_baixa, "Data Efetiva"].dt.normalize()).sum()
+    ) if len(_antes) else 0
 
     # ---- As três linhas de contas a receber ----
     # A planilha traz duas ("Projetado" e "Realizado"); o painel mostra três,
@@ -4977,10 +5009,13 @@ def preparar_fluxo_caixa(base_data):
         lambda nome: RENOMEAR_MOVIMENTO_FIN.get(nome.strip().lower(), nome)
     )
     _e_receber = df[COL_FIN_MOVIMENTO] == MOV_RECEBER_AVENCER
-    _tem_baixa = df[COL_FIN_DATA_LIQUIDACAO].notna()
+    # Usa a liquidação EFETIVA, não só a coluna do CSV: o cruzamento com a
+    # DIÁRIO também vale para o a receber, e olhar só o CSV deixaria de fora
+    # justamente os títulos cuja baixa veio de lá.
+    _tem_baixa = df[COL_FIN_LIQ_EFETIVA].notna()
     df.loc[_e_receber & _tem_baixa, COL_FIN_MOVIMENTO] = MOV_RECEBER_LIQUIDADO
     df.loc[_e_receber & _tem_baixa, "Data Efetiva"] = df.loc[
-        _e_receber & _tem_baixa, COL_FIN_DATA_LIQUIDACAO
+        _e_receber & _tem_baixa, COL_FIN_LIQ_EFETIVA
     ]
     df.loc[_e_receber & ~_tem_baixa, "Data Efetiva"] = df.loc[
         _e_receber & ~_tem_baixa, COL_FIN_VENCIMENTO
@@ -5634,6 +5669,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "acumulado do período e o saldo traz a abertura do primeiro mês. **Só esta tabela usa o "
                 "saldo de abertura** — a Reserva de Caixa abaixo e as demais abas seguem com a posição de "
                 "fechamento."
+            )
+            st.caption(
+                "**4 - Contas a Pagar** é programado no futuro e efetivo no passado: título já pago "
+                "entra no mês em que o dinheiro saiu, e título em aberto fica no mês do vencimento. "
+                "A data de pagamento vem da coluna Liquidação da aba DIÁRIO, cruzada por número, "
+                "vencimento e valor."
             )
             if meta_cheia_m is not None:
                 st.caption(
@@ -6768,21 +6809,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
         if df_a.empty:
             st.info("Nenhum lançamento para os filtros selecionados.")
         else:
-            # ---- Liquidação efetiva: SÓ NESTA ABA ----
-            # O CSV não traz a baixa das contas a pagar; ela vem da DIÁRIO,
-            # numa coluna à parte. Aqui as duas são juntadas para os cálculos
-            # de prazo médio e de quitado x em aberto. Nenhuma outra aba do
-            # painel usa isso -- lá o pago continua aparecendo no fluxo
-            # normalmente, como sempre foi.
-            df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO]
-            if COL_FIN_LIQ_AMPLA in df_a.columns:
-                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_LIQ_EFETIVA].fillna(
-                    df_a[COL_FIN_LIQ_AMPLA]
-                )
-            if COL_FIN_LIQ_DIARIO in df_a.columns:
-                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_LIQ_EFETIVA].fillna(
-                    df_a[COL_FIN_LIQ_DIARIO]
-                )
+            # A liquidação efetiva já vem montada do preparo dos dados e é a
+            # MESMA que o fluxo usa para posicionar o contas a pagar. Antes
+            # ela era recalculada aqui dentro; duas construções da mesma
+            # coluna são duas chances de elas discordarem.
+            if COL_FIN_LIQ_EFETIVA not in df_a.columns:
+                df_a[COL_FIN_LIQ_EFETIVA] = df_a[COL_FIN_DATA_LIQUIDACAO]
 
             df_a["DiaOrd"] = df_a["Data Efetiva"].dt.normalize()
             entradas_a = df_a.loc[df_a["Tipo Movimento"] == "entrada", COL_FIN_VALOR].sum()
