@@ -50,6 +50,7 @@ DEPENDENCIAS = {
     "_eh_linha_de_resultado": ["_normalizar_texto"],
     "resolver_planos_forcados": ["_planos_sem_linha_dre", "_normalizar_texto"],
     "_planos_sem_linha_dre": ["_normalizar_texto"],
+    "guardar_memoria": ["memoria_em_uso_mb"],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
 }
@@ -60,6 +61,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
+    "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
 
@@ -1463,6 +1465,68 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertIn('chave="somador_mensal"', FONTE)
         self.assertIn('chave="somador_diario"', FONTE)
         self.assertIn('selection_mode=["multi-row", "multi-column"]', FONTE)
+
+
+# ============================================================================
+# 5i. MEMORIA E LEITURA DAS PLANILHAS
+# ============================================================================
+class TesteMemoriaELeitura(unittest.TestCase):
+    """O servidor derruba o app quando a memoria estoura, e a tela e um erro
+    generico sem causa. Estas travas protegem as duas frentes: ler menos e
+    soltar memoria antes do limite."""
+
+    def test_abas_sao_lidas_com_a_planilha_aberta_uma_vez(self):
+        """Cada `pd.read_excel(caminho, sheet_name=...)` reprocessa o arquivo
+        INTEIRO. Carregar 13 lojas dos dois arquivos eram 26 leituras
+        completas -- 26 picos de memoria."""
+        for funcao in ("carregar_dados_abas", "carregar_dados_por_loja"):
+            i = FONTE.index(f"def {funcao}(")
+            trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+            self.assertIn("_planilha_aberta(path_o)", trecho, funcao)
+            self.assertIn("_planilha_aberta(path_r)", trecho, funcao)
+            self.assertNotIn("_ler_aba_ou_vazio(path_o", trecho,
+                             f"{funcao} voltou a reabrir o arquivo por aba")
+
+    def test_caches_pesados_tem_teto_de_entradas(self):
+        """Sem max_entries, cada combinacao de abas guarda uma copia inteira
+        dos dados e elas se acumulam ate o app cair."""
+        import re as _re
+        for funcao in ("carregar_dados_abas", "carregar_dados_por_loja", "carregar_diario",
+                       "preparar_fluxo_caixa", "carregar_liquidacoes_diario"):
+            i = FONTE.index(f"def {funcao}(")
+            decorador = FONTE[max(0, i - 400):i]
+            achado = _re.search(r"@st\.cache_\w+\([^)]*\)\s*$", decorador)
+            self.assertIsNotNone(achado, f"{funcao} sem decorador de cache")
+            self.assertIn("max_entries", achado.group(0), f"{funcao} sem teto de entradas")
+
+    def test_guarda_de_memoria_existe_e_tem_limite(self):
+        ns = carregar(["memoria_em_uso_mb"],
+                      ["LIMITE_MEMORIA_ALERTA_MB", "LIMITE_MEMORIA_LIMPEZA_MB"])
+        self.assertLess(ns["LIMITE_MEMORIA_ALERTA_MB"], ns["LIMITE_MEMORIA_LIMPEZA_MB"],
+                        "o alerta tem de vir antes da limpeza")
+        # A medicao nao pode derrubar nada onde nao houver /proc.
+        valor = ns["memoria_em_uso_mb"]()
+        self.assertTrue(valor is None or valor > 0)
+
+    def test_guarda_so_limpa_acima_do_limite(self):
+        ns = carregar(["guardar_memoria"], ["LIMITE_MEMORIA_LIMPEZA_MB"])
+        limpezas = []
+        ns["st"] = type("st", (), {"cache_data": type("c", (), {
+            "clear": staticmethod(lambda: limpezas.append(1))})()})()
+        ns["gc"] = type("gc", (), {"collect": staticmethod(lambda: None)})()
+
+        ns["memoria_em_uso_mb"] = lambda: 100.0
+        mb, limpou = ns["guardar_memoria"]()
+        self.assertFalse(limpou, "limpou com a memoria baixa")
+
+        ns["memoria_em_uso_mb"] = lambda: ns["LIMITE_MEMORIA_LIMPEZA_MB"] + 50
+        mb, limpou = ns["guardar_memoria"]()
+        self.assertTrue(limpou, "nao limpou mesmo acima do limite")
+        self.assertEqual(len(limpezas), 1)
+
+        # Sem medicao possivel, nao age -- e nao quebra.
+        ns["memoria_em_uso_mb"] = lambda: None
+        self.assertEqual(ns["guardar_memoria"](), (None, False))
 
 
 # ============================================================================

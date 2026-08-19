@@ -8,6 +8,8 @@ Fontes de dados: Google Sheets (com fallback para arquivos locais em rede).
 """
 
 import base64
+import contextlib
+import gc
 import hashlib
 import hmac
 import io
@@ -1852,21 +1854,131 @@ except Exception as e:
     st.stop()
 
 
-def _ler_aba_ou_vazio(path, aba, colunas_modelo=None):
-    """Lê uma aba de uma planilha. Se a aba não existir naquele arquivo
-    específico (ex.: loja nova que só tem aba no Realizado, ainda sem aba
-    correspondente no Orçado), retorna um DataFrame vazio com as mesmas
-    colunas do modelo de referência, em vez de derrubar a loja inteira do
-    relatório/painel."""
+# ---------------------------------------------------------------------------
+# GUARDA DE MEMÓRIA
+# ---------------------------------------------------------------------------
+# O servidor derruba o app quando a memória estoura, e a tela que aparece é
+# um genérico "Erro ao executar o aplicativo" -- sem pista nenhuma de causa.
+# Só volta reiniciando. Estes limites existem para soltar a memória ANTES
+# desse ponto: é melhor reler uma planilha do que perder o app inteiro.
+LIMITE_MEMORIA_ALERTA_MB = 700
+LIMITE_MEMORIA_LIMPEZA_MB = 850
+
+
+def memoria_em_uso_mb():
+    """Memória residente do processo, em MB. Devolve None onde não dá para
+    medir (fora do Linux), e nesse caso a guarda simplesmente não age."""
     try:
-        return pd.read_excel(path, sheet_name=aba)
+        with open("/proc/self/status", "r", encoding="utf-8") as arquivo:
+            for linha in arquivo:
+                if linha.startswith("VmRSS:"):
+                    return int(linha.split()[1]) / 1024
+    except Exception:
+        return None
+    return None
+
+
+def guardar_memoria():
+    """Se a memória passar do limite, esvazia os caches de dados e chama o
+    coletor. Devolve (mb_antes, limpou) para a barra lateral mostrar.
+
+    Limpar cache custa uma releitura das planilhas -- alguns segundos. Deixar
+    estourar custa o app inteiro e um reinício manual. A escolha é fácil."""
+    mb = memoria_em_uso_mb()
+    if mb is None or mb < LIMITE_MEMORIA_LIMPEZA_MB:
+        return mb, False
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    gc.collect()
+    return mb, True
+
+
+def painel_de_memoria_na_barra():
+    """Mostra a memória em uso e um botão para liberá-la à mão.
+
+    Fica visível de propósito: quando o app cair de novo, o primeiro lugar a
+    olhar é este número. Se ele estiver perto do teto antes da queda, o
+    caminho é reduzir o que se carrega -- não reiniciar de novo."""
+    mb, limpou = guardar_memoria()
+    if mb is None:
+        return
+    if limpou:
+        st.sidebar.warning(
+            f"Memória chegou a {mb:.0f} MB e os caches foram esvaziados sozinhos para o "
+            "app não cair. A próxima tela vai demorar alguns segundos a mais, porque as "
+            "planilhas serão lidas de novo."
+        )
+    with st.sidebar.expander("🧠 Memória do app"):
+        cor = (COLORS["negative"] if mb >= LIMITE_MEMORIA_ALERTA_MB
+               else COLORS["positive"])
+        st.markdown(
+            f'<span style="font-family:{FONTE_MONO};font-size:20px;font-weight:700;'
+            f'color:{cor};">{mb:.0f} MB</span>'
+            f'<span style="font-size:11px;color:{COLORS["text_muted"]};"> em uso · '
+            f'limpeza automática em {LIMITE_MEMORIA_LIMPEZA_MB} MB</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "O servidor derruba o app quando a memória estoura, e a tela que aparece é um "
+            "erro genérico, sem causa. Este número é o aviso antes disso."
+        )
+        if st.button("Liberar memória agora", key="btn_liberar_memoria"):
+            st.cache_data.clear()
+            gc.collect()
+            st.rerun()
+
+
+@contextlib.contextmanager
+def _planilha_aberta(path):
+    """Abre a planilha UMA vez e devolve o handle para ler várias abas.
+
+    Antes cada aba era lida com `pd.read_excel(path, sheet_name=aba)`, e cada
+    uma dessas chamadas reabria e reprocessava o arquivo INTEIRO. Carregar as
+    13 lojas dos dois arquivos eram 26 leituras completas -- 26 picos de
+    memória, num servidor que mata o app quando a memória estoura. É a causa
+    mais provável do "Oh não" que só voltava reiniciando o app.
+
+    Se o arquivo não abrir, devolve None e quem chama trata como aba
+    inexistente, que é o comportamento de sempre."""
+    livro = None
+    try:
+        livro = pd.ExcelFile(path)
+        yield livro
+    except Exception:
+        yield None
+    finally:
+        if livro is not None:
+            try:
+                livro.close()
+            except Exception:
+                pass
+
+
+def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
+    """Lê uma aba de uma planilha. Aceita o caminho ou uma planilha já aberta
+    (o segundo caso evita reprocessar o arquivo a cada aba).
+
+    Se a aba não existir naquele arquivo específico (ex.: loja nova que só
+    tem aba no Realizado, ainda sem aba correspondente no Orçado), retorna um
+    DataFrame vazio com as mesmas colunas do modelo de referência, em vez de
+    derrubar a loja inteira do relatório/painel."""
+    if path_ou_livro is None:
+        return pd.DataFrame(columns=colunas_modelo) if colunas_modelo is not None else pd.DataFrame()
+    try:
+        return pd.read_excel(path_ou_livro, sheet_name=aba)
     except Exception:
         if colunas_modelo is not None:
             return pd.DataFrame(columns=colunas_modelo)
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=60)
+# max_entries: cada combinação de abas guarda uma cópia dos dados. Sem
+# teto, trocar de visão algumas vezes empilha cópias até o servidor
+# derrubar o app -- e o cache existe para poupar leitura, não para
+# guardar tudo que já foi aberto.
+@st.cache_data(ttl=60, max_entries=8)
 def carregar_dados_abas(path_o, path_r, lista_abas):
     """Carrega Orçado e Realizado de cada aba/loja. Cada lado é lido de forma
     INDEPENDENTE: se a loja não existir no Orçado (ex.: loja nova, ainda sem
@@ -1878,19 +1990,20 @@ def carregar_dados_abas(path_o, path_r, lista_abas):
     dfs_o = []
     dfs_r = []
     colunas_modelo_o, colunas_modelo_r = None, None
-    for aba in lista_abas:
-        df_o = _ler_aba_ou_vazio(path_o, aba, colunas_modelo_o)
-        df_r = _ler_aba_ou_vazio(path_r, aba, colunas_modelo_r)
-        if not df_o.empty and colunas_modelo_o is None:
-            colunas_modelo_o = df_o.columns
-        if not df_r.empty and colunas_modelo_r is None:
-            colunas_modelo_r = df_r.columns
-        dfs_o.append(df_o)
-        dfs_r.append(df_r)
+    with _planilha_aberta(path_o) as livro_o, _planilha_aberta(path_r) as livro_r:
+        for aba in lista_abas:
+            df_o = _ler_aba_ou_vazio(livro_o, aba, colunas_modelo_o)
+            df_r = _ler_aba_ou_vazio(livro_r, aba, colunas_modelo_r)
+            if not df_o.empty and colunas_modelo_o is None:
+                colunas_modelo_o = df_o.columns
+            if not df_r.empty and colunas_modelo_r is None:
+                colunas_modelo_r = df_r.columns
+            dfs_o.append(df_o)
+            dfs_r.append(df_r)
     return dfs_o, dfs_r
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60, max_entries=6)
 def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     """Carrega os dados de Orçado/Realizado de cada loja SEPARADAMENTE (uma aba
     por loja), para permitir a divisão por loja no relatório Excel — independente
@@ -1899,19 +2012,20 @@ def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     aba no Orçado ainda entra no relatório com os valores do Realizado (e
     Orçado zerado), em vez de ser descartada por completo."""
     dados_por_loja = {}
-    for loja in lista_lojas:
-        df_o = _ler_aba_ou_vazio(path_o, loja)
-        df_r = _ler_aba_ou_vazio(path_r, loja)
-        if df_o.empty and df_r.empty:
-            continue
-        dados_por_loja[loja] = (df_o, df_r)
+    with _planilha_aberta(path_o) as livro_o, _planilha_aberta(path_r) as livro_r:
+        for loja in lista_lojas:
+            df_o = _ler_aba_ou_vazio(livro_o, loja)
+            df_r = _ler_aba_ou_vazio(livro_r, loja)
+            if df_o.empty and df_r.empty:
+                continue
+            dados_por_loja[loja] = (df_o, df_r)
     return dados_por_loja
 
 
 # ---------------------------------------------------------------------------
 # 4.1 PLANO DE CONTAS — fonte auxiliar para a aba "Plano de Contas" do relatório
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=2)
 def carregar_tabela_contas(path_r):
     """Lê a aba Tabela_Contas da planilha Realizado 2026: relação entre
     Natureza Financeira (plano de contas) e Linha DRE."""
@@ -1942,7 +2056,7 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
 # "23157" ou outro código) -- sem esse DE_PARA, o filtro por loja no DIÁRIO
 # nunca encontra nada, e por isso os lançamentos apareciam sempre vazios.
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=2)
 def carregar_tabela_lojas(path_r):
     """Lê a aba Tabela_Lojas da planilha Realizado 2026: relação (DE_PARA)
     entre o nome da Loja e o Centro de Custos correspondente."""
@@ -1997,7 +2111,7 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
 # ---------------------------------------------------------------------------
 # 4.2 DIÁRIO — lançamentos detalhados, fonte principal da aba "Plano de Contas"
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=2)
 def carregar_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
     com Valor Bruto, Competência (data do lançamento), Plano de Contas,
@@ -4497,7 +4611,7 @@ def _chave_numero_fin(serie):
 TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
 
 
-@st.cache_resource(ttl=900, show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
+@st.cache_resource(ttl=900, max_entries=2, show_spinner="Cruzando com a aba DIÁRIO para achar as baixas...")
 def carregar_liquidacoes_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026 e devolve as datas de
     pagamento por documento, prontas para cruzar com o CSV do Fluxo de Caixa.
@@ -4627,7 +4741,7 @@ def carregar_liquidacoes_diario(path_r):
     return tabelas, diag
 
 
-@st.cache_resource(ttl=300, show_spinner="Preparando os dados do fluxo de caixa...")
+@st.cache_resource(ttl=300, max_entries=2, show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -5170,6 +5284,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
     # para administrador é redundante, já que só administrador enxerga.
     if eh_admin:
         st.sidebar.markdown("---")
+        painel_de_memoria_na_barra()
+
         with st.sidebar.expander("🔧 Diagnóstico da planilha"):
             st.write(
                 f"**Linhas lidas do CSV:** {total_linhas_lidas} · "
@@ -7046,6 +7162,8 @@ st.sidebar.markdown(
 
 st.sidebar.markdown("**🔎 Escopo da Análise**")
 if eh_admin:
+    painel_de_memoria_na_barra()
+
     with st.sidebar.expander("🔧 Abas detectadas nas planilhas"):
         st.caption(
             "Se uma aba nova (ex.: um consolidado que você acabou de criar) não "
