@@ -5098,6 +5098,57 @@ def _normalizar_coluna_fin(nome):
     return re.sub(r"\s+", " ", str(nome or "").strip().translate(_ACENTOS_FIN).lower())
 
 
+# Palavras de ligação que não mudam o sentido do nome de uma coluna. A
+# planilha às vezes escreve "Data de Liquidação" e às vezes "Data
+# Liquidação"; para o painel é a mesma coluna, e uma preposição a mais não
+# pode derrubar a tela inteira.
+LIGACOES_NOME_COLUNA = ("de", "da", "do", "das", "dos", "e")
+
+
+def _assinatura_coluna_fin(nome):
+    """Reduz o nome da coluna ao que ele tem de essencial: minúsculas, sem
+    acento, sem pontuação e sem palavra de ligação. "Data de Liquidação",
+    "Data Liquidação" e "DATA LIQUIDACAO" viram todas a mesma assinatura."""
+    limpo = re.sub(r"[^\w\s]", " ", _normalizar_coluna_fin(nome))
+    palavras = [p for p in limpo.split() if p and p not in LIGACOES_NOME_COLUNA]
+    return " ".join(palavras)
+
+
+def resolver_colunas_fluxo(df, colunas_esperadas):
+    """Encontra, entre as colunas do CSV, as que o painel espera -- aceitando
+    diferenças de escrita que não mudam o sentido.
+
+    Devolve (df com as colunas renomeadas para o nome canônico, lista do que
+    faltou de verdade). O casamento é em duas passadas: primeiro o nome
+    exato, e só depois a assinatura. Essa ordem importa porque a planilha tem
+    pares como "Valor" e "Valor.1" -- deixar a assinatura decidir primeiro
+    poderia trocar uma pela outra em silêncio, que é bem pior do que a tela
+    de erro."""
+    renomear = {}
+    usadas = set()
+
+    for esperada in colunas_esperadas:
+        if esperada in df.columns:
+            usadas.add(esperada)
+
+    for esperada in colunas_esperadas:
+        if esperada in usadas:
+            continue
+        alvo = _assinatura_coluna_fin(esperada)
+        for coluna in df.columns:
+            if coluna in usadas:
+                continue
+            if _assinatura_coluna_fin(coluna) == alvo:
+                renomear[coluna] = esperada
+                usadas.add(coluna)
+                break
+
+    if renomear:
+        df = df.rename(columns=renomear)
+    faltando = [c for c in colunas_esperadas if c not in df.columns]
+    return df, faltando, renomear
+
+
 def _chave_numero_fin(serie):
     """Normaliza o Número do documento para servir de chave entre o CSV do
     Fluxo de Caixa e a aba DIÁRIO: tira espaços, deixa maiúsculo e remove o
@@ -5134,7 +5185,12 @@ def preparar_fluxo_caixa(base_data):
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
     ]
-    faltando = [c for c in colunas_esperadas if c not in df_fluxo.columns]
+    # A planilha muda de escrita de vez em quando ("Data de Liquidação" no
+    # lugar de "Data Liquidação"). Para o painel é a mesma coluna, e uma
+    # preposição a mais não pode derrubar a tela.
+    df_fluxo, faltando, colunas_renomeadas = resolver_colunas_fluxo(
+        df_fluxo, colunas_esperadas
+    )
     if faltando:
         return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0, {}
 
@@ -5211,6 +5267,7 @@ def preparar_fluxo_caixa(base_data):
         "liq_nao_convertidas": int(nao_convertidas.sum()),
         "liq_amostras_nao_convertidas": texto_liq_bruto[nao_convertidas].unique()[:5].tolist(),
         "colunas_liq_extras": colunas_liq_extras,
+        "colunas_renomeadas": colunas_renomeadas,
         "colunas_csv": [str(c) for c in df_fluxo.columns],
     }
 

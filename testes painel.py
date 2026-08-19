@@ -50,6 +50,8 @@ DEPENDENCIAS = {
     "_eh_linha_de_resultado": ["_normalizar_texto"],
     "resolver_planos_forcados": ["_planos_sem_linha_dre", "_normalizar_texto"],
     "_planos_sem_linha_dre": ["_normalizar_texto"],
+    "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
+    "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
     "guardar_memoria": ["memoria_em_uso_mb"],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
@@ -61,6 +63,8 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
+    "_assinatura_coluna_fin": ["LIGACOES_NOME_COLUNA", "_ACENTOS_FIN"],
+    "_normalizar_coluna_fin": ["_ACENTOS_FIN"],
     "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
@@ -1635,6 +1639,63 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         ns_local["tabela_selecionavel"](df, chave="t")
         self.assertNotIn("\u200b", capturado["codigo"])
         self.assertIn(">1.1.Caixa<", capturado["codigo"])
+
+
+# ============================================================================
+# 5l. NOME DAS COLUNAS DA PLANILHA
+# ============================================================================
+class TesteNomeDasColunas(unittest.TestCase):
+    """A planilha muda de escrita de vez em quando ("Data de Liquidação" no
+    lugar de "Data Liquidação"). Para o painel e a mesma coluna, e uma
+    preposicao a mais nao pode derrubar a tela inteira."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["_normalizar_coluna_fin", "_assinatura_coluna_fin", "resolver_colunas_fluxo"],
+            ["_ACENTOS_FIN", "LIGACOES_NOME_COLUNA", "COL_FIN_VALOR", "COL_FIN_MODALIDADE",
+             "COL_FIN_CANAL", "COL_FIN_MOVIMENTO", "COL_FIN_DATA_LIQUIDACAO",
+             "COL_FIN_VENCIMENTO"],
+        )
+        cls.esperadas = [cls.ns[k] for k in (
+            "COL_FIN_VALOR", "COL_FIN_MODALIDADE", "COL_FIN_CANAL", "COL_FIN_MOVIMENTO",
+            "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VENCIMENTO")]
+
+    def _resolver(self, colunas):
+        df = pd.DataFrame({c: [1] for c in colunas})
+        return self.ns["resolver_colunas_fluxo"](df, self.esperadas)
+
+    def test_aceita_as_escritas_que_a_planilha_ja_usou(self):
+        base = ["Valor.1", "Modalidade", "Canal.1", "Movimento", "Vencimento.1"]
+        for escrita in ["Data Liquidação", "Data de Liquidação", "DATA DE LIQUIDACAO",
+                        "  Data  de  Liquidação "]:
+            _saida, faltando, _ren = self._resolver(base + [escrita])
+            self.assertEqual(faltando, [], f"nao reconheceu: {escrita!r}")
+
+    def test_coluna_que_falta_de_verdade_continua_faltando(self):
+        """Tolerancia nao pode virar adivinhacao: sem a coluna, o painel tem
+        de dizer o que falta, e nao inventar um substituto."""
+        _saida, faltando, _ren = self._resolver(
+            ["Valor.1", "Modalidade", "Canal.1", "Movimento", "Vencimento.1"])
+        self.assertEqual(faltando, [self.ns["COL_FIN_DATA_LIQUIDACAO"]])
+
+    def test_nao_confunde_valor_com_valor_ponto_um(self):
+        """A planilha tem pares como "Valor" e "Valor.1". Trocar uma pela
+        outra em silencio e bem pior do que a tela de erro."""
+        saida, faltando, _ren = self._resolver(
+            ["Valor", "Valor.1", "Modalidade", "Canal.1", "Movimento",
+             "Data de Liquidação", "Vencimento.1"])
+        self.assertEqual(faltando, [])
+        self.assertIn("Valor.1", saida.columns)
+        self.assertIn("Valor", saida.columns)
+
+    def test_nome_exato_tem_prioridade(self):
+        """Se a coluna certa existe com o nome exato, ninguem mexe nela."""
+        _saida, faltando, renomeadas = self._resolver(
+            ["Valor.1", "Modalidade", "Canal.1", "Movimento",
+             "Data Liquidação", "Vencimento.1"])
+        self.assertEqual(faltando, [])
+        self.assertEqual(renomeadas, {}, "renomeou uma coluna que ja estava certa")
 
 
 # ============================================================================
