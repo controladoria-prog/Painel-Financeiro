@@ -2096,6 +2096,22 @@ class TesteDiarioConsolidado(unittest.TestCase):
                       trecho, "a abertura deixou de respeitar a URL")
         self.assertIn("if MOV_RECEBER_META in abertas_dc else []", trecho)
 
+    def test_as_duas_abas_diarias_abrem_no_mesmo_dia(self):
+        """Ontem, nas duas. O movimento do dia corrente costuma estar
+        incompleto; e, se as abas abrissem em dias diferentes, a mesma
+        pergunta daria respostas diferentes conforme a aba."""
+        for ancora, variavel in [("with tab_fin_diario:", "data_ontem_d"),
+                                 ("with tab_fin_consolidado:", "_ontem_dc")]:
+            i = FONTE.index(ancora)
+            trecho = FONTE[i:i + 2600]
+            self.assertIn(f"{variavel} = ", trecho, ancora)
+            self.assertIn("Timedelta(days=1)", trecho, f"{ancora}: nao comeca em ontem")
+            self.assertIn("MonthEnd(1)", trecho, f"{ancora}: nao vai ate o fim do mes seguinte")
+            # Nao basta calcular "ontem": o seletor tem de RECEBER esse
+            # valor. Calcular e nao usar passaria despercebido.
+            self.assertRegex(trecho, rf"padrao_ini=[^,]*{re.escape(variavel)}",
+                             f"{ancora}: o padrao nao usa o dia de ontem")
+
     def test_periodo_por_datas_nas_duas_abas_diarias(self):
         """As duas abas diarias usam o mesmo seletor de duas datas, que pode
         atravessar meses -- julho e agosto na mesma tela."""

@@ -6683,6 +6683,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # A URL manda no padrão: se a pessoa já escolheu um período e
             # clicou numa seta, a página recarrega e o seletor precisa
             # nascer com a escolha dela, não com o mês corrente.
+            _ontem_dc = _hoje_dc - pd.Timedelta(days=1)
             _ini_url_dc, _fim_url_dc = guardar_periodo_na_url("dc")
             abrir_por_dc = st.radio(
                 "Ao abrir uma linha, mostrar",
@@ -6694,8 +6695,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
             data_ini_dc, data_fim_dc = seletor_periodo_dias(
                 datas_disp_dc, "dc_periodo",
-                padrao_ini=_ini_url_dc or pd.Timestamp(_hoje_dc).replace(day=1).date(),
-                padrao_fim=_fim_url_dc or (pd.Timestamp(_hoje_dc) + pd.offsets.MonthEnd(0)).date(),
+                # Mesmo padrão do Fluxo Diário: começa em ONTEM e vai até o
+                # fim do mês seguinte. O movimento do dia corrente costuma
+                # estar incompleto, e o que já passou está fechado -- quem
+                # abre uma tela diária quer ver o que vem pela frente. As
+                # duas abas diárias precisam abrir no mesmo dia, senão a
+                # mesma pergunta dá respostas diferentes conforme a aba.
+                padrao_ini=_ini_url_dc or _ontem_dc,
+                padrao_fim=_fim_url_dc or (
+                    pd.Timestamp(_ontem_dc) + pd.offsets.MonthEnd(1)
+                ).date(),
                 ajuda="O período pode atravessar meses — ex.: 20/07 a 15/08.",
             )
             rotulo_periodo_dc = rotulo_periodo_dias(data_ini_dc, data_fim_dc)
