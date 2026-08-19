@@ -1399,72 +1399,59 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertIn("df = df[df[COL_FIN_MOVIMENTO] != MOV_RECEBER_META]", trecho)
         self.assertIn("montar_linhas_de_meta(df.columns)", FONTE)
 
-    def test_somador_nao_passa_altura_nula(self):
-        """`height=None` nao e o mesmo que nao passar height: o Streamlit
-        valida o valor e recusa None -- foi o que derrubou o painel em
-        18/08/2026. O fake abaixo reproduz essa validacao."""
-        ns_local = carregar(["formata_brl", "cor_valor", "tabela_com_somador"],
-                            ["COLORS", "FONTE_MONO"])
+    def test_tabela_permite_selecionar_celulas_soltas(self):
+        """O st.dataframe so seleciona linha ou coluna inteira. A area precisa
+        do comportamento do Excel: clicar numa celula, segurar Ctrl, clicar em
+        outras e ver a soma. Por isso a tabela e HTML propria."""
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"],
+                            ["COLORS", "FONTE_MONO", "ALTURA_LINHA_TABELA_PX",
+                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX"])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            codigo=codigo, altura=altura)
+        df = pd.DataFrame([[10.0, -20.0], [30.0, 40.0]],
+                          index=["1.1.Caixa", "4 - Contas a Pagar"], columns=["18/08", "19/08"])
+        ns_local["tabela_selecionavel"](df, chave="t", tipos_linha=["movimento", "movimento"],
+                                        linhas_visiveis=21)
+        codigo = capturado["codigo"]
+        self.assertEqual(len(re.findall(r'data-v="', codigo)), 4, "faltou celula clicavel")
+        self.assertIn("evento.ctrlKey || evento.metaKey", codigo, "sem Ctrl+clique")
+        self.assertIn("evento.shiftKey", codigo, "sem Shift+clique para intervalo")
+        for identificador in ("soma", "media", "qtd"):
+            self.assertIn(f'id="{identificador}"', codigo)
 
-        chamadas = []
+    def test_altura_do_diario_mostra_21_linhas(self):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"],
+                            ["COLORS", "FONTE_MONO", "LINHAS_VISIVEIS_FLUXO_DIARIO",
+                             "ALTURA_LINHA_TABELA_PX", "ALTURA_CABECALHO_TABELA_PX",
+                             "ALTURA_BARRA_SOMA_PX"])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            altura=altura)
+        df = pd.DataFrame([[1.0]], index=["1.1.Caixa"], columns=["18/08"])
+        ns_local["tabela_selecionavel"](
+            df, chave="t", linhas_visiveis=ns_local["LINHAS_VISIVEIS_FLUXO_DIARIO"])
+        esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
+                    + ns_local["ALTURA_LINHA_TABELA_PX"] * 21
+                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 8)
+        self.assertEqual(ns_local["LINHAS_VISIVEIS_FLUXO_DIARIO"], 21)
+        self.assertEqual(capturado["altura"], esperado)
+        i = FONTE.index('chave="tabela_diaria"')
+        self.assertIn("LINHAS_VISIVEIS_FLUXO_DIARIO", FONTE[i - 400:i + 400])
 
-        class StreamlitRigoroso:
-            def __init__(self, com_selecao):
-                self.com_selecao = com_selecao
-
-            def dataframe(self, conteudo, **kw):
-                if "height" in kw and kw["height"] is None:
-                    raise ValueError("StreamlitInvalidHeightError")
-                if not self.com_selecao and ("on_select" in kw or "selection_mode" in kw):
-                    raise TypeError("on_select nao existe nesta versao")
-                chamadas.append(sorted(kw))
-                return type("Evento", (), {"selection": {"rows": [], "columns": []}})()
-
-            markdown = staticmethod(lambda *a, **k: None)
-
-        df = pd.DataFrame({"Janeiro": [100.0, 250.0]}, index=["Banco", "A pagar"])
-        for com_selecao in (True, False):
-            ns_local["st"] = StreamlitRigoroso(com_selecao)
-            chamadas.clear()
-            ns_local["tabela_com_somador"](df, chave="k1")
-            ns_local["tabela_com_somador"](df, chave="k2", altura=300)
-            self.assertNotIn("height", chamadas[0], "passou height sem ter altura")
-            self.assertIn("height", chamadas[1], "perdeu a altura quando ela existe")
-
-    def test_somador_nao_engole_erro_de_verdade(self):
-        """O fallback e so para versao antiga do Streamlit (TypeError). Um
-        except generico esconde o erro real e faz a tela quebrar num ponto
-        que nao e a causa -- foi exatamente o que atrasou o diagnostico."""
-        i = FONTE.index("def tabela_com_somador(")
-        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn("except TypeError:", trecho)
-        self.assertNotIn("except Exception:", trecho)
-
-    def test_somador_soma_o_cruzamento_selecionado(self):
-        ns_local = carregar(["formata_brl", "cor_valor", "tabela_com_somador"],
-                            ["COLORS", "FONTE_MONO"])
-        textos = []
-
-        class StreamlitComSelecao:
-            @staticmethod
-            def dataframe(conteudo, **kw):
-                return type("Evento", (), {"selection": {"rows": [0, 1], "columns": ["Janeiro"]}})()
-
-            markdown = staticmethod(lambda html, **k: textos.append(html))
-
-        ns_local["st"] = StreamlitComSelecao()
-        df = pd.DataFrame({"Janeiro": [100.0, 250.0, 40.0], "Fevereiro": [80.0, 90.0, 10.0]},
-                          index=["Banco", "A receber", "A pagar"])
-        ns_local["tabela_com_somador"](df, chave="k")
-        self.assertTrue(textos, "nao mostrou a soma da selecao")
-        self.assertIn("350,00", textos[0])
-        self.assertIn("2 célula(s)", textos[0])
-
-    def test_somador_de_selecao_nas_duas_tabelas(self):
-        self.assertIn("def tabela_com_somador(", FONTE)
-        self.assertIn('chave="somador_mensal"', FONTE)
-        self.assertIn('chave="somador_diario"', FONTE)
-        self.assertIn('selection_mode=["multi-row", "multi-column"]', FONTE)
+    def test_rotulo_nao_mostra_o_espaco_invisivel(self):
+        """O indice do diario usa espacos invisiveis para nao repetir rotulo;
+        eles nao podem chegar na tela."""
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"],
+                            ["COLORS", "FONTE_MONO", "ALTURA_LINHA_TABELA_PX",
+                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX"])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            codigo=codigo)
+        df = pd.DataFrame([[1.0]], index=["\u200b\u200b    1.1.Caixa"], columns=["18/08"])
+        ns_local["tabela_selecionavel"](df, chave="t")
+        self.assertNotIn("\u200b", capturado["codigo"])
+        self.assertIn(">1.1.Caixa<", capturado["codigo"])
 
 
 # ============================================================================
@@ -1704,7 +1691,7 @@ class TesteTravasEstruturais(unittest.TestCase):
         nomes em ingles - o painel so quebrava ao abrir a aba afetada."""
         arvore = ast.parse(FONTE)
         # Funcoes escritas por nos, cujos parametros sao em portugues.
-        FUNCOES_EM_PORTUGUES = {"html_embutido", "tabela_com_somador"}
+        FUNCOES_EM_PORTUGUES = {"html_embutido", "tabela_selecionavel"}
 
         def nome(no):
             f = no.func

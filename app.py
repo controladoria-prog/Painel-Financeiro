@@ -4336,73 +4336,174 @@ def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_p
     return pivot
 
 
-def tabela_com_somador(df, chave, estilo=None, altura=None, ajuda_colunas=None):
-    """Mostra a tabela e, abaixo dela, a SOMA do que estiver selecionado.
+# A tabela do fluxo diário abre com 21 linhas à mostra: é o que faz o mês
+# inteiro caber na tela sem rolagem vertical, com os três canais abertos.
+LINHAS_VISIVEIS_FLUXO_DIARIO = 21
+ALTURA_LINHA_TABELA_PX = 34
+ALTURA_CABECALHO_TABELA_PX = 42
+ALTURA_BARRA_SOMA_PX = 46
 
-    O Streamlit deixa selecionar linhas e colunas (não célula solta), então a
-    soma é do cruzamento: marque as linhas dos três canais e as colunas dos
-    dias que quiser, e o número embaixo é a soma daquele retângulo. Sem
-    seleção, não aparece nada -- a tabela fica igual a antes.
 
-    Serve para a pergunta do dia a dia: "quanto dá o contas a pagar dos três
-    canais nesta semana?", que antes só saía somando na mão ou exportando.
+def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=21, rotulo_canto=""):
+    """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
+
+    O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
+    que a área precisa é o comportamento do Excel: clicar num valor, segurar
+    Ctrl e clicar em outros, e ver a soma embaixo. Por isso esta tabela é
+    HTML próprio, dentro de um iframe.
+
+    - clique simples: seleciona só aquela célula;
+    - Ctrl (ou Cmd) + clique: acrescenta ou tira da seleção;
+    - Shift + clique: seleciona o retângulo entre a última célula e esta;
+    - Esc ou clique fora: limpa.
+
+    A barra de baixo mostra soma, média e quantidade -- e fica fixa, fora da
+    área que rola, para não sumir quando a tabela é comprida.
+
+    `tipos_linha` é uma lista com o papel de cada linha ("saldo_inicial",
+    "canal", "movimento", "total"), na mesma ordem do índice, e serve para o
+    destaque visual. `linhas_visiveis` define a altura: com 21, o mês inteiro
+    cabe na tela sem rolagem vertical.
     """
-    # `height=None` NÃO é o mesmo que não passar height: o Streamlit valida o
-    # valor e recusa None. Por isso os opcionais só entram no dicionário
-    # quando existem de verdade.
-    argumentos = {"width": "stretch"}
-    if altura is not None:
-        argumentos["height"] = altura
-    if ajuda_colunas:
-        argumentos["column_config"] = ajuda_colunas
-    conteudo = estilo if estilo is not None else df
+    import html as _html
+    import json as _json
 
-    try:
-        evento = st.dataframe(
-            conteudo, key=chave, on_select="rerun",
-            selection_mode=["multi-row", "multi-column"], **argumentos
-        )
-    except TypeError:
-        # Só TypeError: é o erro de quem está numa versão do Streamlit sem
-        # seleção em tabela. Qualquer outro erro tem de aparecer -- engolir
-        # tudo aqui foi o que escondeu um `height` inválido e fez a tela
-        # quebrar duas linhas adiante, num ponto que não era a causa.
-        st.dataframe(conteudo, **argumentos)
-        return
+    tipos_linha = list(tipos_linha or ["movimento"] * len(df))
+    colunas = [str(c) for c in df.columns]
+    linhas_html = []
 
-    selecao = getattr(evento, "selection", None) or {}
-    linhas_sel = list(selecao.get("rows", []) or [])
-    colunas_sel = list(selecao.get("columns", []) or [])
-    if not linhas_sel and not colunas_sel:
-        return
+    for posicao, (rotulo, tipo) in enumerate(zip(df.index, tipos_linha)):
+        # O índice do diário carrega espaços invisíveis para não repetir
+        # rótulo; eles não podem aparecer na tela.
+        texto_rotulo = str(rotulo).replace("\u200b", "").strip()
+        classe = f"linha-{tipo}"
+        celulas = [
+            f'<th class="rotulo {classe}">{_html.escape(texto_rotulo)}</th>'
+        ]
+        for indice_col, coluna in enumerate(df.columns):
+            valor = df.iloc[posicao, indice_col]
+            try:
+                numero = float(valor)
+            except (TypeError, ValueError):
+                numero = float("nan")
+            if numero != numero:  # NaN
+                celulas.append(f'<td class="{classe} vazio">—</td>')
+                continue
+            sinal = "pos" if numero >= 0 else "neg"
+            celulas.append(
+                f'<td class="{classe} {sinal}" data-v="{numero:.2f}" '
+                f'data-l="{posicao}" data-c="{indice_col}">{formata_brl(numero)}</td>'
+            )
+        linhas_html.append(f'<tr>{"".join(celulas)}</tr>')
 
-    recorte = df
-    if linhas_sel:
-        recorte = recorte.iloc[linhas_sel]
-    if colunas_sel:
-        existentes = [c for c in colunas_sel if c in recorte.columns]
-        if existentes:
-            recorte = recorte[existentes]
+    cabecalho = "".join(f'<th class="cabecalho">{_html.escape(c)}</th>' for c in colunas)
+    altura_rolagem = ALTURA_CABECALHO_TABELA_PX + ALTURA_LINHA_TABELA_PX * linhas_visiveis
+    altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 8
 
-    numeros = recorte.select_dtypes(include="number")
-    if numeros.empty:
-        return
-    valores = numeros.to_numpy().ravel()
-    total = float(pd.Series(valores).dropna().sum())
-    quantidade = int(pd.Series(valores).notna().sum())
-    st.markdown(
-        f'<div style="display:flex;gap:22px;align-items:baseline;padding:8px 12px;'
-        f'background:{COLORS["surface_alt"]};border:1px solid {COLORS["border"]};'
-        f'border-radius:8px;margin-top:-6px;">'
-        f'<span style="font-size:11px;letter-spacing:0.9px;color:{COLORS["text_muted"]};'
-        f'text-transform:uppercase;">Soma da seleção</span>'
-        f'<span style="font-family:{FONTE_MONO};font-size:17px;font-weight:700;'
-        f'color:{cor_valor(total).split(":")[-1].strip().rstrip(";")};">{formata_brl(total)}</span>'
-        f'<span style="font-size:11px;color:{COLORS["text_muted"]};">{quantidade} célula(s) · '
-        f'média {formata_brl(total / quantidade) if quantidade else "—"}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    codigo = f"""
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; background:transparent;
+         font-family:-apple-system,"Segoe UI",Roboto,sans-serif; }}
+  .rolagem {{ height:{altura_rolagem}px; overflow:auto;
+              border:1px solid {COLORS['border']}; border-radius:10px;
+              background:{COLORS['surface']}; }}
+  table {{ border-collapse:separate; border-spacing:0; width:100%;
+           font-size:12.5px; color:{COLORS['text']}; }}
+  th, td {{ height:{ALTURA_LINHA_TABELA_PX}px; padding:0 12px; white-space:nowrap;
+            border-bottom:1px solid {COLORS['border']}; }}
+  td {{ text-align:right; font-family:{FONTE_MONO}; cursor:pointer;
+        user-select:none; }}
+  th.cabecalho {{ position:sticky; top:0; z-index:3; text-align:right;
+                  background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
+                  font-size:11px; letter-spacing:0.6px; text-transform:uppercase;
+                  font-weight:600; }}
+  th.rotulo {{ position:sticky; left:0; z-index:2; text-align:left;
+               background:{COLORS['surface']}; font-weight:500;
+               min-width:230px; max-width:230px; overflow:hidden;
+               text-overflow:ellipsis; }}
+  th.canto {{ position:sticky; left:0; top:0; z-index:4;
+              background:{COLORS['surface_alt']}; text-align:left;
+              color:{COLORS['text_muted']}; font-size:11px;
+              letter-spacing:0.6px; text-transform:uppercase; }}
+  .pos {{ color:{COLORS['positive']}; }}
+  .neg {{ color:{COLORS['negative']}; }}
+  .vazio {{ color:{COLORS['text_muted']}; cursor:default; }}
+  .linha-canal td, .linha-canal th.rotulo {{ background:{COLORS['surface_alt']};
+        font-weight:700; }}
+  .linha-total td, .linha-total th.rotulo {{ background:{COLORS['surface_alt']};
+        font-weight:800; border-top:2px solid {COLORS['primary']}; }}
+  .linha-saldo_inicial td, .linha-saldo_inicial th.rotulo {{
+        background:{COLORS['surface_alt']}; font-weight:700; }}
+  td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
+            background:rgba(59,130,246,0.16) !important; }}
+  .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;
+            margin-top:8px; height:{ALTURA_BARRA_SOMA_PX - 8}px;
+            background:{COLORS['surface_alt']};
+            border:1px solid {COLORS['border']}; border-radius:10px; }}
+  .barra .rot {{ font-size:11px; letter-spacing:0.9px; text-transform:uppercase;
+                 color:{COLORS['text_muted']}; }}
+  .barra .val {{ font-family:{FONTE_MONO}; font-size:16px; font-weight:700;
+                 color:{COLORS['text']}; }}
+  .dica {{ font-size:11px; color:{COLORS['text_muted']}; margin-left:auto; }}
+</style>
+<div class="rolagem" id="rolagem">
+  <table>
+    <thead><tr><th class="canto">{_html.escape(rotulo_canto)}</th>{cabecalho}</tr></thead>
+    <tbody>{"".join(linhas_html)}</tbody>
+  </table>
+</div>
+<div class="barra">
+  <span class="rot">Soma</span><span class="val" id="soma">—</span>
+  <span class="rot">Média</span><span class="val" id="media">—</span>
+  <span class="rot">Células</span><span class="val" id="qtd">0</span>
+  <span class="dica">clique · Ctrl+clique soma outra · Shift+clique pega o intervalo · Esc limpa</span>
+</div>
+<script>
+(function() {{
+  const celulas = Array.from(document.querySelectorAll('td[data-v]'));
+  let ultima = null;
+  const brl = v => v.toLocaleString('pt-BR', {{style:'currency', currency:'BRL'}});
+
+  function atualizar() {{
+    const marcadas = celulas.filter(c => c.classList.contains('sel'));
+    const total = marcadas.reduce((s, c) => s + parseFloat(c.dataset.v), 0);
+    document.getElementById('qtd').textContent = marcadas.length;
+    document.getElementById('soma').textContent = marcadas.length ? brl(total) : '—';
+    document.getElementById('media').textContent =
+      marcadas.length ? brl(total / marcadas.length) : '—';
+  }}
+  function limpar() {{ celulas.forEach(c => c.classList.remove('sel')); }}
+
+  celulas.forEach(celula => celula.addEventListener('click', evento => {{
+    if (evento.shiftKey && ultima) {{
+      // Retângulo entre a última célula clicada e esta.
+      const l1 = +ultima.dataset.l, c1 = +ultima.dataset.c;
+      const l2 = +celula.dataset.l, c2 = +celula.dataset.c;
+      limpar();
+      celulas.forEach(c => {{
+        const l = +c.dataset.l, col = +c.dataset.c;
+        if (l >= Math.min(l1,l2) && l <= Math.max(l1,l2) &&
+            col >= Math.min(c1,c2) && col <= Math.max(c1,c2)) c.classList.add('sel');
+      }});
+    }} else if (evento.ctrlKey || evento.metaKey) {{
+      celula.classList.toggle('sel');
+      ultima = celula;
+    }} else {{
+      limpar();
+      celula.classList.add('sel');
+      ultima = celula;
+    }}
+    atualizar();
+  }}));
+
+  document.addEventListener('keydown', e => {{
+    if (e.key === 'Escape') {{ limpar(); atualizar(); }}
+  }});
+}})();
+</script>
+"""
+    html_embutido(codigo, altura=altura_total)
 
 
 def _peso_ordem_movimento_fin(nome_movimento):
@@ -5653,13 +5754,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
             pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
 
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
-            tabela_com_somador(
-                pivot_m_exibicao, chave="somador_mensal",
-                estilo=pivot_m_exibicao.style.format(formata_brl).map(cor_valor),
-            )
-            st.caption(
-                "Clique nos nomes das linhas e nos cabeçalhos das colunas para somar só o que "
-                "interessa — a soma do que ficar selecionado aparece logo abaixo da tabela."
+            tabela_selecionavel(
+                pivot_m_exibicao, chave="tabela_mensal",
+                tipos_linha=[
+                    "total" if str(rotulo).startswith("TOTAL") else "movimento"
+                    for rotulo in pivot_m_exibicao.index
+                ],
+                # O mensal tem poucas linhas: mostra todas, sem rolagem.
+                linhas_visiveis=len(pivot_m_exibicao),
+                rotulo_canto="Movimento",
             )
             st.caption(
                 "As linhas de **caixa e banco** mostram o saldo com que o mês **começou** — a posição do "
@@ -6231,57 +6334,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         unsafe_allow_html=True,
                     )
 
-                    def _estilo_tabela_diaria(df_tabela):
-                        """Destaca canais, total geral e saldo acumulado. Usa
-                        posição, não o nome da linha, então funciona mesmo com
-                        rótulos parecidos entre canais."""
-                        estilos = pd.DataFrame("", index=df_tabela.index, columns=df_tabela.columns)
-                        for posicao, (tipo_linha, _) in enumerate(estilo_linhas_d):
-                            for coluna in df_tabela.columns:
-                                valor = df_tabela.iloc[posicao][coluna]
-                                base = cor_valor(valor)
-                                if tipo_linha == "saldo_inicial":
-                                    # Abre a tabela: mesmo peso do total, com
-                                    # borda embaixo separando dos canais.
-                                    base += (
-                                        f" background-color: {COLORS['surface_alt']};"
-                                        " font-weight: 800;"
-                                        f" border-bottom: 2px solid {COLORS['primary']};"
-                                    )
-                                elif tipo_linha == "canal":
-                                    base += (
-                                        f" background-color: {COLORS['surface_alt']};"
-                                        " font-weight: 700; border-top: 1px solid rgba(139,149,165,0.35);"
-                                    )
-                                elif tipo_linha == "total":
-                                    # Total Geral: mesma cor das linhas de canal
-                                    # (era um cinza à parte, que destoava), com
-                                    # peso maior e borda grossa em cima para
-                                    # fechar visualmente o bloco.
-                                    base += (
-                                        f" background-color: {COLORS['surface_alt']};"
-                                        " font-weight: 800;"
-                                        f" border-top: 2px solid {COLORS['primary']};"
-                                    )
-                                estilos.iloc[posicao, df_tabela.columns.get_loc(coluna)] = base
-                        return estilos
-
-                    # Largura confortável em todas as colunas de valor -- sem
-                    # isso o Streamlit espreme as colunas quando o mês tem
-                    # muitos dias, e os números ficam ilegíveis.
-                    config_colunas_d = {
-                        coluna: st.column_config.NumberColumn(coluna, width="medium")
-                        for coluna in pivot_d.columns
-                    }
-                    # Altura pelo número real de linhas (cabeçalho + linhas x 35px):
-                    # com valor fixo, sobrava uma faixa vazia embaixo quando a
-                    # tabela tinha menos linhas do que o previsto.
-                    altura_tabela_d = min(35 * (len(pivot_d) + 1) + 3, 760)
-                    tabela_com_somador(
-                        pivot_d, chave="somador_diario",
-                        estilo=pivot_d.style.format(formata_brl).apply(
-                            _estilo_tabela_diaria, axis=None),
-                        altura=altura_tabela_d, ajuda_colunas=config_colunas_d,
+                    tabela_selecionavel(
+                        pivot_d, chave="tabela_diaria",
+                        tipos_linha=[tipo for tipo, _nome in estilo_linhas_d],
+                        linhas_visiveis=LINHAS_VISIVEIS_FLUXO_DIARIO,
+                        rotulo_canto="Canal / Movimento",
                     )
                     st.caption(
                         "Cada coluna é um dia. **SALDO INICIAL** é o que sobrou do dia anterior: nos dias "
