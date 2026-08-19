@@ -4764,50 +4764,40 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     if (e.key === 'Escape') {{ limpar(); atualizar(); }}
   }});
 
-  // ---- abrir e fechar as filhas ----
-  // Ao abrir uma linha a tabela precisa CRESCER, não rolar. O caminho que
-  // funciona é mexer no próprio elemento do quadro: esta página é servida
-  // pelo atributo srcdoc, então ela e a página de fora são a mesma origem e
-  // `window.frameElement` está acessível daqui. A mensagem de pedir altura
-  // (streamlit:setFrameHeight) fica como segunda tentativa -- ela só é
-  // escutada por componentes de verdade, não por um HTML embutido, e foi por
-  // isso que sozinha não resolveu.
+  // ---- altura da caixa ----
+  // Um bloco só, e este comentário existe para que continue sendo um: já
+  // houve duas versões desta conta no mesmo script, cada uma declarando
+  // `const ALTURA_LINHA`. Declarar a mesma constante duas vezes no mesmo
+  // escopo é erro de sintaxe em JavaScript, e erro de sintaxe não quebra só
+  // o trecho errado -- ele impede o script INTEIRO de rodar. Foi assim que a
+  // seleção de células, a soma e as setas pararam todas de uma vez.
   const ALTURA_LINHA = {ALTURA_LINHA_TABELA_PX};
   const ALTURA_CABECALHO = {ALTURA_CABECALHO_TABELA_PX};
   const RESERVA_ROLAGEM = {reserva_rolagem};
   const ALTURA_BARRA = {ALTURA_BARRA_SOMA_PX};
 
-  function avisarAltura() {{
+  function ajustarCaixa() {{
+    // A caixa acompanha o número de linhas VISÍVEIS: abrir uma linha faz o
+    // quadro crescer em vez de criar rolagem por dentro.
     const visiveis = Array.from(document.querySelectorAll('tbody tr'))
       .filter(linha => linha.style.display !== 'none').length;
     const alturaCaixa = ALTURA_CABECALHO + ALTURA_LINHA * visiveis + RESERVA_ROLAGEM + 2;
     const rolagem = document.getElementById('rolagem');
     if (rolagem) rolagem.style.height = alturaCaixa + 'px';
 
+    // O quadro de fora também precisa acompanhar, senão a caixa cresce
+    // dentro de um espaço que continua do mesmo tamanho. As duas tentativas
+    // podem falhar em silêncio -- e aí sobra a rolagem, como antes.
     const alturaTotal = alturaCaixa + ALTURA_BARRA + 10;
     try {{
       if (window.frameElement) window.frameElement.style.height = alturaTotal + 'px';
-    }} catch (erro) {{ /* sem acesso ao quadro: a caixa rola, como antes */ }}
+    }} catch (erro) {{ /* sem acesso ao quadro */ }}
     try {{
       window.parent.postMessage(
         {{ isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: alturaTotal }},
         '*'
       );
     }} catch (erro) {{ /* idem */ }}
-  }}
-
-  const caixa = document.getElementById('rolagem');
-  const ALTURA_LINHA = {ALTURA_LINHA_TABELA_PX};
-
-  function ajustarCaixa() {{
-    // A caixa cresce pelo número de linhas VISÍVEIS. Sem isto, abrir uma
-    // linha criava rolagem vertical dentro do quadro -- e a área pediu
-    // justamente para não ter de rolar para ver o que acabou de abrir.
-    const visiveis = Array.from(document.querySelectorAll('tbody tr'))
-      .filter(linha => linha.style.display !== 'none').length;
-    caixa.style.height = ({ALTURA_CABECALHO_TABELA_PX} + ALTURA_LINHA * visiveis
-                          + {reserva_rolagem} + 2) + 'px';
-    avisarAltura();
   }}
 
   // ---- seta que abre pelo servidor ----
@@ -4847,7 +4837,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       ajustarCaixa();
     }});
   }});
-  avisarAltura();
+  ajustarCaixa();
 }})();
 </script>
 """

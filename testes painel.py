@@ -1799,6 +1799,53 @@ class TesteDiarioConsolidado(unittest.TestCase):
             comandos_abrir={mae: mae in abertas for mae in filhas_de})
         return capturado, ns_local
 
+    def test_javascript_gerado_nao_tem_erro_de_sintaxe(self):
+        """Um erro de sintaxe no JS nao quebra so o trecho errado: impede o
+        script INTEIRO de rodar, e a tabela vira uma imagem -- sem clique,
+        sem soma, sem seta. Foi o que aconteceu quando dois blocos escritos
+        em momentos diferentes declararam `const ALTURA_LINHA` no mesmo
+        escopo. Nenhum teste de Python pegava isso, porque o Python estava
+        certo; o defeito nascia no texto que ele montava."""
+        for descricao, argumentos in [
+            ("tabela simples", dict(tipos_linha=["movimento", "movimento", "total"])),
+            ("com hierarquia", dict(tipos_linha=["movimento", "movimento", "total"],
+                                    pais=[None, 0, None], filhas_abertas=True,
+                                    comandos_abrir={"1.1.Caixa": True})),
+        ]:
+            ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                                 "_rotulo_unico_tabela", "formata_brl",
+                                 "tabela_selecionavel"], [])
+            capturado = {}
+            ns_local["html_embutido"] = dubla_html_embutido(capturado)
+            df = pd.DataFrame([[1.0, -2.0]] * 3,
+                              index=["1.1.Caixa", "HUB", "TOTAL GERAL"],
+                              columns=["18/08", "19/08"])
+            ns_local["tabela_selecionavel"](df, chave="t", **argumentos)
+            js = capturado["codigo"].split("<script>")[1].split("</script>")[0]
+
+            self.assertEqual(js.count("{"), js.count("}"), f"{descricao}: chaves")
+            self.assertEqual(js.count("("), js.count(")"), f"{descricao}: parenteses")
+
+            declaracoes = {}
+            for linha in js.split("\n"):
+                achado = re.match(r"(\s*)(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=", linha)
+                if achado:
+                    chave = (len(achado.group(1)), achado.group(2))
+                    declaracoes[chave] = declaracoes.get(chave, 0) + 1
+            repetidas = [nome for (_nivel, nome), vezes in declaracoes.items() if vezes > 1]
+            self.assertEqual(repetidas, [],
+                             f"{descricao}: declarado mais de uma vez no mesmo escopo "
+                             f"-- isso e erro de sintaxe e mata o script inteiro")
+
+    def test_uma_conta_de_altura_so_no_javascript(self):
+        """Duas versoes da mesma conta no mesmo script foi o que gerou a
+        duplicacao. Uma so, e com nome unico."""
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertEqual(corpo.count("function ajustarCaixa()"), 1)
+        self.assertNotIn("function avisarAltura()", corpo,
+                         "voltou a segunda funcao de altura")
+
     def test_seta_fica_na_propria_linha(self):
         """A escolha do que abrir fica DENTRO da tabela, na setinha da
         linha -- nao num campo separado acima dela."""
