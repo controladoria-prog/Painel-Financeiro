@@ -4399,10 +4399,13 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         # O índice do diário carrega espaços invisíveis para não repetir
         # rótulo; eles não podem aparecer na tela.
         texto_rotulo = str(rotulo).replace("\u200b", "").strip()
+        # A classe do tipo vai no <tr>, não nas células: os seletores do CSS
+        # são ".linha-canal td", ou seja, "td DENTRO de algo com essa classe".
+        # Com a classe na própria célula, nenhuma das regras de destaque
+        # chegava a valer -- as linhas de consolidação ficavam iguais às
+        # outras, que foi o que apareceu na tela.
         classe = f"linha-{tipo}"
-        celulas = [
-            f'<th class="rotulo {classe}">{_html.escape(texto_rotulo)}</th>'
-        ]
+        celulas = [f'<th class="rotulo">{_html.escape(texto_rotulo)}</th>']
         for indice_col, coluna in enumerate(df.columns):
             valor = df.iloc[posicao, indice_col]
             try:
@@ -4410,14 +4413,14 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
             except (TypeError, ValueError):
                 numero = float("nan")
             if numero != numero:  # NaN
-                celulas.append(f'<td class="{classe} vazio">—</td>')
+                celulas.append('<td class="vazio">—</td>')
                 continue
             sinal = "pos" if numero >= 0 else "neg"
             celulas.append(
-                f'<td class="{classe} {sinal}" data-v="{numero:.2f}" '
+                f'<td class="{sinal}" data-v="{numero:.2f}" '
                 f'data-l="{posicao}" data-c="{indice_col}">{formata_brl(numero)}</td>'
             )
-        linhas_html.append(f'<tr>{"".join(celulas)}</tr>')
+        linhas_html.append(f'<tr class="{classe}">{"".join(celulas)}</tr>')
 
     cabecalho = "".join(f'<th class="cabecalho">{_html.escape(c)}</th>' for c in colunas)
     # A folga da barra horizontal só entra quando ela vai existir mesmo. No

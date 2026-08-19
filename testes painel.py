@@ -1528,6 +1528,44 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertEqual(self._fundo_do_seletor(css, ".linha-movimento td"), preto)
         self.assertEqual(self._fundo_do_seletor(css, "th.rotulo"), preto)
 
+    def test_regras_de_destaque_encontram_alvo_no_html(self):
+        """Ler o CSS nao basta: a regra pode estar escrita e nao valer para
+        nada. Foi o que aconteceu -- a classe do tipo estava na CELULA e o
+        seletor procurava "td DENTRO de algo com essa classe", entao nenhuma
+        linha de consolidacao ficava destacada."""
+        from html.parser import HTMLParser
+
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            codigo=codigo)
+        df = pd.DataFrame([[1.0, -2.0]] * 5,
+                          index=["SALDO INICIAL", "HUB", "1.1.Caixa", "1.Banco", "TOTAL GERAL"],
+                          columns=["18/08", "19/08"])
+        ns_local["tabela_selecionavel"](
+            df, chave="t",
+            tipos_linha=["saldo_inicial", "canal", "movimento", "movimento", "total"])
+
+        class Leitor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.linha = None
+                self.pares = []
+
+            def handle_starttag(self, tag, attrs):
+                classes = dict(attrs).get("class", "")
+                if tag == "tr":
+                    self.linha = classes
+                elif tag in ("td", "th") and self.linha is not None:
+                    self.pares.append((self.linha, tag))
+
+        leitor = Leitor()
+        leitor.feed(capturado["codigo"])
+        for classe in ("linha-saldo_inicial", "linha-canal", "linha-total", "linha-movimento"):
+            self.assertIn((classe, "td"), leitor.pares,
+                          f"nenhuma celula dentro de tr.{classe} -- a regra do CSS fica morta")
+            self.assertIn((classe, "th"), leitor.pares, f"rotulo fora de tr.{classe}")
+
     def test_consolidacoes_e_cabecalho_ficam_no_tom_claro(self):
         capturado, ns_local = self._medir(5, 5)
         css = capturado["codigo"].split("<div")[0]
