@@ -71,6 +71,19 @@ CONSTANTES_DE_DEPENDENCIA = {
 }
 
 
+def dubla_html_embutido(capturado):
+    """Dublê de html_embutido com a assinatura COMPLETA da função de
+    verdade. Cada teste tinha o seu, escrito com os argumentos do dia -- e
+    quando a função ganhou `redimensionavel`, catorze testes quebraram de
+    uma vez por um motivo que não era o que eles testavam."""
+
+    def _capturar(codigo, altura=0, largura=None, redimensionavel=False):
+        capturado.update(codigo=codigo, altura=altura, largura=largura,
+                         redimensionavel=redimensionavel)
+
+    return _capturar
+
+
 def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
     """Executa apenas as funcoes e constantes pedidas, num espaco isolado."""
     nomes_funcoes = list(nomes_funcoes)
@@ -1406,8 +1419,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                             ["COLORS", "FONTE_MONO", "ALTURA_LINHA_TABELA_PX",
                              "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX"])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo, altura=altura)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         df = pd.DataFrame([[10.0, -20.0], [30.0, 40.0]],
                           index=["1.1.Caixa", "4 - Contas a Pagar"], columns=["18/08", "19/08"])
         ns_local["tabela_selecionavel"](df, chave="t", tipos_linha=["movimento", "movimento"],
@@ -1426,8 +1438,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                              "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
                              "ALTURA_BARRA_ROLAGEM_PX"])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo, altura=altura)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         # Colunas suficientes para haver rolagem horizontal, que e o caso das
         # tabelas de verdade (14 a 31 dias no diario).
         colunas = [f"C{i}" for i in range(20)]
@@ -1439,8 +1450,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
     def _medir(self, n_linhas, n_colunas):
         ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo, altura=altura)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         df = pd.DataFrame([[1.0] * n_colunas] * n_linhas,
                           index=[f"L{i}" for i in range(n_linhas)],
                           columns=[f"C{i}" for i in range(n_colunas)])
@@ -1531,8 +1541,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
 
         ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         df = pd.DataFrame([[1.0, -2.0]] * 5,
                           index=["SALDO INICIAL", "HUB", "1.1.Caixa", "1.Banco", "TOTAL GERAL"],
                           columns=["18/08", "19/08"])
@@ -1587,8 +1596,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         espaco dela deixava uma faixa vazia embaixo da ultima linha."""
         ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            altura=altura)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
 
         def altura(n_colunas):
             df = pd.DataFrame([[1.0] * n_colunas] * 7,
@@ -1619,8 +1627,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                             ["COLORS", "FONTE_MONO", "ALTURA_LINHA_TABELA_PX",
                              "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX"])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         df = pd.DataFrame([[1.0]], index=["\u200b\u200b    1.1.Caixa"], columns=["18/08"])
         ns_local["tabela_selecionavel"](df, chave="t")
         self.assertNotIn("\u200b", capturado["codigo"])
@@ -1746,8 +1753,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
                              "_rotulo_unico_tabela", "_ordenar_com_filhas",
                              "_pais_reordenados", "formata_brl", "tabela_selecionavel"], [])
         capturado = {}
-        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            codigo=codigo, altura=altura)
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
         ordem = ns_local["_ordenar_com_filhas"](self.INDICES, self.PAIS, self.TIPOS)
         df = pd.DataFrame([[1.0, 2.0]] * len(self.INDICES),
                           index=[ns_local["_rotulo_unico_tabela"](self.INDICES[p], p)
@@ -1775,6 +1781,74 @@ class TesteDiarioConsolidado(unittest.TestCase):
                     + ns_local["ALTURA_LINHA_TABELA_PX"] * maes
                     + ns_local["ALTURA_BARRA_SOMA_PX"] + 10 + 2)
         self.assertEqual(capturado["altura"], esperado)
+
+    def test_tabela_cresce_ao_abrir_uma_linha(self):
+        """A altura do quadro é definida na hora de desenhar. Se a expansão
+        fosse só um clique de JavaScript, abrir uma linha empurraria o
+        conteudo para dentro da rolagem -- o oposto do pedido. Com as filhas
+        ja abertas, cada uma acrescenta uma linha de altura."""
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "_ordenar_com_filhas",
+                             "_pais_reordenados", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        maes = ["1.1.Caixa", "4 - Contas a Pagar", "TOTAL GERAL"]
+        filhas = {"1.1.Caixa": ["HUB", "LOJA", "VD"]}
+
+        def altura(abertas):
+            indices, tipos, pais = [], [], []
+            for mae in maes:
+                posicao = len(indices)
+                indices.append(mae)
+                tipos.append("total" if mae == "TOTAL GERAL" else "movimento")
+                pais.append(None)
+                if mae in abertas:
+                    for filha in filhas.get(mae, []):
+                        indices.append(filha)
+                        tipos.append("movimento")
+                        pais.append(posicao)
+            ordem = ns_local["_ordenar_com_filhas"](indices, pais, tipos)
+            df = pd.DataFrame([[1.0] * 31] * len(indices),
+                              index=[ns_local["_rotulo_unico_tabela"](indices[p], p)
+                                     for p in ordem],
+                              columns=[f"D{i}" for i in range(31)])
+            ns_local["tabela_selecionavel"](
+                df, chave="t", tipos_linha=[tipos[p] for p in ordem],
+                pais=ns_local["_pais_reordenados"](pais, ordem), filhas_abertas=True)
+            return capturado["altura"]
+
+        fechado = altura(set())
+        aberto = altura({"1.1.Caixa"})
+        self.assertEqual(aberto - fechado, ns_local["ALTURA_LINHA_TABELA_PX"] * 3,
+                         "abrir uma linha com 3 filhas tem de crescer 3 linhas")
+        self.assertNotIn('style="display:none"', capturado["codigo"],
+                         "filha marcada para abrir nao pode nascer escondida")
+        self.assertFalse(capturado["redimensionavel"],
+                         "com a altura ja pronta, nao precisa pedir para o quadro crescer")
+
+    def test_o_que_abre_e_escolhido_no_streamlit(self):
+        """Trava estrutural: se a escolha voltar a ser so do JavaScript, a
+        altura para de acompanhar e a rolagem volta."""
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn('key="abertas_diario_consolidado"', trecho)
+        self.assertIn("movimento in abertas_dc", trecho)
+        self.assertIn("filhas_abertas=True", trecho)
+
+    def test_periodo_por_datas_nas_duas_abas_diarias(self):
+        """As duas abas diarias usam o mesmo seletor de duas datas, que pode
+        atravessar meses -- julho e agosto na mesma tela."""
+        self.assertIn("def seletor_periodo_dias(", FONTE)
+        for ancora in ("with tab_fin_diario:", "with tab_fin_consolidado:"):
+            i = FONTE.index(ancora)
+            trecho = FONTE[i:i + 3000]
+            self.assertIn("seletor_periodo_dias(", trecho, ancora)
+        i = FONTE.index("def seletor_periodo_dias(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("min_value=limite_ini", corpo)
+        self.assertIn("data_ini, data_fim = data_fim, data_ini", corpo,
+                      "datas invertidas tem de ser ordenadas, nao virar erro")
 
     def test_aba_existe_com_as_duas_formas_de_abrir(self):
         self.assertIn("📆 Diário Consolidado", FONTE)
