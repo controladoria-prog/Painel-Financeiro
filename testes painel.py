@@ -1350,6 +1350,67 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertIn("df = df[df[COL_FIN_MOVIMENTO] != MOV_RECEBER_META]", trecho)
         self.assertIn("montar_linhas_de_meta(df.columns)", FONTE)
 
+    def test_somador_nao_passa_altura_nula(self):
+        """`height=None` nao e o mesmo que nao passar height: o Streamlit
+        valida o valor e recusa None -- foi o que derrubou o painel em
+        18/08/2026. O fake abaixo reproduz essa validacao."""
+        ns_local = carregar(["formata_brl", "cor_valor", "tabela_com_somador"],
+                            ["COLORS", "FONTE_MONO"])
+
+        chamadas = []
+
+        class StreamlitRigoroso:
+            def __init__(self, com_selecao):
+                self.com_selecao = com_selecao
+
+            def dataframe(self, conteudo, **kw):
+                if "height" in kw and kw["height"] is None:
+                    raise ValueError("StreamlitInvalidHeightError")
+                if not self.com_selecao and ("on_select" in kw or "selection_mode" in kw):
+                    raise TypeError("on_select nao existe nesta versao")
+                chamadas.append(sorted(kw))
+                return type("Evento", (), {"selection": {"rows": [], "columns": []}})()
+
+            markdown = staticmethod(lambda *a, **k: None)
+
+        df = pd.DataFrame({"Janeiro": [100.0, 250.0]}, index=["Banco", "A pagar"])
+        for com_selecao in (True, False):
+            ns_local["st"] = StreamlitRigoroso(com_selecao)
+            chamadas.clear()
+            ns_local["tabela_com_somador"](df, chave="k1")
+            ns_local["tabela_com_somador"](df, chave="k2", altura=300)
+            self.assertNotIn("height", chamadas[0], "passou height sem ter altura")
+            self.assertIn("height", chamadas[1], "perdeu a altura quando ela existe")
+
+    def test_somador_nao_engole_erro_de_verdade(self):
+        """O fallback e so para versao antiga do Streamlit (TypeError). Um
+        except generico esconde o erro real e faz a tela quebrar num ponto
+        que nao e a causa -- foi exatamente o que atrasou o diagnostico."""
+        i = FONTE.index("def tabela_com_somador(")
+        trecho = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("except TypeError:", trecho)
+        self.assertNotIn("except Exception:", trecho)
+
+    def test_somador_soma_o_cruzamento_selecionado(self):
+        ns_local = carregar(["formata_brl", "cor_valor", "tabela_com_somador"],
+                            ["COLORS", "FONTE_MONO"])
+        textos = []
+
+        class StreamlitComSelecao:
+            @staticmethod
+            def dataframe(conteudo, **kw):
+                return type("Evento", (), {"selection": {"rows": [0, 1], "columns": ["Janeiro"]}})()
+
+            markdown = staticmethod(lambda html, **k: textos.append(html))
+
+        ns_local["st"] = StreamlitComSelecao()
+        df = pd.DataFrame({"Janeiro": [100.0, 250.0, 40.0], "Fevereiro": [80.0, 90.0, 10.0]},
+                          index=["Banco", "A receber", "A pagar"])
+        ns_local["tabela_com_somador"](df, chave="k")
+        self.assertTrue(textos, "nao mostrou a soma da selecao")
+        self.assertIn("350,00", textos[0])
+        self.assertIn("2 célula(s)", textos[0])
+
     def test_somador_de_selecao_nas_duas_tabelas(self):
         self.assertIn("def tabela_com_somador(", FONTE)
         self.assertIn('chave="somador_mensal"', FONTE)

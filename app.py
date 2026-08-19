@@ -4233,22 +4233,27 @@ def tabela_com_somador(df, chave, estilo=None, altura=None, ajuda_colunas=None):
     Serve para a pergunta do dia a dia: "quanto dá o contas a pagar dos três
     canais nesta semana?", que antes só saía somando na mão ou exportando.
     """
+    # `height=None` NÃO é o mesmo que não passar height: o Streamlit valida o
+    # valor e recusa None. Por isso os opcionais só entram no dicionário
+    # quando existem de verdade.
+    argumentos = {"width": "stretch"}
+    if altura is not None:
+        argumentos["height"] = altura
+    if ajuda_colunas:
+        argumentos["column_config"] = ajuda_colunas
+    conteudo = estilo if estilo is not None else df
+
     try:
         evento = st.dataframe(
-            estilo if estilo is not None else df,
-            width="stretch",
-            height=altura,
-            column_config=ajuda_colunas,
-            key=chave,
-            on_select="rerun",
-            selection_mode=["multi-row", "multi-column"],
+            conteudo, key=chave, on_select="rerun",
+            selection_mode=["multi-row", "multi-column"], **argumentos
         )
-    except Exception:
-        # Streamlit mais antigo: sem seleção, mas a tabela continua na tela.
-        st.dataframe(
-            estilo if estilo is not None else df,
-            width="stretch", height=altura, column_config=ajuda_colunas,
-        )
+    except TypeError:
+        # Só TypeError: é o erro de quem está numa versão do Streamlit sem
+        # seleção em tabela. Qualquer outro erro tem de aparecer -- engolir
+        # tudo aqui foi o que escondeu um `height` inválido e fez a tela
+        # quebrar duas linhas adiante, num ponto que não era a causa.
+        st.dataframe(conteudo, **argumentos)
         return
 
     selecao = getattr(evento, "selection", None) or {}
