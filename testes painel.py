@@ -66,7 +66,8 @@ CONSTANTES_DE_DEPENDENCIA = {
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
                             "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
                             "FUNDO_TABELA_FLUXO", "PARAM_LINHAS_ABERTAS",
-                            "SEPARADOR_LINHAS_ABERTAS"],
+                            "SEPARADOR_LINHAS_ABERTAS", "PREFIXO_BOTAO_ABRIR"],
+    "botoes_de_abrir": ["PREFIXO_BOTAO_ABRIR"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "linhas_abertas_da_url": ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
@@ -1796,7 +1797,8 @@ class TesteDiarioConsolidado(unittest.TestCase):
         ns_local["tabela_selecionavel"](
             df, chave="t", tipos_linha=[tipos[p] for p in ordem],
             pais=ns_local["_pais_reordenados"](pais, ordem), filhas_abertas=True,
-            comandos_abrir={mae: mae in abertas for mae in filhas_de})
+            comandos_abrir={mae: (mae in abertas, i)
+                            for i, mae in enumerate(filhas_de)})
         return capturado, ns_local
 
     def test_javascript_gerado_nao_tem_erro_de_sintaxe(self):
@@ -1810,7 +1812,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
             ("tabela simples", dict(tipos_linha=["movimento", "movimento", "total"])),
             ("com hierarquia", dict(tipos_linha=["movimento", "movimento", "total"],
                                     pais=[None, 0, None], filhas_abertas=True,
-                                    comandos_abrir={"1.1.Caixa": True})),
+                                    comandos_abrir={"1.1.Caixa": (True, 0)})),
         ]:
             ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
                                  "_rotulo_unico_tabela", "formata_brl",
@@ -1870,8 +1872,8 @@ class TesteDiarioConsolidado(unittest.TestCase):
                          "abrir uma linha com 2 filhas tem de crescer 2 linhas")
         self.assertNotIn('style="display:none"', aberto["codigo"],
                          "filha de linha aberta nao pode nascer escondida")
-        self.assertIn("janela.location.href = url.toString()", aberto["codigo"],
-                      "o clique precisa navegar a pagina")
+        self.assertIn("alvo.click()", aberto["codigo"],
+                      "o clique precisa acionar o botao da pagina")
 
     def test_seta_da_linha_aberta_vem_girada(self):
         aberto, _ = self._montar({"4 - Contas a Pagar"})
@@ -1888,6 +1890,57 @@ class TesteDiarioConsolidado(unittest.TestCase):
                 "3 - Contas a Receber~Crédito à Vista, parcelado"}})()
         self.assertEqual(ns_local["linhas_abertas_da_url"](),
                          ["3 - Contas a Receber", "Crédito à Vista, parcelado"])
+
+    def test_seta_aciona_um_botao_da_pagina(self):
+        """O quadro da tabela NAO pode trocar o endereco da pagina -- o
+        navegador recusa a navegacao sem avisar, e foi por isso que a seta
+        ficou muda mesmo com o resto do script funcionando. O que ele pode e
+        apertar um botao que ja existe na pagina, porque as duas sao da
+        mesma origem."""
+        ns_local = carregar(["botoes_de_abrir"], ["PREFIXO_BOTAO_ABRIR"])
+        estado, estilos = {}, []
+
+        class FakeST:
+            session_state = estado
+            clicado = None
+
+            def markdown(self, html, **kw):
+                estilos.append(html)
+
+            def button(self, rotulo, key=None, **kw):
+                return key == FakeST.clicado
+
+        ns_local["st"] = FakeST()
+        linhas = ["1.1.Caixa", "4 - Contas a Pagar"]
+
+        comandos = ns_local["botoes_de_abrir"](linhas, "dc")
+        self.assertEqual(comandos, {"1.1.Caixa": (False, 0), "4 - Contas a Pagar": (False, 1)})
+        self.assertIn("left:-9999px", estilos[0], "o botao tem de ficar fora da tela")
+
+        FakeST.clicado = "dcabrir_0"
+        comandos = ns_local["botoes_de_abrir"](linhas, "dc")
+        self.assertTrue(comandos["1.1.Caixa"][0], "o clique tinha de abrir a linha")
+        comandos = ns_local["botoes_de_abrir"](linhas, "dc")
+        self.assertFalse(comandos["1.1.Caixa"][0], "clicar de novo tinha de fechar")
+
+    def test_js_procura_o_botao_e_tem_plano_b(self):
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("{PREFIXO_BOTAO_ABRIR}' + indice + ' button'", corpo,
+                      "o JS precisa achar o botao pela classe da chave")
+        self.assertIn("innerText.trim() ===", corpo,
+                      "sem a classe por chave, o plano B e achar pelo texto")
+        self.assertIn("alvo.click()", corpo)
+
+    def test_botao_e_desenhado_antes_da_tabela(self):
+        """O Streamlit conta o clique no ponto em que o botao aparece: se ele
+        vier depois, a tabela e montada com o estado velho e o clique so faz
+        efeito na proxima interacao."""
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        posicao_botoes = trecho.index("botoes_de_abrir(")
+        posicao_tabela = trecho.index("tabela_selecionavel(")
+        self.assertLess(posicao_botoes, posicao_tabela)
 
     def test_periodo_sobrevive_ao_clique_na_seta(self):
         """Abrir uma linha recarrega a pagina, e recarregar apaga o que
@@ -1907,7 +1960,6 @@ class TesteDiarioConsolidado(unittest.TestCase):
         i = FONTE.index("with tab_fin_consolidado:")
         trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
         self.assertIn('guardar_periodo_na_url("dc", data_ini_dc, data_fim_dc)', trecho)
-        self.assertIn("abertas_dc = linhas_abertas_da_url()", trecho)
         # Sem esta condicao, TODAS as linhas abririam sempre -- a tabela
         # nasceria com 60 linhas e o clique na seta nao faria diferenca.
         self.assertIn("if movimento in abertas_dc and coluna_abertura in recorte.columns:",

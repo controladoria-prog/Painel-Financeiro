@@ -4488,6 +4488,38 @@ PARAM_LINHAS_ABERTAS = "abrir"
 # Separador da lista na URL. Vírgula não serve: nome de linha tem vírgula
 # ("Crédito à Vista, parcelado"), e o til não aparece em nenhum deles.
 SEPARADOR_LINHAS_ABERTAS = "~"
+# Começo da chave dos botões escondidos que a seta aciona. O Streamlit
+# transforma a chave de um elemento numa classe CSS ("st-key-<chave>"), e é
+# por ela que o código de dentro da tabela encontra o botão na página.
+PREFIXO_BOTAO_ABRIR = "st-key-dcabrir_"
+
+
+def botoes_de_abrir(linhas, chave_estado):
+    """Desenha, fora da tela, um botão por linha que pode ser aberta e
+    devolve {linha: (está aberta, índice do botão)}.
+
+    Por que botões escondidos em vez de um link: a tabela é desenhada dentro
+    de um quadro isolado, e esse quadro não pode trocar o endereço da página
+    -- o navegador recusa a navegação sem avisar. Tocar num botão que já
+    existe na página, isso ele pode, porque as duas são da mesma origem.
+    O botão precisa ser desenhado ANTES da tabela: é no ponto em que ele
+    aparece que o Streamlit conta o clique, e a tabela tem de ser montada já
+    sabendo o que está aberto."""
+    abertas = st.session_state.setdefault(chave_estado, [])
+    st.markdown(
+        f"<style>div[class*='{PREFIXO_BOTAO_ABRIR}']"
+        "{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}</style>",
+        unsafe_allow_html=True,
+    )
+    comandos = {}
+    for indice, linha in enumerate(linhas):
+        if st.button(f"{PREFIXO_BOTAO_ABRIR}{indice}", key=f"dcabrir_{indice}"):
+            if linha in abertas:
+                abertas.remove(linha)
+            else:
+                abertas.append(linha)
+        comandos[linha] = (linha in abertas, indice)
+    return comandos
 
 
 def linhas_abertas_da_url():
@@ -4593,11 +4625,15 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
             atributos_linha += f' data-pai="{pais[posicao]}" style="display:none"'
         rotulo_cru = str(rotulo).replace("\u200b", "").strip()
         if comandos_abrir is not None and rotulo_cru in comandos_abrir:
-            # Comando de abrir/fechar: recarrega a página com a linha marcada
-            # (ou desmarcada) na URL.
-            aberta = comandos_abrir[rotulo_cru]
+            # Comando de abrir/fechar. Ele aciona um BOTÃO de verdade da
+            # página, escondido fora da tela: o quadro onde a tabela vive não
+            # tem permissão para trocar o endereço da página (o navegador
+            # bloqueia em silêncio), mas TEM permissão para tocar no
+            # documento de fora, porque os dois são da mesma origem.
+            aberta, indice_botao = comandos_abrir[rotulo_cru]
             seta = (
                 f'<span class="seta comando{" aberta" if aberta else ""}" '
+                f'data-botao="{indice_botao}" '
                 f'data-linha="{_html.escape(rotulo_cru, quote=True)}" '
                 f'title="{"Fechar" if aberta else "Abrir"} o detalhe">▸</span>'
             )
@@ -4801,27 +4837,50 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   }}
 
   // ---- seta que abre pelo servidor ----
-  // Navega a PÁGINA (não só o quadro) com a linha marcada na URL. É o que
-  // permite a tabela voltar mais alta: a altura do quadro é decidida ao
-  // desenhar, e um pedido de crescer vindo daqui de dentro é ignorado.
+  // A tabela mora num quadro isolado, e esse quadro NÃO pode trocar o
+  // endereço da página -- o navegador recusa a navegação sem dizer nada, e
+  // foi por isso que a seta ficou muda. O que ele pode fazer, porque as duas
+  // são da mesma origem, é apertar um botão que já está na página. O botão
+  // existe de verdade, só que posicionado fora da tela; apertá-lo faz o
+  // Streamlit redesenhar a tabela com a linha aberta -- e mais alta.
   document.querySelectorAll('.seta.comando').forEach(seta => {{
     seta.addEventListener('click', evento => {{
       evento.stopPropagation();
+      const indice = seta.dataset.botao;
+      let alvo = null;
       try {{
-        const janela = window.top || window.parent;
-        const url = new URL(janela.location.href);
-        const atuais = (url.searchParams.get('{PARAM_LINHAS_ABERTAS}') || '')
-          .split('{SEPARADOR_LINHAS_ABERTAS}').filter(Boolean);
-        const linha = seta.dataset.linha;
-        const posicao = atuais.indexOf(linha);
-        if (posicao >= 0) {{ atuais.splice(posicao, 1); }} else {{ atuais.push(linha); }}
-        if (atuais.length) {{
-          url.searchParams.set('{PARAM_LINHAS_ABERTAS}', atuais.join('{SEPARADOR_LINHAS_ABERTAS}'));
-        }} else {{
-          url.searchParams.delete('{PARAM_LINHAS_ABERTAS}');
+        const fora = (window.parent || window.top).document;
+        alvo = fora.querySelector('.{PREFIXO_BOTAO_ABRIR}' + indice + ' button');
+        if (!alvo) {{
+          // Versão do Streamlit sem a classe por chave: procura pelo texto,
+          // que é único e invisível na tela.
+          alvo = Array.from(fora.querySelectorAll('button')).find(
+            b => b.innerText.trim() === '{PREFIXO_BOTAO_ABRIR}' + indice
+          );
         }}
-        janela.location.href = url.toString();
-      }} catch (erro) {{ /* sem acesso à página: a seta apenas não responde */ }}
+      }} catch (erro) {{ /* sem acesso à página de fora */ }}
+      if (alvo) {{
+        alvo.click();
+      }} else {{
+        // Último recurso: tenta o endereço. Onde a navegação for permitida,
+        // funciona; onde não for, a seta apenas não responde.
+        try {{
+          const janela = window.top || window.parent;
+          const url = new URL(janela.location.href);
+          const atuais = (url.searchParams.get('{PARAM_LINHAS_ABERTAS}') || '')
+            .split('{SEPARADOR_LINHAS_ABERTAS}').filter(Boolean);
+          const linha = seta.dataset.linha;
+          const posicao = atuais.indexOf(linha);
+          if (posicao >= 0) {{ atuais.splice(posicao, 1); }} else {{ atuais.push(linha); }}
+          if (atuais.length) {{
+            url.searchParams.set('{PARAM_LINHAS_ABERTAS}',
+                                 atuais.join('{SEPARADOR_LINHAS_ABERTAS}'));
+          }} else {{
+            url.searchParams.delete('{PARAM_LINHAS_ABERTAS}');
+          }}
+          janela.location.href = url.toString();
+        }} catch (erro) {{ /* nada a fazer */ }}
+      }}
     }});
   }});
 
@@ -6593,7 +6652,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # lá. O caminho passa pelo servidor de propósito -- a altura
                 # do quadro é decidida ao desenhar, então só redesenhando a
                 # tabela ela cresce, em vez de ganhar rolagem.
-                abertas_dc = linhas_abertas_da_url()
+                # Um botão escondido por linha que pode abrir. Precisa vir
+                # ANTES de montar as linhas: é aqui que o clique é contado, e
+                # a tabela tem de nascer já sabendo o que está aberto.
+                abriveis_dc = list(movimentos_dc)
+                if not df_dc_metas.empty:
+                    abriveis_dc.append(MOV_RECEBER_META)
+                comandos_dc = botoes_de_abrir(abriveis_dc, "dc_linhas_abertas")
+                abertas_dc = [linha for linha, (aberta, _i) in comandos_dc.items() if aberta]
                 for movimento in movimentos_dc:
                     recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO].astype(str) == movimento]
                     posicao_mae = len(linhas_dc)
@@ -6666,23 +6732,19 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_dc.columns = [rotulos_dias_dc[d] for d in dias_dc]
                 ordem_dc = _ordenar_com_filhas(indices_dc, pais_dc, tipos_dc)
                 pivot_dc = pivot_dc.iloc[ordem_dc]
-                abriveis_dc = list(movimentos_dc)
-                if not df_dc_metas.empty:
-                    abriveis_dc.append(MOV_RECEBER_META)
                 tabela_selecionavel(
                     pivot_dc, chave="tabela_diario_consolidado",
                     tipos_linha=[tipos_dc[i] for i in ordem_dc],
                     pais=_pais_reordenados(pais_dc, ordem_dc),
                     filhas_abertas=True,
-                    comandos_abrir={linha: linha in abertas_dc for linha in abriveis_dc},
+                    comandos_abrir=comandos_dc,
                     rotulo_canto="Movimento",
                 )
                 st.caption(
                     f"A empresa inteira, dia a dia ({rotulo_periodo_dc}): as mesmas linhas do "
                     "Fluxo Mensal, com os dias nas colunas e sem separar por canal. Clique no "
                     "**▸** da linha para abrir o detalhe — a tabela cresce junto, sem rolagem. "
-                    "Abrir e fechar recarrega a página, e é isso que permite o quadro mudar de "
-                    "tamanho; o período escolhido é preservado. Contas a receber abre por "
+                    "Contas a receber abre por "
                     "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
                     "conforme a escolha acima. **2 - Contas a Receber Meta** mostra quanto ainda "
                     "falta no dia e não entra no TOTAL GERAL."
