@@ -4373,7 +4373,7 @@ def _avaliar_alertas_fluxo(
     return alertas
 
 
-def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia):
+def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=None):
     """A meta do dia, já descontando o que foi recebido -- e ZERADA a partir
     do dia em que a meta do MÊS foi batida.
 
@@ -4387,6 +4387,13 @@ def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia):
     dia em que esse acumulado alcança a meta do mês. Desse dia em diante a
     linha zera. Antes dele, continua valendo o rateio do dia menos o que
     entrou naquele dia.
+
+    As séries de entrada têm de cobrir o MÊS INTEIRO, não só o recorte que
+    está na tela. É este o ponto que faz a conta fechar: com o período
+    começando no dia 18, olhar só o recorte esconde tudo que entrou do dia 1
+    ao 17 -- e a meta reaparece nos dias seguintes como se nada tivesse sido
+    recebido. `dias_visiveis` corta o resultado no fim, depois de a conta já
+    ter sido feita com o mês completo.
 
     Recebe e devolve séries indexadas por dia (Timestamp). Os valores são
     tratados em módulo -- sinal aqui não tem significado."""
@@ -4408,6 +4415,9 @@ def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia):
         # mês a meta já foi alcançada.
         virada = batidos.index[0]
         resultado.loc[[i for i in indices if i >= virada]] = 0.0
+
+    if dias_visiveis is not None:
+        resultado = resultado.reindex(dias_visiveis, fill_value=0.0)
     return resultado
 
 
@@ -6447,20 +6457,25 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]))
                         for movimento in df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
                     ]
-                    if not df_metas_d.empty:
-                        df_meta_canal = df_metas_d[
-                            df_metas_d[COL_FIN_CANAL].astype(str) == canal
+                    if not df_d_metas.empty:
+                        # Mês INTEIRO, não o recorte da tela: senão o que
+                        # entrou antes do primeiro dia visível some da conta
+                        # e a meta reaparece nos dias seguintes como se nada
+                        # tivesse sido recebido.
+                        df_meta_canal = df_d_metas[
+                            df_d_metas[COL_FIN_CANAL].astype(str) == canal
                         ]
                         if not df_meta_canal.empty:
-                            serie_meta = _agrega_por_dia(df_meta_canal).abs()
-                            realizado_canal = df_canal[
-                                df_canal[COL_FIN_MOVIMENTO].astype(str).isin(
+                            serie_meta = _agrega_no_mes_cheio(df_meta_canal).abs()
+                            realizado_canal = df_d_completo[
+                                (df_d_completo[COL_FIN_CANAL].astype(str) == canal)
+                                & df_d_completo[COL_FIN_MOVIMENTO].astype(str).isin(
                                     [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
                                 )
                             ]
-                            serie_realizado = _agrega_por_dia(realizado_canal).abs()
+                            serie_realizado = _agrega_no_mes_cheio(realizado_canal).abs()
                             falta_meta_canal = meta_diaria_que_ainda_falta(
-                                serie_meta, serie_realizado)
+                                serie_meta, serie_realizado, dias_ordenados_d)
                             # Zerada no intervalo inteiro, a linha não
                             # acrescenta nada: some. Volta sozinha se o
                             # período incluir um mês em que ainda falta.
@@ -6803,13 +6818,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # Meta: quanto ainda falta receber em cada dia.
                 serie_falta_dc = None
                 if not df_dc_metas.empty:
-                    serie_meta = _serie_por_dia(df_dc_metas).abs()
-                    realizado_receber = df_dc_real[
-                        df_dc_real[COL_FIN_MOVIMENTO].astype(str).isin(
+                    # Mês INTEIRO, não o recorte: com o período começando no
+                    # dia 18, olhar só a tela esconde tudo que entrou do dia
+                    # 1 ao 17 e a meta reaparece nos dias seguintes.
+                    _meses_dc = {pd.Timestamp(d).to_period("M") for d in dias_dc}
+                    _do_mes_cheio = df_fin[
+                        df_fin["Data Efetiva"].dt.to_period("M").isin(_meses_dc)
+                    ]
+
+                    def _por_dia_mes_cheio(recorte):
+                        if recorte.empty:
+                            return pd.Series(dtype="float64")
+                        return recorte.groupby(
+                            recorte["Data Efetiva"].dt.normalize()
+                        )[COL_FIN_VALOR].sum()
+
+                    serie_meta = _por_dia_mes_cheio(
+                        _do_mes_cheio[_do_mes_cheio["Tipo Movimento"] == "meta"]).abs()
+                    realizado_receber = _do_mes_cheio[
+                        _do_mes_cheio[COL_FIN_MOVIMENTO].astype(str).isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
                     ]
                     falta = meta_diaria_que_ainda_falta(
-                        serie_meta, _serie_por_dia(realizado_receber))
+                        serie_meta, _por_dia_mes_cheio(realizado_receber), dias_dc)
                     # Zerada no intervalo inteiro, a linha não acrescenta
                     # nada: some. Volta sozinha se o período alcançar um mês
                     # em que ainda falta receber.

@@ -1698,6 +1698,58 @@ class TesteNomesEVirada(unittest.TestCase):
         self.assertEqual(list(falta.iloc[3:10]), [0.0] * 7, "agosto tinha de estar zerado")
         self.assertTrue((falta.iloc[10:] > 0).all(), "setembro ainda tem meta a cobrar")
 
+    def test_conta_da_meta_usa_o_mes_inteiro_e_nao_o_recorte(self):
+        """Com o periodo comecando no dia 18, olhar so o recorte esconde tudo
+        que entrou do dia 1 ao 17 -- e a meta reaparece nos dias seguintes
+        como se nada tivesse sido recebido. A conta e do mes; o recorte so
+        decide o que aparece na tela."""
+        ns = carregar(["meta_diaria_que_ainda_falta"])
+        dias_mes = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        meta = pd.Series([100.0] * 31, index=dias_mes)          # meta do mes: 3.100
+        real = pd.Series(0.0, index=dias_mes)
+        for dia, valor in [("2026-08-05", 1200.0), ("2026-08-10", 1200.0),
+                           ("2026-08-15", 1100.0)]:             # 3.500 no total
+            real[pd.Timestamp(dia)] = valor
+        visiveis = pd.date_range("2026-08-18", "2026-08-31", freq="D")
+
+        so_o_recorte = ns["meta_diaria_que_ainda_falta"](meta[visiveis], real[visiveis])
+        self.assertTrue((so_o_recorte > 0).all(),
+                        "o cenario do teste precisa mesmo falhar sem o mes inteiro")
+
+        com_o_mes = ns["meta_diaria_que_ainda_falta"](meta, real, visiveis)
+        self.assertEqual(list(com_o_mes.index), list(visiveis), "devolveu dias fora da tela")
+        self.assertFalse(com_o_mes.any(),
+                         "a meta do mes ja foi superada: nenhum dia pode cobrar")
+
+    def test_mes_seguinte_ainda_cobra_no_mesmo_recorte(self):
+        """Olhando 18/08 a 30/09: agosto (batido) zerado e setembro cobrando,
+        na mesma tabela."""
+        ns = carregar(["meta_diaria_que_ainda_falta"])
+        dias_ago = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        dias_set = pd.date_range("2026-09-01", "2026-09-30", freq="D")
+        meta = pd.concat([pd.Series([100.0] * 31, index=dias_ago),
+                          pd.Series([200.0] * 30, index=dias_set)])
+        real = pd.Series(0.0, index=list(dias_ago) + list(dias_set))
+        real[pd.Timestamp("2026-08-05")] = 3500.0
+        visiveis = pd.date_range("2026-08-18", "2026-09-30", freq="D")
+        falta = ns["meta_diaria_que_ainda_falta"](meta, real, visiveis)
+        self.assertFalse(falta[:pd.Timestamp("2026-08-31")].any(), "agosto tinha de zerar")
+        self.assertTrue((falta[pd.Timestamp("2026-09-01"):] > 0).all(),
+                        "setembro ainda tem meta a cobrar")
+
+    def test_as_duas_telas_montam_a_meta_com_o_mes_cheio(self):
+        """Trava estrutural: se qualquer uma voltar a somar so o recorte, o
+        numero volta a discordar do mensal."""
+        i = FONTE.index("with tab_fin_diario:")
+        diario = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
+        self.assertIn("_agrega_no_mes_cheio(df_meta_canal)", diario)
+        self.assertIn("serie_meta, serie_realizado, dias_ordenados_d", diario)
+        j = FONTE.index("with tab_fin_consolidado:")
+        consolidado = FONTE[j:FONTE.index("# ---------------- TESOURARIA", j)]
+        self.assertIn("_por_dia_mes_cheio(", consolidado)
+        self.assertIn("_por_dia_mes_cheio(realizado_receber), dias_dc)", consolidado,
+                      "o consolidado precisa cortar o resultado nos dias da tela")
+
     def test_linha_da_meta_some_quando_zerada_no_intervalo(self):
         """Se no recorte visivel a meta ja foi batida em todos os dias, a
         linha nao acrescenta nada -- e some. Volta se o periodo alcancar um
