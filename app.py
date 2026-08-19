@@ -4421,7 +4421,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                        if len(df.columns) > COLUNAS_SEM_ROLAGEM_HORIZONTAL else 0)
     altura_rolagem = (ALTURA_CABECALHO_TABELA_PX
                       + ALTURA_LINHA_TABELA_PX * linhas_visiveis
-                      + reserva_rolagem)
+                      + reserva_rolagem
+                      + 2)  # as bordas de cima e de baixo da própria caixa
     altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 10
 
     codigo = f"""
@@ -4429,9 +4430,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:transparent;
          font-family:{FONTE_PADRAO_TABELA}; }}
+  /* Sem fundo próprio: o que aparece é a cor da página, e só as linhas de
+     consolidação recebem preenchimento. Pintar a caixa inteira era o que
+     deixava a tabela com aquele tom azulado por baixo de tudo. */
   .rolagem {{ height:{altura_rolagem}px; overflow:auto;
               border:1px solid {COLORS['border']}; border-radius:10px;
-              background:{COLORS['bg']}; }}
+              background:transparent; }}
   /* Fonte e cores iguais às demais tabelas do painel: a de valores NÃO é
      monoespaçada, senão esta tabela destoa de todas as outras da tela. */
   table {{ border-collapse:separate; border-spacing:0; width:100%;
@@ -4441,12 +4445,19 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
             border-right:1px solid {COLORS['border_soft']}; }}
   td {{ text-align:right; cursor:pointer; user-select:none;
         font-variant-numeric:tabular-nums; }}
+  /* A altura do cabeçalho PRECISA ser a mesma usada no cálculo da altura do
+     iframe. Enquanto ele herdava os 34px das linhas e a conta somava 40,
+     sobrava um filete vazio embaixo da última linha. */
+  th.cabecalho, th.canto {{ height:{ALTURA_CABECALHO_TABELA_PX}px; }}
   th.cabecalho {{ position:sticky; top:0; z-index:3; text-align:right;
                   background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
                   font-size:12.5px; font-weight:400; }}
   /* Linha comum fica no fundo escuro da página; só as de consolidação
      (saldo inicial, canais e total) ganham o tom mais claro. É o que faz o
      olho achar os totais sem precisar ler a tabela toda. */
+  /* A coluna de rótulo é a única que precisa ser opaca mesmo numa linha
+     comum: ela fica fixa na rolagem horizontal, e transparente deixaria os
+     valores passarem por baixo do texto. */
   th.rotulo {{ position:sticky; left:0; z-index:2; text-align:left;
                background:{COLORS['bg']}; font-weight:400;
                color:{COLORS['text']};
@@ -4464,7 +4475,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         font-weight:800; border-top:2px solid {COLORS['primary']}; }}
   .linha-saldo_inicial td, .linha-saldo_inicial th.rotulo {{
         background:{COLORS['surface_alt']}; font-weight:700; }}
-  .linha-movimento td, .linha-movimento th.rotulo {{ background:{COLORS['bg']}; }}
+  .linha-movimento td {{ background:transparent; }}
+  .linha-movimento th.rotulo {{ background:{COLORS['bg']}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;

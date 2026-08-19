@@ -1441,6 +1441,17 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         ns_local["tabela_selecionavel"](df, chave="t")
         return capturado, ns_local
 
+    def _medir(self, n_linhas, n_colunas):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
+            codigo=codigo, altura=altura)
+        df = pd.DataFrame([[1.0] * n_colunas] * n_linhas,
+                          index=[f"L{i}" for i in range(n_linhas)],
+                          columns=[f"C{i}" for i in range(n_colunas)])
+        ns_local["tabela_selecionavel"](df, chave="t")
+        return capturado, ns_local
+
     def test_altura_cabe_a_tabela_inteira_sem_rolagem(self):
         """A barra de rolagem HORIZONTAL fica dentro da area que rola e come
         altura: sem reservar esse espaco sobra sempre um filete de rolagem
@@ -1449,7 +1460,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
             capturado, ns_local = self._altura_para(n_linhas)
             esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
                         + ns_local["ALTURA_LINHA_TABELA_PX"] * n_linhas
-                        + ns_local["ALTURA_BARRA_ROLAGEM_PX"]
+                        + ns_local["ALTURA_BARRA_ROLAGEM_PX"] + 2
                         + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
             self.assertEqual(capturado["altura"], esperado, f"{n_linhas} linhas")
 
@@ -1464,9 +1475,38 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         teto = ns_local["TETO_LINHAS_TABELA"]
         esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
                     + ns_local["ALTURA_LINHA_TABELA_PX"] * teto
-                    + ns_local["ALTURA_BARRA_ROLAGEM_PX"]
+                    + ns_local["ALTURA_BARRA_ROLAGEM_PX"] + 2
                     + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
         self.assertEqual(capturado["altura"], esperado)
+
+    def test_altura_da_caixa_fecha_com_o_conteudo(self):
+        """A conta em Python e o CSS tem de falar a mesma altura de
+        cabecalho. Enquanto o cabecalho herdava os 34px das linhas e a conta
+        somava 40, sobrava um filete vazio embaixo da ultima linha."""
+        for n_linhas, n_colunas, folga_esperada in [(7, 7, 0), (21, 31, 18)]:
+            capturado, ns_local = self._medir(n_linhas, n_colunas)
+            css = capturado["codigo"]
+            altura_cabecalho = int(
+                re.search(r"th\.cabecalho, th\.canto \{ height:(\d+)px", css).group(1))
+            altura_linha = int(re.search(r"th, td \{ height:(\d+)px", css).group(1))
+            altura_caixa = int(re.search(r"\.rolagem \{ height:(\d+)px", css).group(1))
+            conteudo = altura_cabecalho + altura_linha * n_linhas + 2
+            self.assertEqual(altura_cabecalho, ns_local["ALTURA_CABECALHO_TABELA_PX"],
+                             "CSS e conta discordam da altura do cabecalho")
+            self.assertEqual(altura_caixa - conteudo, folga_esperada,
+                             f"{n_linhas} linhas x {n_colunas} colunas")
+
+    def test_fundo_da_tabela_nao_pinta_nada_por_baixo(self):
+        """A caixa nao pode ter cor propria: era ela que deixava a tabela
+        inteira com tom azulado por tras das linhas."""
+        capturado, _ = self._medir(5, 5)
+        css = capturado["codigo"].split("<div")[0]
+        self.assertEqual(
+            re.search(r"\.rolagem \{[^}]*background:([^;]+);", css, re.S).group(1).strip(),
+            "transparent")
+        self.assertEqual(
+            re.search(r"\.linha-movimento td \{ background:([^;]+);", css).group(1).strip(),
+            "transparent")
 
     def test_so_as_linhas_de_consolidacao_ganham_destaque(self):
         """O tom claro marca saldo inicial, canais e total. Linha comum fica
@@ -1479,7 +1519,8 @@ class TesteMetasDeRecebimento(unittest.TestCase):
             achado = re.search(rf"\.linha-{classe} td[^{{]*{{\s*background:([^;]+);", css)
             return achado.group(1).strip() if achado else None
 
-        self.assertEqual(fundo("movimento"), cores["bg"], "linha comum tem de ser escura")
+        # Linha comum nao pinta nada: deixa a cor da pagina aparecer.
+        self.assertEqual(fundo("movimento"), "transparent", "linha comum nao pode ter fundo")
         for destaque in ("canal", "total", "saldo_inicial"):
             self.assertEqual(fundo(destaque), cores["surface_alt"], destaque)
 
