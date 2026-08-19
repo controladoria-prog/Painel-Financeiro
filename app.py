@@ -4336,15 +4336,25 @@ def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_p
     return pivot
 
 
-# A tabela do fluxo diário abre com 21 linhas à mostra: é o que faz o mês
-# inteiro caber na tela sem rolagem vertical, com os três canais abertos.
-LINHAS_VISIVEIS_FLUXO_DIARIO = 21
+# A altura das tabelas do fluxo acompanha o número de linhas -- com os três
+# canais abertos o diário fica em 21, mas um canal novo ou um movimento a
+# mais não podem trazer a rolagem vertical de volta. O teto só evita que uma
+# visão fora do comum vire uma página sem fim.
+TETO_LINHAS_TABELA = 40
 ALTURA_LINHA_TABELA_PX = 34
-ALTURA_CABECALHO_TABELA_PX = 42
+ALTURA_CABECALHO_TABELA_PX = 40
 ALTURA_BARRA_SOMA_PX = 46
+# A barra de rolagem HORIZONTAL fica dentro da área que rola e come altura.
+# Sem reservar esse espaço, sobra sempre um filete de rolagem vertical --
+# foi exatamente o que apareceu na tela com as 21 linhas cravadas.
+ALTURA_BARRA_ROLAGEM_PX = 18
+# O iframe não herda a fonte da página, então a pilha precisa ser declarada
+# lá dentro -- é a mesma que o Streamlit usa nas outras tabelas do painel.
+FONTE_PADRAO_TABELA = ('"Source Sans Pro", -apple-system, BlinkMacSystemFont, '
+                       '"Segoe UI", Roboto, sans-serif')
 
 
-def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=21, rotulo_canto=""):
+def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto=""):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -4368,6 +4378,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=21, rotulo_
     import html as _html
     import json as _json
 
+    # A altura acompanha o número de linhas: a área não quer rolagem
+    # vertical nenhuma nestas tabelas. O teto existe só para o caso extremo
+    # (uma visão com dezenas de linhas não pode virar uma página infinita).
+    linhas_visiveis = min(max(int(linhas_visiveis or 0), len(df)), TETO_LINHAS_TABELA)
     tipos_linha = list(tipos_linha or ["movimento"] * len(df))
     colunas = [str(c) for c in df.columns]
     linhas_html = []
@@ -4397,35 +4411,39 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=21, rotulo_
         linhas_html.append(f'<tr>{"".join(celulas)}</tr>')
 
     cabecalho = "".join(f'<th class="cabecalho">{_html.escape(c)}</th>' for c in colunas)
-    altura_rolagem = ALTURA_CABECALHO_TABELA_PX + ALTURA_LINHA_TABELA_PX * linhas_visiveis
-    altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 8
+    altura_rolagem = (ALTURA_CABECALHO_TABELA_PX
+                      + ALTURA_LINHA_TABELA_PX * linhas_visiveis
+                      + ALTURA_BARRA_ROLAGEM_PX)
+    altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 10
 
     codigo = f"""
 <style>
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:transparent;
-         font-family:-apple-system,"Segoe UI",Roboto,sans-serif; }}
+         font-family:{FONTE_PADRAO_TABELA}; }}
   .rolagem {{ height:{altura_rolagem}px; overflow:auto;
               border:1px solid {COLORS['border']}; border-radius:10px;
               background:{COLORS['surface']}; }}
+  /* Fonte e cores iguais às demais tabelas do painel: a de valores NÃO é
+     monoespaçada, senão esta tabela destoa de todas as outras da tela. */
   table {{ border-collapse:separate; border-spacing:0; width:100%;
-           font-size:12.5px; color:{COLORS['text']}; }}
-  th, td {{ height:{ALTURA_LINHA_TABELA_PX}px; padding:0 12px; white-space:nowrap;
-            border-bottom:1px solid {COLORS['border']}; }}
-  td {{ text-align:right; font-family:{FONTE_MONO}; cursor:pointer;
-        user-select:none; }}
+           font-size:13px; color:{COLORS['text']}; }}
+  th, td {{ height:{ALTURA_LINHA_TABELA_PX}px; padding:0 14px; white-space:nowrap;
+            border-bottom:1px solid {COLORS['border_soft']};
+            border-right:1px solid {COLORS['border_soft']}; }}
+  td {{ text-align:right; cursor:pointer; user-select:none;
+        font-variant-numeric:tabular-nums; }}
   th.cabecalho {{ position:sticky; top:0; z-index:3; text-align:right;
                   background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
-                  font-size:11px; letter-spacing:0.6px; text-transform:uppercase;
-                  font-weight:600; }}
+                  font-size:12.5px; font-weight:400; }}
   th.rotulo {{ position:sticky; left:0; z-index:2; text-align:left;
-               background:{COLORS['surface']}; font-weight:500;
-               min-width:230px; max-width:230px; overflow:hidden;
+               background:{COLORS['surface']}; font-weight:400;
+               color:{COLORS['text']};
+               min-width:240px; max-width:240px; overflow:hidden;
                text-overflow:ellipsis; }}
   th.canto {{ position:sticky; left:0; top:0; z-index:4;
               background:{COLORS['surface_alt']}; text-align:left;
-              color:{COLORS['text_muted']}; font-size:11px;
-              letter-spacing:0.6px; text-transform:uppercase; }}
+              color:{COLORS['text_muted']}; font-size:12.5px; font-weight:400; }}
   .pos {{ color:{COLORS['positive']}; }}
   .neg {{ color:{COLORS['negative']}; }}
   .vazio {{ color:{COLORS['text_muted']}; cursor:default; }}
@@ -4443,8 +4461,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=21, rotulo_
             border:1px solid {COLORS['border']}; border-radius:10px; }}
   .barra .rot {{ font-size:11px; letter-spacing:0.9px; text-transform:uppercase;
                  color:{COLORS['text_muted']}; }}
-  .barra .val {{ font-family:{FONTE_MONO}; font-size:16px; font-weight:700;
-                 color:{COLORS['text']}; }}
+  .barra .val {{ font-size:16px; font-weight:700; color:{COLORS['text']};
+                 font-variant-numeric:tabular-nums; }}
   .dica {{ font-size:11px; color:{COLORS['text_muted']}; margin-left:auto; }}
 </style>
 <div class="rolagem" id="rolagem">
@@ -5760,8 +5778,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "total" if str(rotulo).startswith("TOTAL") else "movimento"
                     for rotulo in pivot_m_exibicao.index
                 ],
-                # O mensal tem poucas linhas: mostra todas, sem rolagem.
-                linhas_visiveis=len(pivot_m_exibicao),
+                # Sem número: a altura acompanha as linhas da tabela.
                 rotulo_canto="Movimento",
             )
             st.caption(
@@ -6337,7 +6354,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     tabela_selecionavel(
                         pivot_d, chave="tabela_diaria",
                         tipos_linha=[tipo for tipo, _nome in estilo_linhas_d],
-                        linhas_visiveis=LINHAS_VISIVEIS_FLUXO_DIARIO,
                         rotulo_canto="Canal / Movimento",
                     )
                     st.caption(

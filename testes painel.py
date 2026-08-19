@@ -61,6 +61,10 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
 CONSTANTES_DE_DEPENDENCIA = {
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
+    "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
+                            "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
+                            "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
+                            "ALTURA_BARRA_ROLAGEM_PX"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
@@ -1420,24 +1424,57 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         for identificador in ("soma", "media", "qtd"):
             self.assertIn(f'id="{identificador}"', codigo)
 
-    def test_altura_do_diario_mostra_21_linhas(self):
+    def _altura_para(self, n_linhas):
         ns_local = carregar(["formata_brl", "tabela_selecionavel"],
-                            ["COLORS", "FONTE_MONO", "LINHAS_VISIVEIS_FLUXO_DIARIO",
-                             "ALTURA_LINHA_TABELA_PX", "ALTURA_CABECALHO_TABELA_PX",
-                             "ALTURA_BARRA_SOMA_PX"])
+                            ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
+                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
+                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
+                             "ALTURA_BARRA_ROLAGEM_PX"])
         capturado = {}
         ns_local["html_embutido"] = lambda codigo, altura=0, largura=None: capturado.update(
-            altura=altura)
-        df = pd.DataFrame([[1.0]], index=["1.1.Caixa"], columns=["18/08"])
-        ns_local["tabela_selecionavel"](
-            df, chave="t", linhas_visiveis=ns_local["LINHAS_VISIVEIS_FLUXO_DIARIO"])
+            codigo=codigo, altura=altura)
+        df = pd.DataFrame([[1.0, 2.0]] * n_linhas,
+                          index=[f"L{i}" for i in range(n_linhas)], columns=["a", "b"])
+        ns_local["tabela_selecionavel"](df, chave="t")
+        return capturado, ns_local
+
+    def test_altura_cabe_a_tabela_inteira_sem_rolagem(self):
+        """A barra de rolagem HORIZONTAL fica dentro da area que rola e come
+        altura: sem reservar esse espaco sobra sempre um filete de rolagem
+        vertical, que foi o que apareceu na tela."""
+        for n_linhas in (6, 21, 25):
+            capturado, ns_local = self._altura_para(n_linhas)
+            esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
+                        + ns_local["ALTURA_LINHA_TABELA_PX"] * n_linhas
+                        + ns_local["ALTURA_BARRA_ROLAGEM_PX"]
+                        + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
+            self.assertEqual(capturado["altura"], esperado, f"{n_linhas} linhas")
+
+    def test_tabela_pequena_nao_ganha_espaco_vazio(self):
+        """Altura fixa em 21 deixaria 15 linhas de vazio numa tabela de 6."""
+        pequena, _ = self._altura_para(6)
+        grande, _ = self._altura_para(21)
+        self.assertLess(pequena["altura"], grande["altura"])
+
+    def test_altura_tem_teto_para_o_caso_extremo(self):
+        capturado, ns_local = self._altura_para(60)
+        teto = ns_local["TETO_LINHAS_TABELA"]
         esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
-                    + ns_local["ALTURA_LINHA_TABELA_PX"] * 21
-                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 8)
-        self.assertEqual(ns_local["LINHAS_VISIVEIS_FLUXO_DIARIO"], 21)
+                    + ns_local["ALTURA_LINHA_TABELA_PX"] * teto
+                    + ns_local["ALTURA_BARRA_ROLAGEM_PX"]
+                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
         self.assertEqual(capturado["altura"], esperado)
-        i = FONTE.index('chave="tabela_diaria"')
-        self.assertIn("LINHAS_VISIVEIS_FLUXO_DIARIO", FONTE[i - 400:i + 400])
+
+    def test_tabela_usa_a_mesma_fonte_das_outras(self):
+        """O iframe nao herda a fonte da pagina. Com monoespacada nos valores
+        esta tabela destoava de todas as outras da tela."""
+        capturado, _ = self._altura_para(3)
+        codigo = capturado["codigo"]
+        self.assertNotIn("monospace", codigo, "voltou a fonte monoespacada")
+        self.assertIn("Source Sans Pro", codigo, "sem a fonte do app declarada no iframe")
+        corpo = codigo.split(".barra")[0]
+        self.assertNotIn("text-transform:uppercase", corpo,
+                         "cabecalho da tabela nao e caixa alta nas outras telas")
 
     def test_rotulo_nao_mostra_o_espaco_invisivel(self):
         """O indice do diario usa espacos invisiveis para nao repetir rotulo;
