@@ -4995,11 +4995,23 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }}
 
-  document.querySelectorAll('td[data-k]').forEach(celula => {{
-    celula.addEventListener('dblclick', evento => {{
+  // Delegação no documento, e não um ouvinte por célula: assim o duplo
+  // clique funciona mesmo que as células sejam recriadas depois, e não
+  // depende do momento em que este script roda.
+  document.addEventListener('dblclick', evento => {{
+    const celula = evento.target && evento.target.closest
+      ? evento.target.closest('td[data-k]') : null;
+    if (celula) {{
       evento.preventDefault();
       const linhas = detalhes[celula.dataset.k] || [];
-      if (!linhas.length) return;
+      if (!linhas.length) {{
+        // Silêncio aqui foi o que atrasou o diagnóstico por dois turnos.
+        const barra = document.querySelector('.barra .dica');
+        if (barra) {{
+          barra.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula');
+        }}
+        return;
+      }}
       const [nomeLinha, nomeDia] = celula.dataset.k.split('||');
       const colunas = Object.keys(linhas[0]);
       const total = linhas.reduce((s, l) => s + (parseFloat(l['Valor']) || 0), 0);
@@ -5133,7 +5145,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
           URL.revokeObjectURL(enderecoArquivo);
         }});
       }}
-    }});
+    }}
   }});
 
   // ---- altura da caixa ----
@@ -7243,6 +7255,25 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
                 lancamentos_dc, _cortou_dc = montar_lancamentos_por_celula(
                     df_dc_real, rotulos_dias_dc, _rotulos_dc)
+                # Diagnóstico à vista: quando o duplo clique não responde, a
+                # primeira pergunta é se o detalhe chegou a ser montado. Sem
+                # este número, a resposta só vem por tentativa e erro.
+                with st.expander("🔎 Detalhe por célula — diagnóstico"):
+                    st.write(
+                        f"**Células com detalhe:** {len(lancamentos_dc)} · "
+                        f"**Lançamentos embutidos:** "
+                        f"{sum(len(v) for v in lancamentos_dc.values())}"
+                    )
+                    if lancamentos_dc:
+                        st.caption(
+                            "Exemplos de chave (a célula precisa casar com uma delas): "
+                            + " · ".join(list(lancamentos_dc)[:3])
+                        )
+                    else:
+                        st.caption(
+                            "Nenhuma célula tem detalhe — o problema está na montagem, "
+                            "não no navegador."
+                        )
 
                 tabela_selecionavel(
                     pivot_dc, chave="tabela_diario_consolidado",

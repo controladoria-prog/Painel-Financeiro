@@ -2415,6 +2415,32 @@ class TesteDiarioConsolidado(unittest.TestCase):
         # E o download tem de existir nos DOIS caminhos.
         self.assertGreaterEqual(html.count("URL.createObjectURL"), 2)
 
+    def test_duplo_clique_usa_delegacao_e_nunca_fica_mudo(self):
+        """Ouvinte por celula depende do momento em que o script roda; a
+        delegacao no documento nao. E o caminho de "sem detalhe" precisa
+        DIZER alguma coisa: o silencio ali atrasou o diagnostico por dois
+        turnos seguidos."""
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        self.assertIn("document.addEventListener('dblclick'", html)
+        self.assertIn("closest('td[data-k]')", html)
+        self.assertIn("sem detalhe para", html,
+                      "o caminho sem detalhe precisa avisar, nao ficar mudo")
+
+    def test_tela_mostra_quantas_celulas_tem_detalhe(self):
+        """Quando o duplo clique nao responde, a primeira pergunta e se o
+        detalhe chegou a ser montado."""
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn("Detalhe por célula — diagnóstico", trecho)
+        self.assertIn("Células com detalhe:", trecho)
+
     def test_celula_sem_detalhe_nao_finge_ser_clicavel(self):
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
                              "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
