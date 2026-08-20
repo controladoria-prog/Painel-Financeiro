@@ -4415,7 +4415,11 @@ def _avaliar_alertas_fluxo(
 # Teto de lançamentos levados para a tela do duplo clique. Eles viajam
 # junto com a página, então uma tabela sem limite pesaria no carregamento --
 # e ninguém confere dez mil linhas na mão de uma vez.
-TETO_LANCAMENTOS_POR_CELULA = 60
+# Quantos lançamentos cada célula leva para a aba de detalhe. Era 200, caiu
+# para 60 quando o CSV tinha ~650 mil linhas e a página ficava pesada. Em
+# 20/08/2026 a planilha passou a consolidar as parcelas de cartão por loja e
+# dia (48.688 linhas, 93% a menos), então o teto pôde subir de novo.
+TETO_LANCAMENTOS_POR_CELULA = 300
 
 
 def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
