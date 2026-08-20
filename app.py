@@ -5164,14 +5164,24 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       let abriu = false;
       try {{
         const aba = window.open('', '_blank');
-        if (aba) {{
+        // Não basta a janela existir. Bloqueador de anúncios e extensão de
+        // privacidade costumam devolver uma janela FALSA, que fecha sozinha
+        // -- e o código antigo dava a abertura como certa e não mostrava
+        // nada. Por isso o teste é: existe, não está fechada e tem
+        // documento onde escrever.
+        if (aba && !aba.closed && aba.document) {{
+          aba.document.open();
           aba.document.write(pagina);
           aba.document.close();
-          abriu = true;
+          if (!aba.closed) {{
+            try {{ aba.focus(); }} catch (erro) {{ /* sem foco, tudo bem */ }}
+            abriu = true;
+          }}
         }}
       }} catch (erro) {{ abriu = false; }}
       if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}
-      avisar('o navegador bloqueou a janela — mostrando aqui embaixo');
+      avisar('o navegador bloqueou a janela (veja o ícone de pop-up bloqueado na '
+             + 'barra de endereço) — mostrando aqui embaixo');
 
       if (!window._corpoOriginal) {{ window._corpoOriginal = document.body.innerHTML; }}
       // O quadro tem altura fixa e não rola por fora: o detalhe entra numa

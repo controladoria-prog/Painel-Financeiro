@@ -2541,6 +2541,68 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertEqual(saida.stdout.strip(), "abriu janela",
                          "o duplo clique tem de abrir a aba com os lancamentos")
 
+    def test_janela_falsa_de_bloqueador_nao_engana(self):
+        """Bloqueador de anuncios devolve uma janela FALSA, que ja nasce
+        fechada. O codigo antigo dava a abertura como certa e nao mostrava
+        nada -- duplo clique aparentemente morto, sem nenhuma pista."""
+        import shutil
+        import subprocess
+        import tempfile
+
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            self.skipTest("sem motor JavaScript nesta maquina")
+
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        inicio = html.index("<script>", html.index('id="detalhes"')) + len("<script>")
+        js = html[inicio:html.index("</script>", inicio)]
+
+        roteiro = """
+        let ouvinte = null;
+        const barra = {textContent:''};
+        const celula = {dataset:{k:'Ativo Permanente||21/08',v:'-1',l:'0',c:'0'},
+          style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false}},
+          addEventListener(t,f){if(t==='dblclick') ouvinte=f;},
+          closest(s){return s==='td[data-k]'?celula:null}};
+        const jsonTag = {textContent: JSON.stringify(
+          {'Ativo Permanente||21/08':[{'Valor':-1}]})};
+        const corpo = {innerHTML:'', style:{cssText:''}};
+        const elemento = () => ({style:{cssText:''}, textContent:'', dataset:{},
+          classList:{add(){},remove(){},toggle(){},contains(){return false}},
+          addEventListener(){}, click(){}, appendChild(){}, querySelector(){return null}});
+        global.document = {addEventListener(){},
+          getElementById(id){return id==='detalhes'?jsonTag:elemento()},
+          querySelector(s){return s.includes('dica')?barra:elemento()},
+          querySelectorAll(s){return (s.includes('data-v')||s.includes('data-k'))
+                                     ?[celula]:[]},
+          createElement: elemento, body: corpo, documentElement:{scrollHeight:1}};
+        global.window = {parent:{postMessage(){}}, top:null, frameElement:null,
+          location:{href:'http://x/', reload(){}},
+          // A janela FALSA: existe, mas ja nasce fechada.
+          // Janela FALSA: existe e ate deixa escrever, mas ja nasce fechada.
+          open(){return {closed:true, document:{open(){},write(){},close(){}}}}};
+        global.URL={createObjectURL(){return 'blob:'},revokeObjectURL(){}};
+        global.Blob=function(){};
+        eval(JS_DA_TABELA);
+        ouvinte({target: celula, preventDefault(){}});
+        console.log(corpo.innerHTML.includes('painel-detalhe') ? 'mostrou' : 'sumiu');
+        """
+        with tempfile.TemporaryDirectory() as pasta:
+            caminho = f"{pasta}/t.js"
+            with open(caminho, "w", encoding="utf-8") as arquivo:
+                arquivo.write("const JS_DA_TABELA = " + json.dumps(js) + ";\n" + roteiro)
+            saida = subprocess.run([node, caminho], capture_output=True, text=True)
+        self.assertEqual(saida.returncode, 0, f"o JavaScript nao rodou: {saida.stderr[:300]}")
+        self.assertEqual(saida.stdout.strip(), "mostrou",
+                         "com janela falsa, o detalhe tem de aparecer no quadro")
+
     def test_duplo_clique_tem_caminho_alternativo(self):
         """O navegador pode recusar a abertura da aba vinda de dentro do
         quadro -- e recusa em SILENCIO. Sem um plano B, o duplo clique
