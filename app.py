@@ -5117,52 +5117,49 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         <\\/script>
         <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
-      // Duas portas, nesta ordem, e QUALQUER erro aqui vira mensagem na
-      // barra de baixo -- nada de falhar em silêncio. O silêncio foi o que
-      // fez este problema durar vários dias: sem mensagem, cada tentativa
-      // de conserto era um palpite.
+      // ABA NOVA por window.open, que é o caminho PERMITIDO: a lista de
+      // permissões do quadro do Streamlit inclui "allow-popups" (abrir
+      // janela) e NÃO inclui "allow-top-navigation" (levar o usuário para
+      // outra página). São coisas diferentes, e eu já confundi as duas:
+      // trocar isto por um link ou por window.parent.open transforma a
+      // abertura em navegação, que o navegador barra e registra no console
+      // como "Unsafe attempt to initiate navigation".
       //
-      // (O quadro do Streamlit TEM permissão para abrir janelas: a lista
-      // de permissões dele inclui allow-popups. Então window.open é um
-      // caminho legítimo; o link criado na página de fora é a alternativa
-      // para quando o navegador do usuário bloqueia a janela.)
+      // Se o usuário tiver bloqueado janelas no navegador dele, o detalhe
+      // aparece aqui embaixo mesmo, no lugar da tabela.
       let abriu = false;
       try {{
-        const endereco = URL.createObjectURL(
-          new Blob([pagina], {{ type: 'text/html;charset=utf-8' }}));
-        const paginaDeFora = (window.parent || window.top).document;
-        const atalhoAba = paginaDeFora.createElement('a');
-        atalhoAba.href = endereco;
-        atalhoAba.target = '_blank';
-        atalhoAba.rel = 'noopener';
-        paginaDeFora.body.appendChild(atalhoAba);
-        atalhoAba.click();
-        paginaDeFora.body.removeChild(atalhoAba);
-        abriu = true;
+        const aba = window.open('', '_blank');
+        if (aba) {{
+          aba.document.write(pagina);
+          aba.document.close();
+          abriu = true;
+        }}
       }} catch (erro) {{ abriu = false; }}
-      if (!abriu) {{
-        try {{
-          const aba = window.open('', '_blank');
-          if (aba) {{ aba.document.write(pagina); aba.document.close(); abriu = true; }}
-        }} catch (erro) {{ abriu = false; }}
-      }}
       if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}
-      avisar('o navegador bloqueou a aba — mostrando aqui embaixo');
-      // Sem aba nova (o navegador pode recusar a abertura vinda de dentro do
-      // quadro, e recusa em silêncio), o detalhe abre AQUI mesmo, por cima da
-      // tabela, com um botão para voltar. Antes deste trecho o duplo clique
-      // simplesmente não fazia nada quando a abertura era bloqueada.
+      avisar('o navegador bloqueou a janela — mostrando aqui embaixo');
+
       if (!window._corpoOriginal) {{ window._corpoOriginal = document.body.innerHTML; }}
-      document.body.innerHTML = pagina.split('<body>')[1].split('<\\/body>')[0]
-        + '<div style="margin-top:14px"><button id="voltar">Voltar para a tabela'
-        + '<\\/button><\\/div>';
+      // O quadro tem altura fixa e não rola por fora: o detalhe entra numa
+      // caixa com a mesma altura e rolagem própria, senão o fim da lista
+      // ficaria cortado sem jeito de alcançar.
+      const alturaUtil = {altura_rolagem} + {ALTURA_BARRA_SOMA_PX};
+      document.body.innerHTML =
+        '<div id="painel-detalhe" style="height:' + alturaUtil + 'px;overflow:auto">'
+        + pagina.split('<body>')[1].split('<\\/body>')[0] + '<\\/div>';
       document.body.style.cssText =
         'font-family:{FONTE_PADRAO_TABELA};background:{COLORS['bg']};'
-        + 'color:{COLORS['text']};margin:0;padding:8px;font-size:13px;';
-      const voltar = document.getElementById('voltar');
-      if (voltar) {{
-        voltar.style.cssText = document.getElementById('baixar').style.cssText;
+        + 'color:{COLORS['text']};margin:0;padding:0;font-size:13px;';
+      const cabecalho = document.querySelector('#painel-detalhe header');
+      if (cabecalho) {{
+        const voltar = document.createElement('button');
+        voltar.textContent = 'Voltar para a tabela';
+        voltar.style.cssText =
+          'font:inherit;font-size:12.5px;cursor:pointer;color:{COLORS['text']};'
+          + 'background:{COLORS['surface_alt']};border:1px solid {COLORS['border']};'
+          + 'border-radius:8px;padding:8px 16px;margin-left:10px;';
         voltar.addEventListener('click', () => {{ window.location.reload(); }});
+        cabecalho.appendChild(voltar);
       }}
       const baixar = document.getElementById('baixar');
       if (baixar) {{
@@ -5247,24 +5244,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       if (alvo) {{
         alvo.click();
       }} else {{
-        // Último recurso: tenta o endereço. Onde a navegação for permitida,
-        // funciona; onde não for, a seta apenas não responde.
-        try {{
-          const janela = window.top || window.parent;
-          const url = new URL(janela.location.href);
-          const atuais = (url.searchParams.get('{PARAM_LINHAS_ABERTAS}') || '')
-            .split('{SEPARADOR_LINHAS_ABERTAS}').filter(Boolean);
-          const linha = seta.dataset.linha;
-          const posicao = atuais.indexOf(linha);
-          if (posicao >= 0) {{ atuais.splice(posicao, 1); }} else {{ atuais.push(linha); }}
-          if (atuais.length) {{
-            url.searchParams.set('{PARAM_LINHAS_ABERTAS}',
-                                 atuais.join('{SEPARADOR_LINHAS_ABERTAS}'));
-          }} else {{
-            url.searchParams.delete('{PARAM_LINHAS_ABERTAS}');
-          }}
-          janela.location.href = url.toString();
-        }} catch (erro) {{ /* nada a fazer */ }}
+        // Sem o botão na página, não há o que fazer: trocar o endereço da
+        // página é BARRADO neste quadro ("allow-top-navigation" não está
+        // nas permissões do Streamlit). A tentativa antiga só enchia o
+        // console de erro sem nunca funcionar.
+        const recado = document.querySelector('.barra .dica');
+        if (recado) {{ recado.textContent = 'não consegui abrir esta linha'; }}
       }}
     }});
   }});

@@ -2379,7 +2379,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
                          "a celula com detalhe precisa se mostrar clicavel")
         self.assertIn('data-k="Ativo Permanente||21/08"', html)
         self.assertIn("dblclick", html, "um clique so continua servindo para somar")
-        self.assertIn("window.open('', '_blank')", html)
+        self.assertIn("painel-detalhe", html)
         embutido = json.loads(html.split('id="detalhes">')[1].split("</script>")[0])
         self.assertIn("Ativo Permanente||21/08", embutido)
 
@@ -2424,12 +2424,12 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("URL.createObjectURL", html)
         self.assertIn("link.download", html)
 
-    def test_duplo_clique_abre_pela_pagina_de_fora(self):
-        """A abertura e pedida pela PAGINA DE FORA, nao pelo quadro da
-        tabela: o quadro roda isolado e o navegador recusa abrir aba a
-        partir dele -- em silencio, que foi o que fez o duplo clique
-        parecer morto por varios turnos. Este teste RODA o JavaScript num
-        motor de verdade; ler o texto do codigo nao pegava isso."""
+    def test_duplo_clique_abre_a_aba_com_window_open(self):
+        """ABRIR JANELA e permitido; LEVAR PARA OUTRA PAGINA nao e. O console
+        acusou "Unsafe attempt to initiate navigation" quando troquei
+        window.open por um link -- eu confundi as duas coisas e quebrei o que
+        funcionava. Este teste RODA o JavaScript para garantir que o caminho
+        e o permitido."""
         import shutil
         import subprocess
         import tempfile
@@ -2449,47 +2449,54 @@ class TesteDiarioConsolidado(unittest.TestCase):
         inicio = html.index("<script>", html.index('id="detalhes"')) + len("<script>")
         js = html[inicio:html.index("</script>", inicio)]
 
+        # ABRIR JANELA e permitido ("allow-popups"); LEVAR PARA OUTRA PAGINA
+        # nao e ("allow-top-navigation" fica de fora). Sao coisas diferentes,
+        # e confundi-las custou varios dias: window.open funciona, link e
+        # window.parent.open viram navegacao e o navegador barra.
+        self.assertIn("window.open('', '_blank')", js,
+                      "abrir janela e o caminho permitido")
+        # Sem comentarios: eles CITAM os padroes proibidos de proposito, para
+        # que o proximo a mexer saiba por que nao usar.
+        sem_comentario = re.sub(r"//[^\n]*", "", js)
+        for proibido in ("location.href =", "target = '_blank'", "window.parent.open("):
+            self.assertNotIn(proibido, sem_comentario,
+                             f"{proibido} vira navegacao e o navegador barra")
+        # Ler o documento de fora NAO e navegacao -- e o que faz a seta
+        # funcionar. Por isso nao entra na lista acima.
+
         roteiro = """
         const celula = {dataset:{k:'Ativo Permanente||21/08',v:'-1',l:'0',c:'0'},
           style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false}},
           addEventListener(){}, closest(s){return s==='td[data-k]'?this:null}};
         const jsonTag = {textContent: JSON.stringify(
           {'Ativo Permanente||21/08':[{'Valor':-1}]})};
-        const doc = {}; const feito = [];
-        const elemento = () => ({style:{}, textContent:'', dataset:{},
+        const doc = {}; const corpo = {innerHTML:'', style:{cssText:''}};
+        const elemento = () => ({style:{cssText:''}, textContent:'', dataset:{},
           classList:{add(){},remove(){},toggle(){},contains(){return false}},
-          addEventListener(){}, click(){}, querySelector(){return null}});
+          addEventListener(){}, click(){}, appendChild(){}, querySelector(){return null}});
         global.document = {addEventListener(t,f){doc[t]=f},
           getElementById(id){return id==='detalhes'?jsonTag:elemento()},
-          querySelector(){return null},
+          querySelector(){return elemento()},
           querySelectorAll(s){return s.includes('data-v')?[celula]:[]},
-          createElement: elemento, body:{innerHTML:'',style:{}},
-          documentElement:{scrollHeight:1}};
-        const corpoDeFora = {appendChild(){}, removeChild(){}};
-        global.window = {
-          parent:{postMessage(){},
-            document:{querySelector(){return null}, body: corpoDeFora,
-              createElement(){return {set href(v){}, set target(v){}, set rel(v){},
-                click(){feito.push('link na pagina de fora')}}}}},
-          top:null, frameElement:null, location:{href:'http://x/'},
-          open(){feito.push('window.open no quadro');
-                 return {document:{write(){},close(){}}}}};
+          createElement: elemento, body: corpo, documentElement:{scrollHeight:1}};
+        let abriuJanela = false;
+        global.window = {parent:{postMessage(){}}, top:null, frameElement:null,
+          location:{href:'http://x/', reload(){}},
+          open(){abriuJanela = true; return {document:{write(){},close(){}}}}};
         global.URL={createObjectURL(){return 'blob:'},revokeObjectURL(){}};
         global.Blob=function(){};
         eval(JS_DA_TABELA);
         doc['dblclick']({target: celula, preventDefault(){}});
-        console.log(feito.join(','));
+        console.log(abriuJanela ? 'abriu janela' : 'nao abriu');
         """
         with tempfile.TemporaryDirectory() as pasta:
             caminho = f"{pasta}/t.js"
             with open(caminho, "w", encoding="utf-8") as arquivo:
                 arquivo.write("const JS_DA_TABELA = " + json.dumps(js) + ";\n" + roteiro)
             saida = subprocess.run([node, caminho], capture_output=True, text=True)
-        self.assertEqual(saida.returncode, 0,
-                         f"o JavaScript nao rodou: {saida.stderr[:300]}")
-        self.assertEqual(saida.stdout.strip(), "link na pagina de fora",
-                         "o quadro do Streamlit nao pode abrir janelas (esta no codigo-fonte "
-                         "dele): a aba tem de vir de um link criado na pagina de fora")
+        self.assertEqual(saida.returncode, 0, f"o JavaScript nao rodou: {saida.stderr[:300]}")
+        self.assertEqual(saida.stdout.strip(), "abriu janela",
+                         "o duplo clique tem de abrir a aba com os lancamentos")
 
     def test_duplo_clique_tem_caminho_alternativo(self):
         """O navegador pode recusar a abertura da aba vinda de dentro do
@@ -2503,11 +2510,9 @@ class TesteDiarioConsolidado(unittest.TestCase):
         tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
         ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
         html = capturado["codigo"]
-        self.assertIn("window._corpoOriginal", html,
-                      "sem plano B, a recusa da aba deixa o duplo clique mudo")
-        self.assertIn('id="voltar"', html, "o plano B precisa de volta para a tabela")
-        # E o download tem de existir nos DOIS caminhos.
-        self.assertGreaterEqual(html.count("URL.createObjectURL"), 2)
+        self.assertIn("window._corpoOriginal", html)
+        self.assertIn("Voltar para a tabela", html, "precisa de volta para a tabela")
+        self.assertIn("URL.createObjectURL", html, "o CSV continua disponivel")
 
     def test_duplo_clique_usa_delegacao_e_nunca_fica_mudo(self):
         """Ouvinte por celula depende do momento em que o script roda; a
