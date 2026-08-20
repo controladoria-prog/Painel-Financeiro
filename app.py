@@ -4415,17 +4415,27 @@ def _avaliar_alertas_fluxo(
 # Teto de lançamentos levados para a tela do duplo clique. Eles viajam
 # junto com a página, então uma tabela sem limite pesaria no carregamento --
 # e ninguém confere dez mil linhas na mão de uma vez.
-TETO_LANCAMENTOS_POR_CELULA = 400
+TETO_LANCAMENTOS_POR_CELULA = 200
+# E um teto para a PÁGINA inteira: a soma de todas as células é o que
+# viaja junto com a tela. Sem ele, um recorte de dois meses podia
+# embutir dezenas de milhares de lançamentos e travar o carregamento.
+TETO_LANCAMENTOS_NA_PAGINA = 5000
 
 
-def montar_lancamentos_por_celula(df, rotulos_por_dia, chave_linha):
+def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     """Agrupa os lançamentos por (linha da tabela, dia) para o duplo clique.
 
-    `chave_linha` recebe uma linha do DataFrame e devolve o rótulo da linha
-    da tabela a que ela pertence -- é o que amarra o lançamento à célula.
-    Devolve {"rótulo||dia": [ {campo: valor}, ... ] }."""
+    `coluna_rotulo` é uma SÉRIE com o rótulo da linha da tabela a que cada
+    lançamento pertence -- é o que amarra o lançamento à célula.
+    Devolve ({"rótulo||dia": [ {campo: valor}, ... ]}, cortou_algo).
+
+    Dois tetos, e os dois existem por experiência ruim: a primeira versão
+    percorria o recorte linha a linha e podia embutir dezenas de milhares de
+    lançamentos na página. O resultado foi a tela ficar girando sem nunca
+    abrir -- não é erro, é peso. Aqui o agrupamento é vetorizado e o volume
+    é limitado por célula e no total."""
     if df is None or df.empty:
-        return {}
+        return {}, False
     colunas = [c for c in (COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_CANAL,
                            COL_FIN_MODALIDADE, COL_FIN_GRUPO_DESPESA,
                            COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO) if c in df.columns]
@@ -4433,26 +4443,38 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, chave_linha):
              COL_FIN_CANAL: "Canal", COL_FIN_MODALIDADE: "Modalidade",
              COL_FIN_GRUPO_DESPESA: "Grupo de Despesa",
              COL_FIN_VENCIMENTO: "Vencimento", COL_FIN_DATA_LIQUIDACAO: "Liquidação"}
+
+    recorte = df.loc[:, colunas + [COL_FIN_VALOR]].copy()
+    recorte["_rotulo"] = list(coluna_rotulo)
+    recorte["_dia"] = df["Data Efetiva"].dt.normalize().map(rotulos_por_dia)
+    recorte = recorte[recorte["_dia"].notna()]
+    if recorte.empty:
+        return {}, False
+
+    # Os maiores primeiro: se a célula for cortada, o que fica é o que
+    # explica o valor -- ninguém procura o lançamento de dois reais.
+    recorte = recorte.reindex(recorte[COL_FIN_VALOR].abs().sort_values(ascending=False).index)
+    antes = len(recorte)
+    recorte = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False).head(
+        TETO_LANCAMENTOS_POR_CELULA
+    )
+    recorte = recorte.head(TETO_LANCAMENTOS_NA_PAGINA)
+    cortou = len(recorte) < antes
+
+    for coluna in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
+        if coluna in recorte.columns:
+            recorte[coluna] = recorte[coluna].dt.strftime("%d/%m/%Y").fillna("")
+    for coluna in colunas:
+        if coluna not in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
+            recorte[coluna] = recorte[coluna].astype(str).replace({"nan": "", "None": ""})
+    recorte[COL_FIN_VALOR] = recorte[COL_FIN_VALOR].astype(float)
+
     por_celula = {}
-    for _pos, linha in df.iterrows():
-        dia = rotulos_por_dia.get(pd.Timestamp(linha["Data Efetiva"]).normalize())
-        if dia is None:
-            continue
-        chave = f"{chave_linha(linha)}||{dia}"
-        destino = por_celula.setdefault(chave, [])
-        if len(destino) >= TETO_LANCAMENTOS_POR_CELULA:
-            continue
-        registro = {}
-        for coluna in colunas:
-            valor = linha[coluna]
-            if coluna in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
-                registro[nomes[coluna]] = (
-                    "" if pd.isna(valor) else pd.Timestamp(valor).strftime("%d/%m/%Y"))
-            else:
-                registro[nomes[coluna]] = "" if pd.isna(valor) else str(valor)
-        registro["Valor"] = float(linha[COL_FIN_VALOR])
-        destino.append(registro)
-    return por_celula
+    saida = recorte.rename(columns={**nomes, COL_FIN_VALOR: "Valor"})
+    campos = [nomes[c] for c in colunas] + ["Valor"]
+    for (rotulo, dia), grupo in saida.groupby(["_rotulo", "_dia"], observed=True, sort=False):
+        por_celula[f"{rotulo}||{dia}"] = grupo[campos].to_dict("records")
+    return por_celula, cortou
 
 
 def fracao_da_meta_ainda_nao_coberta(meta_por_dia, realizado_por_dia):
@@ -7174,18 +7196,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # clique abrir numa aba nova. A linha da tabela é o próprio
                 # movimento; quando ela está aberta, o detalhe fica na filha,
                 # e por isso a chave usa o rótulo que está na tela.
-                def _linha_da_tabela_dc(registro):
-                    movimento = str(registro[COL_FIN_MOVIMENTO])
-                    if movimento in abertas_dc:
-                        coluna = _coluna_de_abertura(movimento)
-                        if coluna in df_dc_real.columns:
-                            detalhe = str(registro[coluna]).strip()
-                            if detalhe:
-                                return detalhe
-                    return movimento
+                # O rótulo de cada lançamento, calculado de uma vez para o
+                # recorte inteiro: linha aberta manda o lançamento para a
+                # filha (o detalhe), fechada mantém no próprio movimento.
+                _rotulos_dc = df_dc_real[COL_FIN_MOVIMENTO].astype(str)
+                for _movimento_aberto in abertas_dc:
+                    _coluna = _coluna_de_abertura(_movimento_aberto)
+                    if _coluna not in df_dc_real.columns:
+                        continue
+                    _desta_linha = _rotulos_dc == _movimento_aberto
+                    _detalhe = df_dc_real.loc[_desta_linha, _coluna].astype(str).str.strip()
+                    _rotulos_dc = _rotulos_dc.mask(
+                        _desta_linha & _detalhe.reindex(_rotulos_dc.index).ne(""), _detalhe)
 
-                lancamentos_dc = montar_lancamentos_por_celula(
-                    df_dc_real, rotulos_dias_dc, _linha_da_tabela_dc)
+                lancamentos_dc, _cortou_dc = montar_lancamentos_por_celula(
+                    df_dc_real, rotulos_dias_dc, _rotulos_dc)
 
                 tabela_selecionavel(
                     pivot_dc, chave="tabela_diario_consolidado",
@@ -7204,7 +7229,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
                     "conforme a escolha acima. **Dois cliques num valor** abrem, numa aba nova, "
                     "os lançamentos que formam aquele número, com documento e fornecedor — as "
-                    "células com detalhe aparecem sublinhadas. **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
+                    "células com detalhe aparecem sublinhadas"
+                    + (" (com muitos lançamentos no período, cada célula traz os maiores)"
+                       if _cortou_dc else "") + ". **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
                     "e não entra no TOTAL GERAL."
                 )
 
