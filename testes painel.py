@@ -1253,6 +1253,31 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
             pivo = self._pivo(posicao)
             self.assertEqual(pivo.loc["4 - Contas a Pagar"].iloc[0], -500_000.0)
 
+    def test_coluna_final_do_mensal_traz_a_ultima_posicao(self):
+        """Caixa e banco na coluna final mostram a posicao MAIS RECENTE. A
+        versao anterior pegava o primeiro mes com saldo e exibia julho
+        quando agosto ja tinha posicao. Meses de previsao vem zerados, e
+        zero e ausencia de dado, nao posicao -- por isso nao contam."""
+        caixa = pd.Series({"JUL": 14_184.65, "AGO": 20_318.50, "SET": 0.0, "OUT": 0.0})
+        nao_zerados = caixa[caixa != 0]
+        self.assertEqual(nao_zerados.iloc[-1], 20_318.50)
+        i = FONTE.index("totais_finais_m = {}")
+        trecho = FONTE[i:i + 900]
+        self.assertIn("nao_zerados.iloc[-1]", trecho,
+                      "a coluna final tem de pegar a ultima posicao, nao a primeira")
+        self.assertNotIn("nao_zerados.iloc[0]", trecho)
+
+    def test_escrita_do_mapa_nunca_sai_vazia_em_silencio(self):
+        """O mapa chegava VAZIO ao navegador porque a escrita falhava e o
+        erro morria numa variavel. Agora ha uma ultima defesa para tipos que
+        o JSON nao conhece, e o erro viaja ate a tela."""
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("default=_valor_para_json", corpo,
+                      "sem isto, um tipo desconhecido zera o mapa inteiro")
+        self.assertIn('data-erro-mapa=', corpo, "o erro precisa chegar na tela")
+        self.assertIn("erroDoMapa", corpo)
+
     def test_saldo_inicial_mensal_so_vale_para_previsao(self):
         """Mes que ja passou, e o mes corrente, tem as posicoes reais de caixa
         e banco DENTRO deles: somar um saldo de abertura por cima contaria o

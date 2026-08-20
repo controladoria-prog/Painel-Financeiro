@@ -4782,13 +4782,26 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     # gerar um texto que o navegador não consegue ler. Se algum campo
     # escapar, o mapa sai vazio e a tela avisa -- melhor do que o silêncio,
     # que foi o que escondeu este defeito por vários dias.
+    def _valor_para_json(objeto):
+        """Último recurso para qualquer tipo que o JSON não conheça.
+
+        O pandas devolve números do NumPy, datas, decimais -- e um único
+        valor desses fazia a escrita inteira falhar. O resultado era o mapa
+        sair VAZIO e o navegador receber zero células, sem nenhuma pista."""
+        try:
+            numero = float(objeto)
+            return numero if numero == numero and abs(numero) != float("inf") else 0.0
+        except (TypeError, ValueError):
+            return str(objeto)
+
     _detalhes_json = "{}"
     _detalhes_erro = ""
     try:
         _detalhes_json = _json.dumps(
-            detalhes_por_celula or {}, ensure_ascii=False, allow_nan=False)
+            detalhes_por_celula or {}, ensure_ascii=False, allow_nan=False,
+            default=_valor_para_json)
     except (ValueError, TypeError) as _erro_json:
-        _detalhes_erro = str(_erro_json)
+        _detalhes_erro = f"{type(_erro_json).__name__}: {_erro_json}"
 
     pais = list(pais or [None] * len(df))
     # A altura acompanha as linhas VISÍVEIS de saída (as filhas nascem
@@ -4958,7 +4971,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   </table>
 </div>
 <script type="application/json" id="detalhes">{_detalhes_json}</script>
-<div class="barra">
+<div class="barra" data-erro-mapa="{_html.escape(_detalhes_erro, quote=True)}">
   <span class="rot">Soma</span><span class="val" id="soma">—</span>
   <span class="rot">Média</span><span class="val" id="media">—</span>
   <span class="rot">Células</span><span class="val" id="qtd">0</span>
@@ -5013,6 +5026,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   // Se a leitura do mapa falhar, o aviso vai para a barra de baixo. Antes
   // este catch engolia o erro e deixava `detalhes` vazio: TODA célula
   // passava a responder "sem detalhe", e nada na tela dizia por quê.
+  // O erro de ESCRITA (lado do servidor) vem na etiqueta da barra: sem
+  // isto ele morria numa variável e o mapa chegava vazio sem explicação.
+  const erroDoMapa = (document.querySelector('.barra') || {{}}).dataset
+    ? (document.querySelector('.barra').dataset.erroMapa || '') : '';
   let detalhes = {{}};
   try {{
     detalhes = JSON.parse(document.getElementById('detalhes').textContent || '{{}}');
@@ -5049,7 +5066,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
           const total = Object.keys(detalhes).length;
           aviso.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula')
             + ' · o navegador recebeu ' + total + ' célula(s)'
-            + (total ? ', ex.: ' + Object.keys(detalhes)[0] : ' — o mapa não chegou');
+            + (total ? ', ex.: ' + Object.keys(detalhes)[0]
+                     : ' — o mapa não chegou' + (erroDoMapa ? ' (' + erroDoMapa + ')' : ''));
         }}
         return;
       }}
@@ -6428,9 +6446,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
             totais_finais_m = {}
             for movimento in pivot_m.index:
                 if _classificar_movimento_fin(movimento) in ("saldo", "aplicacao"):
+                    # ÚLTIMO mês com saldo, não o primeiro: a pergunta aqui é
+                    # "qual a posição mais recente", e a coluna mostrava a de
+                    # julho quando agosto já tinha uma. Os meses seguintes
+                    # vêm zerados porque são previsão -- e zero não é posição,
+                    # é ausência de dado, por isso não conta.
                     serie = pivot_m.loc[movimento]
                     nao_zerados = serie[serie != 0]
-                    totais_finais_m[movimento] = nao_zerados.iloc[0] if not nao_zerados.empty else 0.0
+                    totais_finais_m[movimento] = (
+                        nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
                 else:
                     totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
 
