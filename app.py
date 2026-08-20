@@ -5100,7 +5100,39 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
       const aba = window.open('', '_blank');
-      if (aba) {{ aba.document.write(pagina); aba.document.close(); }}
+      if (aba) {{
+        aba.document.write(pagina);
+        aba.document.close();
+        return;
+      }}
+      // Sem aba nova (o navegador pode recusar a abertura vinda de dentro do
+      // quadro, e recusa em silêncio), o detalhe abre AQUI mesmo, por cima da
+      // tabela, com um botão para voltar. Antes deste trecho o duplo clique
+      // simplesmente não fazia nada quando a abertura era bloqueada.
+      if (!window._corpoOriginal) {{ window._corpoOriginal = document.body.innerHTML; }}
+      document.body.innerHTML = pagina.split('<body>')[1].split('<\\/body>')[0]
+        + '<div style="margin-top:14px"><button id="voltar">Voltar para a tabela'
+        + '<\\/button><\\/div>';
+      document.body.style.cssText =
+        'font-family:{FONTE_PADRAO_TABELA};background:{COLORS['bg']};'
+        + 'color:{COLORS['text']};margin:0;padding:8px;font-size:13px;';
+      const voltar = document.getElementById('voltar');
+      if (voltar) {{
+        voltar.style.cssText = document.getElementById('baixar').style.cssText;
+        voltar.addEventListener('click', () => {{ window.location.reload(); }});
+      }}
+      const baixar = document.getElementById('baixar');
+      if (baixar) {{
+        baixar.addEventListener('click', function () {{
+          const enderecoArquivo = URL.createObjectURL(
+            new Blob([csv], {{ type: 'text/csv;charset=utf-8;' }}));
+          const atalho = document.createElement('a');
+          atalho.href = enderecoArquivo;
+          atalho.download = nomeArquivo;
+          atalho.click();
+          URL.revokeObjectURL(enderecoArquivo);
+        }});
+      }}
     }});
   }});
 

@@ -2397,6 +2397,24 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("URL.createObjectURL", html)
         self.assertIn("link.download", html)
 
+    def test_duplo_clique_tem_caminho_alternativo(self):
+        """O navegador pode recusar a abertura da aba vinda de dentro do
+        quadro -- e recusa em SILENCIO. Sem um plano B, o duplo clique
+        simplesmente nao fazia nada e nao havia como saber por que."""
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        self.assertIn("window._corpoOriginal", html,
+                      "sem plano B, a recusa da aba deixa o duplo clique mudo")
+        self.assertIn('id="voltar"', html, "o plano B precisa de volta para a tabela")
+        # E o download tem de existir nos DOIS caminhos.
+        self.assertGreaterEqual(html.count("URL.createObjectURL"), 2)
+
     def test_celula_sem_detalhe_nao_finge_ser_clicavel(self):
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
                              "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
