@@ -1744,6 +1744,18 @@ NOME_ABA_FLUXO = "Fluxo de Caixa 2026"
 # caixa. Sem isso, uma fonte que devolvesse a aba errada entraria em silêncio
 # e o painel mostraria números de outro lugar -- que é o pior desfecho
 # possível: errado sem avisar.
+# Colunas de texto que se repetem muito ao longo das ~650 mil linhas. Lidas
+# como categoria, cada valor distinto é guardado UMA vez e as linhas passam a
+# apontar para ele. Não entram aqui as colunas de variedade alta (histórico,
+# número do documento): ali a categoria não economiza, chega a piorar.
+TIPOS_ECONOMICOS_FLUXO = {
+    "Movimento": "category",
+    "Canal.1": "category",
+    "Modalidade": "category",
+    "GRUPO DESPESA": "category",
+    "Plano de Contas": "category",
+}
+
 COLUNAS_MINIMAS_FLUXO = ("Movimento", "Valor.1", "Vencimento.1")
 
 
@@ -1806,7 +1818,14 @@ def obter_dados_fluxo_caixa():
     erros = []
     for descricao, url in fontes_csv_fluxo():
         try:
-            df = pd.read_csv(url)
+            # `low_memory=False` evita o pandas adivinhar o tipo em pedaços
+            # (o que gera o aviso de "mixed types" e desperdiça memória
+            # refazendo a coluna). As colunas de texto de baixa variedade
+            # entram como CATEGORIA: em 650 mil linhas, "HUB LOGISTICO"
+            # repetido vira um número de dois bytes em vez de uma cadeia de
+            # caracteres inteira por linha. É a maior economia disponível
+            # sem mexer no que a tela mostra.
+            df = pd.read_csv(url, low_memory=False, dtype=TIPOS_ECONOMICOS_FLUXO)
             df = df.dropna(how="all").dropna(axis=1, how="all")
             df.columns = [str(c).strip() for c in df.columns]
             if df.empty:
@@ -1866,8 +1885,12 @@ except Exception as e:
 # um genérico "Erro ao executar o aplicativo" -- sem pista nenhuma de causa.
 # Só volta reiniciando. Estes limites existem para soltar a memória ANTES
 # desse ponto: é melhor reler uma planilha do que perder o app inteiro.
-LIMITE_MEMORIA_ALERTA_MB = 700
-LIMITE_MEMORIA_LIMPEZA_MB = 850
+# O servidor corta o app perto de 1 GB, e quando corta manda e-mail e
+# bloqueia o acesso por um tempo. Os limites abaixo existem para soltar
+# memória bem antes disso -- reler uma planilha custa segundos, ser cortado
+# custa o app fora do ar.
+LIMITE_MEMORIA_ALERTA_MB = 500
+LIMITE_MEMORIA_LIMPEZA_MB = 650
 
 
 def memoria_em_uso_mb():
@@ -3131,7 +3154,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # DRE (Pessoal, Ocupação, Comercial etc.) -- é o "de onde vem o
         # custo" que o donut sozinho não mostra. ----
         col_nome_tv = "Nome" if "Nome" in df_ref_tv.columns else df_ref_tv.columns[0]
-        linhas_dre_tv = df_ref_tv[col_nome_tv].dropna().astype(str).unique()
+        linhas_dre_tv = df_ref_tv[col_nome_tv].dropna().unique().astype(str)
         subgrupos_despop = _subgrupos_nivel2(linhas_dre_tv, "8")
 
         detalhe_despop = []
@@ -5239,6 +5262,18 @@ def preparar_fluxo_caixa(base_data):
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
     ]
+    # Fora as colunas que o painel usa, o resto do CSV não serve para nada
+    # aqui e ocupa memória por 650 mil linhas. Segurar isso foi parte do que
+    # levou o servidor a cortar o app por excesso de uso.
+    _uteis = {
+        COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
+        COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_GRUPO_DESPESA,
+        COL_FIN_HISTORICO, COL_FIN_NUMERO, COL_FIN_PLANO_CONTAS, COL_FIN_LIQ_AMPLA,
+    }
+    _descartar = [c for c in df_fluxo.columns if c not in _uteis]
+    if _descartar:
+        df_fluxo = df_fluxo.drop(columns=_descartar)
+
     # A planilha muda de escrita de vez em quando ("Data de Liquidação" no
     # lugar de "Data Liquidação"). Para o painel é a mesma coluna, e uma
     # preposição a mais não pode derrubar a tela.
@@ -5817,8 +5852,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
                 width="stretch", hide_index=True,
             )
-            st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique())))
-            st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique())))
+            st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str))))
+            st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str))))
             st.dataframe(df_fin.head(15), width="stretch", hide_index=True)
 
     # Faixa de alertas, no mesmo lugar e no mesmo formato da Controladoria:
@@ -5875,10 +5910,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 help="Por padrão vai até o fim do ano atual.",
             )
         with col_f3:
-            opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
         with col_f4:
-            opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+            opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str).tolist())
             modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
 
         periodo_ini_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_ini_sel_fin)]
@@ -6294,10 +6329,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             col_d1, col_d2 = st.columns([1, 1])
             with col_d1:
-                opcoes_canal_d = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+                opcoes_canal_d = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
                 canal_sel_d = st.selectbox("Canal:", opcoes_canal_d, key="fin_canal_sel_diario")
             with col_d2:
-                opcoes_modal_d = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+                opcoes_modal_d = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str).tolist())
                 modal_sel_d = st.selectbox("Modalidade:", opcoes_modal_d, key="fin_modal_sel_diario")
 
             data_ini_d, data_fim_d = seletor_periodo_dias(
@@ -6312,9 +6347,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # acumulado desde o começo do ano. Só depois vem o recorte de datas.
             df_d_completo = df_fin.copy()
             if canal_sel_d != "Todos":
-                df_d_completo = df_d_completo[df_d_completo[COL_FIN_CANAL].astype(str) == canal_sel_d]
+                df_d_completo = df_d_completo[df_d_completo[COL_FIN_CANAL] == canal_sel_d]
             if modal_sel_d != "Todas":
-                df_d_completo = df_d_completo[df_d_completo[COL_FIN_MODALIDADE].astype(str) == modal_sel_d]
+                df_d_completo = df_d_completo[df_d_completo[COL_FIN_MODALIDADE] == modal_sel_d]
             # Aplicações ficam fora, igual ao resto do painel
             df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "aplicacao"]
             # A META também sai daqui: ela não é dinheiro, é alvo. Se ficasse,
@@ -6458,12 +6493,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     df_metas_d["DiaOrd"] = df_metas_d["Data Efetiva"].dt.normalize()
 
                 canais_ordenados_d = sorted(
-                    set(df_d[COL_FIN_CANAL].dropna().astype(str).unique())
-                    | set(df_metas_d[COL_FIN_CANAL].dropna().astype(str).unique()
+                    set(df_d[COL_FIN_CANAL].dropna().unique().astype(str))
+                    | set(df_metas_d[COL_FIN_CANAL].dropna().unique().astype(str)
                           if not df_metas_d.empty else [])
                 )
                 for canal in canais_ordenados_d:
-                    df_canal = df_d[df_d[COL_FIN_CANAL].astype(str) == canal]
+                    df_canal = df_d[df_d[COL_FIN_CANAL] == canal]
                     # O subtotal do canal NÃO inclui a meta -- ela é alvo.
                     linhas_tabela_d.append(_agrega_por_dia(df_canal))
                     indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
@@ -6476,8 +6511,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # para responder "quanto ainda falta receber hoje".
                     linhas_do_canal = [
                         (movimento, _agrega_por_dia(
-                            df_canal[df_canal[COL_FIN_MOVIMENTO].astype(str) == movimento]))
-                        for movimento in df_canal[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
+                            df_canal[df_canal[COL_FIN_MOVIMENTO] == movimento]))
+                        for movimento in df_canal[COL_FIN_MOVIMENTO].dropna().unique().astype(str)
                     ]
                     if not df_d_metas.empty:
                         # Mês INTEIRO, não o recorte da tela: senão o que
@@ -6485,13 +6520,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         # e a meta reaparece nos dias seguintes como se nada
                         # tivesse sido recebido.
                         df_meta_canal = df_d_metas[
-                            df_d_metas[COL_FIN_CANAL].astype(str) == canal
+                            df_d_metas[COL_FIN_CANAL] == canal
                         ]
                         if not df_meta_canal.empty:
                             serie_meta = _agrega_no_mes_cheio(df_meta_canal).abs()
                             realizado_canal = df_d_completo[
-                                (df_d_completo[COL_FIN_CANAL].astype(str) == canal)
-                                & df_d_completo[COL_FIN_MOVIMENTO].astype(str).isin(
+                                (df_d_completo[COL_FIN_CANAL] == canal)
+                                & df_d_completo[COL_FIN_MOVIMENTO].isin(
                                     [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
                                 )
                             ]
@@ -6546,7 +6581,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         else:
                             totais_finais_d.append(pivot_d.iloc[posicao].sum())
                     else:
-                        df_escopo = df_d[df_d[COL_FIN_CANAL].astype(str) == nome_limpo]
+                        df_escopo = df_d[df_d[COL_FIN_CANAL] == nome_limpo]
                         fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
                         saldo_escopo = 0.0
                         df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"] == "saldo"]
@@ -6796,7 +6831,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     return COL_FIN_CANAL
 
                 movimentos_dc = _ordenar_movimentos_fin(
-                    df_dc_real[COL_FIN_MOVIMENTO].dropna().astype(str).unique()
+                    df_dc_real[COL_FIN_MOVIMENTO].dropna().unique().astype(str)
                 )
                 # Quais linhas estão abertas vem da URL: é o clique na seta,
                 # dentro da própria linha, que coloca (ou tira) o nome dela de
@@ -6812,7 +6847,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 comandos_dc = botoes_de_abrir(abriveis_dc, "dc_linhas_abertas")
                 abertas_dc = [linha for linha, (aberta, _i) in comandos_dc.items() if aberta]
                 for movimento in movimentos_dc:
-                    recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO].astype(str) == movimento]
+                    recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO] == movimento]
                     posicao_mae = len(linhas_dc)
                     linhas_dc.append(_serie_por_dia(recorte))
                     indices_dc.append(movimento)
@@ -6858,7 +6893,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     serie_meta = _por_dia_mes_cheio(
                         _do_mes_cheio[_do_mes_cheio["Tipo Movimento"] == "meta"]).abs()
                     realizado_receber = _do_mes_cheio[
-                        _do_mes_cheio[COL_FIN_MOVIMENTO].astype(str).isin(
+                        _do_mes_cheio[COL_FIN_MOVIMENTO].isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
                     ]
                     falta = meta_diaria_que_ainda_falta(
@@ -6933,7 +6968,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
         col_t1, col_t2 = st.columns(2)
         with col_t1:
-            opcoes_canal_t = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            opcoes_canal_t = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_t = st.selectbox("Canal:", opcoes_canal_t, key="fin_canal_sel_tesouraria")
         with col_t2:
             semanas_horizonte_t = st.slider(
@@ -7303,10 +7338,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
         with col_a1:
             mes_sel_a = st.selectbox("Mês:", rotulos_a, key="fin_mes_sel_analise")
         with col_a2:
-            opcoes_canal_a = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().astype(str).unique().tolist())
+            opcoes_canal_a = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_a = st.selectbox("Canal:", opcoes_canal_a, key="fin_canal_sel_analise")
         with col_a3:
-            opcoes_modal_a = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().astype(str).unique().tolist())
+            opcoes_modal_a = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str).tolist())
             modal_sel_a = st.selectbox("Modalidade:", opcoes_modal_a, key="fin_modal_sel_analise")
 
         df_a = df_fin[df_fin["Tipo Movimento"] != "aplicacao"].copy()
@@ -7866,7 +7901,7 @@ m_map = {
 # contra as linhas REAIS da DRE atual -- mesma lógica de correspondência
 # usada na aba de Emitir Relatório (ver _resolver_termo_departamento).
 col_nome_dre_dept = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().astype(str).unique())
+linhas_dre_todas_painel = list(df_ref[col_nome_dre_dept].dropna().unique().astype(str))
 linhas_departamento_resolvidas = []
 linhas_departamento_raiz = []
 linhas_departamento_informativas = []
@@ -9763,7 +9798,7 @@ if departamento_ativo:
         )
 else:
     _col_nome_alerta = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-    _linhas_alerta = list(df_ref[_col_nome_alerta].dropna().astype(str).unique())
+    _linhas_alerta = list(df_ref[_col_nome_alerta].dropna().unique().astype(str))
     _alertas_controladoria = _avaliar_alertas_controladoria(
         list_df_real, list_df_orc, cols_kpi, m_map, _linhas_alerta,
         limite_desvio_ebitda_cfg, limite_estouro_conta_cfg, valor_minimo_conta_cfg,
@@ -11570,7 +11605,7 @@ with tab2:
         st.session_state["grupos_dre_colapsados"] = set()
 
     col_nome = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-    linhas_dre_todas = list(df_ref[col_nome].dropna().astype(str).unique())
+    linhas_dre_todas = list(df_ref[col_nome].dropna().unique().astype(str))
     if departamento_ativo and linhas_departamento_resolvidas:
         linhas_dre_todas = [l for l in linhas_dre_todas if l in linhas_departamento_resolvidas]
 
@@ -11828,7 +11863,7 @@ with tab3:
     if "grupos_hist_colapsados" not in st.session_state:
         st.session_state["grupos_hist_colapsados"] = set()
 
-    linhas_hist_todas = list(df_ref[col_nome].dropna().astype(str).unique())
+    linhas_hist_todas = list(df_ref[col_nome].dropna().unique().astype(str))
     if departamento_ativo and linhas_departamento_resolvidas:
         linhas_hist_todas = [l for l in linhas_hist_todas if l in linhas_departamento_resolvidas]
     is_sintetica_hist = visao_hist_dre == "Grupos Fechados (Sintético)"
@@ -12191,7 +12226,7 @@ if not departamento_ativo and tab_diag is not None:
         # Universo de linhas de custo/despesa usado pela curva ABC e pela
         # detecção de anomalias.
         col_nome_diag = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-        linhas_diag = list(df_ref[col_nome_diag].dropna().astype(str).unique())
+        linhas_diag = list(df_ref[col_nome_diag].dropna().unique().astype(str))
         linhas_custo_diag = [l for l in linhas_diag if eh_linha_custos_despesas(l)]
         linhas_custo_raiz_diag = _linhas_raiz_do_conjunto(linhas_custo_diag)
         # Para ABC e anomalias, o nível de topo (Custo das Vendas, Despesas
@@ -13359,7 +13394,7 @@ if not departamento_ativo:
         )
 
         col_nome_stress = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
-        todas_linhas_dre = df_ref[col_nome_stress].dropna().astype(str).unique().tolist()
+        todas_linhas_dre = df_ref[col_nome_stress].dropna().unique().astype(str).tolist()
 
         ce1, ce2 = st.columns([1.3, 1.3])
         with ce1:
@@ -13468,7 +13503,7 @@ with tab5:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    linhas_relatorio = df_ref[col_nome].dropna().astype(str).unique()
+    linhas_relatorio = df_ref[col_nome].dropna().unique().astype(str)
 
     # ---- Período do relatório: um intervalo contínuo de meses ----
     # A lista atravessa os anos numa sequência só (…, Nov/2025, Dez/2025,

@@ -2255,6 +2255,40 @@ class TesteMemoriaELeitura(unittest.TestCase):
             self.assertIsNotNone(achado, f"{funcao} sem decorador de cache")
             self.assertIn("max_entries", achado.group(0), f"{funcao} sem teto de entradas")
 
+    def test_csv_do_fluxo_e_lido_em_formato_economico(self):
+        """O servidor corta o app perto de 1 GB. As colunas de texto que se
+        repetem ao longo das ~650 mil linhas entram como CATEGORIA: cada
+        valor distinto e guardado uma vez. Medido em 19/08/2026: 57% menos
+        memoria por copia do fluxo."""
+        ns = carregar([], ["TIPOS_ECONOMICOS_FLUXO"])
+        for coluna in ("Movimento", "Canal.1", "Modalidade", "GRUPO DESPESA"):
+            self.assertEqual(ns["TIPOS_ECONOMICOS_FLUXO"].get(coluna), "category", coluna)
+        self.assertIn("dtype=TIPOS_ECONOMICOS_FLUXO", FONTE)
+        self.assertIn("low_memory=False", FONTE)
+
+    def test_colunas_sem_uso_sao_descartadas(self):
+        i = FONTE.index("_descartar = [c for c in df_fluxo.columns")
+        self.assertIn("df_fluxo.drop(columns=_descartar)", FONTE[i:i + 300])
+
+    def test_nao_converte_coluna_inteira_para_texto(self):
+        """`astype(str)` numa coluna categoria desfaz a economia: cria uma
+        copia inteira em texto. Dentro de um laco por canal isso acontece
+        dezenas de vezes por tela."""
+        self.assertNotIn(".dropna().astype(str).unique()", FONTE,
+                         "converte a coluna toda antes do unique() -- inverta a ordem")
+        i = FONTE.index("with tab_fin_diario:")
+        bloco = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertNotIn("].astype(str) ==", bloco,
+                         "comparacao com categoria nao precisa virar texto")
+        self.assertNotIn("].astype(str).isin(", bloco)
+
+    def test_guarda_de_memoria_limpa_antes_do_corte(self):
+        """850 MB era tarde: o servidor corta perto de 1 GB, manda e-mail e
+        bloqueia o acesso. Reler uma planilha custa segundos."""
+        ns = carregar([], ["LIMITE_MEMORIA_ALERTA_MB", "LIMITE_MEMORIA_LIMPEZA_MB"])
+        self.assertLessEqual(ns["LIMITE_MEMORIA_LIMPEZA_MB"], 700)
+        self.assertLess(ns["LIMITE_MEMORIA_ALERTA_MB"], ns["LIMITE_MEMORIA_LIMPEZA_MB"])
+
     def test_guarda_de_memoria_existe_e_tem_limite(self):
         ns = carregar(["memoria_em_uso_mb"],
                       ["LIMITE_MEMORIA_ALERTA_MB", "LIMITE_MEMORIA_LIMPEZA_MB"])
