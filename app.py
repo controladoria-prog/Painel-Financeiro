@@ -1753,6 +1753,10 @@ TIPOS_ECONOMICOS_FLUXO = {
     "Canal.1": "category",
     "Modalidade": "category",
     "GRUPO DESPESA": "category",
+    # O mesmo fornecedor aparece em centenas de lançamentos: como categoria,
+    # 42 MB viram 1,4 MB. O Número NÃO entra aqui -- é único por lançamento,
+    # e categoria custaria mais do que o texto puro.
+    "Histórico": "category",
 }
 
 COLUNAS_MINIMAS_FLUXO = ("Movimento", "Valor.1", "Vencimento.1")
@@ -4422,9 +4426,11 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, chave_linha):
     Devolve {"rótulo||dia": [ {campo: valor}, ... ] }."""
     if df is None or df.empty:
         return {}
-    colunas = [c for c in (COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_GRUPO_DESPESA,
+    colunas = [c for c in (COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_CANAL,
+                           COL_FIN_MODALIDADE, COL_FIN_GRUPO_DESPESA,
                            COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO) if c in df.columns]
-    nomes = {COL_FIN_CANAL: "Canal", COL_FIN_MODALIDADE: "Modalidade",
+    nomes = {COL_FIN_NUMERO: "Número", COL_FIN_HISTORICO: "Fornecedor / Histórico",
+             COL_FIN_CANAL: "Canal", COL_FIN_MODALIDADE: "Modalidade",
              COL_FIN_GRUPO_DESPESA: "Grupo de Despesa",
              COL_FIN_VENCIMENTO: "Vencimento", COL_FIN_DATA_LIQUIDACAO: "Liquidação"}
     por_celula = {}
@@ -5404,14 +5410,16 @@ def preparar_fluxo_caixa(base_data):
 
     # Agora sim: fora as colunas que o painel usa, o resto do CSV não serve
     # para nada aqui e ocupa memória por 650 mil linhas.
-    # Histórico, Número e Plano de Contas ficam de fora: nenhuma tela usa
-    # essas três, e são justamente as de maior variedade -- um texto
-    # diferente por lançamento, 650 mil vezes. Eram o resto do cruzamento
-    # com a aba DIÁRIO, que saiu do painel em 18/08.
+    # Plano de Contas fica de fora: nenhuma tela usa. Histórico e Número
+    # ficam SÓ por causa do detalhamento por célula do Diário Consolidado,
+    # onde eles respondem "de quem é este valor" -- o Histórico carrega o
+    # fornecedor. Custam cerca de 39 MB por cópia (o Histórico entra como
+    # categoria, porque o mesmo fornecedor se repete muito; o Número entra
+    # como texto, porque é único por lançamento e categoria só pioraria).
     _uteis = {
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_GRUPO_DESPESA,
-        COL_FIN_LIQ_AMPLA,
+        COL_FIN_LIQ_AMPLA, COL_FIN_HISTORICO, COL_FIN_NUMERO,
     }
     _descartar = [c for c in df_fluxo.columns if c not in _uteis]
     if _descartar:
@@ -7124,8 +7132,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "Contas a receber abre por "
                     "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
                     "conforme a escolha acima. **Dois cliques num valor** abrem, numa aba nova, "
-                    "os lançamentos que formam aquele número — as células com detalhe aparecem "
-                    "sublinhadas. **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
+                    "os lançamentos que formam aquele número, com documento e fornecedor — as "
+                    "células com detalhe aparecem sublinhadas. **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
                     "e não entra no TOTAL GERAL."
                 )
 

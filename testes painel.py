@@ -2130,11 +2130,14 @@ class TesteDiarioConsolidado(unittest.TestCase):
         ns = carregar(["montar_lancamentos_por_celula"],
                       ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
                        "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
-                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
         dia = pd.Timestamp("2026-08-21")
         df = pd.DataFrame({
             "Data Efetiva": [dia] * 3,
             ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 3,
+            ns["COL_FIN_NUMERO"]: ["NF 1001", "NF 1002", "NF 1003"],
+            ns["COL_FIN_HISTORICO"]: ["FORNECEDOR A LTDA"] * 3,
             ns["COL_FIN_CANAL"]: ["LOJA", "HUB LOGISTICO", "LOJA"],
             ns["COL_FIN_MODALIDADE"]: ["", "", ""],
             ns["COL_FIN_GRUPO_DESPESA"]: ["Ativo Permanente"] * 3,
@@ -2161,11 +2164,14 @@ class TesteDiarioConsolidado(unittest.TestCase):
         ns = carregar(["montar_lancamentos_por_celula"],
                       ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
                        "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
-                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
         dias = [pd.Timestamp("2026-08-21"), pd.Timestamp("2026-08-22")]
         df = pd.DataFrame({
             "Data Efetiva": dias,
             ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 2,
+            ns["COL_FIN_NUMERO"]: ["NF 1", "NF 2"],
+            ns["COL_FIN_HISTORICO"]: ["FORNECEDOR A", "FORNECEDOR B"],
             ns["COL_FIN_CANAL"]: ["LOJA", "LOJA"],
             ns["COL_FIN_GRUPO_DESPESA"]: ["Ativo Permanente"] * 2,
             ns["COL_FIN_VENCIMENTO"]: dias,
@@ -2184,13 +2190,16 @@ class TesteDiarioConsolidado(unittest.TestCase):
         ns = carregar(["montar_lancamentos_por_celula"],
                       ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
                        "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
-                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
         teto = ns["TETO_LANCAMENTOS_POR_CELULA"]
         dia = pd.Timestamp("2026-08-21")
         n = teto + 50
         df = pd.DataFrame({
             "Data Efetiva": [dia] * n,
             ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * n,
+            ns["COL_FIN_NUMERO"]: [f"NF {i}" for i in range(n)],
+            ns["COL_FIN_HISTORICO"]: ["FORNECEDOR A"] * n,
             ns["COL_FIN_CANAL"]: ["LOJA"] * n,
             ns["COL_FIN_GRUPO_DESPESA"]: ["Frete"] * n,
             ns["COL_FIN_VENCIMENTO"]: [dia] * n,
@@ -2449,19 +2458,37 @@ class TesteMemoriaELeitura(unittest.TestCase):
                          "comparacao com categoria nao precisa virar texto")
         self.assertNotIn("].astype(str).isin(", bloco)
 
-    def test_colunas_de_variedade_alta_ficam_de_fora(self):
-        """Historico, Numero e Plano de Contas nao sao usados por nenhuma
-        tela do fluxo -- sao resto do cruzamento com a DIARIO, removido em
-        18/08 -- e sao justamente os de maior variedade: um texto diferente
-        por lancamento, 650 mil vezes. Medido: 135 MB a menos por copia."""
+    def test_plano_de_contas_continua_fora(self):
+        """Nenhuma tela do fluxo usa o Plano de Contas, e ele e um texto
+        diferente por lancamento, 650 mil vezes."""
         i = FONTE.index("_uteis = {")
         bloco = FONTE[i:FONTE.index("}", i)]
-        for coluna in ("COL_FIN_HISTORICO", "COL_FIN_NUMERO", "COL_FIN_PLANO_CONTAS"):
-            self.assertNotIn(coluna, bloco, f"{coluna} voltou a ser carregada sem uso")
-        # E continuam sem uso em qualquer outro lugar do app.
-        for coluna in ("COL_FIN_HISTORICO", "COL_FIN_NUMERO", "COL_FIN_PLANO_CONTAS"):
-            self.assertLessEqual(FONTE.count(coluna), 1,
-                                 f"{coluna} passou a ser usada -- precisa voltar para _uteis")
+        self.assertNotIn("COL_FIN_PLANO_CONTAS", bloco,
+                         "voltou a ser carregada sem nenhuma tela usar")
+        self.assertLessEqual(FONTE.count("COL_FIN_PLANO_CONTAS"), 1,
+                             "passou a ser usada -- precisa voltar para _uteis")
+
+    def test_historico_e_numero_so_existem_para_o_detalhamento(self):
+        """Elas custam memoria (cerca de 39 MB por copia) e so se justificam
+        por causa do detalhamento por celula, onde respondem "de quem e este
+        valor". Se o uso sumir, precisam sair de novo."""
+        i = FONTE.index("_uteis = {")
+        bloco = FONTE[i:FONTE.index("}", i)]
+        for coluna in ("COL_FIN_HISTORICO", "COL_FIN_NUMERO"):
+            self.assertIn(coluna, bloco, f"{coluna} precisa ser carregada para o detalhamento")
+        j = FONTE.index("def montar_lancamentos_por_celula(")
+        corpo = FONTE[j:FONTE.index("\ndef ", j + 10)]
+        self.assertIn("COL_FIN_NUMERO", corpo, "o Numero precisa aparecer no detalhamento")
+        self.assertIn("COL_FIN_HISTORICO", corpo)
+        self.assertIn('"Fornecedor / Histórico"', corpo)
+
+    def test_historico_entra_como_categoria_e_numero_nao(self):
+        """O mesmo fornecedor aparece em centenas de lancamentos (42 MB viram
+        1,4 MB como categoria). O Numero e unico por lancamento, e ai a
+        categoria custa MAIS que o texto puro."""
+        ns = carregar([], ["TIPOS_ECONOMICOS_FLUXO"])
+        self.assertEqual(ns["TIPOS_ECONOMICOS_FLUXO"].get("Histórico"), "category")
+        self.assertNotIn("Número", ns["TIPOS_ECONOMICOS_FLUXO"])
 
     def test_diario_guarda_as_repetitivas_como_categoria(self):
         i = FONTE.index("def carregar_diario(")
