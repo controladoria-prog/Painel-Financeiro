@@ -2424,6 +2424,68 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("URL.createObjectURL", html)
         self.assertIn("link.download", html)
 
+    def test_duplo_clique_abre_pela_pagina_de_fora(self):
+        """A abertura e pedida pela PAGINA DE FORA, nao pelo quadro da
+        tabela: o quadro roda isolado e o navegador recusa abrir aba a
+        partir dele -- em silencio, que foi o que fez o duplo clique
+        parecer morto por varios turnos. Este teste RODA o JavaScript num
+        motor de verdade; ler o texto do codigo nao pegava isso."""
+        import shutil
+        import subprocess
+        import tempfile
+
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            self.skipTest("sem motor JavaScript nesta maquina")
+
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        inicio = html.index("<script>", html.index('id="detalhes"')) + len("<script>")
+        js = html[inicio:html.index("</script>", inicio)]
+
+        roteiro = """
+        const celula = {dataset:{k:'Ativo Permanente||21/08',v:'-1',l:'0',c:'0'},
+          style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false}},
+          addEventListener(){}, closest(s){return s==='td[data-k]'?this:null}};
+        const jsonTag = {textContent: JSON.stringify(
+          {'Ativo Permanente||21/08':[{'Valor':-1}]})};
+        const doc = {}; const feito = [];
+        const elemento = () => ({style:{}, textContent:'', dataset:{},
+          classList:{add(){},remove(){},toggle(){},contains(){return false}},
+          addEventListener(){}, click(){}, querySelector(){return null}});
+        global.document = {addEventListener(t,f){doc[t]=f},
+          getElementById(id){return id==='detalhes'?jsonTag:elemento()},
+          querySelector(){return null},
+          querySelectorAll(s){return s.includes('data-v')?[celula]:[]},
+          createElement: elemento, body:{innerHTML:'',style:{}},
+          documentElement:{scrollHeight:1}};
+        global.window = {
+          parent:{open(){feito.push('fora');return {document:{write(){},close(){}}}},
+                  postMessage(){}, document:{querySelector(){return null}}},
+          top:null, frameElement:null, location:{href:'http://x/'},
+          open(){feito.push('quadro');return {document:{write(){},close(){}}}}};
+        global.URL={createObjectURL(){return 'blob:'},revokeObjectURL(){}};
+        global.Blob=function(){};
+        eval(JS_DA_TABELA);
+        doc['dblclick']({target: celula, preventDefault(){}});
+        console.log(feito.join(','));
+        """
+        with tempfile.TemporaryDirectory() as pasta:
+            caminho = f"{pasta}/t.js"
+            with open(caminho, "w", encoding="utf-8") as arquivo:
+                arquivo.write("const JS_DA_TABELA = " + json.dumps(js) + ";\n" + roteiro)
+            saida = subprocess.run([node, caminho], capture_output=True, text=True)
+        self.assertEqual(saida.returncode, 0,
+                         f"o JavaScript nao rodou: {saida.stderr[:300]}")
+        self.assertEqual(saida.stdout.strip(), "fora",
+                         "o duplo clique tem de pedir a abertura pela pagina de fora")
+
     def test_duplo_clique_tem_caminho_alternativo(self):
         """O navegador pode recusar a abertura da aba vinda de dentro do
         quadro -- e recusa em SILENCIO. Sem um plano B, o duplo clique

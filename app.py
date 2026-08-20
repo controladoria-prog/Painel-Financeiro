@@ -5112,7 +5112,19 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         <\\/script>
         <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
-      const aba = window.open('', '_blank');
+      // A abertura é pedida pela PÁGINA DE FORA, não pelo quadro da tabela.
+      // O quadro roda isolado e o navegador recusa abrir aba a partir dele
+      // -- em silêncio, que é o que fez o duplo clique parecer morto. A
+      // página de fora não tem essa restrição, e alcançá-la é permitido
+      // porque as duas são da mesma origem (é assim que a seta já funciona).
+      let aba = null;
+      try {{
+        const dono = (window.parent && window.parent.open) ? window.parent : window;
+        aba = dono.open('', '_blank');
+      }} catch (erro) {{ aba = null; }}
+      if (!aba) {{
+        try {{ aba = window.open('', '_blank'); }} catch (erro) {{ aba = null; }}
+      }}
       if (aba) {{
         aba.document.write(pagina);
         aba.document.close();
