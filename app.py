@@ -7005,7 +7005,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
                 tabela_selecionavel(
                     pivot_d, chave="tabela_diaria",
-                    tipos_linha=[tipo for tipo, _nome in estilo_linhas_d],
+                    # A lista guarda (tipo, nome, canal) desde que a coluna
+                    # final passou a somar o mês -- desempacotar em dois quebra.
+                    tipos_linha=[linha[0] for linha in estilo_linhas_d],
                     rotulo_canto="Canal / Movimento",
                 )
                 st.caption(

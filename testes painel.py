@@ -2046,6 +2046,41 @@ class TesteDiarioConsolidado(unittest.TestCase):
                     vistos.add(item.name)
         self.assertEqual(repetidos, [], "metodo definido duas vezes na mesma classe")
 
+    def test_desempacotar_tupla_bate_com_o_que_foi_guardado(self):
+        """Uma lista passou a guardar 3 itens por linha e um leitor continuou
+        desempacotando em 2. O Python compila, a suite passa, e o app quebra
+        NO AR com ValueError -- o erro so existe em tempo de execucao.
+        Aconteceu em 20/08/2026 com estilo_linhas_d."""
+        from collections import defaultdict
+
+        arvore = ast.parse(FONTE)
+        guardados = defaultdict(set)
+        for no in ast.walk(arvore):
+            if (isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute)
+                    and no.func.attr == "append"
+                    and isinstance(no.func.value, ast.Name)
+                    and len(no.args) == 1 and isinstance(no.args[0], ast.Tuple)):
+                guardados[no.func.value.id].add(len(no.args[0].elts))
+
+        problemas = []
+        for no in ast.walk(arvore):
+            if not isinstance(no, (ast.comprehension, ast.For)):
+                continue
+            alvo, fonte_iter = no.target, no.iter
+            if isinstance(fonte_iter, ast.Call) and fonte_iter.args:
+                fonte_iter = fonte_iter.args[0]          # enumerate(lista)
+                if isinstance(alvo, ast.Tuple) and len(alvo.elts) == 2:
+                    alvo = alvo.elts[1]
+            if not isinstance(fonte_iter, ast.Name) or not isinstance(alvo, ast.Tuple):
+                continue
+            tamanhos = guardados.get(fonte_iter.id)
+            if tamanhos and len(alvo.elts) not in tamanhos:
+                problemas.append(
+                    f"{fonte_iter.id}: guarda {sorted(tamanhos)}, "
+                    f"desempacota em {len(alvo.elts)} (linha {no.iter.lineno})")
+        self.assertEqual(sorted(set(problemas)), [],
+                         "desempacotamento que nao bate com o que foi guardado")
+
     def test_toda_funcao_chamada_existe(self):
         """Teste que so procura o TEXTO da chamada passa mesmo quando a
         funcao nunca foi definida -- e o app quebra no ar com NameError.
