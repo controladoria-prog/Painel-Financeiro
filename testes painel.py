@@ -1254,8 +1254,10 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
             self.assertEqual(pivo.loc["4 - Contas a Pagar"].iloc[0], -500_000.0)
 
     def test_so_a_tabela_mensal_usa_a_abertura(self):
+        # Janela ampla: o bloco cresceu quando o SALDO INICIAL entrou, e uma
+        # janela curta faz o teste falhar por posicao, nao por defeito.
         i = FONTE.index("📋 Movimentos por Mês")
-        trecho = FONTE[max(0, i - 3000):i + 3000]
+        trecho = FONTE[max(0, i - 6000):i + 3000]
         self.assertIn('posicao_saldo="primeira"', trecho)
         self.assertIn("pivot_m_fechamento = _pivot_fluxo_fin(", trecho)
         # A reserva de caixa nao pode ter passado a ler a abertura.

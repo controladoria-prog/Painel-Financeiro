@@ -5041,9 +5041,15 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       const linhas = detalhes[celula.dataset.k] || [];
       if (!linhas.length) {{
         // Silêncio aqui foi o que atrasou o diagnóstico por dois turnos.
+        // Quantas chaves o NAVEGADOR tem: é o que distingue "o mapa não
+        // chegou" de "chegou mas falta esta célula". Sem esse número, as
+        // duas causas dão a mesma mensagem -- e eu perdi dias por isso.
         const aviso = document.querySelector('.barra .dica');
         if (aviso) {{
-          aviso.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula');
+          const total = Object.keys(detalhes).length;
+          aviso.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula')
+            + ' · o navegador recebeu ' + total + ' célula(s)'
+            + (total ? ', ex.: ' + Object.keys(detalhes)[0] : ' — o mapa não chegou');
         }}
         return;
       }}
@@ -6379,6 +6385,20 @@ if st.session_state["painel_escolhido"] == "financeiro":
             meses_ordenados_m = sorted(df_m["PeriodoMes"].unique())
             rotulos_meses_m = {p: _rotulo_mes_pt(p) for p in meses_ordenados_m}
 
+            # O que sobrou ANTES do primeiro mês da tela. Sem isto, o período
+            # começaria do zero e os meses à frente ficariam negativos: eles
+            # pagam contas com o caixa que veio de trás. Vem de df_fin (a base
+            # inteira), não de df_fin_view, que é o recorte visível.
+            saldo_anterior_ao_periodo_m = 0.0
+            if meses_ordenados_m:
+                _antes_do_periodo_m = df_fin[
+                    (df_fin["Data Efetiva"].dt.to_period("M") < meses_ordenados_m[0])
+                    & (df_fin["Tipo Movimento"] != "meta")
+                    & (df_fin["Tipo Movimento"] != "aplicacao")
+                ]
+                saldo_anterior_ao_periodo_m = float(
+                    _antes_do_periodo_m[COL_FIN_VALOR].sum())
+
             # Aqui, e SÓ aqui, caixa e banco mostram o saldo com que o mês
             # COMEÇOU -- a posição do primeiro dia. Nesta leitura a pergunta é
             # "com quanto entrei no mês e o que aconteceu nele", então a
@@ -6419,15 +6439,54 @@ if st.session_state["painel_escolhido"] == "financeiro":
             pivot_m["TOTAL / SALDO DE ABERTURA"] = pd.Series(totais_finais_m)
             pivot_m.index.name = "Movimento"
 
-            # TOTAL GERAL: soma de todas as linhas em cada mês, EXCETO a meta.
-            linha_total_geral_m = _total_geral_sem_meta(pivot_m)
-            pivot_m_exibicao = pd.concat([pivot_m, pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"])])
+            # SALDO INICIAL: o mês não começa do zero, começa com o que sobrou
+            # do mês anterior. Sem esta linha, os meses à frente apareciam
+            # negativos no TOTAL GERAL -- pagavam as contas do mês sem contar
+            # o caixa que veio de trás, o que não é o fluxo real da empresa.
+            #
+            # O saldo inicial do primeiro mês da tela é o fechamento do mês
+            # anterior a ele; dos demais, é o TOTAL GERAL do mês anterior JÁ
+            # acumulado. Por isso a conta é feita em cadeia, mês a mês.
+            movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)
+            colunas_meses_m = [c for c in pivot_m.columns if c != "TOTAL / SALDO DE ABERTURA"]
+
+            saldos_iniciais_m = {}
+            _acumulado_m = float(saldo_anterior_ao_periodo_m)
+            for _coluna in colunas_meses_m:
+                saldos_iniciais_m[_coluna] = _acumulado_m
+                _acumulado_m += float(movimentos_do_mes_m.get(_coluna, 0.0))
+
+            linha_saldo_inicial_m = pd.Series(saldos_iniciais_m)
+            # Na coluna final vai a abertura do PRIMEIRO mês do recorte: é a
+            # posição de onde o período parte.
+            linha_saldo_inicial_m["TOTAL / SALDO DE ABERTURA"] = (
+                saldos_iniciais_m[colunas_meses_m[0]] if colunas_meses_m else 0.0)
+
+            # TOTAL GERAL: movimentos do mês MAIS o saldo com que ele começou.
+            linha_total_geral_m = movimentos_do_mes_m.copy()
+            for _coluna in colunas_meses_m:
+                linha_total_geral_m[_coluna] = (
+                    float(movimentos_do_mes_m.get(_coluna, 0.0))
+                    + saldos_iniciais_m[_coluna]
+                )
+            if colunas_meses_m:
+                # A coluna final é o fechamento do ÚLTIMO mês: onde o período
+                # termina, não a soma de saldos de meses diferentes.
+                linha_total_geral_m["TOTAL / SALDO DE ABERTURA"] = (
+                    linha_total_geral_m[colunas_meses_m[-1]])
+
+            pivot_m_exibicao = pd.concat([
+                pd.DataFrame([linha_saldo_inicial_m], index=["SALDO INICIAL"]),
+                pivot_m,
+                pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"]),
+            ])
 
             st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
             tabela_selecionavel(
                 pivot_m_exibicao, chave="tabela_mensal",
                 tipos_linha=[
-                    "total" if str(rotulo).startswith("TOTAL") else "movimento"
+                    "saldo_inicial" if str(rotulo).startswith("SALDO INICIAL")
+                    else "total" if str(rotulo).startswith("TOTAL") else "movimento"
                     for rotulo in pivot_m_exibicao.index
                 ],
                 # Sem número: a altura acompanha as linhas da tabela.
