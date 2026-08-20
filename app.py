@@ -5112,24 +5112,36 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         <\\/script>
         <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
-      // A abertura é pedida pela PÁGINA DE FORA, não pelo quadro da tabela.
-      // O quadro roda isolado e o navegador recusa abrir aba a partir dele
-      // -- em silêncio, que é o que fez o duplo clique parecer morto. A
-      // página de fora não tem essa restrição, e alcançá-la é permitido
-      // porque as duas são da mesma origem (é assim que a seta já funciona).
-      let aba = null;
+      // POR QUE NÃO É window.open: o quadro onde esta tabela vive é criado
+      // pelo Streamlit com permissão para rodar scripts e NÃO para abrir
+      // janelas -- está no código-fonte dele. Sem essa permissão, qualquer
+      // window.open daqui falha sem dizer nada, e foi isso que fez o duplo
+      // clique parecer morto.
+      //
+      // O que funciona: montar a página como arquivo em memória e clicar
+      // num link criado NA PÁGINA DE FORA, que não tem essa restrição. É a
+      // mesma porta que a seta de expandir já usa.
+      let abriu = false;
       try {{
-        const dono = (window.parent && window.parent.open) ? window.parent : window;
-        aba = dono.open('', '_blank');
-      }} catch (erro) {{ aba = null; }}
-      if (!aba) {{
-        try {{ aba = window.open('', '_blank'); }} catch (erro) {{ aba = null; }}
+        const endereco = URL.createObjectURL(
+          new Blob([pagina], {{ type: 'text/html;charset=utf-8' }}));
+        const paginaDeFora = (window.parent || window.top).document;
+        const atalhoAba = paginaDeFora.createElement('a');
+        atalhoAba.href = endereco;
+        atalhoAba.target = '_blank';
+        atalhoAba.rel = 'noopener';
+        paginaDeFora.body.appendChild(atalhoAba);
+        atalhoAba.click();
+        paginaDeFora.body.removeChild(atalhoAba);
+        abriu = true;
+      }} catch (erro) {{ abriu = false; }}
+      if (!abriu) {{
+        try {{
+          const aba = window.open('', '_blank');
+          if (aba) {{ aba.document.write(pagina); aba.document.close(); abriu = true; }}
+        }} catch (erro) {{ abriu = false; }}
       }}
-      if (aba) {{
-        aba.document.write(pagina);
-        aba.document.close();
-        return;
-      }}
+      if (abriu) {{ return; }}
       // Sem aba nova (o navegador pode recusar a abertura vinda de dentro do
       // quadro, e recusa em silêncio), o detalhe abre AQUI mesmo, por cima da
       // tabela, com um botão para voltar. Antes deste trecho o duplo clique

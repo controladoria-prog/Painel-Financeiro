@@ -2465,11 +2465,15 @@ class TesteDiarioConsolidado(unittest.TestCase):
           querySelectorAll(s){return s.includes('data-v')?[celula]:[]},
           createElement: elemento, body:{innerHTML:'',style:{}},
           documentElement:{scrollHeight:1}};
+        const corpoDeFora = {appendChild(){}, removeChild(){}};
         global.window = {
-          parent:{open(){feito.push('fora');return {document:{write(){},close(){}}}},
-                  postMessage(){}, document:{querySelector(){return null}}},
+          parent:{postMessage(){},
+            document:{querySelector(){return null}, body: corpoDeFora,
+              createElement(){return {set href(v){}, set target(v){}, set rel(v){},
+                click(){feito.push('link na pagina de fora')}}}}},
           top:null, frameElement:null, location:{href:'http://x/'},
-          open(){feito.push('quadro');return {document:{write(){},close(){}}}}};
+          open(){feito.push('window.open no quadro');
+                 return {document:{write(){},close(){}}}}};
         global.URL={createObjectURL(){return 'blob:'},revokeObjectURL(){}};
         global.Blob=function(){};
         eval(JS_DA_TABELA);
@@ -2483,8 +2487,9 @@ class TesteDiarioConsolidado(unittest.TestCase):
             saida = subprocess.run([node, caminho], capture_output=True, text=True)
         self.assertEqual(saida.returncode, 0,
                          f"o JavaScript nao rodou: {saida.stderr[:300]}")
-        self.assertEqual(saida.stdout.strip(), "fora",
-                         "o duplo clique tem de pedir a abertura pela pagina de fora")
+        self.assertEqual(saida.stdout.strip(), "link na pagina de fora",
+                         "o quadro do Streamlit nao pode abrir janelas (esta no codigo-fonte "
+                         "dele): a aba tem de vir de um link criado na pagina de fora")
 
     def test_duplo_clique_tem_caminho_alternativo(self):
         """O navegador pode recusar a abertura da aba vinda de dentro do
