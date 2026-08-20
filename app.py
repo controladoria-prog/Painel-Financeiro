@@ -5007,12 +5007,17 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       const linhas = detalhes[celula.dataset.k] || [];
       if (!linhas.length) {{
         // Silêncio aqui foi o que atrasou o diagnóstico por dois turnos.
-        const barra = document.querySelector('.barra .dica');
-        if (barra) {{
-          barra.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula');
+        const aviso = document.querySelector('.barra .dica');
+        if (aviso) {{
+          aviso.textContent = 'sem detalhe para ' + (celula.dataset.k || 'esta célula');
         }}
         return;
       }}
+      const avisar = (recado) => {{
+        const barra = document.querySelector('.barra .dica');
+        if (barra) {{ barra.textContent = recado; }}
+      }};
+      try {{
       const [nomeLinha, nomeDia] = celula.dataset.k.split('||');
       const colunas = Object.keys(linhas[0]);
       const total = linhas.reduce((s, l) => s + (parseFloat(l['Valor']) || 0), 0);
@@ -5112,15 +5117,15 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         <\\/script>
         <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
-      // POR QUE NÃO É window.open: o quadro onde esta tabela vive é criado
-      // pelo Streamlit com permissão para rodar scripts e NÃO para abrir
-      // janelas -- está no código-fonte dele. Sem essa permissão, qualquer
-      // window.open daqui falha sem dizer nada, e foi isso que fez o duplo
-      // clique parecer morto.
+      // Duas portas, nesta ordem, e QUALQUER erro aqui vira mensagem na
+      // barra de baixo -- nada de falhar em silêncio. O silêncio foi o que
+      // fez este problema durar vários dias: sem mensagem, cada tentativa
+      // de conserto era um palpite.
       //
-      // O que funciona: montar a página como arquivo em memória e clicar
-      // num link criado NA PÁGINA DE FORA, que não tem essa restrição. É a
-      // mesma porta que a seta de expandir já usa.
+      // (O quadro do Streamlit TEM permissão para abrir janelas: a lista
+      // de permissões dele inclui allow-popups. Então window.open é um
+      // caminho legítimo; o link criado na página de fora é a alternativa
+      // para quando o navegador do usuário bloqueia a janela.)
       let abriu = false;
       try {{
         const endereco = URL.createObjectURL(
@@ -5141,7 +5146,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
           if (aba) {{ aba.document.write(pagina); aba.document.close(); abriu = true; }}
         }} catch (erro) {{ abriu = false; }}
       }}
-      if (abriu) {{ return; }}
+      if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}
+      avisar('o navegador bloqueou a aba — mostrando aqui embaixo');
       // Sem aba nova (o navegador pode recusar a abertura vinda de dentro do
       // quadro, e recusa em silêncio), o detalhe abre AQUI mesmo, por cima da
       // tabela, com um botão para voltar. Antes deste trecho o duplo clique
@@ -5169,6 +5175,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
           atalho.click();
           URL.revokeObjectURL(enderecoArquivo);
         }});
+      }}
+      }} catch (erro) {{
+        // Erro visível: o nome e a mensagem aparecem na barra, para você
+        // poder me dizer exatamente o que aconteceu.
+        avisar('erro ao abrir: ' + (erro && erro.name ? erro.name + ' — ' : '')
+               + (erro && erro.message ? erro.message : erro));
       }}
     }}
   }});
