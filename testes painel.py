@@ -2101,7 +2101,12 @@ class TesteDiarioConsolidado(unittest.TestCase):
                               index=["1.1.Caixa", "HUB", "TOTAL GERAL"],
                               columns=["18/08", "19/08"])
             ns_local["tabela_selecionavel"](df, chave="t", **argumentos)
-            js = capturado["codigo"].split("<script>")[1].split("</script>")[0]
+            codigo = capturado["codigo"]
+            # Do PRIMEIRO <script> ao ULTIMO </script>: a pagina de detalhe
+            # que o codigo monta contem um <script> dentro dela, e recortar
+            # no primeiro fechamento truncava o texto no meio.
+            js = codigo[codigo.index("<script>") + len("<script>"):
+                        codigo.rindex("</script>")]
 
             self.assertEqual(js.count("{"), js.count("}"), f"{descricao}: chaves")
             self.assertEqual(js.count("("), js.count(")"), f"{descricao}: parenteses")
@@ -2228,6 +2233,47 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("window.open('', '_blank')", html)
         embutido = json.loads(html.split('id="detalhes">')[1].split("</script>")[0])
         self.assertIn("Ativo Permanente||21/08", embutido)
+
+    def test_aba_de_lancamentos_segue_o_padrao_do_painel(self):
+        """A leitura ali e longa: linhas alternadas para o olho nao pular de
+        linha, cabecalho discreto em vez de branco forte, realce sob o
+        cursor e o total fixo no rodape."""
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        for marca, motivo in [
+            ("nth-child(even)", "linhas alternadas"),
+            ("tbody tr:hover", "realce sob o cursor"),
+            ("td.pos", "valor colorido por sinal"),
+            ("td.neg", "valor colorido por sinal"),
+            ("white-space:normal", "o historico precisa poder quebrar linha"),
+            ("position:sticky; bottom:0", "total fixo no rodape"),
+            ("FONTE_PADRAO_TABELA" if False else "Source Sans Pro", "mesma fonte do painel"),
+        ]:
+            self.assertIn(marca, html, motivo)
+
+    def test_aba_tem_um_unico_botao_de_download(self):
+        """Um botao so, e o CSV no formato que o Excel em portugues abre sem
+        pedir nada: ponto e virgula, virgula decimal e BOM para os acentos."""
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        self.assertEqual(html.count('id="baixar"'), 1, "tem de ser um botao so")
+        self.assertIn("join(';')", html, "separador ponto e virgula")
+        self.assertIn("replace('.', ',')", html, "virgula decimal")
+        self.assertIn("\ufeff", html, "BOM: sem ele os acentos saem trocados no Excel")
+        self.assertIn("URL.createObjectURL", html)
+        self.assertIn("link.download", html)
 
     def test_celula_sem_detalhe_nao_finge_ser_clicavel(self):
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",

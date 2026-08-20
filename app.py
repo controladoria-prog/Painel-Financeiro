@@ -4981,30 +4981,101 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       const [nomeLinha, nomeDia] = celula.dataset.k.split('||');
       const colunas = Object.keys(linhas[0]);
       const total = linhas.reduce((s, l) => s + (parseFloat(l['Valor']) || 0), 0);
+      // Cada coluna com o seu papel: número à direita e colorido pelo sinal,
+      // o histórico podendo quebrar linha (é o texto longo), e as chaves em
+      // tom mais discreto para não competirem com o que importa.
+      const classeDaColuna = (c, v) => {{
+        if (typeof v === 'number') return 'num ' + (v >= 0 ? 'pos' : 'neg');
+        if (c === 'Fornecedor / Histórico') return 'texto';
+        return 'chave';
+      }};
       const corpo = linhas.map(l => '<tr>' + colunas.map(
-        c => `<td class="${{typeof l[c] === 'number' ? 'num' : ''}}">${{escaparHtml(
+        c => `<td class="${{classeDaColuna(c, l[c])}}">${{escaparHtml(
           typeof l[c] === 'number' ? brl(l[c]) : l[c])}}</td>`).join('') + '</tr>').join('');
+      // O CSV sai com ponto e vírgula e vírgula decimal, que é o que o
+      // Excel em português abre sem pedir nada. O BOM no começo evita os
+      // acentos saírem trocados.
+      const csv = "\ufeff" + [colunas.join(';')].concat(linhas.map(
+        l => colunas.map(c => {{
+          const v = l[c];
+          if (typeof v === 'number') return v.toFixed(2).replace('.', ',');
+          return '"' + String(v === null || v === undefined ? '' : v)
+            .replace(/"/g, '""') + '"';
+        }}).join(';'))).join('\r\n');
+      const nomeArquivo = (nomeLinha + ' ' + nomeDia)
+        .replace(/[^\\wÀ-ú ]+/g, '').trim().replace(/\\s+/g, '-') + '.csv';
+
       const pagina = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
         <title>${{escaparHtml(nomeLinha)}} — ${{escaparHtml(nomeDia)}}</title>
         <style>
-          body {{ font-family:{FONTE_PADRAO_TABELA}; background:{FUNDO_TABELA_FLUXO};
-                 color:{COLORS['text']}; margin:24px; }}
-          h1 {{ font-size:16px; margin:0 0 4px; }}
-          p.resumo {{ color:{COLORS['text_muted']}; font-size:13px; margin:0 0 16px; }}
-          table {{ border-collapse:collapse; width:100%; font-size:13px; }}
-          th, td {{ padding:7px 12px; border-bottom:1px solid {COLORS['border_soft']};
-                    text-align:left; white-space:nowrap; }}
+          /* Mesma paleta e a mesma fonte do painel. As mudanças em relação
+             à tabela da tela existem porque aqui a leitura é longa: linhas
+             alternadas para o olho não pular de linha, cabeçalho discreto
+             em vez de branco forte, e realce na linha sob o cursor. */
+          body {{ font-family:{FONTE_PADRAO_TABELA}; background:{COLORS['bg']};
+                 color:{COLORS['text']}; margin:0; padding:28px 32px 48px;
+                 font-size:13px; }}
+          header {{ display:flex; align-items:flex-end; gap:20px; flex-wrap:wrap;
+                    border-bottom:1px solid {COLORS['border']}; padding-bottom:14px;
+                    margin-bottom:18px; }}
+          h1 {{ font-size:15px; font-weight:600; margin:0; letter-spacing:0.2px; }}
+          .resumo {{ color:{COLORS['text_muted']}; font-size:12.5px; }}
+          .resumo b {{ color:{COLORS['text']}; font-variant-numeric:tabular-nums;
+                       font-weight:600; }}
+          button {{ margin-left:auto; font:inherit; font-size:12.5px; cursor:pointer;
+                    color:{COLORS['text']}; background:{COLORS['surface_alt']};
+                    border:1px solid {COLORS['border']}; border-radius:8px;
+                    padding:8px 16px; }}
+          button:hover {{ border-color:{COLORS['primary']}; color:{COLORS['primary']}; }}
+          .caixa {{ border:1px solid {COLORS['border']}; border-radius:10px;
+                    overflow:hidden; background:{FUNDO_TABELA_FLUXO}; }}
+          table {{ border-collapse:collapse; width:100%; }}
+          th, td {{ padding:9px 14px; text-align:left; vertical-align:top;
+                    border-bottom:1px solid {COLORS['border_soft']}; }}
           th {{ background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
-                position:sticky; top:0; }}
-          td.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
-          tfoot td {{ font-weight:700; border-top:2px solid {COLORS['primary']}; }}
+                font-weight:400; position:sticky; top:0; white-space:nowrap; }}
+          tbody tr:nth-child(even) {{ background:{COLORS['surface']}33; }}
+          tbody tr:hover {{ background:{COLORS['surface_alt']}; }}
+          td.num {{ text-align:right; font-variant-numeric:tabular-nums;
+                    white-space:nowrap; }}
+          td.pos {{ color:{COLORS['positive']}; }}
+          td.neg {{ color:{COLORS['negative']}; }}
+          td.texto {{ max-width:520px; white-space:normal;
+                      color:{COLORS['text']}; }}
+          td.chave {{ color:{COLORS['text_muted']}; white-space:nowrap; }}
+          tfoot td {{ background:{COLORS['surface_alt']}; font-weight:700;
+                      border-top:2px solid {COLORS['primary']}; border-bottom:none;
+                      position:sticky; bottom:0; }}
         </style></head><body>
-        <h1>${{escaparHtml(nomeLinha)}} — ${{escaparHtml(nomeDia)}}</h1>
-        <p class="resumo">${{linhas.length}} lançamento(s) · total ${{brl(total)}}</p>
-        <table><thead><tr>${{colunas.map(c => '<th>' + escaparHtml(c) + '</th>').join('')}}</tr></thead>
-        <tbody>${{corpo}}</tbody>
-        <tfoot><tr><td colspan="${{colunas.length - 1}}">TOTAL</td>
-        <td class="num">${{brl(total)}}</td></tr></tfoot></table>
+        <header>
+          <div>
+            <h1>${{escaparHtml(nomeLinha)}} · ${{escaparHtml(nomeDia)}}</h1>
+            <div class="resumo">${{linhas.length}} lançamento(s) · total
+              <b>${{brl(total)}}</b></div>
+          </div>
+          <button id="baixar">Baixar CSV</button>
+        </header>
+        <div class="caixa"><table>
+          <thead><tr>${{colunas.map(
+            c => `<th${{c === 'Valor' ? ' style="text-align:right"' : ''}}>`
+                 + escaparHtml(c) + '</th>').join('')}}</tr></thead>
+          <tbody>${{corpo}}</tbody>
+          <tfoot><tr><td colspan="${{colunas.length - 1}}">TOTAL</td>
+          <td class="num">${{brl(total)}}</td></tr></tfoot>
+        </table></div>
+        <script>
+          document.getElementById('baixar').addEventListener('click', function () {{
+            var dados = document.getElementById('csv').textContent;
+            var url = URL.createObjectURL(
+              new Blob([dados], {{ type: 'text/csv;charset=utf-8;' }}));
+            var link = document.createElement('a');
+            link.href = url;
+            link.download = ${{JSON.stringify(nomeArquivo)}};
+            link.click();
+            URL.revokeObjectURL(url);
+          }});
+        <\\/script>
+        <script type="text/plain" id="csv">${{escaparHtml(csv)}}<\\/script>
         </body></html>`;
       const aba = window.open('', '_blank');
       if (aba) {{ aba.document.write(pagina); aba.document.close(); }}
