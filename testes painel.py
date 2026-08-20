@@ -2337,6 +2337,43 @@ class TesteDiarioConsolidado(unittest.TestCase):
         valores = [l["Valor"] for l in mapa["Frete||21/08"]]
         self.assertEqual(min(valores), -1.0 * n, "o maior lancamento foi cortado")
 
+    def test_corte_da_pagina_nunca_apaga_uma_celula(self):
+        """O corte guarda os maiores, mas cada celula mantem ao menos a sua
+        maior linha. Sem isso, as celulas de valor pequeno ficavam de fora e
+        o duplo clique nelas nao respondia -- enquanto as grandes abriam."""
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_NA_PAGINA",
+                       "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA",
+                       "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR",
+                       "COL_FIN_MOVIMENTO", "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        teto = ns["TETO_LANCAMENTOS_NA_PAGINA"]
+        grupos = [f"Grupo {i}" for i in range(60)]
+        n = teto * 2
+        dias = pd.to_datetime("2026-08-01") + pd.to_timedelta(
+            [i % 30 for i in range(n)], unit="D")
+        # O "Grupo 0" so tem centavos: e o primeiro a ser cortado por valor.
+        valores = [-0.01 if i % 60 == 0 else -1000.0 - i for i in range(n)]
+        df = pd.DataFrame({
+            "Data Efetiva": dias,
+            ns["COL_FIN_MOVIMENTO"]: "3 - Contas a Pagar",
+            ns["COL_FIN_NUMERO"]: [f"NF {i}" for i in range(n)],
+            ns["COL_FIN_HISTORICO"]: "FORN",
+            ns["COL_FIN_CANAL"]: "LOJA",
+            ns["COL_FIN_GRUPO_DESPESA"]: [grupos[i % 60] for i in range(n)],
+            ns["COL_FIN_VENCIMENTO"]: dias,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: dias,
+            ns["COL_FIN_VALOR"]: valores,
+        })
+        rotulos = {d: pd.Timestamp(d).strftime("%d/%m")
+                   for d in df["Data Efetiva"].dt.normalize().unique()}
+        mapa, cortou = ns["montar_lancamentos_por_celula"](
+            df, rotulos, df[ns["COL_FIN_GRUPO_DESPESA"]].astype(str))
+        self.assertTrue(cortou, "o cenario precisa mesmo estourar o teto")
+        nos_dados = df.groupby(
+            [df[ns["COL_FIN_GRUPO_DESPESA"]], df["Data Efetiva"].dt.normalize()]).ngroups
+        self.assertEqual(len(mapa), nos_dados,
+                         "toda celula que existe nos dados tem de ter chave no mapa")
+
     def test_celula_com_detalhe_e_clicavel_no_html(self):
         mapa, _ns = self._mapa_de_lancamentos()
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
@@ -2439,7 +2476,9 @@ class TesteDiarioConsolidado(unittest.TestCase):
         i = FONTE.index("with tab_fin_consolidado:")
         trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
         self.assertIn("Detalhe por célula — diagnóstico", trecho)
-        self.assertIn("Células com detalhe:", trecho)
+        self.assertIn("células com detalhe:", trecho)
+        self.assertIn("com dia reconhecido:", trecho,
+                      "o diagnostico precisa dizer onde o detalhe se perde")
 
     def test_celula_sem_detalhe_nao_finge_ser_clicavel(self):
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",

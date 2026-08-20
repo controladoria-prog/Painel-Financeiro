@@ -4455,10 +4455,19 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     # explica o valor -- ninguém procura o lançamento de dois reais.
     recorte = recorte.reindex(recorte[COL_FIN_VALOR].abs().sort_values(ascending=False).index)
     antes = len(recorte)
-    recorte = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False).head(
-        TETO_LANCAMENTOS_POR_CELULA
-    )
-    recorte = recorte.head(TETO_LANCAMENTOS_NA_PAGINA)
+    grupos = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False)
+    recorte = grupos.head(TETO_LANCAMENTOS_POR_CELULA)
+
+    # O corte da página guarda os maiores -- MAS nunca apaga uma célula
+    # inteira: cada uma mantém pelo menos a sua maior linha. Sem isso, as
+    # células de valor pequeno ficavam de fora do mapa e o duplo clique nelas
+    # não respondia, enquanto as grandes abriam normalmente.
+    if len(recorte) > TETO_LANCAMENTOS_NA_PAGINA:
+        chaves = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False)
+        garantidas = chaves.head(1)
+        resto = recorte.drop(index=garantidas.index)
+        sobra = max(TETO_LANCAMENTOS_NA_PAGINA - len(garantidas), 0)
+        recorte = pd.concat([garantidas, resto.head(sobra)])
     cortou = len(recorte) < antes
 
     for coluna in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
@@ -7259,11 +7268,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # primeira pergunta é se o detalhe chegou a ser montado. Sem
                 # este número, a resposta só vem por tentativa e erro.
                 with st.expander("🔎 Detalhe por célula — diagnóstico"):
+                    _celulas_nos_dados = df_dc_real.assign(
+                        _r=list(_rotulos_dc),
+                        _d=df_dc_real["Data Efetiva"].dt.normalize(),
+                    ).groupby(["_r", "_d"], observed=True).ngroups
+                    _com_dia = int(
+                        df_dc_real["Data Efetiva"].dt.normalize()
+                        .isin(list(rotulos_dias_dc)).sum()
+                    )
                     st.write(
-                        f"**Células com detalhe:** {len(lancamentos_dc)} · "
-                        f"**Lançamentos embutidos:** "
+                        f"**Lançamentos no período:** {len(df_dc_real)} · "
+                        f"**com dia reconhecido:** {_com_dia} · "
+                        f"**células nos dados:** {_celulas_nos_dados} · "
+                        f"**células com detalhe:** {len(lancamentos_dc)} · "
+                        f"**lançamentos embutidos:** "
                         f"{sum(len(v) for v in lancamentos_dc.values())}"
                     )
+                    if _com_dia < len(df_dc_real):
+                        st.warning(
+                            f"{len(df_dc_real) - _com_dia} lançamentos ficaram sem dia "
+                            "reconhecido — é aí que o detalhe se perde."
+                        )
                     if lancamentos_dc:
                         st.caption(
                             "Exemplos de chave (a célula precisa casar com uma delas): "
