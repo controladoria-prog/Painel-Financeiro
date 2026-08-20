@@ -53,7 +53,7 @@ DEPENDENCIAS = {
     "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
     "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
     "guardar_memoria": ["memoria_em_uso_mb"],
-    "meta_diaria_que_ainda_falta": [],
+    "meta_diaria_que_ainda_falta": ["dias_com_meta_ja_batida"],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
 }
@@ -1686,6 +1686,50 @@ class TesteNomesEVirada(unittest.TestCase):
         self.assertEqual(falta.iloc[0], 0.0, "o recebido do dia abate a meta do dia")
         self.assertEqual(falta.iloc[1], 100.0, "antes da virada, o rateio continua valendo")
         self.assertEqual(list(falta.iloc[3:]), [0.0] * 7, "da virada em diante, zero")
+
+    def test_virada_e_da_empresa_e_nao_de_cada_canal(self):
+        """Um canal pode nao ter batido a sua parte enquanto a empresa, no
+        conjunto, ja passou da meta -- e ai nenhum canal continua cobrando.
+        Decidir canal a canal deixava valor futuro na tela com a meta geral
+        superada."""
+        ns = carregar(["dias_com_meta_ja_batida", "meta_diaria_que_ainda_falta"])
+        dias = pd.date_range("2026-08-01", "2026-08-10", freq="D")
+        meta_hub = pd.Series([100.0] * 10, index=dias)      # meta do canal: 1.000
+        real_hub = pd.Series([0.0] * 10, index=dias)
+        real_hub.iloc[2] = 1800.0                            # HUB bateu sozinho
+        meta_loja = pd.Series([100.0] * 10, index=dias)
+        real_loja = pd.Series([0.0] * 10, index=dias)
+        real_loja.iloc[2] = 200.0                            # LOJA nao bateu
+
+        so_a_loja = ns["meta_diaria_que_ainda_falta"](meta_loja, real_loja)
+        self.assertGreater((so_a_loja > 0).sum(), 5,
+                           "o cenario precisa mesmo cobrar meta quando olha so o canal")
+
+        batidos = ns["dias_com_meta_ja_batida"](meta_hub + meta_loja, real_hub + real_loja)
+        com_geral = ns["meta_diaria_que_ainda_falta"](
+            meta_loja, real_loja, dias_ja_batidos=batidos)
+        # A empresa bateu no dia 3: dali em diante a loja tambem para de cobrar.
+        self.assertEqual(list(com_geral.iloc[2:]), [0.0] * 8)
+        self.assertGreater(com_geral.iloc[0], 0, "antes da virada o rateio continua valendo")
+
+    def test_empresa_longe_da_meta_ninguem_zera(self):
+        ns = carregar(["dias_com_meta_ja_batida", "meta_diaria_que_ainda_falta"])
+        dias = pd.date_range("2026-08-01", "2026-08-10", freq="D")
+        meta = pd.Series([100.0] * 10, index=dias)
+        real = pd.Series([0.0] * 10, index=dias)
+        real.iloc[2] = 50.0
+        batidos = ns["dias_com_meta_ja_batida"](meta * 2, real * 2)
+        self.assertEqual(batidos, [], "sem bater a meta, nenhum dia pode ser dado como batido")
+
+    def test_diario_decide_a_virada_uma_vez_no_geral(self):
+        i = FONTE.index("with tab_fin_diario:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
+        self.assertIn("_dias_batidos_d = dias_com_meta_ja_batida(", trecho)
+        self.assertIn("dias_ja_batidos=_dias_batidos_d", trecho)
+        # A virada tem de sair da base SEM filtro de canal.
+        j = trecho.index("_dias_batidos_d = dias_com_meta_ja_batida(")
+        self.assertIn("_agrega_no_mes_cheio(df_d_metas)", trecho[j:j + 300],
+                      "a virada precisa usar as metas de todos os canais")
 
     def test_cada_mes_e_avaliado_por_si(self):
         """Agosto batido nao pode zerar setembro: sao metas diferentes."""

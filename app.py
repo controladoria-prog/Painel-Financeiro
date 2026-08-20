@@ -4403,7 +4403,35 @@ def _avaliar_alertas_fluxo(
     return alertas
 
 
-def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=None):
+def dias_com_meta_ja_batida(meta_por_dia, realizado_por_dia):
+    """Os dias em que a meta do mês já estava alcançada -- do dia da virada
+    até o fim do mês.
+
+    A virada é da EMPRESA, não de cada canal. Um canal pode não ter batido a
+    sua parte enquanto a empresa, no conjunto, já passou da meta -- e nesse
+    caso não faz sentido nenhum canal continuar cobrando meta. Decidir por
+    canal era o que deixava valores futuros na tela mesmo com a meta geral
+    superada."""
+    meta = meta_por_dia.abs()
+    realizado = realizado_por_dia.abs().reindex(meta.index, fill_value=0.0)
+    dias = pd.to_datetime(pd.Series(meta.index, index=meta.index))
+    batidos = []
+    for _mes, indices in meta.groupby(dias.dt.to_period("M")).groups.items():
+        indices = list(indices)
+        meta_do_mes = float(meta.loc[indices].sum())
+        if meta_do_mes <= 0:
+            continue
+        acumulado = realizado.loc[indices].cumsum()
+        alcancados = acumulado[acumulado >= meta_do_mes]
+        if alcancados.empty:
+            continue
+        virada = alcancados.index[0]
+        batidos.extend(i for i in indices if i >= virada)
+    return batidos
+
+
+def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=None,
+                                dias_ja_batidos=None):
     """A meta do dia, já descontando o que foi recebido -- e ZERADA a partir
     do dia em que a meta do MÊS foi batida.
 
@@ -4418,6 +4446,11 @@ def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=N
     linha zera. Antes dele, continua valendo o rateio do dia menos o que
     entrou naquele dia.
 
+    `dias_ja_batidos` permite que a virada venha de FORA -- é assim que a
+    tabela por canal usa a virada da empresa inteira. Um canal pode não ter
+    batido a sua parte enquanto a empresa já passou da meta, e aí ninguém
+    mais cobra meta.
+
     As séries de entrada têm de cobrir o MÊS INTEIRO, não só o recorte que
     está na tela. É este o ponto que faz a conta fechar: com o período
     começando no dia 18, olhar só o recorte esconde tudo que entrou do dia 1
@@ -4431,20 +4464,11 @@ def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=N
     realizado = realizado_por_dia.abs().reindex(meta.index, fill_value=0.0)
     resultado = (meta - realizado).clip(lower=0)
 
-    dias = pd.to_datetime(pd.Series(meta.index, index=meta.index))
-    for _mes, indices in meta.groupby(dias.dt.to_period("M")).groups.items():
-        indices = list(indices)
-        meta_do_mes = float(meta.loc[indices].sum())
-        if meta_do_mes <= 0:
-            continue
-        acumulado = realizado.loc[indices].cumsum()
-        batidos = acumulado[acumulado >= meta_do_mes]
-        if batidos.empty:
-            continue
-        # Do dia da virada em diante não se cobra mais nada: no conjunto do
-        # mês a meta já foi alcançada.
-        virada = batidos.index[0]
-        resultado.loc[[i for i in indices if i >= virada]] = 0.0
+    if dias_ja_batidos is None:
+        dias_ja_batidos = dias_com_meta_ja_batida(meta, realizado)
+    presentes = [d for d in dias_ja_batidos if d in resultado.index]
+    if presentes:
+        resultado.loc[presentes] = 0.0
 
     if dias_visiveis is not None:
         resultado = resultado.reindex(dias_visiveis, fill_value=0.0)
@@ -6473,6 +6497,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         dentro["Data Efetiva"].dt.normalize()
                     )[COL_FIN_VALOR].sum()
 
+                # A virada da meta é decidida UMA vez, com a empresa
+                # inteira: um canal pode não ter batido a sua parte enquanto
+                # a empresa já passou da meta, e nesse caso nenhum canal
+                # continua cobrando. Decidir isso canal a canal era o que
+                # deixava valor futuro na tela com a meta geral já superada.
+                _dias_batidos_d = []
+                if not df_d_metas.empty:
+                    _real_geral_d = df_d_completo[
+                        df_d_completo[COL_FIN_MOVIMENTO].isin(
+                            [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
+                    ]
+                    _dias_batidos_d = dias_com_meta_ja_batida(
+                        _agrega_no_mes_cheio(df_d_metas),
+                        _agrega_no_mes_cheio(_real_geral_d),
+                    )
+
                 linhas_tabela_d = []
                 indices_tabela_d = []
                 estilo_linhas_d = []
@@ -6541,7 +6581,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             ]
                             serie_realizado = _agrega_no_mes_cheio(realizado_canal).abs()
                             falta_meta_canal = meta_diaria_que_ainda_falta(
-                                serie_meta, serie_realizado, dias_ordenados_d)
+                                serie_meta, serie_realizado, dias_ordenados_d,
+                                dias_ja_batidos=_dias_batidos_d)
                             # Zerada no intervalo inteiro, a linha não
                             # acrescenta nada: some. Volta sozinha se o
                             # período incluir um mês em que ainda falta.
