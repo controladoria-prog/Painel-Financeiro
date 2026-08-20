@@ -4408,73 +4408,55 @@ def _avaliar_alertas_fluxo(
     return alertas
 
 
-def dias_com_meta_ja_batida(meta_por_dia, realizado_por_dia):
-    """Os dias em que a meta do mês já estava alcançada -- do dia da virada
-    até o fim do mês.
+def fracao_da_meta_ainda_nao_coberta(meta_por_dia, realizado_por_dia):
+    """Para cada dia, quanto da meta DAQUELE dia ainda não está coberta pelo
+    que a empresa tem a receber no mês -- de 1 (nada coberto) a 0 (coberta).
 
-    A virada é da EMPRESA, não de cada canal. Um canal pode não ter batido a
-    sua parte enquanto a empresa, no conjunto, já passou da meta -- e nesse
-    caso não faz sentido nenhum canal continuar cobrando meta. Decidir por
-    canal era o que deixava valores futuros na tela mesmo com a meta geral
-    superada."""
+    O modelo é de consumo: o total do MÊS a receber (o que já entrou mais o
+    que está programado por vencimento, inclusive nos dias à frente) vai
+    cobrindo as metas diárias em ordem de data. Se o total cobre o mês
+    inteiro, todos os dias zeram; se cobre até o dia 12, os dias 1 a 12
+    zeram, o 13 fica parcial e os demais continuam cheios.
+
+    Por que não comparar o acumulado ATÉ o dia: nesse modelo, um título que
+    vence dia 28 só passava a contar no dia 28, e os dias anteriores
+    continuavam cobrando meta mesmo com o mês inteiro já garantido. Era o
+    que deixava valor futuro na tela.
+
+    A decisão é sempre da EMPRESA: quem chama passa a meta e o realizado de
+    todos os canais, e o fator resultante vale para cada canal. Um canal
+    pode não ter batido a sua parte enquanto a empresa já cobriu o mês."""
     meta = meta_por_dia.abs()
     realizado = realizado_por_dia.abs().reindex(meta.index, fill_value=0.0)
+    fator = pd.Series(1.0, index=meta.index, dtype="float64")
     dias = pd.to_datetime(pd.Series(meta.index, index=meta.index))
-    batidos = []
     for _mes, indices in meta.groupby(dias.dt.to_period("M")).groups.items():
-        indices = list(indices)
-        meta_do_mes = float(meta.loc[indices].sum())
-        if meta_do_mes <= 0:
-            continue
-        acumulado = realizado.loc[indices].cumsum()
-        alcancados = acumulado[acumulado >= meta_do_mes]
-        if alcancados.empty:
-            continue
-        virada = alcancados.index[0]
-        batidos.extend(i for i in indices if i >= virada)
-    return batidos
+        saldo = float(realizado.loc[list(indices)].sum())
+        for dia in sorted(indices):
+            alvo = float(meta.loc[dia])
+            if alvo <= 0:
+                fator.loc[dia] = 0.0
+                continue
+            consumido = min(saldo, alvo)
+            saldo -= consumido
+            fator.loc[dia] = (alvo - consumido) / alvo
+    return fator
 
 
-def meta_diaria_que_ainda_falta(meta_por_dia, realizado_por_dia, dias_visiveis=None,
-                                dias_ja_batidos=None):
-    """A meta do dia, já descontando o que foi recebido -- e ZERADA a partir
-    do dia em que a meta do MÊS foi batida.
+def meta_diaria_que_ainda_falta(meta_por_dia, fracao_nao_coberta, dias_visiveis=None):
+    """A meta do dia já descontada do que a empresa tem a receber no mês.
 
-    O que ela resolve: o contas a receber é posicionado pelo vencimento, e
-    boa parte do mês já está programada. A meta, por outro lado, é rateada
-    dia a dia. Sem olhar o mês inteiro, dias lá na frente continuavam
-    cobrando meta mesmo depois de a meta do mês já ter sido superada -- e o
-    mensal, que soma tudo, já mostrava zero. Ficavam duas telas discordando.
+    `fracao_nao_coberta` vem de fracao_da_meta_ainda_nao_coberta e é sempre
+    calculada com a empresa inteira -- por isso a linha de um canal zera
+    quando a EMPRESA cobriu o mês, e não só quando aquele canal cobriu.
 
-    A conta é por MÊS: soma-se o realizado em ordem de data e procura-se o
-    dia em que esse acumulado alcança a meta do mês. Desse dia em diante a
-    linha zera. Antes dele, continua valendo o rateio do dia menos o que
-    entrou naquele dia.
-
-    `dias_ja_batidos` permite que a virada venha de FORA -- é assim que a
-    tabela por canal usa a virada da empresa inteira. Um canal pode não ter
-    batido a sua parte enquanto a empresa já passou da meta, e aí ninguém
-    mais cobra meta.
-
-    As séries de entrada têm de cobrir o MÊS INTEIRO, não só o recorte que
-    está na tela. É este o ponto que faz a conta fechar: com o período
-    começando no dia 18, olhar só o recorte esconde tudo que entrou do dia 1
-    ao 17 -- e a meta reaparece nos dias seguintes como se nada tivesse sido
-    recebido. `dias_visiveis` corta o resultado no fim, depois de a conta já
-    ter sido feita com o mês completo.
-
-    Recebe e devolve séries indexadas por dia (Timestamp). Os valores são
-    tratados em módulo -- sinal aqui não tem significado."""
+    As séries de entrada cobrem o MÊS INTEIRO, não o recorte da tela: com o
+    período começando no dia 18, olhar só o recorte esconde o que entrou do
+    dia 1 ao 17. `dias_visiveis` corta o resultado no fim, depois de a conta
+    já ter sido feita."""
     meta = meta_por_dia.abs()
-    realizado = realizado_por_dia.abs().reindex(meta.index, fill_value=0.0)
-    resultado = (meta - realizado).clip(lower=0)
-
-    if dias_ja_batidos is None:
-        dias_ja_batidos = dias_com_meta_ja_batida(meta, realizado)
-    presentes = [d for d in dias_ja_batidos if d in resultado.index]
-    if presentes:
-        resultado.loc[presentes] = 0.0
-
+    fator = fracao_nao_coberta.reindex(meta.index, fill_value=1.0).fillna(1.0)
+    resultado = (meta * fator).clip(lower=0)
     if dias_visiveis is not None:
         resultado = resultado.reindex(dias_visiveis, fill_value=0.0)
     return resultado
@@ -6511,13 +6493,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # a empresa já passou da meta, e nesse caso nenhum canal
                 # continua cobrando. Decidir isso canal a canal era o que
                 # deixava valor futuro na tela com a meta geral já superada.
-                _dias_batidos_d = []
+                _fator_meta_d = None
                 if not df_d_metas.empty:
                     _real_geral_d = df_d_completo[
                         df_d_completo[COL_FIN_MOVIMENTO].isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
                     ]
-                    _dias_batidos_d = dias_com_meta_ja_batida(
+                    _fator_meta_d = fracao_da_meta_ainda_nao_coberta(
                         _agrega_no_mes_cheio(df_d_metas),
                         _agrega_no_mes_cheio(_real_geral_d),
                     )
@@ -6581,17 +6563,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             df_d_metas[COL_FIN_CANAL] == canal
                         ]
                         if not df_meta_canal.empty:
+                            # A meta é a do canal; o quanto dela ainda não
+                            # está coberta é decisão da EMPRESA (_fator_meta_d),
+                            # e por isso o recebimento deste canal não entra
+                            # aqui -- ele já foi contado no fator.
                             serie_meta = _agrega_no_mes_cheio(df_meta_canal).abs()
-                            realizado_canal = df_d_completo[
-                                (df_d_completo[COL_FIN_CANAL] == canal)
-                                & df_d_completo[COL_FIN_MOVIMENTO].isin(
-                                    [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO]
-                                )
-                            ]
-                            serie_realizado = _agrega_no_mes_cheio(realizado_canal).abs()
                             falta_meta_canal = meta_diaria_que_ainda_falta(
-                                serie_meta, serie_realizado, dias_ordenados_d,
-                                dias_ja_batidos=_dias_batidos_d)
+                                serie_meta, _fator_meta_d, dias_ordenados_d)
                             # Zerada no intervalo inteiro, a linha não
                             # acrescenta nada: some. Volta sozinha se o
                             # período incluir um mês em que ainda falta.
@@ -6956,7 +6934,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
                     ]
                     falta = meta_diaria_que_ainda_falta(
-                        serie_meta, _por_dia_mes_cheio(realizado_receber), dias_dc)
+                        serie_meta,
+                        fracao_da_meta_ainda_nao_coberta(
+                            serie_meta, _por_dia_mes_cheio(realizado_receber)),
+                        dias_dc)
                     # Zerada no intervalo inteiro, a linha não acrescenta
                     # nada: some. Volta sozinha se o período alcançar um mês
                     # em que ainda falta receber.

@@ -53,7 +53,7 @@ DEPENDENCIAS = {
     "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
     "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
     "guardar_memoria": ["memoria_em_uso_mb"],
-    "meta_diaria_que_ainda_falta": ["dias_com_meta_ja_batida"],
+    "meta_diaria_que_ainda_falta": [],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
 }
@@ -1671,115 +1671,96 @@ class TesteNomesEVirada(unittest.TestCase):
             ["1.1.Caixa", "1.Banco", "2 - Contas a Receber Meta", "2.1 - Contas a Receber",
              "2.2 - Contas a Receber Liquidado", "3 - Contas a Pagar"])
 
-    def _falta(self, meta, realizado, inicio="2026-08-03"):
-        ns = carregar(["meta_diaria_que_ainda_falta"])
-        dias = pd.date_range(inicio, periods=len(meta), freq="D")
+    def _falta(self, meta, realizado, dias_visiveis=None, meta_alvo=None):
+        """Roda o par de funcoes como as telas rodam: o fator sai da EMPRESA
+        e a meta mostrada pode ser a de um canal."""
+        ns = carregar(["fracao_da_meta_ainda_nao_coberta", "meta_diaria_que_ainda_falta"])
+        fator = ns["fracao_da_meta_ainda_nao_coberta"](meta, realizado)
         return ns["meta_diaria_que_ainda_falta"](
-            pd.Series(meta, index=dias), pd.Series(realizado, index=dias)), dias
+            meta if meta_alvo is None else meta_alvo, fator, dias_visiveis)
 
-    def test_meta_zera_a_partir_do_dia_em_que_foi_batida(self):
-        """O a receber e posicionado pelo VENCIMENTO, entao boa parte do mes
-        ja esta programada. Sem olhar o mes inteiro, dias la na frente
-        continuavam cobrando meta mesmo com a meta do mes ja superada -- e o
-        mensal, que soma tudo, ja mostrava zero. Duas telas discordando."""
-        falta, dias = self._falta([100.0] * 10, [400.0, 0, 0, 700.0] + [0.0] * 6)
-        self.assertEqual(falta.iloc[0], 0.0, "o recebido do dia abate a meta do dia")
-        self.assertEqual(falta.iloc[1], 100.0, "antes da virada, o rateio continua valendo")
-        self.assertEqual(list(falta.iloc[3:]), [0.0] * 7, "da virada em diante, zero")
+    def test_recebivel_do_fim_do_mes_ja_cobre_os_dias_anteriores(self):
+        """O contas a receber e posicionado pelo VENCIMENTO. Comparando o
+        acumulado ATE o dia, um titulo que vence dia 28 so contava no dia 28
+        e os dias anteriores seguiam cobrando meta com o mes ja garantido --
+        era o que deixava valor futuro na tela."""
+        dias = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        meta = pd.Series([100.0] * 31, index=dias)           # meta do mes: 3.100
+        real = pd.Series(0.0, index=dias)
+        real[pd.Timestamp("2026-08-28")] = 3500.0            # tudo vence no fim
+        falta = self._falta(meta, real)
+        self.assertEqual((falta > 0).sum(), 0, "o mes inteiro esta coberto")
 
-    def test_virada_e_da_empresa_e_nao_de_cada_canal(self):
-        """Um canal pode nao ter batido a sua parte enquanto a empresa, no
-        conjunto, ja passou da meta -- e ai nenhum canal continua cobrando.
-        Decidir canal a canal deixava valor futuro na tela com a meta geral
-        superada."""
-        ns = carregar(["dias_com_meta_ja_batida", "meta_diaria_que_ainda_falta"])
-        dias = pd.date_range("2026-08-01", "2026-08-10", freq="D")
-        meta_hub = pd.Series([100.0] * 10, index=dias)      # meta do canal: 1.000
-        real_hub = pd.Series([0.0] * 10, index=dias)
-        real_hub.iloc[2] = 1800.0                            # HUB bateu sozinho
-        meta_loja = pd.Series([100.0] * 10, index=dias)
-        real_loja = pd.Series([0.0] * 10, index=dias)
-        real_loja.iloc[2] = 200.0                            # LOJA nao bateu
+    def test_mes_parcialmente_coberto_cobra_o_que_sobra(self):
+        """Cobrindo 1.250 de 3.100, os primeiros dias zeram, um fica parcial
+        e o resto continua cheio -- e a soma bate com o que falta."""
+        dias = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        meta = pd.Series([100.0] * 31, index=dias)
+        real = pd.Series(0.0, index=dias)
+        real[pd.Timestamp("2026-08-28")] = 1250.0
+        falta = self._falta(meta, real)
+        self.assertEqual(falta[pd.Timestamp("2026-08-01")], 0.0)
+        self.assertEqual(falta[pd.Timestamp("2026-08-12")], 0.0)
+        self.assertAlmostEqual(falta[pd.Timestamp("2026-08-13")], 50.0, places=2)
+        self.assertAlmostEqual(falta[pd.Timestamp("2026-08-14")], 100.0, places=2)
+        self.assertAlmostEqual(falta.sum(), 3100.0 - 1250.0, places=2)
 
-        so_a_loja = ns["meta_diaria_que_ainda_falta"](meta_loja, real_loja)
-        self.assertGreater((so_a_loja > 0).sum(), 5,
-                           "o cenario precisa mesmo cobrar meta quando olha so o canal")
-
-        batidos = ns["dias_com_meta_ja_batida"](meta_hub + meta_loja, real_hub + real_loja)
-        com_geral = ns["meta_diaria_que_ainda_falta"](
-            meta_loja, real_loja, dias_ja_batidos=batidos)
-        # A empresa bateu no dia 3: dali em diante a loja tambem para de cobrar.
-        self.assertEqual(list(com_geral.iloc[2:]), [0.0] * 8)
-        self.assertGreater(com_geral.iloc[0], 0, "antes da virada o rateio continua valendo")
+    def test_canal_que_nao_bateu_zera_quando_a_empresa_cobriu(self):
+        """A decisao e da EMPRESA: um canal pode nao ter batido a sua parte
+        enquanto a empresa ja cobriu o mes."""
+        dias = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        meta_empresa = pd.Series([100.0] * 31, index=dias)
+        real_empresa = pd.Series(0.0, index=dias)
+        real_empresa[pd.Timestamp("2026-08-28")] = 3500.0
+        meta_loja = pd.Series([40.0] * 31, index=dias)
+        falta_loja = self._falta(meta_empresa, real_empresa, meta_alvo=meta_loja)
+        self.assertEqual(falta_loja.sum(), 0.0)
 
     def test_empresa_longe_da_meta_ninguem_zera(self):
-        ns = carregar(["dias_com_meta_ja_batida", "meta_diaria_que_ainda_falta"])
         dias = pd.date_range("2026-08-01", "2026-08-10", freq="D")
         meta = pd.Series([100.0] * 10, index=dias)
-        real = pd.Series([0.0] * 10, index=dias)
+        real = pd.Series(0.0, index=dias)
         real.iloc[2] = 50.0
-        batidos = ns["dias_com_meta_ja_batida"](meta * 2, real * 2)
-        self.assertEqual(batidos, [], "sem bater a meta, nenhum dia pode ser dado como batido")
+        falta = self._falta(meta, real)
+        self.assertAlmostEqual(falta.sum(), 950.0, places=2)
 
-    def test_diario_decide_a_virada_uma_vez_no_geral(self):
-        i = FONTE.index("with tab_fin_diario:")
-        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
-        self.assertIn("_dias_batidos_d = dias_com_meta_ja_batida(", trecho)
-        self.assertIn("dias_ja_batidos=_dias_batidos_d", trecho)
-        # A virada tem de sair da base SEM filtro de canal.
-        j = trecho.index("_dias_batidos_d = dias_com_meta_ja_batida(")
-        self.assertIn("_agrega_no_mes_cheio(df_d_metas)", trecho[j:j + 300],
-                      "a virada precisa usar as metas de todos os canais")
-
-    def test_cada_mes_e_avaliado_por_si(self):
-        """Agosto batido nao pode zerar setembro: sao metas diferentes."""
-        ns = carregar(["meta_diaria_que_ainda_falta"])
-        dias = list(pd.date_range("2026-08-03", periods=10, freq="D")) + \
-            list(pd.date_range("2026-09-01", periods=5, freq="D"))
-        meta = pd.Series([100.0] * 10 + [200.0] * 5, index=dias)
-        real = pd.Series([400.0, 0, 0, 700.0] + [0.0] * 6 + [0.0] * 5, index=dias)
-        falta = ns["meta_diaria_que_ainda_falta"](meta, real)
-        self.assertEqual(list(falta.iloc[3:10]), [0.0] * 7, "agosto tinha de estar zerado")
-        self.assertTrue((falta.iloc[10:] > 0).all(), "setembro ainda tem meta a cobrar")
-
-    def test_conta_da_meta_usa_o_mes_inteiro_e_nao_o_recorte(self):
-        """Com o periodo comecando no dia 18, olhar so o recorte esconde tudo
-        que entrou do dia 1 ao 17 -- e a meta reaparece nos dias seguintes
-        como se nada tivesse sido recebido. A conta e do mes; o recorte so
-        decide o que aparece na tela."""
-        ns = carregar(["meta_diaria_que_ainda_falta"])
-        dias_mes = pd.date_range("2026-08-01", "2026-08-31", freq="D")
-        meta = pd.Series([100.0] * 31, index=dias_mes)          # meta do mes: 3.100
-        real = pd.Series(0.0, index=dias_mes)
-        for dia, valor in [("2026-08-05", 1200.0), ("2026-08-10", 1200.0),
-                           ("2026-08-15", 1100.0)]:             # 3.500 no total
-            real[pd.Timestamp(dia)] = valor
+    def test_conta_usa_o_mes_inteiro_e_nao_o_recorte(self):
+        """Com o periodo comecando no dia 18, olhar so o recorte esconde o
+        que entrou do dia 1 ao 17."""
+        dias = pd.date_range("2026-08-01", "2026-08-31", freq="D")
+        meta = pd.Series([100.0] * 31, index=dias)
+        real = pd.Series(0.0, index=dias)
+        real[pd.Timestamp("2026-08-05")] = 3500.0
         visiveis = pd.date_range("2026-08-18", "2026-08-31", freq="D")
 
-        so_o_recorte = ns["meta_diaria_que_ainda_falta"](meta[visiveis], real[visiveis])
-        self.assertTrue((so_o_recorte > 0).all(),
-                        "o cenario do teste precisa mesmo falhar sem o mes inteiro")
+        so_recorte = self._falta(meta[visiveis], real[visiveis])
+        self.assertTrue((so_recorte > 0).all(),
+                        "o cenario precisa mesmo falhar sem o mes inteiro")
+        com_mes = self._falta(meta, real, visiveis)
+        self.assertEqual(list(com_mes.index), list(visiveis))
+        self.assertFalse(com_mes.any())
 
-        com_o_mes = ns["meta_diaria_que_ainda_falta"](meta, real, visiveis)
-        self.assertEqual(list(com_o_mes.index), list(visiveis), "devolveu dias fora da tela")
-        self.assertFalse(com_o_mes.any(),
-                         "a meta do mes ja foi superada: nenhum dia pode cobrar")
-
-    def test_mes_seguinte_ainda_cobra_no_mesmo_recorte(self):
-        """Olhando 18/08 a 30/09: agosto (batido) zerado e setembro cobrando,
-        na mesma tabela."""
-        ns = carregar(["meta_diaria_que_ainda_falta"])
+    def test_cada_mes_e_avaliado_por_si(self):
+        """Agosto coberto nao pode zerar setembro."""
         dias_ago = pd.date_range("2026-08-01", "2026-08-31", freq="D")
         dias_set = pd.date_range("2026-09-01", "2026-09-30", freq="D")
         meta = pd.concat([pd.Series([100.0] * 31, index=dias_ago),
                           pd.Series([200.0] * 30, index=dias_set)])
         real = pd.Series(0.0, index=list(dias_ago) + list(dias_set))
         real[pd.Timestamp("2026-08-05")] = 3500.0
-        visiveis = pd.date_range("2026-08-18", "2026-09-30", freq="D")
-        falta = ns["meta_diaria_que_ainda_falta"](meta, real, visiveis)
-        self.assertFalse(falta[:pd.Timestamp("2026-08-31")].any(), "agosto tinha de zerar")
+        falta = self._falta(meta, real)
+        self.assertFalse(falta[:pd.Timestamp("2026-08-31")].any(), "agosto esta coberto")
         self.assertTrue((falta[pd.Timestamp("2026-09-01"):] > 0).all(),
                         "setembro ainda tem meta a cobrar")
+
+    def test_diario_decide_o_fator_uma_vez_no_geral(self):
+        i = FONTE.index("with tab_fin_diario:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
+        self.assertIn("_fator_meta_d = fracao_da_meta_ainda_nao_coberta(", trecho)
+        self.assertIn("serie_meta, _fator_meta_d, dias_ordenados_d", trecho)
+        j = trecho.index("_fator_meta_d = fracao_da_meta_ainda_nao_coberta(")
+        self.assertIn("_agrega_no_mes_cheio(df_d_metas)", trecho[j:j + 300],
+                      "o fator precisa usar as metas de TODOS os canais")
 
     def test_as_duas_telas_montam_a_meta_com_o_mes_cheio(self):
         """Trava estrutural: se qualquer uma voltar a somar so o recorte, o
@@ -1787,11 +1768,12 @@ class TesteNomesEVirada(unittest.TestCase):
         i = FONTE.index("with tab_fin_diario:")
         diario = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
         self.assertIn("_agrega_no_mes_cheio(df_meta_canal)", diario)
-        self.assertIn("serie_meta, serie_realizado, dias_ordenados_d", diario)
+        self.assertIn("serie_meta, _fator_meta_d, dias_ordenados_d", diario)
         j = FONTE.index("with tab_fin_consolidado:")
         consolidado = FONTE[j:FONTE.index("# ---------------- TESOURARIA", j)]
         self.assertIn("_por_dia_mes_cheio(", consolidado)
-        self.assertIn("_por_dia_mes_cheio(realizado_receber), dias_dc)", consolidado,
+        self.assertIn("fracao_da_meta_ainda_nao_coberta(", consolidado)
+        self.assertIn("dias_dc)", consolidado,
                       "o consolidado precisa cortar o resultado nos dias da tela")
 
     def test_linha_da_meta_some_quando_zerada_no_intervalo(self):
@@ -2012,22 +1994,6 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertEqual(len(set(rotulos)), 3)
         self.assertTrue(all(r.replace("\u200b", "") == "Débito" for r in rotulos))
 
-    def _montar(self):
-        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
-                             "_rotulo_unico_tabela", "_ordenar_com_filhas",
-                             "_pais_reordenados", "formata_brl", "tabela_selecionavel"], [])
-        capturado = {}
-        ns_local["html_embutido"] = dubla_html_embutido(capturado)
-        ordem = ns_local["_ordenar_com_filhas"](self.INDICES, self.PAIS, self.TIPOS)
-        df = pd.DataFrame([[1.0, 2.0]] * len(self.INDICES),
-                          index=[ns_local["_rotulo_unico_tabela"](self.INDICES[p], p)
-                                 for p in ordem],
-                          columns=["18/08", "19/08"])
-        ns_local["tabela_selecionavel"](
-            df, chave="t", tipos_linha=[self.TIPOS[p] for p in ordem],
-            pais=ns_local["_pais_reordenados"](self.PAIS, ordem))
-        return capturado, ns_local
-
     def _montar(self, abertas=()):
         """Monta a tabela como a aba monta: as filhas so entram para as
         linhas marcadas como abertas."""
@@ -2061,6 +2027,23 @@ class TesteDiarioConsolidado(unittest.TestCase):
             comandos_abrir={mae: (mae in abertas, i)
                             for i, mae in enumerate(filhas_de)})
         return capturado, ns_local
+
+    def test_nenhum_metodo_de_teste_duplicado(self):
+        """Dois metodos com o mesmo nome numa classe: o ultimo apaga o
+        primeiro em silencio. Foi o que aconteceu com um `_falta` antigo,
+        que passou a responder pelas chamadas do novo."""
+        arvore = ast.parse(open(__file__, encoding="utf-8").read())
+        repetidos = []
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.ClassDef):
+                continue
+            vistos = set()
+            for item in no.body:
+                if isinstance(item, ast.FunctionDef):
+                    if item.name in vistos:
+                        repetidos.append(f"{no.name}.{item.name}")
+                    vistos.add(item.name)
+        self.assertEqual(repetidos, [], "metodo definido duas vezes na mesma classe")
 
     def test_toda_funcao_chamada_existe(self):
         """Teste que so procura o TEXTO da chamada passa mesmo quando a
