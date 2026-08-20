@@ -6450,17 +6450,36 @@ if st.session_state["painel_escolhido"] == "financeiro":
             movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)
             colunas_meses_m = [c for c in pivot_m.columns if c != "TOTAL / SALDO DE ABERTURA"]
 
+            # O saldo inicial só vale para PREVISÃO. Mês que já passou, e o
+            # mês corrente, têm as posições de caixa e banco reais dentro
+            # deles -- somar um saldo de abertura por cima contaria o mesmo
+            # dinheiro duas vezes. É a mesma regra que já vale no diário:
+            # dia com caixa/banco preenchido zera o saldo inicial.
+            _mes_corrente_m = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
             saldos_iniciais_m = {}
             _acumulado_m = float(saldo_anterior_ao_periodo_m)
-            for _coluna in colunas_meses_m:
-                saldos_iniciais_m[_coluna] = _acumulado_m
-                _acumulado_m += float(movimentos_do_mes_m.get(_coluna, 0.0))
+            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
+                if _periodo <= _mes_corrente_m:
+                    # Passado e mês corrente: a posição real já está na tabela.
+                    saldos_iniciais_m[_coluna] = 0.0
+                    _acumulado_m = float(movimentos_do_mes_m.get(_coluna, 0.0))
+                else:
+                    # Daqui para a frente é previsão: o mês parte do que
+                    # sobrou do anterior.
+                    saldos_iniciais_m[_coluna] = _acumulado_m
+                    _acumulado_m += float(movimentos_do_mes_m.get(_coluna, 0.0))
 
             linha_saldo_inicial_m = pd.Series(saldos_iniciais_m)
             # Na coluna final vai a abertura do PRIMEIRO mês do recorte: é a
             # posição de onde o período parte.
+            # Na coluna final, a abertura do primeiro mês de PREVISÃO: é dali
+            # que a projeção parte. Se o recorte não alcança o futuro, não há
+            # abertura nenhuma a mostrar.
+            _primeira_previsao_m = next(
+                (c for p, c in zip(meses_ordenados_m, colunas_meses_m)
+                 if p > _mes_corrente_m), None)
             linha_saldo_inicial_m["TOTAL / SALDO DE ABERTURA"] = (
-                saldos_iniciais_m[colunas_meses_m[0]] if colunas_meses_m else 0.0)
+                saldos_iniciais_m[_primeira_previsao_m] if _primeira_previsao_m else 0.0)
 
             # TOTAL GERAL: movimentos do mês MAIS o saldo com que ele começou.
             linha_total_geral_m = movimentos_do_mes_m.copy()

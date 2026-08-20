@@ -1253,6 +1253,36 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
             pivo = self._pivo(posicao)
             self.assertEqual(pivo.loc["4 - Contas a Pagar"].iloc[0], -500_000.0)
 
+    def test_saldo_inicial_mensal_so_vale_para_previsao(self):
+        """Mes que ja passou, e o mes corrente, tem as posicoes reais de caixa
+        e banco DENTRO deles: somar um saldo de abertura por cima contaria o
+        mesmo dinheiro duas vezes. Da frente em diante e previsao, e ai o mes
+        parte do que sobrou do anterior."""
+        mes_corrente = pd.Period("2026-08", "M")
+        meses = [pd.Period(m, "M") for m in ("2026-07", "2026-08", "2026-09", "2026-10")]
+        movimentos = {"JUL": 4_200.0, "AGO": 5_037.0, "SET": -300.0, "OUT": -400.0}
+        colunas = list(movimentos)
+
+        saldos, acumulado = {}, 0.0
+        for periodo, coluna in zip(meses, colunas):
+            if periodo <= mes_corrente:
+                saldos[coluna] = 0.0
+                acumulado = movimentos[coluna]
+            else:
+                saldos[coluna] = acumulado
+                acumulado += movimentos[coluna]
+
+        self.assertEqual(saldos["JUL"], 0.0, "mes realizado nao tem abertura")
+        self.assertEqual(saldos["AGO"], 0.0, "mes corrente nao tem abertura")
+        self.assertEqual(saldos["SET"], 5_037.0, "previsao parte do fechamento anterior")
+        self.assertEqual(saldos["OUT"], 4_737.0, "e segue em cadeia")
+
+        i = FONTE.index("📋 Movimentos por Mês")
+        trecho = FONTE[max(0, i - 6000):i + 3000]
+        self.assertIn("if _periodo <= _mes_corrente_m:", trecho,
+                      "a regra precisa distinguir passado/corrente de previsao")
+        self.assertIn('index=["SALDO INICIAL"]', trecho)
+
     def test_so_a_tabela_mensal_usa_a_abertura(self):
         # Janela ampla: o bloco cresceu quando o SALDO INICIAL entrou, e uma
         # janela curta faz o teste falhar por posicao, nao por defeito.
