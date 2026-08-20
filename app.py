@@ -5168,27 +5168,20 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         // reconferir se a janela continua aberta -- cada verificação que
         // acrescentei aqui foi uma chance a mais de o caminho ser abandonado
         // no meio, e nenhuma delas resolveu nada.
-        // Primeiro: abrir a página como ARQUIVO EM MEMÓRIA. A permissão do
-        // quadro inclui "allow-popups-to-escape-sandbox", ou seja, a janela
-        // nova NÃO herda o isolamento -- e por isso ela consegue carregar um
-        // endereço de arquivo em memória. Já tentamos abrir em branco e
-        // escrever dentro (funcionava antes, hoje não), e criar link na
-        // página de fora (é navegação, o navegador barra). Este caminho é
-        // diferente dos dois.
-        const enderecoPagina = URL.createObjectURL(
-          new Blob([pagina], {{ type: 'text/html;charset=utf-8' }}));
-        const aba = window.open(enderecoPagina, '_blank');
+        // ESTE é o caminho que funciona, comprovado por print do usuário em
+        // 20/08/2026: a aba abriu com o endereço "about:blank", ou seja,
+        // janela em branco com a página escrita dentro.
+        //
+        // NÃO trocar por abrir um arquivo em memória: aquilo devolve uma
+        // janela mesmo quando o navegador barra o conteúdo, então o código
+        // dá a abertura como certa e nunca tenta este jeito aqui. Também não
+        // trocar por link ou por window.parent.open: viram navegação da
+        // página, que o quadro não tem permissão de fazer.
+        const aba = window.open('', '_blank');
         if (aba) {{
+          aba.document.write(pagina);
+          aba.document.close();
           abriu = true;
-        }} else {{
-          URL.revokeObjectURL(enderecoPagina);
-          // Segundo: abrir em branco e escrever dentro -- o jeito antigo.
-          const abaEmBranco = window.open('', '_blank');
-          if (abaEmBranco) {{
-            abaEmBranco.document.write(pagina);
-            abaEmBranco.document.close();
-            abriu = true;
-          }}
         }}
       }} catch (erro) {{ abriu = false; }}
       if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}

@@ -2589,18 +2589,21 @@ class TesteDiarioConsolidado(unittest.TestCase):
         tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
         ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
         html = capturado["codigo"]
-        # Dois caminhos, nesta ordem: arquivo em memoria (a janela nova nao
-        # herda o isolamento do quadro, entao consegue carrega-lo) e, se
-        # falhar, abrir em branco e escrever dentro -- o jeito antigo.
-        self.assertIn("window.open(enderecoPagina, '_blank')", html)
-        self.assertIn("abaEmBranco.document.write(pagina);", html)
-        self.assertLess(html.index("window.open(enderecoPagina"),
-                        html.index("window.open('', '_blank')"),
-                        "o arquivo em memoria vem primeiro")
-        self.assertNotIn("aba.document.open()", html,
-                         "a versao que funcionava nao chamava document.open()")
-        self.assertNotIn("!aba.closed", html,
-                         "reconferir a janela so cria caminho para desistir no meio")
+        # CAMINHO COMPROVADO POR PRINT (20/08/2026): a aba abriu com o
+        # endereco "about:blank" -- janela em branco com a pagina escrita
+        # dentro. Cada variacao que tentei aqui quebrou o que funcionava:
+        #   - arquivo em memoria: devolve janela mesmo quando o navegador
+        #     barra o conteudo, entao o codigo nunca cai no jeito certo
+        #   - link ou window.parent.open: viram navegacao da pagina, que o
+        #     quadro nao tem permissao de fazer
+        #   - document.open() antes de escrever, reconferir se a janela
+        #     seguia aberta: so criam caminhos para desistir no meio
+        self.assertIn("const aba = window.open('', '_blank');", html)
+        self.assertIn("aba.document.write(pagina);", html)
+        for proibido in ("window.open(enderecoPagina", "aba.document.open()",
+                         "!aba.closed", "window.parent.open("):
+            self.assertNotIn(proibido, html,
+                             f"{proibido} ja quebrou a abertura da aba antes")
 
     def test_duplo_clique_tem_caminho_alternativo(self):
         """O navegador pode recusar a abertura da aba vinda de dentro do
