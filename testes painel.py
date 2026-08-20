@@ -2456,6 +2456,47 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn('lancamentos_dc.pop("||", None)', trecho,
                       "a chave vazia (linhas sem grupo) nao pode virar celula")
 
+    def test_categoria_com_valor_ausente_nao_derruba_o_mapa(self):
+        """astype(str) numa coluna CATEGORIA devolve o ausente como nan de
+        verdade, nao como o texto "nan" -- entao um replace depois nao pega,
+        e esse nan derruba a escrita do mapa INTEIRO. Foi a mensagem que o
+        painel finalmente mostrou: "Out of range float values are not JSON
+        compliant: nan". Canal, Modalidade e Grupo de Despesa sao categorias."""
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        dia = pd.Timestamp("2026-08-24")
+        df = pd.DataFrame({
+            "Data Efetiva": [dia] * 2,
+            ns["COL_FIN_MOVIMENTO"]: pd.Categorical(["3 - Contas a Pagar"] * 2),
+            ns["COL_FIN_NUMERO"]: ["NF 1", None],
+            ns["COL_FIN_HISTORICO"]: pd.Categorical(["FORN A", None]),
+            ns["COL_FIN_CANAL"]: pd.Categorical(["LOJA", None]),
+            ns["COL_FIN_MODALIDADE"]: pd.Categorical([None, None]),
+            ns["COL_FIN_GRUPO_DESPESA"]: pd.Categorical(["Frete", None]),
+            ns["COL_FIN_VENCIMENTO"]: [dia, pd.NaT],
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [pd.NaT] * 2,
+            ns["COL_FIN_VALOR"]: [-79_843.01, float("nan")],
+        })
+        mapa, _cortou = ns["montar_lancamentos_por_celula"](
+            df, {dia: "24/08"}, df[ns["COL_FIN_MOVIMENTO"]].astype(str))
+        # allow_nan=False e o que o navegador faz: recusa nan.
+        texto = json.dumps(mapa, ensure_ascii=False, allow_nan=False)
+        self.assertIn("3 - Contas a Pagar||24/08", json.loads(texto))
+        for lancamento in json.loads(texto)["3 - Contas a Pagar||24/08"]:
+            for campo, valor in lancamento.items():
+                self.assertNotEqual(valor, "nan", f"{campo} virou o texto 'nan'")
+
+    def test_fluxo_mensal_nao_tem_coluna_de_total(self):
+        """So os meses. Uma coluna que ora soma (a receber, a pagar) ora
+        mostra posicao (caixa, banco) confunde mais do que ajuda."""
+        self.assertNotIn('pivot_m["TOTAL / SALDO DE ABERTURA"]', FONTE)
+        i = FONTE.index("📋 Movimentos por Mês")
+        trecho = FONTE[max(0, i - 6000):i + 2000]
+        self.assertNotIn("TOTAL / SALDO DE ABERTURA", trecho)
+
     def test_mapa_e_sempre_legivel_pelo_navegador(self):
         """UM lancamento com valor vazio bastava para o navegador nao
         conseguir ler o mapa INTEIRO -- Python escreve NaN, que nao e JSON

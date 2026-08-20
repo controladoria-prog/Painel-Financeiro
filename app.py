@@ -4471,7 +4471,15 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
             recorte[coluna] = recorte[coluna].dt.strftime("%d/%m/%Y").fillna("")
     for coluna in colunas:
         if coluna not in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
-            recorte[coluna] = recorte[coluna].astype(str).replace({"nan": "", "None": ""})
+            # fillna ANTES do astype(str). Numa coluna CATEGORIA, astype(str)
+            # devolve o valor ausente como nan de verdade -- não como o texto
+            # "nan" -- então o replace depois não pega, e esse nan derruba a
+            # escrita do mapa inteiro ("Out of range float values are not JSON
+            # compliant"). Canal, Modalidade e Grupo de Despesa são categorias.
+            recorte[coluna] = (
+                recorte[coluna].astype("object").where(recorte[coluna].notna(), "")
+                .astype(str).replace({"nan": "", "None": "", "NaT": ""})
+            )
     # Valor vazio ou infinito vira 0: o Python escreve NaN/Infinity, que NÃO
     # são JSON válido, e o navegador falha ao ler o mapa INTEIRO. Uma linha
     # ruim entre milhares fazia toda célula responder "sem detalhe" -- o
@@ -6460,7 +6468,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
             pivot_m_fechamento.columns = list(pivot_m.columns)
-            pivot_m["TOTAL / SALDO DE ABERTURA"] = pd.Series(totais_finais_m)
+            # Sem coluna de total no Fluxo Mensal: só os meses. Uma coluna
+            # que ora soma (a receber, a pagar) ora mostra posição (caixa,
+            # banco) confunde mais do que ajuda. `totais_finais_m` segue
+            # calculado porque outros blocos da aba o consultam.
             pivot_m.index.name = "Movimento"
 
             # SALDO INICIAL: o mês não começa do zero, começa com o que sobrou
@@ -6472,7 +6483,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # anterior a ele; dos demais, é o TOTAL GERAL do mês anterior JÁ
             # acumulado. Por isso a conta é feita em cadeia, mês a mês.
             movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)
-            colunas_meses_m = [c for c in pivot_m.columns if c != "TOTAL / SALDO DE ABERTURA"]
+            colunas_meses_m = list(pivot_m.columns)
 
             # O saldo inicial só vale para PREVISÃO. Mês que já passou, e o
             # mês corrente, têm as posições de caixa e banco reais dentro
@@ -6496,15 +6507,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
             linha_saldo_inicial_m = pd.Series(saldos_iniciais_m)
             # Na coluna final vai a abertura do PRIMEIRO mês do recorte: é a
             # posição de onde o período parte.
-            # Na coluna final, a abertura do primeiro mês de PREVISÃO: é dali
-            # que a projeção parte. Se o recorte não alcança o futuro, não há
-            # abertura nenhuma a mostrar.
-            _primeira_previsao_m = next(
-                (c for p, c in zip(meses_ordenados_m, colunas_meses_m)
-                 if p > _mes_corrente_m), None)
-            linha_saldo_inicial_m["TOTAL / SALDO DE ABERTURA"] = (
-                saldos_iniciais_m[_primeira_previsao_m] if _primeira_previsao_m else 0.0)
-
             # TOTAL GERAL: movimentos do mês MAIS o saldo com que ele começou.
             linha_total_geral_m = movimentos_do_mes_m.copy()
             for _coluna in colunas_meses_m:
@@ -6512,12 +6514,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     float(movimentos_do_mes_m.get(_coluna, 0.0))
                     + saldos_iniciais_m[_coluna]
                 )
-            if colunas_meses_m:
-                # A coluna final é o fechamento do ÚLTIMO mês: onde o período
-                # termina, não a soma de saldos de meses diferentes.
-                linha_total_geral_m["TOTAL / SALDO DE ABERTURA"] = (
-                    linha_total_geral_m[colunas_meses_m[-1]])
-
             pivot_m_exibicao = pd.concat([
                 pd.DataFrame([linha_saldo_inicial_m], index=["SALDO INICIAL"]),
                 pivot_m,
