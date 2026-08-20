@@ -4472,7 +4472,15 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     for coluna in colunas:
         if coluna not in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
             recorte[coluna] = recorte[coluna].astype(str).replace({"nan": "", "None": ""})
-    recorte[COL_FIN_VALOR] = recorte[COL_FIN_VALOR].astype(float)
+    # Valor vazio ou infinito vira 0: o Python escreve NaN/Infinity, que NÃO
+    # são JSON válido, e o navegador falha ao ler o mapa INTEIRO. Uma linha
+    # ruim entre milhares fazia toda célula responder "sem detalhe" -- o
+    # defeito mais caro desta sessão.
+    recorte[COL_FIN_VALOR] = (
+        recorte[COL_FIN_VALOR].astype(float)
+        .replace([float("inf"), float("-inf")], 0.0)
+        .fillna(0.0)
+    )
 
     por_celula = {}
     saida = recorte.rename(columns={**nomes, COL_FIN_VALOR: "Valor"})
@@ -4770,6 +4778,18 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     import html as _html
     import json as _json
 
+    # allow_nan=False faz o Python RECUSAR escrever NaN/Infinity em vez de
+    # gerar um texto que o navegador não consegue ler. Se algum campo
+    # escapar, o mapa sai vazio e a tela avisa -- melhor do que o silêncio,
+    # que foi o que escondeu este defeito por vários dias.
+    _detalhes_json = "{}"
+    _detalhes_erro = ""
+    try:
+        _detalhes_json = _json.dumps(
+            detalhes_por_celula or {}, ensure_ascii=False, allow_nan=False)
+    except (ValueError, TypeError) as _erro_json:
+        _detalhes_erro = str(_erro_json)
+
     pais = list(pais or [None] * len(df))
     # A altura acompanha as linhas VISÍVEIS de saída (as filhas nascem
     # fechadas). Ao abrir uma mãe, o JS avisa a página para crescer; onde
@@ -4937,7 +4957,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     <tbody>{"".join(linhas_html)}</tbody>
   </table>
 </div>
-<script type="application/json" id="detalhes">{_json.dumps(detalhes_por_celula or {}, ensure_ascii=False)}</script>
+<script type="application/json" id="detalhes">{_detalhes_json}</script>
 <div class="barra">
   <span class="rot">Soma</span><span class="val" id="soma">—</span>
   <span class="rot">Média</span><span class="val" id="media">—</span>
@@ -4990,10 +5010,20 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   // A lista viaja junto com a página, então a aba é montada aqui mesmo: sem
   // ida ao servidor, sem gerar arquivo e sem perder o que está na tela. Um
   // clique só continua servindo para somar -- por isso este é o duplo.
+  // Se a leitura do mapa falhar, o aviso vai para a barra de baixo. Antes
+  // este catch engolia o erro e deixava `detalhes` vazio: TODA célula
+  // passava a responder "sem detalhe", e nada na tela dizia por quê.
   let detalhes = {{}};
   try {{
     detalhes = JSON.parse(document.getElementById('detalhes').textContent || '{{}}');
-  }} catch (erro) {{ detalhes = {{}}; }}
+  }} catch (erro) {{
+    detalhes = {{}};
+    const recadoLeitura = document.querySelector('.barra .dica');
+    if (recadoLeitura) {{
+      recadoLeitura.textContent = 'não consegui ler os lançamentos: '
+        + (erro && erro.message ? erro.message : erro);
+    }}
+  }}
 
   function escaparHtml(valor) {{
     return String(valor === null || valor === undefined ? '' : valor)

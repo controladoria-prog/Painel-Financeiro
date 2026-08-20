@@ -2364,6 +2364,47 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn('lancamentos_dc.pop("||", None)', trecho,
                       "a chave vazia (linhas sem grupo) nao pode virar celula")
 
+    def test_mapa_e_sempre_legivel_pelo_navegador(self):
+        """UM lancamento com valor vazio bastava para o navegador nao
+        conseguir ler o mapa INTEIRO -- Python escreve NaN, que nao e JSON
+        valido -- e ai TODA celula respondia "sem detalhe". Foi o defeito
+        mais caro desta sessao: o servidor mostrava as chaves certas
+        enquanto o navegador estava com o mapa vazio."""
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        dia = pd.Timestamp("2026-08-24")
+        df = pd.DataFrame({
+            "Data Efetiva": [dia] * 3,
+            ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 3,
+            ns["COL_FIN_NUMERO"]: ["NF 1", "NF 2", "NF 3"],
+            ns["COL_FIN_HISTORICO"]: ["FORN A", "FORN B", "FORN C"],
+            ns["COL_FIN_CANAL"]: ["LOJA"] * 3,
+            ns["COL_FIN_MODALIDADE"]: [""] * 3,
+            ns["COL_FIN_GRUPO_DESPESA"]: ["Frete"] * 3,
+            ns["COL_FIN_VENCIMENTO"]: [dia] * 3,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [dia] * 3,
+            ns["COL_FIN_VALOR"]: [-79843.01, float("nan"), float("inf")],
+        })
+        mapa, _cortou = ns["montar_lancamentos_por_celula"](
+            df, {dia: "24/08"}, df[ns["COL_FIN_MOVIMENTO"]].astype(str))
+        # allow_nan=False e o que o navegador faz: recusa NaN e Infinity.
+        texto = json.dumps(mapa, ensure_ascii=False, allow_nan=False)
+        self.assertIn("3 - Contas a Pagar||24/08", json.loads(texto))
+        self.assertNotIn("NaN", texto)
+        self.assertNotIn("Infinity", texto)
+
+    def test_codigo_recusa_escrever_mapa_ilegivel(self):
+        """E, ao escrever, o Python tem de RECUSAR NaN em vez de gerar um
+        texto que o navegador nao le. Se escapar, a tela avisa."""
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("allow_nan=False", corpo)
+        self.assertIn("não consegui ler os lançamentos", corpo,
+                      "o navegador precisa avisar quando a leitura falha")
+
     def test_celula_com_detalhe_e_clicavel_no_html(self):
         mapa, _ns = self._mapa_de_lancamentos()
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
