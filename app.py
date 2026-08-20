@@ -5163,20 +5163,16 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       // aparece aqui embaixo mesmo, no lugar da tabela.
       let abriu = false;
       try {{
+        // EXATAMENTE as três linhas da primeira versão, a que abria a aba:
+        // abre, escreve, fecha. Nada de document.open() antes, nada de
+        // reconferir se a janela continua aberta -- cada verificação que
+        // acrescentei aqui foi uma chance a mais de o caminho ser abandonado
+        // no meio, e nenhuma delas resolveu nada.
         const aba = window.open('', '_blank');
-        // Não basta a janela existir. Bloqueador de anúncios e extensão de
-        // privacidade costumam devolver uma janela FALSA, que fecha sozinha
-        // -- e o código antigo dava a abertura como certa e não mostrava
-        // nada. Por isso o teste é: existe, não está fechada e tem
-        // documento onde escrever.
-        if (aba && !aba.closed && aba.document) {{
-          aba.document.open();
+        if (aba) {{
           aba.document.write(pagina);
           aba.document.close();
-          if (!aba.closed) {{
-            try {{ aba.focus(); }} catch (erro) {{ /* sem foco, tudo bem */ }}
-            abriu = true;
-          }}
+          abriu = true;
         }}
       }} catch (erro) {{ abriu = false; }}
       if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}
