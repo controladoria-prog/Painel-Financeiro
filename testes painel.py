@@ -17,6 +17,7 @@ executadas com dados montados à mão.
 """
 import ast
 import base64
+import json
 import hashlib
 from datetime import date, datetime
 import hmac
@@ -2124,6 +2125,110 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertEqual(corpo.count("function ajustarCaixa()"), 1)
         self.assertNotIn("function avisarAltura()", corpo,
                          "voltou a segunda funcao de altura")
+
+    def _mapa_de_lancamentos(self):
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+        dia = pd.Timestamp("2026-08-21")
+        df = pd.DataFrame({
+            "Data Efetiva": [dia] * 3,
+            ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 3,
+            ns["COL_FIN_CANAL"]: ["LOJA", "HUB LOGISTICO", "LOJA"],
+            ns["COL_FIN_MODALIDADE"]: ["", "", ""],
+            ns["COL_FIN_GRUPO_DESPESA"]: ["Ativo Permanente"] * 3,
+            ns["COL_FIN_VENCIMENTO"]: [dia] * 3,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [dia, pd.NaT, dia],
+            ns["COL_FIN_VALOR"]: [-10_000.00, -4_426.75, -10_000.00],
+        })
+        mapa = ns["montar_lancamentos_por_celula"](
+            df, {dia: "21/08"}, lambda r: str(r[ns["COL_FIN_GRUPO_DESPESA"]]))
+        return mapa, ns
+
+    def test_lancamentos_da_celula_somam_o_valor_mostrado(self):
+        """A conta da aba nova tem de bater com a celula clicada -- e nao
+        adianta ela abrir se mostrar outro numero."""
+        mapa, _ns = self._mapa_de_lancamentos()
+        chave = "Ativo Permanente||21/08"
+        self.assertIn(chave, mapa)
+        self.assertEqual(len(mapa[chave]), 3)
+        self.assertAlmostEqual(sum(l["Valor"] for l in mapa[chave]), -24_426.75, places=2)
+        self.assertEqual(mapa[chave][1]["Liquidação"], "",
+                         "titulo em aberto tem de aparecer sem data, nao como NaT")
+
+    def test_lancamento_de_outro_dia_nao_entra_na_celula(self):
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+        dias = [pd.Timestamp("2026-08-21"), pd.Timestamp("2026-08-22")]
+        df = pd.DataFrame({
+            "Data Efetiva": dias,
+            ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 2,
+            ns["COL_FIN_CANAL"]: ["LOJA", "LOJA"],
+            ns["COL_FIN_GRUPO_DESPESA"]: ["Ativo Permanente"] * 2,
+            ns["COL_FIN_VENCIMENTO"]: dias,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: dias,
+            ns["COL_FIN_VALOR"]: [-100.0, -200.0],
+        })
+        # Só o dia 21 está na tela: o lançamento do 22 fica de fora.
+        mapa = ns["montar_lancamentos_por_celula"](
+            df, {dias[0]: "21/08"}, lambda r: str(r[ns["COL_FIN_GRUPO_DESPESA"]]))
+        self.assertEqual(list(mapa), ["Ativo Permanente||21/08"])
+        self.assertEqual(len(mapa["Ativo Permanente||21/08"]), 1)
+
+    def test_teto_de_lancamentos_por_celula(self):
+        """Eles viajam junto com a pagina: sem teto, uma celula com milhares
+        de lancamentos pesaria no carregamento."""
+        ns = carregar(["montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO"])
+        teto = ns["TETO_LANCAMENTOS_POR_CELULA"]
+        dia = pd.Timestamp("2026-08-21")
+        n = teto + 50
+        df = pd.DataFrame({
+            "Data Efetiva": [dia] * n,
+            ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * n,
+            ns["COL_FIN_CANAL"]: ["LOJA"] * n,
+            ns["COL_FIN_GRUPO_DESPESA"]: ["Frete"] * n,
+            ns["COL_FIN_VENCIMENTO"]: [dia] * n,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [dia] * n,
+            ns["COL_FIN_VALOR"]: [-1.0] * n,
+        })
+        mapa = ns["montar_lancamentos_por_celula"](
+            df, {dia: "21/08"}, lambda r: str(r[ns["COL_FIN_GRUPO_DESPESA"]]))
+        self.assertEqual(len(mapa["Frete||21/08"]), teto)
+
+    def test_celula_com_detalhe_e_clicavel_no_html(self):
+        mapa, _ns = self._mapa_de_lancamentos()
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
+        html = capturado["codigo"]
+        # A marca tem de estar na PRÓPRIA célula, não só na folha de estilo:
+        # sem ela, nada indica que aquele número abre alguma coisa.
+        self.assertRegex(html, r'<td class="[^"]*com-detalhe[^"]*"[^>]*data-k=',
+                         "a celula com detalhe precisa se mostrar clicavel")
+        self.assertIn('data-k="Ativo Permanente||21/08"', html)
+        self.assertIn("dblclick", html, "um clique so continua servindo para somar")
+        self.assertIn("window.open('', '_blank')", html)
+        embutido = json.loads(html.split('id="detalhes">')[1].split("</script>")[0])
+        self.assertIn("Ativo Permanente||21/08", embutido)
+
+    def test_celula_sem_detalhe_nao_finge_ser_clicavel(self):
+        ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",
+                             "_rotulo_unico_tabela", "formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        tabela = pd.DataFrame([[1.0]], index=["Sem detalhe"], columns=["21/08"])
+        ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula={})
+        self.assertNotIn("com-detalhe\"", capturado["codigo"])
+        self.assertNotIn("data-k=", capturado["codigo"])
 
     def test_seta_fica_na_propria_linha(self):
         """A escolha do que abrir fica DENTRO da tabela, na setinha da

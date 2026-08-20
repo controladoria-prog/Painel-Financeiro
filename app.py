@@ -4408,6 +4408,47 @@ def _avaliar_alertas_fluxo(
     return alertas
 
 
+# Teto de lançamentos levados para a tela do duplo clique. Eles viajam
+# junto com a página, então uma tabela sem limite pesaria no carregamento --
+# e ninguém confere dez mil linhas na mão de uma vez.
+TETO_LANCAMENTOS_POR_CELULA = 400
+
+
+def montar_lancamentos_por_celula(df, rotulos_por_dia, chave_linha):
+    """Agrupa os lançamentos por (linha da tabela, dia) para o duplo clique.
+
+    `chave_linha` recebe uma linha do DataFrame e devolve o rótulo da linha
+    da tabela a que ela pertence -- é o que amarra o lançamento à célula.
+    Devolve {"rótulo||dia": [ {campo: valor}, ... ] }."""
+    if df is None or df.empty:
+        return {}
+    colunas = [c for c in (COL_FIN_CANAL, COL_FIN_MODALIDADE, COL_FIN_GRUPO_DESPESA,
+                           COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO) if c in df.columns]
+    nomes = {COL_FIN_CANAL: "Canal", COL_FIN_MODALIDADE: "Modalidade",
+             COL_FIN_GRUPO_DESPESA: "Grupo de Despesa",
+             COL_FIN_VENCIMENTO: "Vencimento", COL_FIN_DATA_LIQUIDACAO: "Liquidação"}
+    por_celula = {}
+    for _pos, linha in df.iterrows():
+        dia = rotulos_por_dia.get(pd.Timestamp(linha["Data Efetiva"]).normalize())
+        if dia is None:
+            continue
+        chave = f"{chave_linha(linha)}||{dia}"
+        destino = por_celula.setdefault(chave, [])
+        if len(destino) >= TETO_LANCAMENTOS_POR_CELULA:
+            continue
+        registro = {}
+        for coluna in colunas:
+            valor = linha[coluna]
+            if coluna in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
+                registro[nomes[coluna]] = (
+                    "" if pd.isna(valor) else pd.Timestamp(valor).strftime("%d/%m/%Y"))
+            else:
+                registro[nomes[coluna]] = "" if pd.isna(valor) else str(valor)
+        registro["Valor"] = float(linha[COL_FIN_VALOR])
+        destino.append(registro)
+    return por_celula
+
+
 def fracao_da_meta_ainda_nao_coberta(meta_por_dia, realizado_por_dia):
     """Para cada dia, quanto da meta DAQUELE dia ainda não está coberta pelo
     que a empresa tem a receber no mês -- de 1 (nada coberto) a 0 (coberta).
@@ -4649,7 +4690,8 @@ def guardar_periodo_na_url(chave, data_ini=None, data_fim=None):
 
 
 def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
-                       pais=None, filhas_abertas=False, comandos_abrir=None):
+                       pais=None, filhas_abertas=False, comandos_abrir=None,
+                       detalhes_por_celula=None):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -4679,6 +4721,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     - True: quem escolheu o que abrir foi o Streamlit, então as filhas já
       chegam aqui visíveis e a altura as conta. A tabela CRESCE ao abrir.
 
+    `detalhes_por_celula` é um dicionário {"rótulo da linha||coluna": lista de
+    lançamentos} que faz cada célula abrir, com DOIS CLIQUES, uma aba nova
+    com os lançamentos que formam aquele valor. A lista viaja junto com a
+    página e a aba é montada ali mesmo -- sem ida ao servidor, sem gerar
+    arquivo e sem perder o que está na tela.
+
     `comandos_abrir` liga a seta ao servidor: um dicionário
     {rótulo da linha: True se está aberta}. A seta vira um comando que
     recarrega a página com aquela linha marcada na URL, e aí a tabela é
@@ -4687,6 +4735,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     não obedece a pedido de crescer vindo de dentro.
     """
     import html as _html
+    import json as _json
 
     pais = list(pais or [None] * len(df))
     # A altura acompanha as linhas VISÍVEIS de saída (as filhas nascem
@@ -4711,6 +4760,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         # Com a classe na própria célula, nenhuma das regras de destaque
         # chegava a valer -- as linhas de consolidação ficavam iguais às
         # outras, que foi o que apareceu na tela.
+        rotulo_cru = texto_rotulo
         classe = f"linha-{tipo}"
         if pais[posicao] is not None:
             classe += " linha-filha"
@@ -4718,7 +4768,6 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         if pais[posicao] is not None and not filhas_abertas:
             # Nasce escondida; o clique na mãe é que revela.
             atributos_linha += f' data-pai="{pais[posicao]}" style="display:none"'
-        rotulo_cru = str(rotulo).replace("\u200b", "").strip()
         if comandos_abrir is not None and rotulo_cru in comandos_abrir:
             # Comando de abrir/fechar. Ele aciona um BOTÃO de verdade da
             # página, escondido fora da tela: o quadro onde a tabela vive não
@@ -4747,9 +4796,13 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                 celulas.append('<td class="vazio">—</td>')
                 continue
             sinal = "pos" if numero >= 0 else "neg"
+            chave_celula = f"{rotulo_cru}||{coluna}"
+            tem_detalhe = bool(detalhes_por_celula) and chave_celula in detalhes_por_celula
             celulas.append(
-                f'<td class="{sinal}" data-v="{numero:.2f}" '
-                f'data-l="{posicao}" data-c="{indice_col}">{formata_brl(numero)}</td>'
+                f'<td class="{sinal}{" com-detalhe" if tem_detalhe else ""}" '
+                f'data-v="{numero:.2f}" data-l="{posicao}" data-c="{indice_col}"'
+                + (f' data-k="{_html.escape(chave_celula, quote=True)}"' if tem_detalhe else "")
+                + f'>{formata_brl(numero)}</td>'
             )
         linhas_html.append(
             f'<tr class="{classe}"{atributos_linha}>{"".join(celulas)}</tr>'
@@ -4829,6 +4882,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   .seta.aberta {{ transform:rotate(90deg); }}
   .seta.comando {{ color:{COLORS['primary']}; font-weight:700; }}
   .seta.comando:hover {{ color:{COLORS['text']}; }}
+  td.com-detalhe {{ text-decoration:underline; text-decoration-style:dotted;
+                    text-underline-offset:3px;
+                    text-decoration-color:{COLORS['text_muted']}; }}
+  td.com-detalhe:hover {{ text-decoration-color:{COLORS['primary']}; }}
   td.sel {{ outline:2px solid {COLORS['primary']}; outline-offset:-2px;
             background:rgba(59,130,246,0.16) !important; }}
   .barra {{ display:flex; gap:26px; align-items:baseline; padding:12px 14px;
@@ -4847,6 +4904,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     <tbody>{"".join(linhas_html)}</tbody>
   </table>
 </div>
+<script type="application/json" id="detalhes">{_json.dumps(detalhes_por_celula or {}, ensure_ascii=False)}</script>
 <div class="barra">
   <span class="rot">Soma</span><span class="val" id="soma">—</span>
   <span class="rot">Média</span><span class="val" id="media">—</span>
@@ -4893,6 +4951,58 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
 
   document.addEventListener('keydown', e => {{
     if (e.key === 'Escape') {{ limpar(); atualizar(); }}
+  }});
+
+  // ---- dois cliques abrem os lançamentos da célula ----
+  // A lista viaja junto com a página, então a aba é montada aqui mesmo: sem
+  // ida ao servidor, sem gerar arquivo e sem perder o que está na tela. Um
+  // clique só continua servindo para somar -- por isso este é o duplo.
+  let detalhes = {{}};
+  try {{
+    detalhes = JSON.parse(document.getElementById('detalhes').textContent || '{{}}');
+  }} catch (erro) {{ detalhes = {{}}; }}
+
+  function escaparHtml(valor) {{
+    return String(valor === null || valor === undefined ? '' : valor)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }}
+
+  document.querySelectorAll('td[data-k]').forEach(celula => {{
+    celula.addEventListener('dblclick', evento => {{
+      evento.preventDefault();
+      const linhas = detalhes[celula.dataset.k] || [];
+      if (!linhas.length) return;
+      const [nomeLinha, nomeDia] = celula.dataset.k.split('||');
+      const colunas = Object.keys(linhas[0]);
+      const total = linhas.reduce((s, l) => s + (parseFloat(l['Valor']) || 0), 0);
+      const corpo = linhas.map(l => '<tr>' + colunas.map(
+        c => `<td class="${{typeof l[c] === 'number' ? 'num' : ''}}">${{escaparHtml(
+          typeof l[c] === 'number' ? brl(l[c]) : l[c])}}</td>`).join('') + '</tr>').join('');
+      const pagina = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+        <title>${{escaparHtml(nomeLinha)}} — ${{escaparHtml(nomeDia)}}</title>
+        <style>
+          body {{ font-family:{FONTE_PADRAO_TABELA}; background:{FUNDO_TABELA_FLUXO};
+                 color:{COLORS['text']}; margin:24px; }}
+          h1 {{ font-size:16px; margin:0 0 4px; }}
+          p.resumo {{ color:{COLORS['text_muted']}; font-size:13px; margin:0 0 16px; }}
+          table {{ border-collapse:collapse; width:100%; font-size:13px; }}
+          th, td {{ padding:7px 12px; border-bottom:1px solid {COLORS['border_soft']};
+                    text-align:left; white-space:nowrap; }}
+          th {{ background:{COLORS['surface_alt']}; color:{COLORS['text_muted']};
+                position:sticky; top:0; }}
+          td.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+          tfoot td {{ font-weight:700; border-top:2px solid {COLORS['primary']}; }}
+        </style></head><body>
+        <h1>${{escaparHtml(nomeLinha)}} — ${{escaparHtml(nomeDia)}}</h1>
+        <p class="resumo">${{linhas.length}} lançamento(s) · total ${{brl(total)}}</p>
+        <table><thead><tr>${{colunas.map(c => '<th>' + escaparHtml(c) + '</th>').join('')}}</tr></thead>
+        <tbody>${{corpo}}</tbody>
+        <tfoot><tr><td colspan="${{colunas.length - 1}}">TOTAL</td>
+        <td class="num">${{brl(total)}}</td></tr></tfoot></table>
+        </body></html>`;
+      const aba = window.open('', '_blank');
+      if (aba) {{ aba.document.write(pagina); aba.document.close(); }}
+    }});
   }});
 
   // ---- altura da caixa ----
@@ -6981,8 +7091,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_dc.columns = [rotulos_dias_dc[d] for d in dias_dc]
                 ordem_dc = _ordenar_com_filhas(indices_dc, pais_dc, tipos_dc)
                 pivot_dc = pivot_dc.iloc[ordem_dc]
+                # Os lançamentos que formam cada célula, para o duplo
+                # clique abrir numa aba nova. A linha da tabela é o próprio
+                # movimento; quando ela está aberta, o detalhe fica na filha,
+                # e por isso a chave usa o rótulo que está na tela.
+                def _linha_da_tabela_dc(registro):
+                    movimento = str(registro[COL_FIN_MOVIMENTO])
+                    if movimento in abertas_dc:
+                        coluna = _coluna_de_abertura(movimento)
+                        if coluna in df_dc_real.columns:
+                            detalhe = str(registro[coluna]).strip()
+                            if detalhe:
+                                return detalhe
+                    return movimento
+
+                lancamentos_dc = montar_lancamentos_por_celula(
+                    df_dc_real, rotulos_dias_dc, _linha_da_tabela_dc)
+
                 tabela_selecionavel(
                     pivot_dc, chave="tabela_diario_consolidado",
+                    detalhes_por_celula=lancamentos_dc,
                     tipos_linha=[tipos_dc[i] for i in ordem_dc],
                     pais=_pais_reordenados(pais_dc, ordem_dc),
                     filhas_abertas=True,
@@ -6995,8 +7123,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "**▸** da linha para abrir o detalhe — a tabela cresce junto, sem rolagem. "
                     "Contas a receber abre por "
                     "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
-                    "conforme a escolha acima. **2 - Contas a Receber Meta** mostra quanto ainda "
-                    "falta no dia e não entra no TOTAL GERAL."
+                    "conforme a escolha acima. **Dois cliques num valor** abrem, numa aba nova, "
+                    "os lançamentos que formam aquele número — as células com detalhe aparecem "
+                    "sublinhadas. **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
+                    "e não entra no TOTAL GERAL."
                 )
 
     # ---------------- TESOURARIA ----------------
