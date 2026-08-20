@@ -2791,12 +2791,15 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("def _total_do_mes_d(", trecho)
         self.assertIn("_total_do_mes_d(canal_da_linha, nome_limpo)", trecho,
                       "a linha de movimento tem de somar o mes")
-        self.assertIn("df_escopo_mes", trecho, "a linha de canal tambem")
-        # A base do total e a COMPLETA, nao o recorte da tela.
+        self.assertIn("_fluxo_do_mes_por_canal_d", trecho, "a linha de canal tambem")
+        # A base e a COMPLETA, e o calculo e UM agrupamento -- nao um filtro
+        # da base inteira por linha da tabela, que foi como fiz primeiro.
+        self.assertIn("_mes_cheio_d = df_d_completo[", trecho)
+        self.assertIn("_soma_por_canal_e_movimento_d = _mes_cheio_d.groupby(", trecho)
         j = trecho.index("def _total_do_mes_d(")
         corpo = trecho[j:j + 900]
-        self.assertIn("df_d_completo", corpo)
-        self.assertNotIn("df_d[", corpo, "df_d e o recorte visivel; aqui vale o mes")
+        self.assertNotIn("df_d_completo[", corpo,
+                         "filtrar a base dentro da funcao volta a varrer tudo por linha")
         self.assertIn("TOTAL DO MÊS / ÚLT. POSIÇÃO", trecho,
                       "o titulo precisa dizer que e do mes, senao engana")
 

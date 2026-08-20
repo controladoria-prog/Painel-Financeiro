@@ -6929,23 +6929,32 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 totais_finais_d = []
                 _dia_ini_exibido = dias_ordenados_d[0]
                 _dia_fim_exibido = dias_ordenados_d[-1]
-                def _total_do_mes_d(canal_da_linha, movimento_da_linha=None):
+                # Somas do MÊS INTEIRO, calculadas UMA vez. A primeira versão
+                # filtrava a base inteira a cada linha da tabela -- dezenas de
+                # varreduras por desenho de tela, sem necessidade nenhuma.
+                # Um agrupamento resolve tudo de uma vez.
+                _mes_cheio_d = df_d_completo[
+                    df_d_completo["Data Efetiva"].dt.to_period("M").isin(_meses_na_tela_d)
+                ]
+                _soma_por_canal_e_movimento_d = _mes_cheio_d.groupby(
+                    [COL_FIN_CANAL, COL_FIN_MOVIMENTO], observed=True
+                )[COL_FIN_VALOR].sum()
+                _fluxo_do_mes_por_canal_d = _mes_cheio_d[
+                    _mes_cheio_d["Tipo Movimento"].isin(["entrada", "saida"])
+                ].groupby(COL_FIN_CANAL, observed=True)[COL_FIN_VALOR].sum()
+
+                def _total_do_mes_d(canal_da_linha, movimento_da_linha):
                     """Soma do MÊS INTEIRO, não do recorte que está na tela.
 
                     Esta aba mostra um mês de cada vez, e a leitura da coluna
                     final é "quanto este movimento soma no mês" -- não
                     "quanto soma nos dias que sobraram na tela". Olhando de
                     19 a 31/08, o total tem de trazer agosto inteiro."""
-                    recorte_mes = df_d_completo[
-                        df_d_completo["Data Efetiva"].dt.to_period("M").isin(_meses_na_tela_d)
-                    ]
-                    if canal_da_linha is not None:
-                        recorte_mes = recorte_mes[
-                            recorte_mes[COL_FIN_CANAL] == canal_da_linha]
-                    if movimento_da_linha is not None:
-                        recorte_mes = recorte_mes[
-                            recorte_mes[COL_FIN_MOVIMENTO] == movimento_da_linha]
-                    return float(recorte_mes[COL_FIN_VALOR].sum())
+                    try:
+                        return float(_soma_por_canal_e_movimento_d.get(
+                            (canal_da_linha, movimento_da_linha), 0.0))
+                    except (KeyError, TypeError):
+                        return 0.0
 
                 for posicao, (tipo_linha, nome_limpo, canal_da_linha) in enumerate(
                     estilo_linhas_d
@@ -6971,14 +6980,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         # saldo. O saldo continua vindo do recorte, porque é
                         # posição num dia, não soma de período.
                         df_escopo = df_d[df_d[COL_FIN_CANAL] == nome_limpo]
-                        df_escopo_mes = df_d_completo[
-                            (df_d_completo[COL_FIN_CANAL] == nome_limpo)
-                            & df_d_completo["Data Efetiva"].dt.to_period("M").isin(
-                                _meses_na_tela_d)
-                        ]
-                        fluxo_escopo = df_escopo_mes[
-                            df_escopo_mes["Tipo Movimento"].isin(["entrada", "saida"])
-                        ][COL_FIN_VALOR].sum()
+                        fluxo_escopo = float(
+                            _fluxo_do_mes_por_canal_d.get(nome_limpo, 0.0))
                         saldo_escopo = 0.0
                         df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"] == "saldo"]
                         if not df_saldo_escopo.empty:
