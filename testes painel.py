@@ -1703,6 +1703,76 @@ class TesteMetasDeRecebimento(unittest.TestCase):
 
 
 # ============================================================================
+# 5n. MÉTRICAS DA ABA ANÁLISES
+# ============================================================================
+class TesteMetricasDeAnalise(unittest.TestCase):
+    """Com vencimento e liquidacao completos, os prazos passaram a ser
+    ponderados PELO VALOR. A media simples por titulo trata um pagamento de
+    R$ 1 milhao atrasado igual a um de R$ 10 -- e e o de R$ 1 milhao que
+    move o caixa."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["atraso_ponderado_por_valor", "pontualidade_por_valor",
+                           "aging_de_vencidos"])
+
+    def test_atraso_e_ponderado_pelo_valor(self):
+        df = pd.DataFrame({"dias": [10, 0, 0, 0],
+                           "valor": [-1_000_000.0, -10.0, -10.0, -10.0]})
+        self.assertAlmostEqual(df["dias"].mean(), 2.5, places=2)   # a leitura antiga
+        self.assertAlmostEqual(
+            self.ns["atraso_ponderado_por_valor"](df, "dias", "valor"), 10.0, places=2)
+
+    def test_atraso_sem_titulo_liquidado_devolve_nada(self):
+        """Sem baixa nao ha prazo -- e zero seria mentira, nao ausencia."""
+        df = pd.DataFrame({"dias": [None, None], "valor": [-10.0, -20.0]})
+        self.assertIsNone(self.ns["atraso_ponderado_por_valor"](df, "dias", "valor"))
+        self.assertIsNone(self.ns["atraso_ponderado_por_valor"](pd.DataFrame(), "dias", "valor"))
+
+    def test_pontualidade_separa_antecipado_de_em_dia(self):
+        """Antecipar e decisao de tesouraria; pagar no dia e cumprir o
+        combinado. Juntar os dois num "pagos ate o vencimento" escondia qual
+        dos dois estava acontecendo."""
+        df = pd.DataFrame({"dias": [-5, 0, 3], "valor": [-100.0, -100.0, -200.0]})
+        antecipado, em_dia, em_atraso = self.ns["pontualidade_por_valor"](
+            df, "dias", "valor")
+        self.assertAlmostEqual(antecipado, 25.0, places=1)
+        self.assertAlmostEqual(em_dia, 25.0, places=1)
+        self.assertAlmostEqual(em_atraso, 50.0, places=1)
+
+    def test_aging_separa_atraso_curto_de_longo(self):
+        """Um total de vencidos nao diz se e de ontem ou de tres meses --
+        e a diferenca e o tamanho do problema."""
+        hoje = pd.Timestamp("2026-08-20")
+        df = pd.DataFrame({
+            "venc": pd.to_datetime(["2026-08-18", "2026-08-10", "2026-05-01", "2026-08-25"]),
+            "valor": [-500.0, -2_000.0, -30_000.0, -100.0],
+        })
+        faixas = self.ns["aging_de_vencidos"](df, "venc", "valor", hoje)
+        por_rotulo = {rotulo: (valor, qtd) for rotulo, valor, qtd in faixas}
+        self.assertEqual(por_rotulo["1 a 7 dias"], (500.0, 1))
+        self.assertEqual(por_rotulo["8 a 15 dias"], (2_000.0, 1))
+        self.assertEqual(por_rotulo["mais de 60 dias"], (30_000.0, 1))
+        # O de 25/08 ainda NAO venceu: nao pode aparecer em faixa nenhuma,
+        # nem no valor total. Sem esta conferencia, incluir o que esta a
+        # vencer passava despercebido.
+        self.assertEqual(sum(qtd for _r, _v, qtd in faixas), 3)
+        self.assertAlmostEqual(sum(v for _r, v, _q in faixas), 32_500.0, places=2)
+        self.assertNotIn(100.0, [v for _r, v, _q in faixas],
+                         "o titulo a vencer entrou no aging")
+
+    def test_aba_usa_as_metricas_ponderadas(self):
+        i = FONTE.index("with sub_prazos:")
+        trecho = FONTE[max(0, i - 4000):i + 3000]
+        self.assertIn("atraso_ponderado_por_valor(", trecho)
+        self.assertIn("pontualidade_por_valor(", trecho)
+        self.assertIn("Ponderado por valor", trecho,
+                      "o cartao precisa dizer que e ponderado, senao engana")
+        j = FONTE.index("with sub_aberto:")
+        self.assertIn("aging_de_vencidos(", FONTE[j:j + 6000])
+
+
+# ============================================================================
 # 5m. NOMES DAS LINHAS E A VIRADA DA META
 # ============================================================================
 class TesteNomesEVirada(unittest.TestCase):

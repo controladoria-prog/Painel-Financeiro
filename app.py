@@ -4422,6 +4422,87 @@ def _avaliar_alertas_fluxo(
 TETO_LANCAMENTOS_POR_CELULA = 300
 
 
+def atraso_ponderado_por_valor(df, coluna_dias, coluna_valor):
+    """Atraso médio PONDERADO PELO VALOR, em dias.
+
+    A média simples por título trata um pagamento de R$ 1 milhão com 10 dias
+    de atraso igual a um de R$ 10 com o mesmo atraso -- e é o de R$ 1 milhão
+    que move o caixa. Ponderando pelo valor, o número responde "quanto do
+    meu dinheiro atrasou, e por quanto tempo", que é a pergunta de quem
+    administra o fluxo.
+
+    Devolve None quando não há título com data de baixa no recorte."""
+    if df is None or df.empty:
+        return None
+    validos = df[df[coluna_dias].notna() & df[coluna_valor].notna()]
+    if validos.empty:
+        return None
+    pesos = validos[coluna_valor].abs()
+    total = float(pesos.sum())
+    if total <= 0:
+        return None
+    return float((validos[coluna_dias] * pesos).sum() / total)
+
+
+def pontualidade_por_valor(df, coluna_dias, coluna_valor):
+    """Reparte o VALOR liquidado em antecipado, em dia e em atraso.
+
+    Antes o painel juntava antecipado e em dia num "pagos até o vencimento".
+    São coisas diferentes: antecipar é decisão de tesouraria (às vezes por
+    desconto, às vezes por sobra de caixa) e pagar em dia é cumprir o
+    combinado. Separar mostra qual dos dois está acontecendo.
+
+    Devolve (pct_antecipado, pct_em_dia, pct_em_atraso) ou None."""
+    if df is None or df.empty:
+        return None
+    validos = df[df[coluna_dias].notna() & df[coluna_valor].notna()]
+    if validos.empty:
+        return None
+    pesos = validos[coluna_valor].abs()
+    total = float(pesos.sum())
+    if total <= 0:
+        return None
+    dias = validos[coluna_dias]
+    return (
+        float(pesos[dias < 0].sum()) / total * 100,
+        float(pesos[dias == 0].sum()) / total * 100,
+        float(pesos[dias > 0].sum()) / total * 100,
+    )
+
+
+def aging_de_vencidos(df, coluna_vencimento, coluna_valor, hoje, faixas=(7, 15, 30, 60)):
+    """Reparte o que está VENCIDO e em aberto por faixa de atraso.
+
+    Um total de vencidos não diz se é coisa de ontem ou de três meses atrás
+    -- e a diferença entre as duas é o tamanho do problema. Devolve uma
+    lista de (rótulo da faixa, valor, quantidade), da mais recente para a
+    mais antiga."""
+    if df is None or df.empty:
+        return []
+    dias_de_atraso = (hoje - df[coluna_vencimento]).dt.days
+    vencidos = df[dias_de_atraso > 0]
+    if vencidos.empty:
+        return []
+    atraso = (hoje - vencidos[coluna_vencimento]).dt.days
+    resultado = []
+    limite_anterior = 0
+    for limite in faixas:
+        faixa = (atraso > limite_anterior) & (atraso <= limite)
+        resultado.append((
+            f"{limite_anterior + 1} a {limite} dias",
+            float(vencidos.loc[faixa, coluna_valor].abs().sum()),
+            int(faixa.sum()),
+        ))
+        limite_anterior = limite
+    faixa = atraso > limite_anterior
+    resultado.append((
+        f"mais de {limite_anterior} dias",
+        float(vencidos.loc[faixa, coluna_valor].abs().sum()),
+        int(faixa.sum()),
+    ))
+    return resultado
+
+
 def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     """Agrupa os lançamentos por (linha da tabela, dia) para o duplo clique.
 
@@ -7964,11 +8045,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # data de emissão do documento, então esse cálculo não é possível
             # com os dados de hoje. Rotular de "prazo médio" levava a ler um
             # atraso de 5 dias como se a empresa pagasse em 5 dias.
-            atraso_medio_pagto_a = saidas_prazo_a["DiasAteLiquidar"].mean() if not saidas_prazo_a.empty else None
-            atraso_medio_receb_a = entradas_prazo_a["DiasAteLiquidar"].mean() if not entradas_prazo_a.empty else None
+            # Ponderado pelo VALOR, não média simples por título: é o
+            # dinheiro que atrasa, não a quantidade de papéis. A média
+            # simples continua ao lado, como referência de contagem.
+            atraso_medio_pagto_a = atraso_ponderado_por_valor(
+                saidas_prazo_a, "DiasAteLiquidar", COL_FIN_VALOR)
+            atraso_medio_receb_a = atraso_ponderado_por_valor(
+                entradas_prazo_a, "DiasAteLiquidar", COL_FIN_VALOR)
+            atraso_simples_pagto_a = (
+                saidas_prazo_a["DiasAteLiquidar"].mean() if not saidas_prazo_a.empty else None)
+            atraso_simples_receb_a = (
+                entradas_prazo_a["DiasAteLiquidar"].mean() if not entradas_prazo_a.empty else None)
+            pontualidade_pagto_a = pontualidade_por_valor(
+                saidas_prazo_a, "DiasAteLiquidar", COL_FIN_VALOR)
             pct_pago_em_dia_a = (
-                (saidas_prazo_a["DiasAteLiquidar"] <= 0).mean() * 100 if not saidas_prazo_a.empty else None
-            )
+                (pontualidade_pagto_a[0] + pontualidade_pagto_a[1])
+                if pontualidade_pagto_a else None)
             saida_media_diaria_a = abs(saidas_a) / dias_com_mov_a
             entrada_media_diaria_a = entradas_a / dias_com_mov_a
             dias_de_caixa_a = (saldo_a / saida_media_diaria_a) if saida_media_diaria_a else None
@@ -8023,20 +8115,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         dict(label="ATRASO MÉDIO NO PAGAMENTO",
                              value=(f"{atraso_medio_pagto_a:+.1f} dias" if atraso_medio_pagto_a is not None else "—"),
                              value_color=(COLORS["positive"] if (atraso_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
-                             subtext=(f"Depois do vencimento · {len(saidas_prazo_a)} títulos pagos"
+                             subtext=(f"Ponderado por valor · média simples "
+                                      f"{atraso_simples_pagto_a:+.1f} d · {len(saidas_prazo_a)} títulos"
                                       if atraso_medio_pagto_a is not None else "Nenhum título pago no recorte"),
                              icon="📤"),
                         dict(label="ATRASO MÉDIO NO RECEBIMENTO",
                              value=(f"{atraso_medio_receb_a:+.1f} dias" if atraso_medio_receb_a is not None else "—"),
                              value_color=(COLORS["positive"] if (atraso_medio_receb_a or 0) <= 0 else COLORS["warning"]),
-                             subtext=(f"Depois do vencimento · {len(entradas_prazo_a)} títulos recebidos"
+                             subtext=(f"Ponderado por valor · média simples "
+                                      f"{atraso_simples_receb_a:+.1f} d · {len(entradas_prazo_a)} títulos"
                                       if atraso_medio_receb_a is not None
                                       else "Sem data de baixa nos títulos a receber"),
                              icon="📥"),
-                        dict(label="PAGAMENTOS EM DIA",
+                        dict(label="PAGO NO PRAZO",
                              value=(f"{pct_pago_em_dia_a:.0f}%" if pct_pago_em_dia_a is not None else "—"),
                              value_color=(COLORS["positive"] if (pct_pago_em_dia_a or 0) >= 90 else COLORS["warning"]),
-                             subtext="Pagos até o vencimento (dos já pagos)", icon="✅"),
+                             subtext=(f"Do VALOR pago · {pontualidade_pagto_a[0]:.0f}% antecipado, "
+                                      f"{pontualidade_pagto_a[1]:.0f}% no dia, "
+                                      f"{pontualidade_pagto_a[2]:.0f}% em atraso"
+                                      if pontualidade_pagto_a else "Sem títulos pagos no recorte"),
+                             icon="✅"),
                         dict(label="DIAS DE CAIXA",
                              value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
                              value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
@@ -8100,6 +8198,38 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     f"**a vencer em até {PRAZO_INTERNO_DIAS} dias** é o desembolso que entra no prazo interno "
                     "combinado com fornecedores e já deve estar reservado no caixa."
                 )
+
+                # AGING dos vencidos. Um total de vencidos não diz se é coisa
+                # de ontem ou de três meses atrás, e a diferença entre as duas
+                # é o tamanho do problema: a primeira é operacional, a segunda
+                # é relacionamento com fornecedor. Só ficou possível agora que
+                # a data de liquidação vem completa -- antes não dava para
+                # separar "não pago" de "pago sem registro".
+                faixas_atraso_a = aging_de_vencidos(
+                    df_pagar_aberto, COL_FIN_VENCIMENTO, COL_FIN_VALOR, hoje_analise)
+                if faixas_atraso_a and any(valor for _f, valor, _q in faixas_atraso_a):
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="section-title">⏳ Há quanto tempo estão vencidos</div>',
+                        unsafe_allow_html=True)
+                    total_vencido_faixas_a = sum(v for _f, v, _q in faixas_atraso_a) or 1.0
+                    tabela_aging_a = pd.DataFrame(
+                        [[formata_brl(valor), f"{valor / total_vencido_faixas_a * 100:.1f}%",
+                          quantidade]
+                         for _faixa, valor, quantidade in faixas_atraso_a],
+                        index=[faixa for faixa, _v, _q in faixas_atraso_a],
+                        columns=["Valor", "% do vencido", "Títulos"],
+                    )
+                    tabela_aging_a.index.name = "Tempo de atraso"
+                    st.dataframe(tabela_aging_a, width="stretch")
+                    _pior_faixa_a = faixas_atraso_a[-1]
+                    if _pior_faixa_a[1] > 0:
+                        st.caption(
+                            f"**{formata_brl(_pior_faixa_a[1])}** estão vencidos "
+                            f"{_pior_faixa_a[0]} ({_pior_faixa_a[2]} título(s)). Atraso curto é "
+                            "fila de pagamento; atraso longo costuma ser divergência de "
+                            "documento ou título que ninguém assumiu."
+                        )
                 st.markdown("<br>", unsafe_allow_html=True)
 
 
