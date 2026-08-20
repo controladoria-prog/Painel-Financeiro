@@ -2280,99 +2280,42 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertEqual(len(mapa["Frete||21/08"]), teto)
         self.assertTrue(cortou, "a tela precisa saber que cortou, para avisar")
 
-    def test_teto_da_pagina_inteira(self):
-        """A soma de TODAS as celulas viaja junto com a tela. Sem teto, um
-        recorte de dois meses embutia dezenas de milhares de lancamentos --
-        cerca de 26 MB -- e a tela ficava girando sem nunca abrir. Nao era
-        erro, era peso."""
+    def test_nenhuma_celula_fica_sem_chave(self):
+        """Uma celula sem chave e a falha mais irritante possivel: o valor
+        continua sublinhado prometendo detalhe e o duplo clique nao abre.
+        Ja aconteceu duas vezes por causa de teto de pagina cortando linhas
+        soltas -- por isso o unico limite agora e POR CELULA."""
         ns = carregar(["montar_lancamentos_por_celula"],
-                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_NA_PAGINA",
-                       "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA",
-                       "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR",
-                       "COL_FIN_MOVIMENTO", "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
-        teto_pagina = ns["TETO_LANCAMENTOS_NA_PAGINA"]
-        n = teto_pagina * 3
+                      ["TETO_LANCAMENTOS_POR_CELULA", "COL_FIN_CANAL", "COL_FIN_MODALIDADE",
+                       "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        self.assertNotIn("TETO_LANCAMENTOS_NA_PAGINA", FONTE,
+                         "o teto de pagina ja apagou celulas duas vezes")
+        n = 6000
+        grupos = [f"Grupo {i}" for i in range(40)]
         dias = pd.to_datetime("2026-08-01") + pd.to_timedelta(
-            [i % 30 for i in range(n)], unit="D")
-        df = pd.DataFrame({
-            "Data Efetiva": dias,
-            ns["COL_FIN_NUMERO"]: [f"NF {i}" for i in range(n)],
-            ns["COL_FIN_HISTORICO"]: ["FORNECEDOR A"] * n,
-            ns["COL_FIN_CANAL"]: ["LOJA"] * n,
-            ns["COL_FIN_GRUPO_DESPESA"]: [f"Grupo {i % 40}" for i in range(n)],
-            ns["COL_FIN_VENCIMENTO"]: dias,
-            ns["COL_FIN_DATA_LIQUIDACAO"]: dias,
-            ns["COL_FIN_VALOR"]: [-1.0 * (i + 1) for i in range(n)],
-        })
-        rotulos = {d: pd.Timestamp(d).strftime("%d/%m") for d in dias.unique()}
-        mapa, cortou = ns["montar_lancamentos_por_celula"](
-            df, rotulos, df[ns["COL_FIN_GRUPO_DESPESA"]].astype(str))
-        self.assertLessEqual(sum(len(v) for v in mapa.values()), teto_pagina)
-        self.assertTrue(cortou)
-
-    def test_celula_cortada_guarda_os_maiores(self):
-        """Se a celula for cortada, o que fica tem de ser o que explica o
-        valor -- ninguem procura o lancamento de dois reais."""
-        ns = carregar(["montar_lancamentos_por_celula"],
-                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_NA_PAGINA",
-                       "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA",
-                       "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR",
-                       "COL_FIN_MOVIMENTO", "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
-        teto = ns["TETO_LANCAMENTOS_POR_CELULA"]
-        n = teto + 10
-        dia = pd.Timestamp("2026-08-21")
-        df = pd.DataFrame({
-            "Data Efetiva": [dia] * n,
-            ns["COL_FIN_NUMERO"]: [f"NF {i}" for i in range(n)],
-            ns["COL_FIN_HISTORICO"]: ["FORNECEDOR A"] * n,
-            ns["COL_FIN_CANAL"]: ["LOJA"] * n,
-            ns["COL_FIN_GRUPO_DESPESA"]: ["Frete"] * n,
-            ns["COL_FIN_VENCIMENTO"]: [dia] * n,
-            ns["COL_FIN_DATA_LIQUIDACAO"]: [dia] * n,
-            # O maior valor é o último da lista: ele TEM de sobreviver ao corte.
-            ns["COL_FIN_VALOR"]: [-1.0 * (i + 1) for i in range(n)],
-        })
-        mapa, _cortou = ns["montar_lancamentos_por_celula"](
-            df, {dia: "21/08"}, df[ns["COL_FIN_GRUPO_DESPESA"]].astype(str))
-        valores = [l["Valor"] for l in mapa["Frete||21/08"]]
-        self.assertEqual(min(valores), -1.0 * n, "o maior lancamento foi cortado")
-
-    def test_corte_da_pagina_nunca_apaga_uma_celula(self):
-        """O corte guarda os maiores, mas cada celula mantem ao menos a sua
-        maior linha. Sem isso, as celulas de valor pequeno ficavam de fora e
-        o duplo clique nelas nao respondia -- enquanto as grandes abriam."""
-        ns = carregar(["montar_lancamentos_por_celula"],
-                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_NA_PAGINA",
-                       "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA",
-                       "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR",
-                       "COL_FIN_MOVIMENTO", "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
-        teto = ns["TETO_LANCAMENTOS_NA_PAGINA"]
-        grupos = [f"Grupo {i}" for i in range(60)]
-        n = teto * 2
-        dias = pd.to_datetime("2026-08-01") + pd.to_timedelta(
-            [i % 30 for i in range(n)], unit="D")
-        # O "Grupo 0" so tem centavos: e o primeiro a ser cortado por valor.
-        valores = [-0.01 if i % 60 == 0 else -1000.0 - i for i in range(n)]
+            [i % 13 for i in range(n)], unit="D")
+        # O "Grupo 0" so tem centavos: por valor, seria o primeiro a cair.
         df = pd.DataFrame({
             "Data Efetiva": dias,
             ns["COL_FIN_MOVIMENTO"]: "3 - Contas a Pagar",
             ns["COL_FIN_NUMERO"]: [f"NF {i}" for i in range(n)],
             ns["COL_FIN_HISTORICO"]: "FORN",
             ns["COL_FIN_CANAL"]: "LOJA",
-            ns["COL_FIN_GRUPO_DESPESA"]: [grupos[i % 60] for i in range(n)],
+            ns["COL_FIN_GRUPO_DESPESA"]: [grupos[i % 40] for i in range(n)],
             ns["COL_FIN_VENCIMENTO"]: dias,
             ns["COL_FIN_DATA_LIQUIDACAO"]: dias,
-            ns["COL_FIN_VALOR"]: valores,
+            ns["COL_FIN_VALOR"]: [-0.01 if i % 40 == 0 else -1000.0 - i for i in range(n)],
         })
         rotulos = {d: pd.Timestamp(d).strftime("%d/%m")
                    for d in df["Data Efetiva"].dt.normalize().unique()}
-        mapa, cortou = ns["montar_lancamentos_por_celula"](
+        mapa, _cortou = ns["montar_lancamentos_por_celula"](
             df, rotulos, df[ns["COL_FIN_GRUPO_DESPESA"]].astype(str))
-        self.assertTrue(cortou, "o cenario precisa mesmo estourar o teto")
         nos_dados = df.groupby(
             [df[ns["COL_FIN_GRUPO_DESPESA"]], df["Data Efetiva"].dt.normalize()]).ngroups
         self.assertEqual(len(mapa), nos_dados,
-                         "toda celula que existe nos dados tem de ter chave no mapa")
+                         "toda celula que existe nos dados precisa ter chave")
 
     def test_detalhe_cobre_linha_fechada_e_linha_aberta(self):
         """A linha aberta mostra o grupo de despesa; a fechada mostra o
@@ -2523,6 +2466,10 @@ class TesteDiarioConsolidado(unittest.TestCase):
         i = FONTE.index("with tab_fin_consolidado:")
         trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
         self.assertIn("Detalhe por célula — diagnóstico", trecho)
+        # E so para quem administra: e uma ferramenta de investigacao, nao
+        # informacao para quem usa o painel no dia a dia.
+        posicao = trecho.index("Detalhe por célula — diagnóstico")
+        self.assertIn("if eh_admin:", trecho[max(0, posicao - 300):posicao])
         self.assertIn("células com detalhe:", trecho)
         self.assertIn("com dia reconhecido:", trecho,
                       "o diagnostico precisa dizer onde o detalhe se perde")

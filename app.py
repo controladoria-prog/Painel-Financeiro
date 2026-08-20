@@ -4415,11 +4415,7 @@ def _avaliar_alertas_fluxo(
 # Teto de lançamentos levados para a tela do duplo clique. Eles viajam
 # junto com a página, então uma tabela sem limite pesaria no carregamento --
 # e ninguém confere dez mil linhas na mão de uma vez.
-TETO_LANCAMENTOS_POR_CELULA = 200
-# E um teto para a PÁGINA inteira: a soma de todas as células é o que
-# viaja junto com a tela. Sem ele, um recorte de dois meses podia
-# embutir dezenas de milhares de lançamentos e travar o carregamento.
-TETO_LANCAMENTOS_NA_PAGINA = 5000
+TETO_LANCAMENTOS_POR_CELULA = 60
 
 
 def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
@@ -4455,19 +4451,15 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     # explica o valor -- ninguém procura o lançamento de dois reais.
     recorte = recorte.reindex(recorte[COL_FIN_VALOR].abs().sort_values(ascending=False).index)
     antes = len(recorte)
-    grupos = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False)
-    recorte = grupos.head(TETO_LANCAMENTOS_POR_CELULA)
+    recorte = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False).head(
+        TETO_LANCAMENTOS_POR_CELULA
+    )
 
-    # O corte da página guarda os maiores -- MAS nunca apaga uma célula
-    # inteira: cada uma mantém pelo menos a sua maior linha. Sem isso, as
-    # células de valor pequeno ficavam de fora do mapa e o duplo clique nelas
-    # não respondia, enquanto as grandes abriam normalmente.
-    if len(recorte) > TETO_LANCAMENTOS_NA_PAGINA:
-        chaves = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False)
-        garantidas = chaves.head(1)
-        resto = recorte.drop(index=garantidas.index)
-        sobra = max(TETO_LANCAMENTOS_NA_PAGINA - len(garantidas), 0)
-        recorte = pd.concat([garantidas, resto.head(sobra)])
+    # Teto de página NÃO existe mais como corte de linhas soltas. Ele já
+    # apagou células inteiras duas vezes, e uma célula sem chave é uma célula
+    # que o duplo clique não abre -- o defeito mais irritante possível,
+    # porque o valor continua sublinhado prometendo detalhe. O único limite
+    # é por célula; o volume total se controla baixando esse limite.
     cortou = len(recorte) < antes
 
     for coluna in (COL_FIN_VENCIMENTO, COL_FIN_DATA_LIQUIDACAO):
@@ -7281,7 +7273,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # Diagnóstico à vista: quando o duplo clique não responde, a
                 # primeira pergunta é se o detalhe chegou a ser montado. Sem
                 # este número, a resposta só vem por tentativa e erro.
-                with st.expander("🔎 Detalhe por célula — diagnóstico"):
+                if eh_admin:
+                  with st.expander("🔎 Detalhe por célula — diagnóstico"):
                     _celulas_nos_dados = df_dc_real.assign(
                         _r=list(_rotulos_dc),
                         _d=df_dc_real["Data Efetiva"].dt.normalize(),
