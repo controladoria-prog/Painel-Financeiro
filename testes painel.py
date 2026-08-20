@@ -1810,6 +1810,41 @@ class TesteNomeDasColunas(unittest.TestCase):
         self.assertIn("Valor.1", saida.columns)
         self.assertIn("Valor", saida.columns)
 
+    def test_reconhece_os_nomes_antes_de_descartar_colunas(self):
+        """ORDEM IMPORTA. A economia de memoria descarta as colunas que o
+        painel nao usa; se ela rodar ANTES do reconhecimento, joga fora
+        justamente a coluna que ainda nao tem o nome canonico ("Data de
+        Liquidacao") e o painel acusa que ela esta faltando. Foi o que
+        aconteceu em 20/08/2026."""
+        i = FONTE.index("df_fluxo, faltando, colunas_renomeadas = resolver_colunas_fluxo(")
+        j = FONTE.index("_descartar = [c for c in df_fluxo.columns")
+        self.assertLess(i, j, "descartar colunas antes de reconhecer os nomes quebra o painel")
+
+    def test_a_ordem_certa_salva_a_coluna_com_outra_escrita(self):
+        """Prova pelo resultado, e nao so pela posicao no arquivo."""
+        colunas_csv = ["Movimento", "Valor.1", "Vencimento.1", "Data de Liquidação",
+                       "Canal.1", "Modalidade", "GRUPO DESPESA", "Coluna Extra"]
+        uteis = set(self.esperadas) | {"GRUPO DESPESA"}
+        df = pd.DataFrame({c: [1] for c in colunas_csv})
+
+        # Ordem errada: descarta primeiro.
+        errada = df.drop(columns=[c for c in df.columns if c not in uteis])
+        _s, faltando_errada, _r = self.ns["resolver_colunas_fluxo"](errada, self.esperadas)
+        self.assertEqual(faltando_errada, [self.ns["COL_FIN_DATA_LIQUIDACAO"]],
+                         "o cenario precisa mesmo falhar na ordem errada")
+
+        # Ordem certa: reconhece primeiro.
+        certa, faltando_certa, _r = self.ns["resolver_colunas_fluxo"](df, self.esperadas)
+        certa = certa.drop(columns=[c for c in certa.columns if c not in uteis])
+        self.assertEqual(faltando_certa, [])
+        self.assertIn(self.ns["COL_FIN_DATA_LIQUIDACAO"], certa.columns)
+        self.assertNotIn("Coluna Extra", certa.columns, "a economia tem de continuar valendo")
+
+    def test_checagem_inicial_tambem_tolera_a_escrita(self):
+        i = FONTE.index("ausentes = [")
+        trecho = FONTE[i - 400:i + 400]
+        self.assertIn("_assinatura_coluna_fin(c) not in _assinaturas", trecho)
+
     def test_nome_exato_tem_prioridade(self):
         """Se a coluna certa existe com o nome exato, ninguem mexe nela."""
         _saida, faltando, renomeadas = self._resolver(

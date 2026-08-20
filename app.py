@@ -1830,7 +1830,14 @@ def obter_dados_fluxo_caixa():
             df.columns = [str(c).strip() for c in df.columns]
             if df.empty:
                 raise ValueError("o CSV veio vazio")
-            ausentes = [c for c in COLUNAS_MINIMAS_FLUXO if c not in df.columns]
+            # Compara pela assinatura, não pelo texto exato: se a planilha
+            # trocar "Vencimento.1" por "Vencimento 1" ou puser um acento a
+            # mais, isto aqui não pode acusar que veio outra aba.
+            _assinaturas = {_assinatura_coluna_fin(c) for c in df.columns}
+            ausentes = [
+                c for c in COLUNAS_MINIMAS_FLUXO
+                if c not in df.columns and _assinatura_coluna_fin(c) not in _assinaturas
+            ]
             if ausentes:
                 raise ValueError(
                     "veio outra aba (faltam as colunas " + ", ".join(ausentes) + ")"
@@ -5262,9 +5269,20 @@ def preparar_fluxo_caixa(base_data):
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO,
     ]
-    # Fora as colunas que o painel usa, o resto do CSV não serve para nada
-    # aqui e ocupa memória por 650 mil linhas. Segurar isso foi parte do que
-    # levou o servidor a cortar o app por excesso de uso.
+    # ORDEM IMPORTA. Primeiro reconhecer os nomes, só depois descartar o que
+    # não se usa -- e não o contrário. A planilha muda de escrita de vez em
+    # quando ("Data de Liquidação" no lugar de "Data Liquidação"); descartar
+    # antes joga fora justamente a coluna que ainda não tem o nome canônico,
+    # e o painel acusa que ela está faltando. Foi o que aconteceu quando a
+    # economia de memória entrou na frente do reconhecimento.
+    df_fluxo, faltando, colunas_renomeadas = resolver_colunas_fluxo(
+        df_fluxo, colunas_esperadas
+    )
+    if faltando:
+        return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0, {}
+
+    # Agora sim: fora as colunas que o painel usa, o resto do CSV não serve
+    # para nada aqui e ocupa memória por 650 mil linhas.
     _uteis = {
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_GRUPO_DESPESA,
@@ -5273,15 +5291,6 @@ def preparar_fluxo_caixa(base_data):
     _descartar = [c for c in df_fluxo.columns if c not in _uteis]
     if _descartar:
         df_fluxo = df_fluxo.drop(columns=_descartar)
-
-    # A planilha muda de escrita de vez em quando ("Data de Liquidação" no
-    # lugar de "Data Liquidação"). Para o painel é a mesma coluna, e uma
-    # preposição a mais não pode derrubar a tela.
-    df_fluxo, faltando, colunas_renomeadas = resolver_colunas_fluxo(
-        df_fluxo, colunas_esperadas
-    )
-    if faltando:
-        return None, "COLUNAS_FALTANDO:" + ", ".join(faltando), 0, 0, {}
 
     df = df_fluxo.copy()
 
