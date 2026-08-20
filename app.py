@@ -5023,7 +5023,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
           if (typeof v === 'number') return v.toFixed(2).replace('.', ',');
           return '"' + String(v === null || v === undefined ? '' : v)
             .replace(/"/g, '""') + '"';
-        }}).join(';'))).join('\r\n');
+        }}).join(';'))).join('\\r\\n');
       const nomeArquivo = (nomeLinha + ' ' + nomeDia)
         .replace(/[^\\wÀ-ú ]+/g, '').trim().replace(/\\s+/g, '-') + '.csv';
 

@@ -2111,6 +2111,63 @@ class TesteDiarioConsolidado(unittest.TestCase):
             self.assertEqual(js.count("{"), js.count("}"), f"{descricao}: chaves")
             self.assertEqual(js.count("("), js.count(")"), f"{descricao}: parenteses")
 
+    # Uma string aberta e nao fechada na mesma linha e erro de sintaxe -- e
+            # nenhuma contagem de chaves pega isso. Foi o que aconteceu com um
+            # "\\r\\n" que o Python transformou em quebra de linha DE VERDADE dentro
+            # do JavaScript: a tabela inteira parou de responder e o verificador
+            # continuou dizendo que estava tudo certo.
+            #
+            # Precisa ser um leitor de verdade, e nao contagem de aspas: aspa dentro
+            # de aspa e comum ('"' + valor) e a contagem sozinha da falso positivo.
+            dentro_de_crase = False
+            for numero, linha in enumerate(js.split("\n"), 1):
+                aberta = None
+                pulo = False
+                saltar_ate = -1
+                for posicao, caractere in enumerate(linha):
+                    if posicao <= saltar_ate:
+                        continue
+                    if pulo:
+                        pulo = False
+                        continue
+                    if caractere == "\\":
+                        pulo = True
+                        continue
+                    if dentro_de_crase:
+                        if caractere == "`":
+                            dentro_de_crase = False
+                        continue
+                    if aberta:
+                        if caractere == aberta:
+                            aberta = None
+                        continue
+                    if caractere == "`":
+                        dentro_de_crase = True
+                    elif caractere in "'\"":
+                        aberta = caractere
+                    elif caractere == "/":
+                        if linha[posicao + 1:posicao + 2] == "/":
+                            break
+                        # Expressao regular como /"/g: as aspas ali dentro nao abrem
+                        # string nenhuma. Sem pular isso, o leitor acusa erro onde
+                        # nao ha -- e um verificador que mente e pior que nenhum.
+                        anterior = linha[:posicao].rstrip()
+                        if not anterior or anterior[-1] in "(,=:[!&|?{;+":
+                            fecha = posicao + 1
+                            while fecha < len(linha):
+                                if linha[fecha] == "\\":
+                                    fecha += 2
+                                    continue
+                                if linha[fecha] == "/":
+                                    break
+                                fecha += 1
+                            saltar_ate = fecha
+                if aberta:
+                    self.fail(
+                        f"{descricao}: linha {numero} abre uma string com {aberta} e nao fecha "
+                        f"-- {linha.strip()[:60]}")
+
+
             declaracoes = {}
             for linha in js.split("\n"):
                 achado = re.match(r"(\s*)(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=", linha)
