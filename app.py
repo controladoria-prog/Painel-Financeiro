@@ -5168,11 +5168,27 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         // reconferir se a janela continua aberta -- cada verificação que
         // acrescentei aqui foi uma chance a mais de o caminho ser abandonado
         // no meio, e nenhuma delas resolveu nada.
-        const aba = window.open('', '_blank');
+        // Primeiro: abrir a página como ARQUIVO EM MEMÓRIA. A permissão do
+        // quadro inclui "allow-popups-to-escape-sandbox", ou seja, a janela
+        // nova NÃO herda o isolamento -- e por isso ela consegue carregar um
+        // endereço de arquivo em memória. Já tentamos abrir em branco e
+        // escrever dentro (funcionava antes, hoje não), e criar link na
+        // página de fora (é navegação, o navegador barra). Este caminho é
+        // diferente dos dois.
+        const enderecoPagina = URL.createObjectURL(
+          new Blob([pagina], {{ type: 'text/html;charset=utf-8' }}));
+        const aba = window.open(enderecoPagina, '_blank');
         if (aba) {{
-          aba.document.write(pagina);
-          aba.document.close();
           abriu = true;
+        }} else {{
+          URL.revokeObjectURL(enderecoPagina);
+          // Segundo: abrir em branco e escrever dentro -- o jeito antigo.
+          const abaEmBranco = window.open('', '_blank');
+          if (abaEmBranco) {{
+            abaEmBranco.document.write(pagina);
+            abaEmBranco.document.close();
+            abriu = true;
+          }}
         }}
       }} catch (erro) {{ abriu = false; }}
       if (abriu) {{ avisar('lançamentos abertos em outra aba'); return; }}
@@ -6838,7 +6854,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ]
                 linhas_tabela_d.append(linha_saldo_inicial_d)
                 indices_tabela_d.append(_rotulo_unico_d("SALDO INICIAL", len(indices_tabela_d)))
-                estilo_linhas_d.append(("saldo_inicial", "SALDO INICIAL"))
+                estilo_linhas_d.append(("saldo_inicial", "SALDO INICIAL", None))
 
                 # As metas do mesmo recorte, para entrarem como linha
                 # dentro do canal a que pertencem.
@@ -6859,7 +6875,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # O subtotal do canal NÃO inclui a meta -- ela é alvo.
                     linhas_tabela_d.append(_agrega_por_dia(df_canal))
                     indices_tabela_d.append(_rotulo_unico_d(canal, len(indices_tabela_d)))
-                    estilo_linhas_d.append(("canal", canal))
+                    estilo_linhas_d.append(("canal", canal, canal))
 
                     # A meta entra na MESMA fila das outras linhas do
                     # canal, e não por cima delas: a ordem de leitura é
@@ -6899,7 +6915,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     for movimento, serie in linhas_do_canal:
                         linhas_tabela_d.append(serie)
                         indices_tabela_d.append(_rotulo_unico_d(f"    {movimento}", len(indices_tabela_d)))
-                        estilo_linhas_d.append(("movimento", movimento))
+                        # O canal vai junto: a coluna final soma o MÊS INTEIRO,
+                        # e para isso precisa saber de qual canal é a linha.
+                        estilo_linhas_d.append(("movimento", movimento, canal))
 
                 # O total do dia já vem pronto do cálculo do saldo: é a
                 # soma das linhas do dia mais o saldo inicial dele.
@@ -6907,7 +6925,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     float(total_por_dia.get(dia, 0.0)) for dia in dias_ordenados_d
                 ])
                 indices_tabela_d.append(_rotulo_unico_d("TOTAL GERAL", len(indices_tabela_d)))
-                estilo_linhas_d.append(("total", "TOTAL GERAL"))
+                estilo_linhas_d.append(("total", "TOTAL GERAL", None))
 
                 pivot_d = pd.DataFrame(linhas_tabela_d, index=indices_tabela_d)
                 pivot_d.columns = rotulos_dias_d
@@ -6918,7 +6936,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 totais_finais_d = []
                 _dia_ini_exibido = dias_ordenados_d[0]
                 _dia_fim_exibido = dias_ordenados_d[-1]
-                for posicao, (tipo_linha, nome_limpo) in enumerate(estilo_linhas_d):
+                def _total_do_mes_d(canal_da_linha, movimento_da_linha=None):
+                    """Soma do MÊS INTEIRO, não do recorte que está na tela.
+
+                    Esta aba mostra um mês de cada vez, e a leitura da coluna
+                    final é "quanto este movimento soma no mês" -- não
+                    "quanto soma nos dias que sobraram na tela". Olhando de
+                    19 a 31/08, o total tem de trazer agosto inteiro."""
+                    recorte_mes = df_d_completo[
+                        df_d_completo["Data Efetiva"].dt.to_period("M").isin(_meses_na_tela_d)
+                    ]
+                    if canal_da_linha is not None:
+                        recorte_mes = recorte_mes[
+                            recorte_mes[COL_FIN_CANAL] == canal_da_linha]
+                    if movimento_da_linha is not None:
+                        recorte_mes = recorte_mes[
+                            recorte_mes[COL_FIN_MOVIMENTO] == movimento_da_linha]
+                    return float(recorte_mes[COL_FIN_VALOR].sum())
+
+                for posicao, (tipo_linha, nome_limpo, canal_da_linha) in enumerate(
+                    estilo_linhas_d
+                ):
                     if tipo_linha == "saldo_inicial":
                         # Saldo com que o período começa (não faz sentido somar).
                         totais_finais_d.append(
@@ -6933,10 +6971,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             nao_zerados = serie_linha[serie_linha != 0]
                             totais_finais_d.append(nao_zerados.iloc[-1] if not nao_zerados.empty else 0.0)
                         else:
-                            totais_finais_d.append(pivot_d.iloc[posicao].sum())
+                            totais_finais_d.append(
+                                _total_do_mes_d(canal_da_linha, nome_limpo))
                     else:
+                        # Canal: fluxo do MÊS INTEIRO mais a última posição de
+                        # saldo. O saldo continua vindo do recorte, porque é
+                        # posição num dia, não soma de período.
                         df_escopo = df_d[df_d[COL_FIN_CANAL] == nome_limpo]
-                        fluxo_escopo = df_escopo[df_escopo["Tipo Movimento"].isin(["entrada", "saida"])][COL_FIN_VALOR].sum()
+                        df_escopo_mes = df_d_completo[
+                            (df_d_completo[COL_FIN_CANAL] == nome_limpo)
+                            & df_d_completo["Data Efetiva"].dt.to_period("M").isin(
+                                _meses_na_tela_d)
+                        ]
+                        fluxo_escopo = df_escopo_mes[
+                            df_escopo_mes["Tipo Movimento"].isin(["entrada", "saida"])
+                        ][COL_FIN_VALOR].sum()
                         saldo_escopo = 0.0
                         df_saldo_escopo = df_escopo[df_escopo["Tipo Movimento"] == "saldo"]
                         if not df_saldo_escopo.empty:
@@ -6946,7 +6995,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             ].sum()
                         totais_finais_d.append(fluxo_escopo + saldo_escopo)
 
-                pivot_d["TOTAL / ÚLT. POSIÇÃO"] = totais_finais_d
+                pivot_d["TOTAL DO MÊS / ÚLT. POSIÇÃO"] = totais_finais_d
                 pivot_d.index.name = "Canal / Movimento"
 
                 st.markdown(

@@ -2554,8 +2554,14 @@ class TesteDiarioConsolidado(unittest.TestCase):
         tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
         ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
         html = capturado["codigo"]
-        self.assertIn("const aba = window.open('', '_blank');", html)
-        self.assertIn("aba.document.write(pagina);", html)
+        # Dois caminhos, nesta ordem: arquivo em memoria (a janela nova nao
+        # herda o isolamento do quadro, entao consegue carrega-lo) e, se
+        # falhar, abrir em branco e escrever dentro -- o jeito antigo.
+        self.assertIn("window.open(enderecoPagina, '_blank')", html)
+        self.assertIn("abaEmBranco.document.write(pagina);", html)
+        self.assertLess(html.index("window.open(enderecoPagina"),
+                        html.index("window.open('', '_blank')"),
+                        "o arquivo em memoria vem primeiro")
         self.assertNotIn("aba.document.open()", html,
                          "a versao que funcionava nao chamava document.open()")
         self.assertNotIn("!aba.closed", html,
@@ -2736,6 +2742,36 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertIn("if movimento in abertas_dc and coluna_abertura in recorte.columns:",
                       trecho, "a abertura deixou de respeitar a URL")
         self.assertIn("if MOV_RECEBER_META in abertas_dc else []", trecho)
+
+    def test_total_do_fluxo_diario_soma_o_mes_e_nao_o_recorte(self):
+        """Esta aba mostra UM mes de cada vez (misturar meses e o papel do
+        Diario Consolidado). A leitura da coluna final e "quanto este
+        movimento soma no mes", nao "quanto soma nos dias que sobraram na
+        tela": olhando de 19 a 31/08, o total traz agosto inteiro."""
+        i = FONTE.index("with tab_fin_diario:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
+        self.assertIn("def _total_do_mes_d(", trecho)
+        self.assertIn("_total_do_mes_d(canal_da_linha, nome_limpo)", trecho,
+                      "a linha de movimento tem de somar o mes")
+        self.assertIn("df_escopo_mes", trecho, "a linha de canal tambem")
+        # A base do total e a COMPLETA, nao o recorte da tela.
+        j = trecho.index("def _total_do_mes_d(")
+        corpo = trecho[j:j + 900]
+        self.assertIn("df_d_completo", corpo)
+        self.assertNotIn("df_d[", corpo, "df_d e o recorte visivel; aqui vale o mes")
+        self.assertIn("TOTAL DO MÊS / ÚLT. POSIÇÃO", trecho,
+                      "o titulo precisa dizer que e do mes, senao engana")
+
+    def test_saldo_continua_sendo_posicao_e_nao_soma(self):
+        """Saldo de caixa e banco e POSICAO num dia: somar dias diferentes
+        nao faz sentido, entao essas linhas seguem mostrando a ultima."""
+        i = FONTE.index("with tab_fin_diario:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:")]
+        self.assertIn('if _classificar_movimento_fin(nome_limpo) in ("saldo", "aplicacao"):',
+                      trecho)
+        posicao = trecho.index('in ("saldo", "aplicacao"):')
+        self.assertIn("nao_zerados.iloc[-1]", trecho[posicao:posicao + 400],
+                      "saldo tem de continuar pegando a ultima posicao")
 
     def test_as_duas_abas_diarias_abrem_no_mesmo_dia(self):
         """Ontem, nas duas. O movimento do dia corrente costuma estar
