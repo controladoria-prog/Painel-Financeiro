@@ -2374,6 +2374,53 @@ class TesteDiarioConsolidado(unittest.TestCase):
         self.assertEqual(len(mapa), nos_dados,
                          "toda celula que existe nos dados tem de ter chave no mapa")
 
+    def test_detalhe_cobre_linha_fechada_e_linha_aberta(self):
+        """A linha aberta mostra o grupo de despesa; a fechada mostra o
+        movimento. O detalhe precisa existir para os DOIS rotulos -- antes
+        ele dependia de saber quais linhas estavam abertas, e quando essa
+        informacao nao chegava, a linha filha ficava sublinhada e o duplo
+        clique nao abria nada."""
+        ns = carregar(["_normalizar_texto", "_classificar_movimento_fin",
+                       "montar_lancamentos_por_celula"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_NA_PAGINA",
+                       "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA",
+                       "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR",
+                       "COL_FIN_MOVIMENTO", "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        dia = pd.Timestamp("2026-08-25")
+        df = pd.DataFrame({
+            "Data Efetiva": [dia] * 2,
+            ns["COL_FIN_MOVIMENTO"]: ["3 - Contas a Pagar"] * 2,
+            ns["COL_FIN_NUMERO"]: ["NF 1", "NF 2"],
+            ns["COL_FIN_HISTORICO"]: ["FORN A", "FORN B"],
+            ns["COL_FIN_CANAL"]: ["LOJA", "HUB"],
+            ns["COL_FIN_MODALIDADE"]: ["", ""],
+            ns["COL_FIN_GRUPO_DESPESA"]: ["Custo s/ Venda", "Custo - Mercadoria"],
+            ns["COL_FIN_VENCIMENTO"]: [dia] * 2,
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [dia] * 2,
+            ns["COL_FIN_VALOR"]: [-3000.0, -1_070_186.40],
+        })
+        mapa = {}
+        por_movimento = df[ns["COL_FIN_MOVIMENTO"]].astype(str)
+        for rotulagem in (por_movimento,
+                          df[ns["COL_FIN_GRUPO_DESPESA"]].astype(str).str.strip()):
+            parcial, _c = ns["montar_lancamentos_por_celula"](df, {dia: "25/08"}, rotulagem)
+            for chave, linhas in parcial.items():
+                mapa.setdefault(chave, linhas)
+        # Fechada: o movimento inteiro. Aberta: cada grupo.
+        self.assertIn("3 - Contas a Pagar||25/08", mapa)
+        self.assertIn("Custo s/ Venda||25/08", mapa)
+        self.assertIn("Custo - Mercadoria||25/08", mapa)
+        self.assertAlmostEqual(
+            sum(l["Valor"] for l in mapa["Custo s/ Venda||25/08"]), -3000.0, places=2)
+
+    def test_codigo_monta_o_detalhe_para_as_duas_rotulagens(self):
+        i = FONTE.index("with tab_fin_consolidado:")
+        trecho = FONTE[i:FONTE.index("# ---------------- TESOURARIA", i)]
+        self.assertIn("_rotulagens = [_por_movimento]", trecho)
+        self.assertIn("lancamentos_dc.setdefault(_chave, _linhas)", trecho)
+        self.assertIn('lancamentos_dc.pop("||", None)', trecho,
+                      "a chave vazia (linhas sem grupo) nao pode virar celula")
+
     def test_celula_com_detalhe_e_clicavel_no_html(self):
         mapa, _ns = self._mapa_de_lancamentos()
         ns_local = carregar(["_normalizar_texto", "_peso_ordem_movimento_fin",

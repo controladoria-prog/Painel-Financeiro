@@ -7252,18 +7252,32 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # O rótulo de cada lançamento, calculado de uma vez para o
                 # recorte inteiro: linha aberta manda o lançamento para a
                 # filha (o detalhe), fechada mantém no próprio movimento.
-                _rotulos_dc = df_dc_real[COL_FIN_MOVIMENTO].astype(str)
-                for _movimento_aberto in abertas_dc:
-                    _coluna = _coluna_de_abertura(_movimento_aberto)
-                    if _coluna not in df_dc_real.columns:
-                        continue
-                    _desta_linha = _rotulos_dc == _movimento_aberto
-                    _detalhe = df_dc_real.loc[_desta_linha, _coluna].astype(str).str.strip()
-                    _rotulos_dc = _rotulos_dc.mask(
-                        _desta_linha & _detalhe.reindex(_rotulos_dc.index).ne(""), _detalhe)
-
-                lancamentos_dc, _cortou_dc = montar_lancamentos_por_celula(
-                    df_dc_real, rotulos_dias_dc, _rotulos_dc)
+                # O detalhe é montado para os DOIS rótulos possíveis de cada
+                # lançamento: o do movimento (linha fechada) e o da abertura
+                # (linha aberta, por modalidade ou grupo de despesa). Antes
+                # ele dependia de saber quais linhas estavam abertas, e
+                # quando essa informação não chegava aqui as linhas filhas
+                # ficavam sem detalhe -- o valor aparecia sublinhado e o
+                # duplo clique não abria nada. Cobrir os dois casos custa
+                # pouco e tira a dependência.
+                lancamentos_dc = {}
+                _cortou_dc = False
+                _por_movimento = df_dc_real[COL_FIN_MOVIMENTO].astype(str)
+                _rotulagens = [_por_movimento]
+                for _coluna_detalhe in {
+                    _coluna_de_abertura(m) for m in _por_movimento.unique()
+                }:
+                    if _coluna_detalhe in df_dc_real.columns:
+                        _rotulagens.append(
+                            df_dc_real[_coluna_detalhe].astype(str).str.strip())
+                for _rotulagem in _rotulagens:
+                    _parcial, _cortou_parcial = montar_lancamentos_por_celula(
+                        df_dc_real, rotulos_dias_dc, _rotulagem)
+                    for _chave, _linhas in _parcial.items():
+                        lancamentos_dc.setdefault(_chave, _linhas)
+                    _cortou_dc = _cortou_dc or _cortou_parcial
+                lancamentos_dc.pop("||", None)
+                _rotulos_dc = _por_movimento
                 # Diagnóstico à vista: quando o duplo clique não responde, a
                 # primeira pergunta é se o detalhe chegou a ser montado. Sem
                 # este número, a resposta só vem por tentativa e erro.
