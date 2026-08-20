@@ -4996,13 +4996,13 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }}
 
-  // Delegação no documento, e não um ouvinte por célula: assim o duplo
-  // clique funciona mesmo que as células sejam recriadas depois, e não
-  // depende do momento em que este script roda.
-  document.addEventListener('dblclick', evento => {{
-    const celula = evento.target && evento.target.closest
-      ? evento.target.closest('td[data-k]') : null;
-    if (celula) {{
+  // Um ouvinte POR CÉLULA -- exatamente como na versão em que a aba abria.
+  // Já tentei delegação no documento (um ouvinte só, com closest); é mais
+  // moderno, mas mudar isso foi uma das coisas que aconteceram entre "abria"
+  // e "não abre", e aqui vale mais parecer com o que funcionava do que ser
+  // elegante.
+  document.querySelectorAll('td[data-k]').forEach(celula => {{
+    celula.addEventListener('dblclick', evento => {{
       evento.preventDefault();
       const linhas = detalhes[celula.dataset.k] || [];
       if (!linhas.length) {{
@@ -5179,7 +5179,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         avisar('erro ao abrir: ' + (erro && erro.name ? erro.name + ' — ' : '')
                + (erro && erro.message ? erro.message : erro));
       }}
-    }}
+    }});
   }});
 
   // ---- altura da caixa ----

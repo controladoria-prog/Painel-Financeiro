@@ -2465,9 +2465,11 @@ class TesteDiarioConsolidado(unittest.TestCase):
         # funcionar. Por isso nao entra na lista acima.
 
         roteiro = """
+        let ouvinteDaCelula = null;
         const celula = {dataset:{k:'Ativo Permanente||21/08',v:'-1',l:'0',c:'0'},
           style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false}},
-          addEventListener(){}, closest(s){return s==='td[data-k]'?this:null}};
+          addEventListener(t,f){ if (t === 'dblclick') ouvinteDaCelula = f; },
+          closest(s){return s==='td[data-k]'?this:null}};
         const jsonTag = {textContent: JSON.stringify(
           {'Ativo Permanente||21/08':[{'Valor':-1}]})};
         const doc = {}; const corpo = {innerHTML:'', style:{cssText:''}};
@@ -2477,7 +2479,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
         global.document = {addEventListener(t,f){doc[t]=f},
           getElementById(id){return id==='detalhes'?jsonTag:elemento()},
           querySelector(){return elemento()},
-          querySelectorAll(s){return s.includes('data-v')?[celula]:[]},
+          querySelectorAll(s){return (s.includes('data-v')||s.includes('data-k'))?[celula]:[]},
           createElement: elemento, body: corpo, documentElement:{scrollHeight:1}};
         let abriuJanela = false;
         global.window = {parent:{postMessage(){}}, top:null, frameElement:null,
@@ -2486,7 +2488,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
         global.URL={createObjectURL(){return 'blob:'},revokeObjectURL(){}};
         global.Blob=function(){};
         eval(JS_DA_TABELA);
-        doc['dblclick']({target: celula, preventDefault(){}});
+        ouvinteDaCelula({target: celula, preventDefault(){}});
         console.log(abriuJanela ? 'abriu janela' : 'nao abriu');
         """
         with tempfile.TemporaryDirectory() as pasta:
@@ -2527,8 +2529,8 @@ class TesteDiarioConsolidado(unittest.TestCase):
         tabela = pd.DataFrame([[-24_426.75]], index=["Ativo Permanente"], columns=["21/08"])
         ns_local["tabela_selecionavel"](tabela, chave="t", detalhes_por_celula=mapa)
         html = capturado["codigo"]
-        self.assertIn("document.addEventListener('dblclick'", html)
-        self.assertIn("closest('td[data-k]')", html)
+        self.assertIn("querySelectorAll('td[data-k]')", html,
+                      "um ouvinte por celula, como na versao em que a aba abria")
         self.assertIn("sem detalhe para", html,
                       "o caminho sem detalhe precisa avisar, nao ficar mudo")
 
