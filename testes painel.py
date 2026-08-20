@@ -2361,6 +2361,38 @@ class TesteMemoriaELeitura(unittest.TestCase):
                          "comparacao com categoria nao precisa virar texto")
         self.assertNotIn("].astype(str).isin(", bloco)
 
+    def test_colunas_de_variedade_alta_ficam_de_fora(self):
+        """Historico, Numero e Plano de Contas nao sao usados por nenhuma
+        tela do fluxo -- sao resto do cruzamento com a DIARIO, removido em
+        18/08 -- e sao justamente os de maior variedade: um texto diferente
+        por lancamento, 650 mil vezes. Medido: 135 MB a menos por copia."""
+        i = FONTE.index("_uteis = {")
+        bloco = FONTE[i:FONTE.index("}", i)]
+        for coluna in ("COL_FIN_HISTORICO", "COL_FIN_NUMERO", "COL_FIN_PLANO_CONTAS"):
+            self.assertNotIn(coluna, bloco, f"{coluna} voltou a ser carregada sem uso")
+        # E continuam sem uso em qualquer outro lugar do app.
+        for coluna in ("COL_FIN_HISTORICO", "COL_FIN_NUMERO", "COL_FIN_PLANO_CONTAS"):
+            self.assertLessEqual(FONTE.count(coluna), 1,
+                                 f"{coluna} passou a ser usada -- precisa voltar para _uteis")
+
+    def test_diario_guarda_as_repetitivas_como_categoria(self):
+        i = FONTE.index("def carregar_diario(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('astype("category")', corpo)
+        for coluna in ("Plano de Contas", "Centro de Custos", "Linha DRE"):
+            self.assertIn(f'"{coluna}"', corpo)
+
+    def test_caches_pesados_guardam_poucas_copias(self):
+        """Cada entrada guarda uma copia inteira dos dados de 13 lojas. Oito
+        entradas eram oito copias."""
+        import re as _re
+        for funcao in ("carregar_dados_abas", "carregar_dados_por_loja"):
+            i = FONTE.index(f"def {funcao}(")
+            decorador = FONTE[max(0, i - 400):i]
+            achado = _re.search(r"max_entries=(\d+)", decorador)
+            self.assertIsNotNone(achado, f"{funcao} sem teto")
+            self.assertLessEqual(int(achado.group(1)), 3, f"{funcao} guarda copias demais")
+
     def test_guarda_de_memoria_limpa_antes_do_corte(self):
         """850 MB era tarde: o servidor corta perto de 1 GB, manda e-mail e
         bloqueia o acesso. Reler uma planilha custa segundos."""

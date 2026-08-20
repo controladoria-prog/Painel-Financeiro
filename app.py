@@ -1753,7 +1753,6 @@ TIPOS_ECONOMICOS_FLUXO = {
     "Canal.1": "category",
     "Modalidade": "category",
     "GRUPO DESPESA": "category",
-    "Plano de Contas": "category",
 }
 
 COLUNAS_MINIMAS_FLUXO = ("Movimento", "Valor.1", "Vencimento.1")
@@ -2013,7 +2012,7 @@ def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
 # teto, trocar de visão algumas vezes empilha cópias até o servidor
 # derrubar o app -- e o cache existe para poupar leitura, não para
 # guardar tudo que já foi aberto.
-@st.cache_data(ttl=60, max_entries=8)
+@st.cache_data(ttl=60, max_entries=2)
 def carregar_dados_abas(path_o, path_r, lista_abas):
     """Carrega Orçado e Realizado de cada aba/loja. Cada lado é lido de forma
     INDEPENDENTE: se a loja não existir no Orçado (ex.: loja nova, ainda sem
@@ -2038,7 +2037,7 @@ def carregar_dados_abas(path_o, path_r, lista_abas):
     return dfs_o, dfs_r
 
 
-@st.cache_data(ttl=60, max_entries=6)
+@st.cache_data(ttl=60, max_entries=2)
 def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     """Carrega os dados de Orçado/Realizado de cada loja SEPARADAMENTE (uma aba
     por loja), para permitir a divisão por loja no relatório Excel — independente
@@ -2211,9 +2210,15 @@ def carregar_diario(path_r):
 
     df = df[colunas_necessarias + colunas_extras].copy()
     df["Valor Bruto"] = pd.to_numeric(df["Valor Bruto"], errors="coerce").fillna(0)
-    df["Plano de Contas"] = df["Plano de Contas"].astype(str).str.strip()
-    df["Centro de Custos"] = df["Centro de Custos"].astype(str).str.strip()
-    df["Linha DRE"] = df["Linha DRE"].astype(str).str.strip()
+    # Estas três se repetem muito ao longo dos lançamentos: dezenas de planos
+    # de contas, algumas dezenas de centros de custo e as linhas da DRE. Como
+    # CATEGORIA, cada texto é guardado uma vez e as linhas apontam para ele --
+    # a mesma economia feita no CSV do fluxo, e pelo mesmo motivo: o servidor
+    # corta o app quando a memória estoura.
+    for _coluna_repetitiva in ("Plano de Contas", "Centro de Custos", "Linha DRE"):
+        df[_coluna_repetitiva] = (
+            df[_coluna_repetitiva].astype(str).str.strip().astype("category")
+        )
     for col_extra in colunas_extras:
         df[col_extra] = df[col_extra].fillna("").astype(str).str.strip()
 
@@ -5307,10 +5312,14 @@ def preparar_fluxo_caixa(base_data):
 
     # Agora sim: fora as colunas que o painel usa, o resto do CSV não serve
     # para nada aqui e ocupa memória por 650 mil linhas.
+    # Histórico, Número e Plano de Contas ficam de fora: nenhuma tela usa
+    # essas três, e são justamente as de maior variedade -- um texto
+    # diferente por lançamento, 650 mil vezes. Eram o resto do cruzamento
+    # com a aba DIÁRIO, que saiu do painel em 18/08.
     _uteis = {
         COL_FIN_VALOR, COL_FIN_MODALIDADE, COL_FIN_CANAL, COL_FIN_MOVIMENTO,
         COL_FIN_DATA_LIQUIDACAO, COL_FIN_VENCIMENTO, COL_FIN_GRUPO_DESPESA,
-        COL_FIN_HISTORICO, COL_FIN_NUMERO, COL_FIN_PLANO_CONTAS, COL_FIN_LIQ_AMPLA,
+        COL_FIN_LIQ_AMPLA,
     }
     _descartar = [c for c in df_fluxo.columns if c not in _uteis]
     if _descartar:
