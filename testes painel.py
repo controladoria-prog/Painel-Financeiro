@@ -1318,7 +1318,17 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # A reserva de caixa nao pode ter passado a ler a abertura.
         j = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
         reserva = FONTE[max(0, j - 1800):j]
-        self.assertIn("serie_total_geral = pivot_m_fechamento", reserva)
+        # O disponivel agora sai das linhas de SALDO e ENTRADA (caixa, banco,
+        # a receber, liquidado) -- antes somava TODAS, arrastando a META
+        # junto, e por isso os numeros vinham inflados.
+        i_reserva = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco_reserva = FONTE[max(0, i_reserva - 4000):i_reserva]
+        self.assertIn("movimentos_disponiveis_m", bloco_reserva)
+        self.assertIn('_classificar_movimento_fin(m) in ("saldo", "entrada")', bloco_reserva)
+        # E a sobra do mes anterior entra no disponivel do seguinte -- so na
+        # previsao, pela mesma razao do SALDO INICIAL.
+        self.assertIn("_base_m if _periodo <= _mes_corrente_m else _base_m + _sobra_anterior_m",
+                      bloco_reserva)
         # E nenhuma outra chamada do pivo pode ter mudado de base.
         self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 1)
 
@@ -1346,8 +1356,14 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         """A soma dos dias tem de devolver a meta do mes -- os centavos do
         arredondamento vao no ultimo dia, entao nada se perde."""
         metas = self.ns["METAS_RECEBER"]
-        esperado = {("HUB LOGISTICO", 9): 2_850_343.42, ("LOJA", 9): 2_713_551.41,
-                    ("VENDA DIRETA", 9): 5_318_893.86, ("LOJA", 7): 1_982_539.27}
+        # Valores de 21/08/2026, conferidos contra a linha de Total de cada
+        # canal na planilha de faturamento.
+        esperado = {("HUB LOGISTICO", 7): 868_869.98, ("HUB LOGISTICO", 9): 2_731_272.77,
+                    ("HUB LOGISTICO", 12): 3_577_081.73,
+                    ("LOJA", 7): 1_731_735.90, ("LOJA", 9): 2_634_495.90,
+                    ("LOJA", 12): 4_253_680.96,
+                    ("VENDA DIRETA", 7): 1_699_876.38, ("VENDA DIRETA", 9): 5_096_452.91,
+                    ("VENDA DIRETA", 12): 6_854_279.96}
         for (canal, mes), alvo in esperado.items():
             soma = sum(v.get((2026, mes), 0.0) for v in metas[canal].values())
             self.assertAlmostEqual(soma, alvo, delta=0.02, msg=f"{canal} mes {mes}")
@@ -1359,7 +1375,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                    self.ns["COL_FIN_LIQ_EFETIVA"], "Liquidado", "Tipo Movimento"]
         diarias = self.ns["montar_linhas_de_meta"](colunas)
         setembro = diarias[diarias["Data Efetiva"].dt.to_period("M") == pd.Period("2026-09")]
-        self.assertAlmostEqual(setembro[self.ns["COL_FIN_VALOR"]].sum(), 10_882_788.68, delta=0.05)
+        self.assertAlmostEqual(setembro[self.ns["COL_FIN_VALOR"]].sum(), 10_462_221.58, delta=0.05)
 
     def test_boleto_garantido_so_cai_em_terca_e_quinta(self):
         dias = self.ns["_dias_da_meta_no_mes"](2026, 9, "Boleto Garantido")
@@ -1376,7 +1392,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         self.assertEqual(
             self.ns["_classificar_movimento_fin"]("3.1 - Contas a Receber Liquidado"), "entrada")
 
-    def _pivo(self, avencer, liquidado, meta=10_882_788.68):
+    def _pivo(self, avencer, liquidado, meta=10_462_221.58):
         return pd.DataFrame({"Setembro": {
             self.ns["MOV_RECEBER_META"]: meta,
             self.ns["MOV_RECEBER_AVENCER"]: avencer,
@@ -1388,14 +1404,14 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         ajustado, cheia = self.ns["_aplicar_meta_como_falta"](
             self._pivo(4_000_000.0, 6_000_000.0))
         self.assertAlmostEqual(ajustado.loc[self.ns["MOV_RECEBER_META"], "Setembro"],
-                               882_788.68, places=2)
-        self.assertAlmostEqual(cheia["Setembro"], 10_882_788.68, places=2)
+                               462_221.58, places=2)
+        self.assertAlmostEqual(cheia["Setembro"], 10_462_221.58, places=2)
 
     def test_meta_zera_quando_batida_e_nao_fica_negativa(self):
-        batida, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_882_788.68))
+        batida, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_462_221.58))
         self.assertAlmostEqual(batida.loc[self.ns["MOV_RECEBER_META"], "Setembro"], 0.0, places=2)
         # Um real abaixo da meta: e um real que tem de aparecer.
-        quase, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_882_787.68))
+        quase, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 6_462_220.58))
         self.assertAlmostEqual(quase.loc[self.ns["MOV_RECEBER_META"], "Setembro"], 1.0, places=2)
         # Passando da meta continua zero, nunca negativo.
         passou, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(4_000_000.0, 9_000_000.0))

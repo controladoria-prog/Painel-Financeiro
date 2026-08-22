@@ -4026,38 +4026,44 @@ RENOMEAR_MOVIMENTO_FIN = {
 # coluna "Projetado" da planilha são DESCARTADOS -- estes aqui é que valem.
 # Chave do mês: (ano, mês).
 METAS_RECEBER = {
+    # Valores de 21/08/2026, conferidos contra a linha de Total de cada canal
+    # na planilha de faturamento. Mês a mês, de julho a dezembro de 2026.
     "HUB LOGISTICO": {
         "Débito": {(2026, 7): 77_404.54, (2026, 8): 72_414.89, (2026, 9): 77_901.96,
                    (2026, 10): 83_026.09, (2026, 11): 83_026.09, (2026, 12): 69_943.17},
-        "Boleto Garantido": {(2026, 7): 910_956.85, (2026, 8): 1_838_897.04,
-                             (2026, 9): 2_619_828.66, (2026, 10): 2_958_458.15,
-                             (2026, 11): 3_074_991.99, (2026, 12): 3_173_902.62},
-        "Crédito à Vista": {(2026, 7): 12_745.61, (2026, 8): 12_666.20, (2026, 9): 11_849.71,
-                            (2026, 10): 12_747.59, (2026, 11): 13_586.09, (2026, 12): 13_586.09},
-        "Crédito Parcelado": {(2026, 8): 80_368.13, (2026, 9): 140_763.09,
-                              (2026, 10): 180_907.04, (2026, 11): 217_079.52,
-                              (2026, 12): 249_005.87},
+        "Boleto Garantido": {(2026, 7): 724_711.94, (2026, 8): 1_648_019.54,
+                             (2026, 9): 2_447_047.24, (2026, 10): 2_889_041.57,
+                             (2026, 11): 3_065_364.87, (2026, 12): 3_173_902.62},
+        "Crédito à Vista": {(2026, 7): 10_139.77, (2026, 8): 76_603.09, (2026, 9): 140_162.70,
+                            (2026, 10): 184_317.05, (2026, 11): 13_586.09,
+                            (2026, 12): 13_586.09},
+        "Crédito Parcelado": {(2026, 7): 56_613.72, (2026, 8): 70_719.61, (2026, 9): 66_160.88,
+                              (2026, 10): 71_174.06, (2026, 11): 285_841.51,
+                              (2026, 12): 319_649.85},
     },
     "LOJA": {
         "Débito": {(2026, 7): 1_106_290.84, (2026, 8): 1_245_777.21, (2026, 9): 1_085_880.28,
-                   (2026, 10): 1_102_890.38, (2026, 11): 1_363_803.43, (2026, 12): 2_349_303.58},
-        "Crédito Parcelado": {(2026, 7): 404_473.61, (2026, 8): 916_807.95,
-                              (2026, 9): 1_164_795.10, (2026, 10): 1_281_575.63,
-                              (2026, 11): 1_304_708.48, (2026, 12): 975_794.15},
-        "Crédito à Vista": {(2026, 7): 471_774.82, (2026, 8): 411_049.02, (2026, 9): 462_876.03,
-                            (2026, 10): 403_465.36, (2026, 11): 409_785.56, (2026, 12): 506_729.38},
+                   (2026, 10): 1_102_890.38, (2026, 11): 1_363_803.43,
+                   (2026, 12): 2_349_303.58},
+        "Crédito Parcelado": {(2026, 7): 288_703.54, (2026, 8): 755_263.88,
+                              (2026, 9): 1_085_739.59, (2026, 10): 1_241_141.93,
+                              (2026, 11): 1_282_775.11, (2026, 12): 1_441_574.81},
+        "Crédito à Vista": {(2026, 7): 336_741.52, (2026, 8): 411_049.02, (2026, 9): 462_876.03,
+                            (2026, 10): 403_465.36, (2026, 11): 409_785.56,
+                            (2026, 12): 462_802.58},
     },
     "VENDA DIRETA": {
         "Débito": {(2026, 7): 303_243.69, (2026, 8): 283_695.99, (2026, 9): 305_192.37,
                    (2026, 10): 325_266.91, (2026, 11): 325_266.91, (2026, 12): 274_012.66},
-        "Boleto Garantido": {(2026, 7): 1_582_766.96, (2026, 8): 3_177_665.26,
-                             (2026, 9): 4_583_064.20, (2026, 10): 5_282_634.16,
-                             (2026, 11): 5_517_863.63, (2026, 12): 5_684_680.42},
-        "Crédito à Vista": {(2026, 7): 62_540.94, (2026, 8): 62_151.30, (2026, 9): 58_144.90,
-                            (2026, 10): 62_550.69, (2026, 11): 66_665.06, (2026, 12): 66_665.06},
-        "Crédito Parcelado": {(2026, 8): 221_298.72, (2026, 9): 372_492.38,
-                              (2026, 10): 470_763.75, (2026, 11): 561_093.74,
-                              (2026, 12): 641_833.40},
+        "Boleto Garantido": {(2026, 7): 1_204_661.09, (2026, 8): 2_794_305.64,
+                             (2026, 9): 4_220_719.58, (2026, 10): 5_115_335.04,
+                             (2026, 11): 5_489_296.36, (2026, 12): 5_684_680.42},
+        "Crédito à Vista": {(2026, 7): 47_600.59, (2026, 8): 62_151.30, (2026, 9): 58_144.90,
+                            (2026, 10): 62_550.69, (2026, 11): 66_665.05,
+                            (2026, 12): 66_665.06},
+        "Crédito Parcelado": {(2026, 7): 144_371.02, (2026, 8): 356_935.69,
+                              (2026, 9): 512_396.05, (2026, 10): 633_388.27,
+                              (2026, 11): 742_928.40, (2026, 12): 828_921.81},
     },
 }
 
@@ -6662,12 +6668,49 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
             # padrão das tabelas já o marca em vermelho automaticamente.
             serie_obrigacoes = -serie_a_pagar.abs()
-            # Disponível = tudo que há antes de descontar o que se deve
-            serie_disponivel_total = serie_total_geral - serie_a_pagar
-            serie_sobra = serie_total_geral  # já é disponível − a pagar
+            # DISPONÍVEL = caixa + banco + contas a receber + contas a receber
+            # liquidado. Só isso. Antes era a soma de TODAS as linhas menos o a
+            # pagar, o que arrastava junto a linha de META -- e meta é
+            # balizador, não dinheiro em caixa. Por isso os números vinham
+            # inflados.
+            movimentos_disponiveis_m = [
+                m for m in pivot_m_fechamento.index
+                if _classificar_movimento_fin(m) in ("saldo", "entrada")
+            ]
+            serie_disponivel_do_mes = (
+                pivot_m_fechamento.loc[movimentos_disponiveis_m, colunas_meses_m].sum(axis=0)
+                if movimentos_disponiveis_m
+                else pd.Series(0.0, index=colunas_meses_m)
+            )
+
+            # A sobra de um mês entra no disponível do SEGUINTE -- mas só na
+            # previsão. Mês já realizado e mês corrente têm as posições reais
+            # de caixa e banco dentro deles; somar a sobra do anterior por
+            # cima contaria o mesmo dinheiro duas vezes. É a mesma regra do
+            # SALDO INICIAL da tabela acima.
+            _disponivel_m, _sobra_m = {}, {}
+            _sobra_anterior_m = 0.0
+            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
+                _base_m = float(serie_disponivel_do_mes.get(_coluna, 0.0))
+                _disponivel_m[_coluna] = (
+                    _base_m if _periodo <= _mes_corrente_m else _base_m + _sobra_anterior_m
+                )
+                _sobra_m[_coluna] = (
+                    _disponivel_m[_coluna] - abs(float(serie_a_pagar.get(_coluna, 0.0)))
+                )
+                # A sobra passa adiante como está, inclusive negativa: buraco
+                # de um mês não some no mês seguinte.
+                _sobra_anterior_m = _sobra_m[_coluna]
+
+            serie_disponivel_total = pd.Series(_disponivel_m)
+            serie_sobra = pd.Series(_sobra_m)
             serie_pct_sobra = pd.Series(
                 [
-                    (sobra / disp * 100) if disp else 0.0
+                    # Porcentagem só faz sentido com disponível positivo. Com
+                    # os dois negativos, a divisão devolve um número POSITIVO
+                    # -- 197% de sobra num mês sem dinheiro nenhum. Aqui vale
+                    # marcar como -100%: não há de onde sobrar.
+                    (sobra / disp * 100) if disp > 0 else (0.0 if sobra == 0 else -100.0)
                     for sobra, disp in zip(serie_sobra.values, serie_disponivel_total.values)
                 ],
                 index=colunas_meses_m,
