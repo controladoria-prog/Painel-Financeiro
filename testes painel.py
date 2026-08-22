@@ -1323,16 +1323,41 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # junto, e por isso os numeros vinham inflados.
         i_reserva = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
         bloco_reserva = FONTE[max(0, i_reserva - 4000):i_reserva]
-        self.assertIn("movimentos_disponiveis_m", bloco_reserva)
-        self.assertIn('_classificar_movimento_fin(m) in ("saldo", "entrada")', bloco_reserva)
-        # E a sobra do mes anterior entra no disponivel do seguinte -- so na
-        # previsao, pela mesma razao do SALDO INICIAL.
-        self.assertIn("_base_m if _periodo <= _mes_corrente_m else _base_m + _sobra_anterior_m",
-                      bloco_reserva)
-        # E so sobra POSITIVA passa adiante: "Disponivel" e dinheiro em caixa,
-        # nao pode ser negativo. Carregar o buraco fazia dezembro aparecer com
-        # -11 milhoes de disponivel e a porcentagem virava -1311%.
-        self.assertIn("_sobra_anterior_m = max(_sobra_m[_coluna], 0.0)", bloco_reserva)
+        # Caixa e banco do FECHAMENTO; a receber e liquidado do total do mes.
+        self.assertIn("_saldos_fechamento_m", bloco_reserva)
+        self.assertIn("_entradas_do_mes_m", bloco_reserva)
+        # A sobra do mes anterior entra pelo SALDO INICIAL, que a tabela de
+        # cima ja calcula -- a Reserva nao faz a propria cadeia.
+        self.assertIn("saldos_iniciais_m.get(coluna, 0.0)", bloco_reserva)
+        self.assertNotIn("_sobra_anterior_m", bloco_reserva,
+                         "a Reserva voltou a encadear por conta propria")
+
+    def test_reserva_monta_cada_parte_da_sua_fonte(self):
+        """Regra definida pela area em 21/08/2026:
+          caixa e banco  -> posicao de FECHAMENTO do mes (ultimo dia com saldo)
+          a receber e liquidado -> TOTAL do mes
+          a pagar        -> TOTAL do mes
+        Caixa e banco sao POSICAO, nao somatorio: o saldo do ultimo dia ja
+        contem tudo que entrou e saiu antes dele. As outras linhas sao
+        movimentacao e por isso somam."""
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 4000):i]
+        self.assertIn("pivot_m_fechamento.loc[_saldos_fechamento_m, coluna]", bloco,
+                      "caixa e banco vem do FECHAMENTO")
+        self.assertIn("pivot_m.loc[_entradas_do_mes_m, coluna]", bloco,
+                      "a receber e liquidado somam o mes")
+        self.assertIn('_classificar_movimento_fin(m) == "saldo"', bloco)
+        self.assertIn('_classificar_movimento_fin(m) == "entrada"', bloco)
+        # A meta continua fora: e balizador, nao dinheiro em caixa.
+        self.assertNotIn('"meta"', bloco)
+
+    def test_reserva_soma_a_sobra_anterior_so_na_previsao(self):
+        """A sobra do mes anterior entra pelo SALDO INICIAL, que ja e zero em
+        mes realizado e no mes corrente."""
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 4000):i]
+        self.assertIn("saldos_iniciais_m.get(coluna, 0.0)", bloco)
+        self.assertIn("serie_sobra = serie_disponivel_total - serie_a_pagar.abs()", bloco)
 
     def test_disponivel_nunca_fica_negativo(self):
         """Mes que fecha no vermelho nao entrega caixa negativo ao seguinte:

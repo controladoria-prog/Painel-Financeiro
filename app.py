@@ -6652,14 +6652,12 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # os recebíveis (caixa + banco + a receber projetado + realizado),
             # e o indicador é a SOBRA sobre esse disponível.
             colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
-            # Base FECHAMENTO, não a abertura da tabela acima: aqui a pergunta
-            # é "com o dinheiro que tenho ao fim do mês, sobra 30% depois de
-            # pagar tudo?". Por isso este bloco monta a própria série em vez
-            # de reaproveitar a linha de TOTAL GERAL da tabela.
-            serie_total_geral = pivot_m_fechamento[colunas_meses_m].sum(axis=0)
-
+            # A PAGAR: total do mês. Soma é igual nas duas bases, então tanto
+            # faz qual pivô -- fica no de fechamento por coerência com o resto
+            # deste bloco.
             movimentos_a_pagar = [
-                m for m in pivot_m_fechamento.index if _classificar_movimento_fin(m) == "saida"
+                m for m in pivot_m_fechamento.index
+                if _classificar_movimento_fin(m) == "saida"
             ]
             serie_a_pagar = (
                 pivot_m_fechamento.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
@@ -6668,49 +6666,44 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
             # padrão das tabelas já o marca em vermelho automaticamente.
             serie_obrigacoes = -serie_a_pagar.abs()
-            # DISPONÍVEL = caixa + banco + contas a receber + contas a receber
-            # liquidado. Só isso. Antes era a soma de TODAS as linhas menos o a
-            # pagar, o que arrastava junto a linha de META -- e meta é
-            # balizador, não dinheiro em caixa. Por isso os números vinham
-            # inflados.
-            movimentos_disponiveis_m = [
+
+            # DISPONÍVEL, com cada parcela na leitura que faz sentido para ela:
+            #   caixa e banco  -> POSIÇÃO do último dia com saldo no mês
+            #                     (pivot_m_fechamento). São posição, não
+            #                     somatório: o saldo do último dia já contém
+            #                     tudo que entrou e saiu antes dele.
+            #   a receber e a receber liquidado -> TOTAL do mês (pivot_m).
+            #                     São movimentação e por isso somam.
+            #   meta           -> fora. É balizador, não dinheiro em caixa.
+            #
+            # A sobra do mês anterior entra pelo SALDO INICIAL, que já é zero
+            # em mês realizado e no mês corrente -- então não é preciso repetir
+            # aqui a regra de "só na previsão".
+            #
+            # ATENÇÃO: por usar o FECHAMENTO de caixa e banco, esta tabela NÃO
+            # fecha com o TOTAL GERAL da tabela acima, que usa a ABERTURA. A
+            # diferença é o movimento de caixa e banco dentro do próprio mês.
+            _saldos_fechamento_m = [
                 m for m in pivot_m_fechamento.index
-                if _classificar_movimento_fin(m) in ("saldo", "entrada")
+                if _classificar_movimento_fin(m) == "saldo"
             ]
-            serie_disponivel_do_mes = (
-                pivot_m_fechamento.loc[movimentos_disponiveis_m, colunas_meses_m].sum(axis=0)
-                if movimentos_disponiveis_m
-                else pd.Series(0.0, index=colunas_meses_m)
+            _entradas_do_mes_m = [
+                m for m in pivot_m.index
+                if _classificar_movimento_fin(m) == "entrada"
+            ]
+            serie_disponivel_total = pd.Series(
+                {
+                    coluna: (
+                        saldos_iniciais_m.get(coluna, 0.0)
+                        + (float(pivot_m_fechamento.loc[_saldos_fechamento_m, coluna].sum())
+                           if _saldos_fechamento_m else 0.0)
+                        + (float(pivot_m.loc[_entradas_do_mes_m, coluna].sum())
+                           if _entradas_do_mes_m else 0.0)
+                    )
+                    for coluna in colunas_meses_m
+                }
             )
-
-            # A sobra de um mês entra no disponível do SEGUINTE -- mas só na
-            # previsão. Mês já realizado e mês corrente têm as posições reais
-            # de caixa e banco dentro deles; somar a sobra do anterior por
-            # cima contaria o mesmo dinheiro duas vezes. É a mesma regra do
-            # SALDO INICIAL da tabela acima.
-            _disponivel_m, _sobra_m = {}, {}
-            _sobra_anterior_m = 0.0
-            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
-                _base_m = float(serie_disponivel_do_mes.get(_coluna, 0.0))
-                _disponivel_m[_coluna] = (
-                    _base_m if _periodo <= _mes_corrente_m else _base_m + _sobra_anterior_m
-                )
-                _sobra_m[_coluna] = (
-                    _disponivel_m[_coluna] - abs(float(serie_a_pagar.get(_coluna, 0.0)))
-                )
-                # Só sobra POSITIVA passa adiante. Se o mês fecha no vermelho,
-                # não há caixa para entregar ao mês seguinte -- ele começa com
-                # o que ele mesmo recebe, e nada mais. Carregar o buraco
-                # fazia o "Disponível" ficar negativo, o que não existe: é
-                # dinheiro em caixa, não pode ser menos que zero. E a
-                # porcentagem virava coisa como -1311%.
-                #
-                # O buraco não some da tela: ele aparece inteiro na linha
-                # "Sobra depois de pagar tudo" do mês em que aconteceu.
-                _sobra_anterior_m = max(_sobra_m[_coluna], 0.0)
-
-            serie_disponivel_total = pd.Series(_disponivel_m)
-            serie_sobra = pd.Series(_sobra_m)
+            serie_sobra = serie_disponivel_total - serie_a_pagar.abs()
             serie_pct_sobra = pd.Series(
                 [
                     # Porcentagem só faz sentido com disponível positivo. Com
