@@ -6698,9 +6698,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 _sobra_m[_coluna] = (
                     _disponivel_m[_coluna] - abs(float(serie_a_pagar.get(_coluna, 0.0)))
                 )
-                # A sobra passa adiante como está, inclusive negativa: buraco
-                # de um mês não some no mês seguinte.
-                _sobra_anterior_m = _sobra_m[_coluna]
+                # Só sobra POSITIVA passa adiante. Se o mês fecha no vermelho,
+                # não há caixa para entregar ao mês seguinte -- ele começa com
+                # o que ele mesmo recebe, e nada mais. Carregar o buraco
+                # fazia o "Disponível" ficar negativo, o que não existe: é
+                # dinheiro em caixa, não pode ser menos que zero. E a
+                # porcentagem virava coisa como -1311%.
+                #
+                # O buraco não some da tela: ele aparece inteiro na linha
+                # "Sobra depois de pagar tudo" do mês em que aconteceu.
+                _sobra_anterior_m = max(_sobra_m[_coluna], 0.0)
 
             serie_disponivel_total = pd.Series(_disponivel_m)
             serie_sobra = pd.Series(_sobra_m)

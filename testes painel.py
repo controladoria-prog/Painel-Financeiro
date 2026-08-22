@@ -1329,6 +1329,30 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # previsao, pela mesma razao do SALDO INICIAL.
         self.assertIn("_base_m if _periodo <= _mes_corrente_m else _base_m + _sobra_anterior_m",
                       bloco_reserva)
+        # E so sobra POSITIVA passa adiante: "Disponivel" e dinheiro em caixa,
+        # nao pode ser negativo. Carregar o buraco fazia dezembro aparecer com
+        # -11 milhoes de disponivel e a porcentagem virava -1311%.
+        self.assertIn("_sobra_anterior_m = max(_sobra_m[_coluna], 0.0)", bloco_reserva)
+
+    def test_disponivel_nunca_fica_negativo(self):
+        """Mes que fecha no vermelho nao entrega caixa negativo ao seguinte:
+        o proximo comeca com o que ele mesmo recebe. O buraco continua
+        visivel na linha de sobra do mes em que aconteceu."""
+        mes_corrente = pd.Period("2026-08", "M")
+        meses = [pd.Period(f"2026-{m:02d}", "M") for m in range(7, 13)]
+        base = [13_964_192.05, 14_568_560.54, 8_142_648.34,
+                5_327_020.43, 2_879_489.29, 1_226_104.71]
+        pagar = [9_704_926.13, 9_111_756.02, 9_225_374.37,
+                 11_612_832.02, 13_663_715.37, 11_207_121.40]
+        disponiveis, anterior = [], 0.0
+        for periodo, propria, a_pagar in zip(meses, base, pagar):
+            disponivel = propria if periodo <= mes_corrente else propria + anterior
+            disponiveis.append(disponivel)
+            anterior = max(disponivel - a_pagar, 0.0)
+        for valor in disponiveis:
+            self.assertGreaterEqual(valor, 0.0, "disponivel e caixa: nao pode ser negativo")
+        # Setembro pega a sobra de agosto, como pedido.
+        self.assertAlmostEqual(disponiveis[2], 8_142_648.34 + 5_456_804.52, places=2)
         # E nenhuma outra chamada do pivo pode ter mudado de base.
         self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 1)
 
