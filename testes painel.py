@@ -54,6 +54,8 @@ DEPENDENCIAS = {
     "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
     "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
     "guardar_memoria": ["memoria_em_uso_mb"],
+    "_avaliar_alertas_fluxo": ["_saldo_posicao_atual_fin", "_saldo_abertura_do_mes",
+                               "formata_brl"],
     "meta_diaria_que_ainda_falta": [],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
@@ -231,7 +233,8 @@ class TesteAlertasDoFluxo(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ns = carregar(
-            ["_avaliar_alertas_fluxo", "_saldo_posicao_atual_fin", "formata_brl"],
+            ["_avaliar_alertas_fluxo", "_saldo_posicao_atual_fin",
+             "_saldo_abertura_do_mes", "formata_brl"],
             ["META_RESERVA_PADRAO", "HORIZONTE_ALERTA_SEMANAS", "COL_FIN_VALOR",
              "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_AMPLA",
              "COL_FIN_LIQ_DIARIO", "COL_FIN_CANAL"],
@@ -298,6 +301,50 @@ class TesteAlertasDoFluxo(unittest.TestCase):
         canal = [a for a in self._rodar(linhas) if "sem recurso" in a["titulo"]]
         self.assertEqual(len(canal), 1)
         self.assertEqual(canal[0]["nivel"], "critico")
+
+    def test_alerta_de_reserva_le_pela_abertura_do_mes(self):
+        """25/08/2026: o alerta usava o saldo de HOJE somado ao total de
+        entradas do mes -- e a posicao de hoje ja contem o que foi recebido no
+        mes. O mesmo dinheiro entrava duas vezes e o alerta anunciava uma
+        reserva melhor do que a tabela mostrava logo abaixo. Aqui o mes abre
+        com 1 mi, recebe 4 mi e paga 4 mi: sobra 1 mi de 5 mi disponiveis, ou
+        20%. Pela conta antiga (saldo de hoje = 5 mi + 4 mi de entradas) daria
+        55%, e o alerta nao dispararia."""
+        primeiro = self.hoje.replace(day=1)
+        dias_ate_o_primeiro = (primeiro - self.hoje).days
+        linhas = [
+            # Abertura do mes: 1 milhao.
+            {"Canal.1": "LOJA", "Tipo Movimento": "saldo", "Data Efetiva": primeiro,
+             "Valor.1": 1_000_000.0, "Vencimento.1": primeiro, "Data Liquidação": pd.NaT},
+            # Posicao de hoje: 5 milhoes -- ja embute os 4 recebidos.
+            self._linha("LOJA", "saldo", 0, 5_000_000.0),
+            self._linha("LOJA", "entrada", max(dias_ate_o_primeiro + 1, -25), 4_000_000.0),
+        ]
+        linhas += [self._linha("LOJA", "saida", 1, -4_000_000.0)]
+        reserva = [a for a in self._rodar(linhas) if "Reserva do mês" in a["titulo"]]
+        self.assertEqual(len(reserva), 1, "a reserva em 20% tem de disparar o alerta")
+        self.assertIn("20%", reserva[0]["titulo"])
+
+    def test_abertura_do_mes_pega_o_primeiro_dia_com_saldo(self):
+        """E soma os canais NAQUELE dia: e a posicao da empresa na data, nao a
+        soma do mes. Mes sem nenhuma posicao devolve zero, nao erro."""
+        abertura = self.ns["_saldo_abertura_do_mes"]
+        df = pd.DataFrame([
+            {"Tipo Movimento": "saldo", "Data Efetiva": pd.Timestamp(2026, 7, 1),
+             "Valor.1": 300_000.0},
+            {"Tipo Movimento": "saldo", "Data Efetiva": pd.Timestamp(2026, 7, 1),
+             "Valor.1": 200_000.0},
+            {"Tipo Movimento": "saldo", "Data Efetiva": pd.Timestamp(2026, 7, 31),
+             "Valor.1": 900_000.0},
+            {"Tipo Movimento": "entrada", "Data Efetiva": pd.Timestamp(2026, 7, 2),
+             "Valor.1": 50_000.0},
+        ])
+        valor, data = abertura(df, "Valor.1", pd.Period("2026-07", "M"))
+        self.assertAlmostEqual(valor, 500_000.0, places=2)
+        self.assertEqual(data, pd.Timestamp(2026, 7, 1))
+        vazio, sem_data = abertura(df, "Valor.1", pd.Period("2026-09", "M"))
+        self.assertEqual(vazio, 0.0)
+        self.assertIsNone(sem_data)
 
     def test_canal_sem_posicao_propria_nao_e_avaliado(self):
         linhas = [self._linha("VENDA DIRETA", "saldo", 0, 9_000_000.0),
@@ -1308,23 +1355,23 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
                       "a regra precisa distinguir passado/corrente de previsao")
         self.assertIn('index=["SALDO INICIAL"]', trecho)
 
-    def test_so_a_tabela_mensal_usa_a_abertura(self):
+    def test_mensal_e_reserva_leem_pela_mesma_abertura(self):
+        """25/08/2026: a Reserva de Caixa passou a ler caixa e banco pela
+        ABERTURA, igual a tabela de cima. Com isso o pivo de fechamento, que
+        so ela consumia, deixou de existir -- e nao pode voltar por descuido,
+        porque a volta dele traz a dupla contagem junto."""
         # Janela ampla: o bloco cresceu quando o SALDO INICIAL entrou, e uma
         # janela curta faz o teste falhar por posicao, nao por defeito.
         i = FONTE.index("📋 Movimentos por Mês")
         trecho = FONTE[max(0, i - 6000):i + 3000]
         self.assertIn('posicao_saldo="primeira"', trecho)
-        self.assertIn("pivot_m_fechamento = _pivot_fluxo_fin(", trecho)
-        # A reserva de caixa nao pode ter passado a ler a abertura.
-        j = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        reserva = FONTE[max(0, j - 1800):j]
-        # O disponivel agora sai das linhas de SALDO e ENTRADA (caixa, banco,
-        # a receber, liquidado) -- antes somava TODAS, arrastando a META
-        # junto, e por isso os numeros vinham inflados.
+        self.assertNotIn("pivot_m_fechamento", FONTE,
+                         "o pivo de fechamento voltou -- a Reserva usa a abertura")
         i_reserva = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco_reserva = FONTE[max(0, i_reserva - 4000):i_reserva]
-        # Caixa e banco do FECHAMENTO; a receber e liquidado do total do mes.
-        self.assertIn("_saldos_fechamento_m", bloco_reserva)
+        bloco_reserva = FONTE[max(0, i_reserva - 4500):i_reserva]
+        # O disponivel sai das linhas de SALDO e ENTRADA (caixa, banco,
+        # a receber, liquidado) -- nunca de TODAS, o que arrastaria a META.
+        self.assertIn("_saldos_abertura_m", bloco_reserva)
         self.assertIn("_entradas_do_mes_m", bloco_reserva)
         # A sobra do mes anterior entra pelo SALDO INICIAL, que a tabela de
         # cima ja calcula -- a Reserva nao faz a propria cadeia.
@@ -1333,23 +1380,128 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
                          "a Reserva voltou a encadear por conta propria")
 
     def test_reserva_monta_cada_parte_da_sua_fonte(self):
-        """Regra definida pela area em 21/08/2026:
-          caixa e banco  -> posicao de FECHAMENTO do mes (ultimo dia com saldo)
+        """Regra definida pela area em 25/08/2026, LEITURA DE FLUXO:
+          caixa e banco  -> ABERTURA do mes (primeiro dia)
           a receber e liquidado -> TOTAL do mes
           a pagar        -> TOTAL do mes
-        Caixa e banco sao POSICAO, nao somatorio: o saldo do ultimo dia ja
-        contem tudo que entrou e saiu antes dele. As outras linhas sao
-        movimentacao e por isso somam."""
+        A pergunta e "de tudo que passou pelo mes, quanto sobrou depois de
+        pagar tudo" -- e a abertura e o unico saldo que conversa com os totais
+        do mes sem contar o mesmo dinheiro duas vezes."""
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 4000):i]
-        self.assertIn("pivot_m_fechamento.loc[_saldos_fechamento_m, coluna]", bloco,
-                      "caixa e banco vem do FECHAMENTO")
+        bloco = FONTE[max(0, i - 4500):i]
+        self.assertIn("pivot_m.loc[_saldos_abertura_m, coluna]", bloco,
+                      "caixa e banco vem da ABERTURA")
         self.assertIn("pivot_m.loc[_entradas_do_mes_m, coluna]", bloco,
                       "a receber e liquidado somam o mes")
         self.assertIn('_classificar_movimento_fin(m) == "saldo"', bloco)
         self.assertIn('_classificar_movimento_fin(m) == "entrada"', bloco)
         # A meta continua fora: e balizador, nao dinheiro em caixa.
         self.assertNotIn('"meta"', bloco)
+
+    def test_fechamento_com_total_do_mes_conta_o_dinheiro_duas_vezes(self):
+        """O defeito que motivou a mudanca, em numeros. O saldo do ULTIMO dia
+        JA E a abertura mais tudo que entrou menos tudo que saiu. Somar esse
+        fechamento COM o total de a receber liquidado conta o mesmo dinheiro
+        duas vezes; e descontar o total de a pagar desconta segunda vez o que
+        ja tinha saido. O excesso na sobra e exatamente o movimento liquido de
+        caixa do mes."""
+        abertura, liquidado, aberto = 2_000_000.0, 12_000_000.0, 500_000.0
+        pago, pagar_aberto = 9_200_000.0, 500_000.0
+        fechamento = abertura + liquidado - pago
+        self.assertEqual(fechamento, 4_800_000.0)
+
+        sobra_fluxo = (abertura + aberto + liquidado) - (pago + pagar_aberto)
+        sobra_posicao = (fechamento + aberto) - pagar_aberto
+        sobra_antiga = (fechamento + aberto + liquidado) - (pago + pagar_aberto)
+
+        # As duas leituras honestas dao a MESMA sobra em reais: e algebra,
+        # porque o fechamento e a abertura mais o liquido. So o denominador
+        # muda -- e com ele a porcentagem.
+        self.assertAlmostEqual(sobra_fluxo, sobra_posicao, places=2)
+        self.assertAlmostEqual(sobra_fluxo, 4_800_000.0, places=2)
+        # A antiga inflava a sobra pelo liquido de caixa do mes.
+        self.assertAlmostEqual(sobra_antiga - sobra_fluxo, liquidado - pago, places=2)
+        self.assertAlmostEqual(sobra_antiga, 7_600_000.0, places=2)
+
+    def test_disponivel_do_mes_sai_da_abertura_mais_o_que_passou(self):
+        """Mesma conta, agora saindo do pivo de verdade: o disponivel de um
+        mes fechado tem de dar abertura + a receber + liquidado, e a sobra tem
+        de bater com o fechamento menos o que sobrou em aberto."""
+        classificar = self.ns["_classificar_movimento_fin"]
+        linhas = [
+            {"Data Efetiva": pd.Timestamp(2026, 7, 1),
+             "Movimento": "1.Banco", "Valor.1": 2_000_000.0},
+            {"Data Efetiva": pd.Timestamp(2026, 7, 31),
+             "Movimento": "1.Banco", "Valor.1": 4_800_000.0},
+            {"Data Efetiva": pd.Timestamp(2026, 7, 10),
+             "Movimento": "2.2 - Contas a Receber Liquidado", "Valor.1": 12_000_000.0},
+            {"Data Efetiva": pd.Timestamp(2026, 7, 28),
+             "Movimento": "2.1 - Contas a Receber", "Valor.1": 500_000.0},
+            {"Data Efetiva": pd.Timestamp(2026, 7, 12),
+             "Movimento": "3 - Contas a Pagar", "Valor.1": -9_200_000.0},
+            {"Data Efetiva": pd.Timestamp(2026, 7, 30),
+             "Movimento": "3 - Contas a Pagar", "Valor.1": -500_000.0},
+        ]
+        df = pd.DataFrame(linhas)
+        df["PeriodoMes"] = df["Data Efetiva"].dt.to_period("M")
+        meses = sorted(df["PeriodoMes"].unique())
+        pivo = self.ns["_pivot_fluxo_fin"](
+            df, "PeriodoMes", "Valor.1", "Movimento", meses, posicao_saldo="primeira")
+        coluna = meses[0]
+
+        saldos = [m for m in pivo.index if classificar(m) == "saldo"]
+        entradas = [m for m in pivo.index if classificar(m) == "entrada"]
+        saidas = [m for m in pivo.index if classificar(m) == "saida"]
+
+        disponivel = (float(pivo.loc[saldos, coluna].sum())
+                      + float(pivo.loc[entradas, coluna].sum()))
+        a_pagar = abs(float(pivo.loc[saidas, coluna].sum()))
+        sobra = disponivel - a_pagar
+
+        self.assertAlmostEqual(disponivel, 14_500_000.0, places=2)
+        self.assertAlmostEqual(a_pagar, 9_700_000.0, places=2)
+        self.assertAlmostEqual(sobra, 4_800_000.0, places=2)
+        self.assertAlmostEqual(sobra / disponivel * 100, 33.10, places=2)
+        # E a mesma sobra da leitura de posicao: fechamento (4,8 mi) mais o
+        # que ainda ha para receber, menos o que ainda ha para pagar.
+        self.assertAlmostEqual(sobra, (4_800_000.0 + 500_000.0) - 500_000.0, places=2)
+
+    def test_sobra_da_reserva_e_o_total_geral_do_mensal(self):
+        """Consequencia da leitura de fluxo, e a melhor trava que existe para
+        ela: as duas tabelas passaram a ler pela mesma base, entao a linha
+        Sobra tem de ser o TOTAL GERAL da tabela de cima, coluna a coluna.
+        Enquanto divergiam, a diferenca era o sintoma da dupla contagem."""
+        saldo_inicial = 1_200_000.0
+        abertura, a_receber, liquidado, a_pagar = 2_000_000.0, 500_000.0, 12_000_000.0, -9_700_000.0
+
+        # TOTAL GERAL = saldo inicial + tudo que nao e meta (a meta fica fora).
+        total_geral = saldo_inicial + abertura + a_receber + liquidado + a_pagar
+        # Reserva = disponivel - a pagar.
+        disponivel = saldo_inicial + abertura + a_receber + liquidado
+        sobra = disponivel - abs(a_pagar)
+        self.assertAlmostEqual(sobra, total_geral, places=2)
+
+        # E o codigo tem de continuar montando as duas do mesmo pivo.
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 4500):i]
+        self.assertNotIn("pivot_m_fechamento", bloco)
+        self.assertIn("movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)", FONTE)
+
+    def test_pct_sem_disponivel_fica_vazia_e_nao_inventa_numero(self):
+        """Com disponivel zero ou negativo nao ha porcentagem. A divisao com
+        os dois lados negativos devolve numero POSITIVO (197% de sobra num mes
+        sem dinheiro), e o -100% que ficava no lugar era invencao igual."""
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 4500):i]
+        self.assertIn('if disp > 0 else float("nan")', bloco,
+                      "sem disponivel a porcentagem tem de ficar vazia")
+        self.assertNotIn("else (0.0 if sobra == 0 else -100.0)", bloco,
+                         "o -100% inventado voltou")
+        depois = FONTE[i:i + 4000]
+        self.assertIn("def _formata_pct_sobra(", depois, "falta o formatador do traco")
+        self.assertIn('return "—"', depois)
+        # A cor da meta nao pode quebrar com valor vazio.
+        self.assertIn("not pd.isna(v) and v >= 30", depois)
 
     def test_reserva_soma_a_sobra_anterior_so_na_previsao(self):
         """A sobra do mes anterior entra pelo SALDO INICIAL, que ja e zero em

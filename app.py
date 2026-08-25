@@ -4310,10 +4310,16 @@ def _avaliar_alertas_fluxo(
                 })
 
     # --- 4. Reserva do mês corrente abaixo da meta ---
+    # Mesma leitura da tabela Reserva de Caixa (25/08/2026): ABERTURA do mês
+    # mais tudo que passou por ele. Até 25/08 aqui entrava o saldo de HOJE, que
+    # já contém o que foi recebido no mês -- somar as entradas do mês por cima
+    # contava o mesmo dinheiro duas vezes, e o alerta anunciava uma reserva
+    # melhor do que a tabela mostrava na tela.
     mes_atual = hoje.to_period("M")
+    abertura_mes, _ = _saldo_abertura_do_mes(df, coluna_valor, mes_atual)
     entradas_mes = entradas[entradas["Data Efetiva"].dt.to_period("M") == mes_atual][coluna_valor].sum()
     saidas_mes = abs(saidas[saidas["Data Efetiva"].dt.to_period("M") == mes_atual][coluna_valor].sum())
-    disponivel_mes = saldo_atual + entradas_mes
+    disponivel_mes = abertura_mes + entradas_mes
     if disponivel_mes > 0 and saidas_mes:
         sobra_pct = (disponivel_mes - saidas_mes) / disponivel_mes * 100
         if sobra_pct < meta_reserva_pct:
@@ -5523,6 +5529,26 @@ def _saldo_posicao_atual_fin(df, coluna_valor):
     return valor, ultima_data
 
 
+def _saldo_abertura_do_mes(df, coluna_valor, periodo):
+    """Posição de caixa e banco no PRIMEIRO dia com saldo do mês — o dinheiro
+    com que o mês começou.
+
+    É o único saldo que pode ser somado ao TOTAL de entradas e saídas do mês
+    sem contar o mesmo dinheiro duas vezes: a posição do último dia já embute
+    essas movimentações. Quem quer a foto mais recente usa
+    `_saldo_posicao_atual_fin`; quem quer a conta do mês usa esta."""
+    linhas_saldo = df[
+        (df["Tipo Movimento"] == "saldo")
+        & (df["Data Efetiva"].dt.to_period("M") == periodo)
+    ]
+    if linhas_saldo.empty:
+        return 0.0, None
+    primeira_data = linhas_saldo["Data Efetiva"].min()
+    valor = linhas_saldo.loc[
+        linhas_saldo["Data Efetiva"] == primeira_data, coluna_valor].sum()
+    return float(valor), primeira_data
+
+
 # Texto que representa "sem data" no CSV publicado. Fica numa constante só
 # porque a mesma lista é usada na conversão e nos diagnósticos -- se as duas
 # saírem do lugar, o diagnóstico passa a acusar problema onde não tem.
@@ -6518,21 +6544,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # abertura conversa com as movimentações da mesma coluna; a
             # posição de fechamento já embute essas movimentações e faria o
             # mesmo dinheiro aparecer duas vezes na leitura da linha.
-            # O bloco de Reserva de Caixa, logo abaixo, segue no fechamento.
+            #
+            # 25/08/2026: a Reserva de Caixa, logo abaixo, passou a usar ESTA
+            # MESMA abertura -- ver o comentário longo lá. Com isso o pivô de
+            # fechamento, que só ela consumia, deixou de existir: é um pivô
+            # inteiro a menos por render.
             pivot_m = _pivot_fluxo_fin(
                 df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m,
                 posicao_saldo="primeira",
             )
-            pivot_m_fechamento = _pivot_fluxo_fin(
-                df_m, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m
-            )
 
             pivot_m, meta_cheia_m = _aplicar_meta_como_falta(pivot_m)
-            pivot_m_fechamento, _ = _aplicar_meta_como_falta(pivot_m_fechamento)
             pivot_m = pivot_m.reindex(_ordenar_movimentos_fin(pivot_m.index))
-            pivot_m_fechamento = pivot_m_fechamento.reindex(
-                _ordenar_movimentos_fin(pivot_m_fechamento.index)
-            )
 
             # A coluna final tem significado diferente conforme o tipo de linha:
             # para fluxo é a SOMA do período; para saldo é a abertura do
@@ -6554,7 +6577,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     totais_finais_m[movimento] = pivot_m.loc[movimento].sum()
 
             pivot_m.columns = [rotulos_meses_m[p] for p in pivot_m.columns]
-            pivot_m_fechamento.columns = list(pivot_m.columns)
             # Sem coluna de total no Fluxo Mensal: só os meses. Uma coluna
             # que ora soma (a receber, a pagar) ora mostra posição (caixa,
             # banco) confunde mais do que ajuda. `totais_finais_m` segue
@@ -6623,9 +6645,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "primeiro dia. As linhas de **contas a receber e a pagar** mostram a **soma** do mês (são "
                 "movimentações que se acumulam). Ler assim é o que permite acompanhar a conta do mês: "
                 "entrei com este saldo, recebi isto, paguei aquilo. Na última coluna, o fluxo traz o "
-                "acumulado do período e o saldo traz a abertura do primeiro mês. **Só esta tabela usa o "
-                "saldo de abertura** — a Reserva de Caixa abaixo e as demais abas seguem com a posição de "
-                "fechamento."
+                "acumulado do período e o saldo traz a abertura do primeiro mês. **A Reserva de Caixa abaixo "
+                "lê pela mesma abertura**, e por isso a Sobra dela bate com o TOTAL GERAL desta tabela; as "
+                "demais abas seguem com a posição de fechamento."
             )
             st.caption(
                 "**4 - Contas a Pagar** é programado no futuro e efetivo no passado: título já pago "
@@ -6648,43 +6670,60 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
             # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
             # A regra da área: pagando todas as contas do mês, ainda tem que
-            # sobrar ~30% do dinheiro disponível. Por isso o disponível inclui
-            # os recebíveis (caixa + banco + a receber projetado + realizado),
-            # e o indicador é a SOBRA sobre esse disponível.
+            # sobrar ~30% do dinheiro disponível.
             colunas_meses_m = [rotulos_meses_m[p] for p in meses_ordenados_m]
-            # A PAGAR: total do mês. Soma é igual nas duas bases, então tanto
-            # faz qual pivô -- fica no de fechamento por coerência com o resto
-            # deste bloco.
+            # A PAGAR: total do mês.
             movimentos_a_pagar = [
-                m for m in pivot_m_fechamento.index
+                m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "saida"
             ]
             serie_a_pagar = (
-                pivot_m_fechamento.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
+                pivot_m.loc[movimentos_a_pagar, colunas_meses_m].sum(axis=0)
                 if movimentos_a_pagar else pd.Series(0.0, index=colunas_meses_m)
             )
             # Mantém o "a pagar" negativo: é saída de dinheiro, e assim a coloração
             # padrão das tabelas já o marca em vermelho automaticamente.
             serie_obrigacoes = -serie_a_pagar.abs()
 
-            # DISPONÍVEL, com cada parcela na leitura que faz sentido para ela:
-            #   caixa e banco  -> POSIÇÃO do último dia com saldo no mês
-            #                     (pivot_m_fechamento). São posição, não
-            #                     somatório: o saldo do último dia já contém
-            #                     tudo que entrou e saiu antes dele.
-            #   a receber e a receber liquidado -> TOTAL do mês (pivot_m).
-            #                     São movimentação e por isso somam.
+            # DISPONÍVEL — LEITURA DE FLUXO (decidida em 25/08/2026). A
+            # pergunta que este bloco responde é "de tudo que passou pelo mês,
+            # quanto sobrou depois de pagar tudo". Então:
+            #   caixa e banco  -> ABERTURA do mês (pivot_m). É o dinheiro com
+            #                     que o mês começou.
+            #   a receber e a receber liquidado -> TOTAL do mês. São
+            #                     movimentação e por isso somam.
+            #   a pagar        -> TOTAL do mês.
             #   meta           -> fora. É balizador, não dinheiro em caixa.
+            #
+            # POR QUE NÃO O FECHAMENTO (era assim até 25/08/2026): o saldo do
+            # último dia JÁ É a abertura mais tudo que entrou menos tudo que
+            # saiu no mês. Somar o fechamento COM o total de a receber
+            # liquidado contava o mesmo dinheiro duas vezes; e descontar o
+            # total de a pagar descontava segunda vez o que já tinha saído
+            # (desde 18/08 título pago entra na data da liquidação). Os dois
+            # erros andavam em sentidos opostos e se cancelavam em parte, o que
+            # deixava julho num plausível 30,5% -- mas não se cancelavam de
+            # verdade, e agosto ia a 42,9%. O excesso na sobra era exatamente o
+            # movimento líquido de caixa do mês, contado uma vez a mais.
+            #
+            # As duas leituras possíveis (abertura + tudo do mês / fechamento +
+            # só o que segue em aberto) dão a MESMA sobra em reais -- é
+            # álgebra, porque o fechamento é a abertura mais o líquido. O que
+            # muda é o DENOMINADOR, e com ele o sentido da porcentagem. Aqui os
+            # 30% são sobre tudo que passou pelo mês, que é a frase da meta.
             #
             # A sobra do mês anterior entra pelo SALDO INICIAL, que já é zero
             # em mês realizado e no mês corrente -- então não é preciso repetir
             # aqui a regra de "só na previsão".
             #
-            # ATENÇÃO: por usar o FECHAMENTO de caixa e banco, esta tabela NÃO
-            # fecha com o TOTAL GERAL da tabela acima, que usa a ABERTURA. A
-            # diferença é o movimento de caixa e banco dentro do próprio mês.
-            _saldos_fechamento_m = [
-                m for m in pivot_m_fechamento.index
+            # CONSEQUÊNCIA: a Sobra é agora IGUAL ao TOTAL GERAL da tabela
+            # Movimentos por Mês, que sempre usou abertura. Antes elas
+            # divergiam de propósito, e a divergência era o sintoma da dupla
+            # contagem. É isso que faz a cadeia dos meses de previsão fechar:
+            # o saldo inicial de cada um é o TOTAL GERAL do anterior, que agora
+            # é a mesma coisa que a sobra do anterior.
+            _saldos_abertura_m = [
+                m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "saldo"
             ]
             _entradas_do_mes_m = [
@@ -6695,8 +6734,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 {
                     coluna: (
                         saldos_iniciais_m.get(coluna, 0.0)
-                        + (float(pivot_m_fechamento.loc[_saldos_fechamento_m, coluna].sum())
-                           if _saldos_fechamento_m else 0.0)
+                        + (float(pivot_m.loc[_saldos_abertura_m, coluna].sum())
+                           if _saldos_abertura_m else 0.0)
                         + (float(pivot_m.loc[_entradas_do_mes_m, coluna].sum())
                            if _entradas_do_mes_m else 0.0)
                     )
@@ -6706,11 +6745,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
             serie_sobra = serie_disponivel_total - serie_a_pagar.abs()
             serie_pct_sobra = pd.Series(
                 [
-                    # Porcentagem só faz sentido com disponível positivo. Com
-                    # os dois negativos, a divisão devolve um número POSITIVO
-                    # -- 197% de sobra num mês sem dinheiro nenhum. Aqui vale
-                    # marcar como -100%: não há de onde sobrar.
-                    (sobra / disp * 100) if disp > 0 else (0.0 if sobra == 0 else -100.0)
+                    # Porcentagem só existe com disponível positivo. Com os
+                    # dois lados negativos a divisão devolve número POSITIVO
+                    # -- 197% de sobra num mês sem dinheiro nenhum --, e o
+                    # -100% que ficava no lugar era invenção igual. Sem
+                    # disponível não há resposta: fica vazio, e a tabela
+                    # mostra um traço.
+                    (sobra / disp * 100) if disp > 0 else float("nan")
                     for sobra, disp in zip(serie_sobra.values, serie_disponivel_total.values)
                 ],
                 index=colunas_meses_m,
@@ -6728,12 +6769,23 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 index=["Disponível", "A pagar no mês", "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
             )
 
+            def _formata_pct_sobra(valor):
+                """Mês sem disponível não tem porcentagem — mostra traço. Um
+                número ali seria pior que nada: parece resposta e não é."""
+                if valor is None or pd.isna(valor):
+                    return "—"
+                return f"{valor:.1f}%".replace(".", ",")
+
             def _cor_pct_meta_fin(linha):
-                """Na linha de % de sobra a cor não segue o sinal (todos são
-                positivos), e sim a META: abaixo de 30% fica vermelho."""
+                """Na linha de % de sobra a cor não segue o sinal, e sim a
+                META: abaixo de 30% fica vermelho. Vazio também é vermelho —
+                mês sem disponível não bateu meta nenhuma."""
                 if linha.name == LINHA_PCT_SOBRA:
                     return [
-                        f"color: {COLORS['positive'] if v >= 30 else COLORS['negative']}; font-weight: 600;"
+                        "color: "
+                        + (COLORS["positive"] if (not pd.isna(v) and v >= 30)
+                           else COLORS["negative"])
+                        + "; font-weight: 600;"
                         for v in linha
                     ]
                 return [cor_valor(v) for v in linha]
@@ -6742,16 +6794,19 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_reserva_m.style.format(
                     {c: formata_brl for c in colunas_meses_m}
                 ).format(
-                    {c: (lambda v: f"{v:.1f}%".replace(".", ",")) for c in colunas_meses_m},
+                    {c: _formata_pct_sobra for c in colunas_meses_m},
                     subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
                 ).apply(_cor_pct_meta_fin, axis=1),
                 width="stretch",
             )
 
             st.caption(
-                "**% de sobra** = (disponível − a pagar) ÷ disponível. Ou seja: pagando todas as contas do mês, "
-                "quanto sobra em caixa em proporção ao que havia disponível. É esse número que deve ficar em "
-                "30% ou mais."
+                "**Disponível** = o saldo de caixa e banco com que o mês **começou** + tudo que se recebeu e "
+                "ainda há para receber **dentro do mês**. **A pagar** = o total de contas a pagar do mês. "
+                "**% de sobra** = (disponível − a pagar) ÷ disponível: de tudo que passou pelo mês, quanto "
+                "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais. Nos meses de "
+                "previsão o disponível já começa com a sobra do mês anterior — por isso a linha Sobra é a "
+                "mesma coisa que o TOTAL GERAL da tabela acima."
             )
 
             # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
