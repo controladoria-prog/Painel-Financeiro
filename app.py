@@ -11466,6 +11466,332 @@ def carregar_planilha_fechamento(url):
 
 
 # ============================================================================
+# 7.10 ORÇAMENTO 2027 — por plano de contas
+# ============================================================================
+# O orçamento de 2026 foi lançado só no nível da LINHA DA DRE. O de 2027 desce
+# ao PLANO DE CONTAS: cada plano tem a sua linha, e a soma dos planos fecha a
+# linha. A planilha modelo já vem com esse desenho pronto -- 27 abas iguais,
+# onde a coluna "Nome" mistura linha da DRE (numerada) com plano de contas
+# (sem número, indentado logo abaixo da sua linha).
+#
+# REGRA QUE NÃO PODE SER QUEBRADA: 163 das 419 linhas são FÓRMULA (=SUM dos
+# filhos). Escrever por cima delas mata a soma da planilha inteira. O gerador
+# só toca nas linhas de valor, e reescreve a fórmula das outras exatamente
+# como estava.
+PADRAO_LINHA_DRE = re.compile(r"^\s*\d+(\.\d+)*\s*[-–]\s")
+
+DIRECIONADORES_2027 = [
+    "Inflação (IPCA)",
+    "Inflação + ganho real",
+    "Crescimento %",
+    "% da receita",
+    "Valor fixo (ano)",
+    "Repetir 2026",
+    "Salário mínimo",
+    "Não orçar",
+]
+
+
+def classificar_nome_orcamento(nome):
+    """"dre" para linha numerada da DRE, "plano" para plano de contas.
+
+    O critério é o NÚMERO na frente, não a indentação: a indentação da
+    planilha varia entre níveis e entre abas, e um plano de contas fundo na
+    hierarquia tem o mesmo recuo de uma linha da DRE de nível parecido. O
+    número é o que a planilha usa para dizer "isto é uma linha da DRE"."""
+    texto = str(nome or "").strip()
+    if not texto:
+        return "vazio"
+    return "dre" if PADRAO_LINHA_DRE.match(texto) else "plano"
+
+
+def chave_conta_orcamento(nome):
+    """Chave para casar o mesmo nome entre a planilha modelo, o DIÁRIO e a
+    aba de orçado. Sem acento, sem caixa, sem espaço sobrando e sem a
+    indentação -- que é decoração da planilha, não parte do nome.
+
+    Usa _normalizar_coluna_fin, e NÃO _normalizar_texto: este último só passa
+    para maiúsculas e mantém o acento, então "Taxa com Cartão de Crédito"
+    nunca casaria com o mesmo nome escrito sem acento no DIÁRIO -- e o efeito
+    seria a tela mostrar tudo zerado, em silêncio, como se não houvesse
+    realizado nenhum naquela conta."""
+    return _normalizar_coluna_fin(str(nome or "").strip())
+
+
+def curva_do_ano(valores):
+    """Transforma 12 valores numa curva de 12 frações que somam 1.
+
+    Cai em linear (1/12) quando a soma é zero ou quando não há 12 valores --
+    não há curva a extrair de uma linha sem histórico, e inventar uma seria
+    pior do que assumir o mês médio. Usa o valor ABSOLUTO: despesa vem
+    negativa na planilha, e o sinal negativo inverteria a curva, jogando o
+    peso nos meses de menor gasto."""
+    if not valores or len(valores) != 12:
+        return [1 / 12] * 12
+    absolutos = [abs(float(v or 0)) for v in valores]
+    total = sum(absolutos)
+    if total <= 0:
+        return [1 / 12] * 12
+    return [v / total for v in absolutos]
+
+
+def aplicar_direcionador_2027(base, direcionador, parametro, premissas):
+    """Aplica o direcionador escolhido sobre a base e devolve o total de 2027.
+
+    Direcionador em branco devolve None, e NÃO zero: conta sem direcionador é
+    conta que ninguém decidiu ainda, e zero mentiria dizendo que foi decidida
+    por zero. Quem quer zerar escolhe "Não orçar", que é uma decisão."""
+    if not direcionador:
+        return None
+    base = float(base or 0)
+    par = float(parametro or 0)
+    if direcionador == "Não orçar":
+        return 0.0
+    if direcionador == "Valor fixo (ano)":
+        return par
+    if direcionador == "% da receita":
+        return float(premissas.get("receita_2027", 0)) * par
+    if direcionador == "Repetir 2026":
+        return base
+    if direcionador == "Inflação (IPCA)":
+        return base * (1 + float(premissas.get("ipca", 0)))
+    if direcionador == "Inflação + ganho real":
+        return base * (1 + float(premissas.get("ipca", 0)) + par)
+    if direcionador == "Crescimento %":
+        return base * (1 + par)
+    if direcionador == "Salário mínimo":
+        return base * (1 + float(premissas.get("reajuste_sm", 0)))
+    return None
+
+
+def distribuir_no_ano(total, curva):
+    """Reparte o total do ano nos 12 meses seguindo a curva.
+
+    A sobra de centavos vai no ÚLTIMO mês, para a soma dos doze bater com o
+    total ao centavo. Sem isso a planilha do usuário mostraria uma diferença
+    de alguns centavos entre a linha do plano e a soma dela -- e diferença de
+    centavo em orçamento vira meia hora de procura."""
+    if total is None:
+        return [None] * 12
+    total = float(total)
+    valores = [round(total * fatia, 2) for fatia in curva]
+    valores[-1] = round(total - sum(valores[:-1]), 2)
+    return valores
+
+
+def anualizar_realizado(valores_meses, meses_fechados):
+    """Projeta para 12 meses o realizado dos meses já fechados.
+
+    Usa só os meses fechados de propósito: em agosto, somar os 12 valores
+    incluiria cinco meses vazios e devolveria uma base 40% menor que a real,
+    sem nada na tela indicando isso."""
+    n = max(int(meses_fechados or 0), 0)
+    if n <= 0:
+        return 0.0
+    somados = sum(float(v or 0) for v in list(valores_meses)[:n])
+    return somados / n * 12
+
+
+def resumo_da_proposta(linhas):
+    """(decididas, sem direcionador, total) do que já foi definido.
+
+    "Sem direcionador" é o número que trava a entrega: conta em branco não é
+    conta zerada, é conta esquecida, e num orçamento de 219 planos ninguém
+    percebe uma faltando olhando a tela."""
+    total = 0.0
+    decididas = pendentes = 0
+    for linha in linhas:
+        if linha.get("direcionador"):
+            decididas += 1
+            total += float(linha.get("total_2027") or 0)
+        else:
+            pendentes += 1
+    return decididas, pendentes, total
+
+
+def ler_estrutura_orcamento(arquivo):
+    """Lê o esqueleto da planilha modelo de 2027 e devolve (estrutura, abas).
+
+    `estrutura` é uma lista de dicionários, um por linha de dados de UMA aba
+    de referência: posição, nome, tipo ("dre" / "plano" / "formula") e a linha
+    da DRE a que o plano pertence.
+
+    A estrutura é lida do ARQUIVO, não cravada no código. As 27 abas são
+    idênticas hoje, mas a lista de planos vai mudar de um ano para o outro --
+    e uma lista cravada aqui viraria mentira em silêncio na primeira mudança,
+    escrevendo valores na linha errada.
+    """
+    from openpyxl import load_workbook
+
+    livro = load_workbook(arquivo, data_only=False)
+    abas = list(livro.sheetnames)
+    if not abas:
+        return [], []
+    # A referencia NAO e a primeira aba: a primeira e "DRE CONSOLIDADO", que
+    # e 100% calculada (soma as unidades por SUMIFS+INDIRECT) e nao tem linha
+    # de valor nenhuma para extrair. A referencia e a aba com MAIS linhas de
+    # valor, que e sempre uma unidade.
+    def _valores_da_aba(nome_aba):
+        folha = livro[nome_aba]
+        return sum(1 for r in range(2, folha.max_row + 1)
+                   if folha.cell(row=r, column=2).data_type != "f")
+
+    aba_ref = max(abas, key=_valores_da_aba)
+    ws = livro[aba_ref]
+    estrutura = []
+    linha_dre_atual = ""
+    for r in range(2, ws.max_row + 1):
+        nome = ws.cell(row=r, column=1).value
+        if nome is None or str(nome).strip() == "":
+            continue
+        # data_type "f" e o campo confiavel: pega formula normal E de
+        # matriz. Testar se o texto comeca com "=" nao ve a de matriz, que o
+        # openpyxl devolve como objeto ArrayFormula -- e as 6 abas
+        # consolidadas sao inteiras assim.
+        eh_formula = ws.cell(row=r, column=2).data_type == "f"
+        tipo = classificar_nome_orcamento(nome)
+        if tipo == "dre":
+            linha_dre_atual = str(nome).strip()
+        estrutura.append({
+            "linha": r,
+            "nome": str(nome).strip(),
+            "nome_bruto": str(nome),
+            "tipo": "formula" if eh_formula else tipo,
+            "linha_dre": linha_dre_atual if tipo == "plano" else str(nome).strip(),
+            "editavel": not eh_formula,
+        })
+    # Abas 100% calculadas NAO entram na lista de preencher: escrever nelas
+    # apagaria a soma das unidades. Elas se resolvem sozinhas quando as
+    # unidades forem preenchidas.
+    abas_de_preencher = [a for a in abas if _valores_da_aba(a) > 0]
+    livro.close()
+    return estrutura, abas_de_preencher
+
+
+def gerar_excel_orcamento(arquivo_modelo, valores_por_aba):
+    """Devolve os bytes da planilha modelo PREENCHIDA.
+
+    `valores_por_aba` é {aba: {linha_da_planilha: [12 valores]}}.
+
+    Escreve SOMENTE nas linhas indicadas, que são as de valor. As 163 linhas
+    de fórmula não são tocadas -- elas somam os filhos, e sobrescrever uma
+    delas com número transformaria a planilha num monte de valores soltos que
+    param de reagir quando alguém corrige um plano. Linha sem valor calculado
+    fica como está (zero), em vez de virar branco: branco numa planilha de
+    orçamento é ambíguo entre "não orçado" e "esqueci".
+    """
+    from openpyxl import load_workbook
+
+    livro = load_workbook(arquivo_modelo, data_only=False)
+    escritas = 0
+    for aba, linhas in valores_por_aba.items():
+        if aba not in livro.sheetnames:
+            continue
+        ws = livro[aba]
+        for numero_linha, valores in linhas.items():
+            for i, valor in enumerate(valores):
+                if valor is None:
+                    continue
+                celula = ws.cell(row=numero_linha, column=2 + i)
+                if celula.data_type == "f":
+                    # Trava de segurança: se a estrutura mudar e uma linha de
+                    # valor virar fórmula, o gerador PULA em vez de destruir.
+                    continue
+                celula.value = round(float(valor), 2)
+                escritas += 1
+    memoria = io.BytesIO()
+    livro.save(memoria)
+    livro.close()
+    memoria.seek(0)
+    return memoria.getvalue(), escritas
+
+
+def realizado_por_conta_e_loja(df_diario, meses_fechados_cols):
+    """Soma o DIÁRIO por (loja, plano de contas) e mês, de uma vez só.
+
+    Um agrupamento para tudo, e não um filtro por conta: são 21 abas x 219
+    planos, e filtrar a base 4.599 vezes deixaria a tela girando -- foi
+    exatamente o que aconteceu com o detalhamento por célula em 20/08, e a
+    solução foi a mesma, vetorizar.
+
+    Devolve {(chave_loja, chave_plano): {mês: valor}}."""
+    saida = {}
+    if df_diario is None or df_diario.empty:
+        return saida
+    coluna_loja = next((c for c in ("Loja", "Centro de Custos") if c in df_diario.columns), None)
+    if not coluna_loja or "Plano de Contas" not in df_diario.columns:
+        return saida
+    bloco = df_diario[df_diario["Mês"].isin(meses_fechados_cols)]
+    if bloco.empty:
+        return saida
+    agrupado = bloco.groupby(
+        [bloco[coluna_loja].map(_normalizar_nome_aba),
+         bloco["Plano de Contas"].map(chave_conta_orcamento),
+         bloco["Mês"]], observed=True)["Valor Bruto"].sum()
+    for (loja, plano, mes), valor in agrupado.items():
+        saida.setdefault((loja, plano), {})[mes] = float(valor)
+    return saida
+
+
+def conferir_casamento_dos_planos(estrutura, df_diario):
+    """Quais planos da planilha modelo existem no DIÁRIO, e quais não.
+
+    Existe porque o modo de falhar aqui é silencioso: nome que não casa vira
+    base zero, e a tela mostraria "R$ 0,00" igualzinho a uma conta que de fato
+    não teve gasto. Quem olha não tem como distinguir. Então a aba mostra a
+    lista do que não casou, ANTES de qualquer número."""
+    planos_modelo = [e["nome"] for e in estrutura if e["tipo"] == "plano"]
+    if df_diario is None or df_diario.empty or "Plano de Contas" not in df_diario.columns:
+        return [], planos_modelo
+    no_diario = set(df_diario["Plano de Contas"].map(chave_conta_orcamento).unique())
+    casaram = [n for n in planos_modelo if chave_conta_orcamento(n) in no_diario]
+    faltaram = [n for n in planos_modelo if chave_conta_orcamento(n) not in no_diario]
+    return casaram, faltaram
+
+
+def base_e_curva_da_linha(df_orcado_aba, nome_linha, colunas_meses_2026):
+    """(12 valores do orçado 2026 daquela linha) para virar curva do ano.
+
+    A curva sai do ORÇADO e não do realizado porque o orçado tem os 12 meses;
+    em agosto o realizado só tem 7 fechados, e usar a curva dele jogaria o ano
+    inteiro em cima dos meses que já passaram."""
+    if df_orcado_aba is None or df_orcado_aba.empty:
+        return [0.0] * 12
+    coluna_nome = "Nome" if "Nome" in df_orcado_aba.columns else df_orcado_aba.columns[0]
+    alvo = chave_conta_orcamento(nome_linha)
+    linhas = df_orcado_aba[df_orcado_aba[coluna_nome].map(chave_conta_orcamento) == alvo]
+    if linhas.empty:
+        return [0.0] * 12
+    valores = []
+    for coluna in colunas_meses_2026:
+        if coluna in linhas.columns:
+            valores.append(float(pd.to_numeric(linhas[coluna], errors="coerce").fillna(0).sum()))
+        else:
+            valores.append(0.0)
+    return valores
+
+
+def realizado_da_linha_dre(df_real_aba, nome_linha, colunas_meses_fechados):
+    """Realizado dos meses fechados de uma linha da DRE numa aba.
+
+    Serve para as 37 linhas que não têm plano de contas abaixo: elas são
+    folha na planilha modelo, e o número delas vem da própria DRE, não do
+    DIÁRIO."""
+    if df_real_aba is None or df_real_aba.empty:
+        return 0.0
+    coluna_nome = "Nome" if "Nome" in df_real_aba.columns else df_real_aba.columns[0]
+    alvo = chave_conta_orcamento(nome_linha)
+    linhas = df_real_aba[df_real_aba[coluna_nome].map(chave_conta_orcamento) == alvo]
+    if linhas.empty:
+        return 0.0
+    total = 0.0
+    for coluna in colunas_meses_fechados:
+        if coluna in linhas.columns:
+            total += float(pd.to_numeric(linhas[coluna], errors="coerce").fillna(0).sum())
+    return total
+
+
+# ============================================================================
 # 8. ABAS
 # ============================================================================
 # ============================================================================
@@ -12562,6 +12888,7 @@ if departamento_ativo:
     tab6 = None
     tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
     tab_fech = None  # Checklist de fechamento é operação da Controladoria
+    tab_orc = None   # Orçamento 2027 é montado pela Controladoria, visão inteira
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -12571,12 +12898,13 @@ else:
         "🔮 Previsões & Trends",
         "📤 Emitir Relatório",
         "✅ Fechamento Mensal",
+        "🎯 Orçamento 2027",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -15742,6 +16070,297 @@ if tab_fech is not None:
                     "importa no portal) — marque OK depois que a importação for conferida, não "
                     "quando o robô terminar de rodar."
                 )
+
+# ---------------------------------------------------------------------------
+# ABA: ORÇAMENTO 2027 (por plano de contas)
+# ---------------------------------------------------------------------------
+if tab_orc is not None:
+    with tab_orc:
+        st.markdown(
+            '<div class="section-title">🎯 Orçamento 2027 — por plano de contas</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "O orçamento de 2026 foi lançado no nível da **linha da DRE**. O de 2027 desce ao "
+            "**plano de contas**: cada plano tem a sua linha, e a soma dos planos fecha a linha. "
+            "Esta aba propõe um valor por conta a partir do que 2026 realizou, e devolve a sua "
+            "planilha modelo preenchida — as fórmulas dela ficam intactas."
+        )
+
+        _modelo_2027 = st.file_uploader(
+            "Planilha modelo do orçamento 2027 (.xlsx)", type=["xlsx"],
+            key="orc27_modelo",
+            help="O mesmo arquivo que você vai preencher. A estrutura é lida dele, "
+                 "não é fixa no código — se a lista de planos mudar, a aba acompanha.",
+        )
+
+        if _modelo_2027 is None:
+            st.info(
+                "**Envie a planilha modelo para começar.** A aba lê dela a lista de planos de "
+                "contas, a linha da DRE de cada um e quais linhas são fórmula — e é por isso que "
+                "ela continua funcionando quando você mudar a estrutura no ano que vem."
+            )
+        else:
+            try:
+                _estrutura_orc, _abas_orc = ler_estrutura_orcamento(_modelo_2027)
+            except Exception as _erro_modelo:                    # noqa: BLE001
+                _estrutura_orc, _abas_orc = [], []
+                st.error(f"Não consegui ler a planilha modelo: {_erro_modelo}")
+
+            if not _estrutura_orc:
+                st.warning("A planilha modelo veio sem linhas reconhecíveis.")
+            else:
+                _editaveis_orc = [e for e in _estrutura_orc if e["editavel"]]
+                _planos_orc = [e for e in _estrutura_orc if e["tipo"] == "plano"]
+                _formulas_orc = [e for e in _estrutura_orc if e["tipo"] == "formula"]
+
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="ABAS A PREENCHER", value=str(len(_abas_orc)),
+                             value_color=COLORS["text"],
+                             subtext="as consolidadas ficam de fora — são calculadas", icon="📑"),
+                        dict(label="PLANOS DE CONTAS", value=str(len(_planos_orc)),
+                             value_color=COLORS["primary"],
+                             subtext=f"+ {len(_editaveis_orc) - len(_planos_orc)} linhas da DRE sem plano abaixo",
+                             icon="🧾"),
+                        dict(label="LINHAS DE FÓRMULA", value=str(len(_formulas_orc)),
+                             value_color=COLORS["warning"],
+                             subtext="intocáveis: somam os planos e não podem ser sobrescritas",
+                             icon="🔒"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+
+                # ---- Casamento dos nomes, ANTES de qualquer número ----------
+                # Nome que não casa vira base zero, e a tela mostraria
+                # "R$ 0,00" igualzinho a uma conta que de fato não teve gasto.
+                # Quem olha não tem como distinguir -- por isso a conferência
+                # vem primeiro, e não escondida num expander fechado.
+                # O DIÁRIO não está carregado neste ponto do arquivo -- cada
+                # painel carrega o seu sob demanda. Aqui é carregado uma vez
+                # só, e reaproveitado no casamento e no cálculo das bases.
+                _diario_orc = carregar_diario(path_real)
+                _casaram_orc, _faltaram_orc = conferir_casamento_dos_planos(
+                    _estrutura_orc, _diario_orc)
+                if _faltaram_orc:
+                    st.warning(
+                        f"**{len(_faltaram_orc)} de {len(_planos_orc)} planos de contas não foram "
+                        "encontrados no DIÁRIO.** Eles vão aparecer com base zero — o que é "
+                        "diferente de não terem tido gasto. Confira se o nome está escrito igual "
+                        "nos dois lugares antes de orçar."
+                    )
+                    with st.expander(f"Ver os {len(_faltaram_orc)} planos sem correspondência"):
+                        st.dataframe(
+                            pd.DataFrame({"Plano de contas na planilha modelo": _faltaram_orc}),
+                            width="stretch", hide_index=True,
+                        )
+                else:
+                    st.success(
+                        f"Os {len(_planos_orc)} planos de contas da planilha modelo têm "
+                        "correspondência no DIÁRIO."
+                    )
+
+                # ---- Premissas ---------------------------------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">⚙️ Premissas</div>', unsafe_allow_html=True)
+                _c1, _c2, _c3, _c4 = st.columns(4)
+                with _c1:
+                    _meses_fech_orc = st.number_input(
+                        "Meses de 2026 fechados", min_value=1, max_value=12,
+                        value=min(max(datetime.now(FUSO_BR).month - 1, 1), 12),
+                        step=1, key="orc27_meses",
+                        help="É o que transforma o realizado parcial em base anual.",
+                    )
+                with _c2:
+                    _ipca_orc = st.number_input(
+                        "IPCA 2027 (%)", min_value=0.0, max_value=30.0, value=4.25,
+                        step=0.05, format="%.2f", key="orc27_ipca",
+                        help="Mediana do Boletim Focus — muda toda segunda-feira.",
+                    ) / 100
+                with _c3:
+                    _reaj_sm_orc = st.number_input(
+                        "Reajuste do salário mínimo (%)", min_value=0.0, max_value=30.0,
+                        value=7.40, step=0.05, format="%.2f", key="orc27_sm",
+                        help="PLOA de 2027. Só se confirma em dezembro, com o INPC até novembro.",
+                    ) / 100
+                with _c4:
+                    _receita_orc = st.number_input(
+                        "Receita bruta projetada 2027 (R$)", min_value=0.0,
+                        value=0.0, step=100000.0, format="%.2f", key="orc27_receita",
+                        help="Base do direcionador '% da receita'.",
+                    )
+                _premissas_orc = {"ipca": _ipca_orc, "reajuste_sm": _reaj_sm_orc,
+                                  "receita_2027": _receita_orc}
+
+                # ---- Base 2026 por conta (empresa inteira, para a tela) -----
+                _meses_2026 = [f"{m:02d}/2026" for m in range(1, 13)]
+                _meses_fechados_cols = _meses_2026[:int(_meses_fech_orc)]
+                _realizado_por_conta = realizado_por_conta_e_loja(
+                    _diario_orc, _meses_fechados_cols)
+
+                _base_empresa = {}
+                for _chave, _por_mes in _realizado_por_conta.items():
+                    _base_empresa[_chave[1]] = _base_empresa.get(_chave[1], 0.0) + sum(_por_mes.values())
+
+                _linhas_editor = []
+                for _item in _editaveis_orc:
+                    _bruto = _base_empresa.get(chave_conta_orcamento(_item["nome"]), 0.0)
+                    _linhas_editor.append({
+                        "Linha DRE": _item["linha_dre"],
+                        "Conta": _item["nome"],
+                        "Realizado 2026 anualizado": anualizar_realizado(
+                            [_bruto / max(int(_meses_fech_orc), 1)] * 12, int(_meses_fech_orc)),
+                        "Direcionador": "",
+                        "Parâmetro %": 0.0,
+                    })
+                _df_editor_orc = pd.DataFrame(_linhas_editor)
+
+                # ---- Aplicação em massa por linha da DRE -------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">🧭 Direcionadores</div>', unsafe_allow_html=True)
+                st.caption(
+                    "Aplicar IPCA em tudo é o erro clássico do orçamento incremental: repete as "
+                    "ineficiências de 2026 corrigidas pela inflação, e ninguém pergunta se o gasto "
+                    "ainda faz sentido. Escolha o que de fato move cada conta — aluguel segue "
+                    "índice, comissão segue receita, folha segue dissídio, software segue contrato."
+                )
+                if "orc27_escolhas" not in st.session_state:
+                    st.session_state["orc27_escolhas"] = {}
+
+                _m1, _m2, _m3, _m4 = st.columns([2, 1.4, 1, 1])
+                with _m1:
+                    _linhas_dre_orc = sorted({e["linha_dre"] for e in _editaveis_orc})
+                    _alvo_massa = st.multiselect(
+                        "Aplicar a estas linhas da DRE", _linhas_dre_orc, key="orc27_alvo")
+                with _m2:
+                    _dir_massa = st.selectbox(
+                        "Direcionador", [""] + DIRECIONADORES_2027, key="orc27_dir_massa")
+                with _m3:
+                    _par_massa = st.number_input(
+                        "Parâmetro (%)", value=0.0, step=0.10, format="%.4f",
+                        key="orc27_par_massa",
+                        help="Só é usado nos direcionadores que pedem percentual ou valor.")
+                with _m4:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("Aplicar", width="stretch", key="orc27_aplicar"):
+                        for _item in _editaveis_orc:
+                            if _item["linha_dre"] in _alvo_massa:
+                                st.session_state["orc27_escolhas"][_item["nome"]] = (
+                                    _dir_massa, _par_massa)
+                        st.rerun()
+
+                for _i, _item in enumerate(_editaveis_orc):
+                    _guardado = st.session_state["orc27_escolhas"].get(_item["nome"])
+                    if _guardado:
+                        _df_editor_orc.loc[_i, "Direcionador"] = _guardado[0]
+                        _df_editor_orc.loc[_i, "Parâmetro %"] = _guardado[1]
+
+                _editado_orc = st.data_editor(
+                    _df_editor_orc, width="stretch", hide_index=True, height=420,
+                    key="orc27_editor",
+                    column_config={
+                        "Linha DRE": st.column_config.TextColumn(disabled=True, width="medium"),
+                        "Conta": st.column_config.TextColumn(disabled=True, width="medium"),
+                        "Realizado 2026 anualizado": st.column_config.NumberColumn(
+                            disabled=True, format="R$ %.2f", width="small"),
+                        "Direcionador": st.column_config.SelectboxColumn(
+                            options=[""] + DIRECIONADORES_2027, width="medium"),
+                        "Parâmetro %": st.column_config.NumberColumn(
+                            format="%.4f", width="small",
+                            help="Percentual em decimal (0,0425 = 4,25%) ou valor do ano."),
+                    },
+                )
+
+                # ---- Resumo do que já foi decidido -------------------------
+                _linhas_resumo = []
+                for _i, _item in enumerate(_editaveis_orc):
+                    _dir = str(_editado_orc.loc[_i, "Direcionador"] or "")
+                    _par = float(_editado_orc.loc[_i, "Parâmetro %"] or 0)
+                    _base = float(_editado_orc.loc[_i, "Realizado 2026 anualizado"] or 0)
+                    _linhas_resumo.append({
+                        "direcionador": _dir,
+                        "total_2027": aplicar_direcionador_2027(_base, _dir, _par, _premissas_orc),
+                    })
+                _decididas, _pendentes, _total_orc = resumo_da_proposta(_linhas_resumo)
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="CONTAS DECIDIDAS", value=f"{_decididas} de {len(_editaveis_orc)}",
+                             value_color=(COLORS["positive"] if not _pendentes else COLORS["warning"]),
+                             progress_pct=_decididas / max(len(_editaveis_orc), 1) * 100,
+                             icon="✔️"),
+                        dict(label="SEM DIRECIONADOR", value=str(_pendentes),
+                             value_color=(COLORS["positive"] if not _pendentes else COLORS["negative"]),
+                             subtext="conta em branco não é conta zerada, é conta esquecida",
+                             icon="⚠️"),
+                        dict(label="TOTAL PROPOSTO (EMPRESA)", value=formata_valor_curto(_total_orc),
+                             value_color=COLORS["text"],
+                             subtext="soma do que já tem direcionador", icon="💰"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+
+                # ---- Geração do Excel --------------------------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                if _pendentes:
+                    st.warning(
+                        f"**{_pendentes} contas ainda estão sem direcionador.** Dá para gerar o "
+                        "Excel assim mesmo — elas saem zeradas —, mas confira antes se é isso que "
+                        "você quer. Quem quer zerar de propósito escolhe **Não orçar**, que fica "
+                        "registrado como decisão."
+                    )
+                if st.button("📊 Gerar a planilha preenchida", type="primary", key="orc27_gerar"):
+                    _escolhas_orc = {
+                        _item["nome"]: (str(_editado_orc.loc[_i, "Direcionador"] or ""),
+                                        float(_editado_orc.loc[_i, "Parâmetro %"] or 0))
+                        for _i, _item in enumerate(_editaveis_orc)
+                    }
+                    with st.spinner("Calculando conta a conta, aba por aba..."):
+                        _dados_abas = carregar_dados_por_loja(path_orc, path_real, _abas_orc)
+                        _valores_orc = {}
+                        for _aba in _abas_orc:
+                            _df_o, _df_r = _dados_abas.get(_aba, (pd.DataFrame(), pd.DataFrame()))
+                            _linhas_aba = {}
+                            for _item in _editaveis_orc:
+                                _dir, _par = _escolhas_orc.get(_item["nome"], ("", 0.0))
+                                if not _dir:
+                                    continue
+                                if _item["tipo"] == "plano":
+                                    _por_mes = _realizado_por_conta.get(
+                                        (_normalizar_nome_aba(_aba),
+                                         chave_conta_orcamento(_item["nome"])), {})
+                                    _bruto = sum(_por_mes.values())
+                                else:
+                                    _bruto = realizado_da_linha_dre(
+                                        _df_r, _item["nome"], _meses_fechados_cols)
+                                _base_aba = anualizar_realizado(
+                                    [_bruto / max(int(_meses_fech_orc), 1)] * 12,
+                                    int(_meses_fech_orc))
+                                _total_linha = aplicar_direcionador_2027(
+                                    _base_aba, _dir, _par, _premissas_orc)
+                                if _total_linha is None:
+                                    continue
+                                _curva = curva_do_ano(base_e_curva_da_linha(
+                                    _df_o, _item["linha_dre"], _meses_2026))
+                                _linhas_aba[_item["linha"]] = distribuir_no_ano(_total_linha, _curva)
+                            _valores_orc[_aba] = _linhas_aba
+                        _modelo_2027.seek(0)
+                        _bytes_orc, _escritas_orc = gerar_excel_orcamento(
+                            _modelo_2027, _valores_orc)
+                    st.success(
+                        f"Planilha gerada: **{_escritas_orc:,} células** preenchidas em "
+                        f"**{len(_abas_orc)} abas**, sem tocar em nenhuma fórmula.".replace(",", ".")
+                    )
+                    st.download_button(
+                        "⬇️ Baixar ORCAMENTO_2027_preenchido.xlsx", data=_bytes_orc,
+                        file_name="ORCAMENTO_2027_preenchido.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="orc27_baixar",
+                    )
+                    st.caption(
+                        "As abas consolidadas não são tocadas: elas somam as unidades por fórmula "
+                        "e se resolvem sozinhas quando você abrir o arquivo."
+                    )
+
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)

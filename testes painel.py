@@ -68,6 +68,7 @@ DEPENDENCIAS = {
                                       "_normalizar_coluna_fin", "_texto_ou_vazio",
                                       "normalizar_status_fechamento", "_normalizar_coluna_fin"],
     "normalizar_status_fechamento": ["_normalizar_coluna_fin"],
+    "chave_conta_orcamento": ["_normalizar_coluna_fin"],
 }
 CONSTANTES_DE_DEPENDENCIA_CONST = {
     # Constante que depende de outra constante para ser avaliada.
@@ -4322,7 +4323,11 @@ class TesteTelaDoFechamento(unittest.TestCase):
         cresceu: a legenda saiu da janela e o teste passou a falhar por
         posicao, nao por defeito. Marco nao encolhe."""
         i = FONTE.index("Fechamento Mensal — lançamentos e conferências")
-        fim = FONTE.index("# ABA 6: GESTÃO DE USUÁRIOS", i)
+        # Ate o proximo cabecalho de aba, seja qual for: cravar "# ABA 6:"
+        # quebrou quando a aba de Orcamento 2027 entrou entre as duas.
+        fim = min(p for p in (FONTE.find("# ABA: ORÇAMENTO 2027", i),
+                              FONTE.find("# ABA 6: GESTÃO DE USUÁRIOS", i))
+                  if p > 0)
         bloco = FONTE[i:fim]
         return bloco if tamanho is None else bloco[:tamanho]
 
@@ -4496,6 +4501,266 @@ class TesteNomesIndefinidos(unittest.TestCase):
         indefinidos = [linha for linha in saida.getvalue().splitlines()
                        if "undefined name" in linha]
         self.assertEqual(indefinidos, [], "\n".join(indefinidos))
+
+
+# ============================================================================
+# 5p. ORÇAMENTO 2027 — por plano de contas
+# ============================================================================
+class TesteOrcamento2027(unittest.TestCase):
+    """O motor que propoe o orcamento de 2027 conta a conta."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["classificar_nome_orcamento", "chave_conta_orcamento", "curva_do_ano",
+             "aplicar_direcionador_2027", "distribuir_no_ano", "anualizar_realizado",
+             "resumo_da_proposta", "_normalizar_coluna_fin"],
+            ["PADRAO_LINHA_DRE", "DIRECIONADORES_2027", "_ACENTOS_FIN"],
+        )
+
+    def test_linha_da_dre_e_plano_de_contas_sao_separados_pelo_numero(self):
+        """O criterio e o NUMERO na frente, nao a indentacao: a indentacao
+        varia entre niveis e um plano fundo na hierarquia tem o mesmo recuo de
+        uma linha da DRE de nivel parecido."""
+        classificar = self.ns["classificar_nome_orcamento"]
+        for nome in ("1 - Receita Operacional Bruta", "  2.1.1 - COFINS sobre Receita Bruta",
+                     "6.24.2.6 - Outras Despesas", "11 - EBITDA"):
+            self.assertEqual(classificar(nome), "dre", nome)
+        for nome in ("    COFINS sobre Receita", "  PIS", "  Taxa com Cartao de Credito / Debito",
+                     "Aluguel de POS / Outras Taxas"):
+            self.assertEqual(classificar(nome), "plano", nome)
+        self.assertEqual(classificar(""), "vazio")
+        self.assertEqual(classificar(None), "vazio")
+
+    def test_chave_de_conta_ignora_indentacao_acento_e_caixa(self):
+        """O mesmo nome aparece indentado na planilha modelo e sem indentacao
+        no DIARIO. Se a chave nao normalizar, nada casa e a tela mostra tudo
+        zerado sem dizer por que."""
+        chave = self.ns["chave_conta_orcamento"]
+        self.assertEqual(chave("    Taxa com Cartão de Crédito / Débito"),
+                         chave("taxa com cartao de credito / debito"))
+        self.assertEqual(chave("  PIS  "), chave("Pis"))
+
+    def test_curva_usa_valor_absoluto(self):
+        """Despesa vem negativa na planilha. Sem o absoluto, o sinal inverteria
+        a curva e jogaria o peso nos meses de MENOR gasto."""
+        curva = self.ns["curva_do_ano"]([-100]*11 + [-1200])
+        self.assertAlmostEqual(sum(curva), 1.0, places=9)
+        self.assertGreater(curva[11], curva[0])
+        self.assertAlmostEqual(curva[11] / curva[0], 12.0, places=6)
+
+    def test_curva_sem_historico_cai_em_linear(self):
+        """Nao ha curva a extrair de uma linha sem historico, e inventar uma
+        seria pior do que assumir o mes medio."""
+        for entrada in ([0]*12, [], None, [1, 2, 3]):
+            self.assertEqual(self.ns["curva_do_ano"](entrada), [1/12]*12)
+
+    def test_direcionador_em_branco_nao_vira_zero(self):
+        """Conta sem direcionador e conta que ninguem decidiu; zero mentiria
+        dizendo que foi decidida por zero. Quem quer zerar escolhe 'Nao orcar',
+        que e uma decisao."""
+        aplicar = self.ns["aplicar_direcionador_2027"]
+        prem = {"ipca": 0.0425, "reajuste_sm": 0.074, "receita_2027": 1_000_000}
+        self.assertIsNone(aplicar(1000, "", None, prem))
+        self.assertIsNone(aplicar(1000, None, None, prem))
+        self.assertEqual(aplicar(1000, "Não orçar", None, prem), 0.0)
+
+    def test_cada_direcionador_faz_a_conta_certa(self):
+        aplicar = self.ns["aplicar_direcionador_2027"]
+        prem = {"ipca": 0.0425, "reajuste_sm": 0.074, "receita_2027": 1_000_000}
+        self.assertAlmostEqual(aplicar(1000, "Inflação (IPCA)", None, prem), 1042.5)
+        self.assertAlmostEqual(aplicar(1000, "Inflação + ganho real", 0.02, prem), 1062.5)
+        self.assertAlmostEqual(aplicar(1000, "Crescimento %", -0.10, prem), 900.0)
+        self.assertAlmostEqual(aplicar(1000, "% da receita", 0.0035, prem), 3500.0)
+        self.assertAlmostEqual(aplicar(1000, "Valor fixo (ano)", 50_000, prem), 50_000)
+        self.assertAlmostEqual(aplicar(1000, "Repetir 2026", None, prem), 1000.0)
+        self.assertAlmostEqual(aplicar(1000, "Salário mínimo", None, prem), 1074.0)
+
+    def test_os_doze_meses_somam_o_total_ao_centavo(self):
+        """Diferenca de centavo entre a linha do plano e a soma dela vira meia
+        hora de procura na planilha do usuario."""
+        distribuir, curva = self.ns["distribuir_no_ano"], self.ns["curva_do_ano"]
+        for total in (10_000.0, 33_333.33, 1.0, -7_777.77):
+            meses = distribuir(total, curva([1]*12))
+            self.assertAlmostEqual(sum(meses), total, places=2, msg=str(total))
+        meses = distribuir(100_000.0, curva([1]*11 + [5]))
+        self.assertAlmostEqual(sum(meses), 100_000.0, places=2)
+
+    def test_total_ausente_nao_vira_doze_zeros(self):
+        self.assertEqual(self.ns["distribuir_no_ano"](None, [1/12]*12), [None]*12)
+
+    def test_anualizar_usa_so_os_meses_fechados(self):
+        """Em agosto, somar os 12 valores incluiria cinco meses vazios e
+        devolveria uma base 40% menor que a real, sem nada na tela avisando."""
+        anualizar = self.ns["anualizar_realizado"]
+        self.assertAlmostEqual(anualizar([100]*7 + [0]*5, 7), 1200.0)
+        self.assertAlmostEqual(anualizar([100]*12, 12), 1200.0)
+        self.assertEqual(anualizar([100]*7, 0), 0.0)
+
+    def test_resumo_conta_as_pendentes_separado(self):
+        """Num orcamento de 219 planos ninguem percebe uma faltando olhando a
+        tela: o contador de pendentes e o que trava a entrega."""
+        linhas = [{"direcionador": "Inflação (IPCA)", "total_2027": 100.0},
+                  {"direcionador": "Não orçar", "total_2027": 0.0},
+                  {"direcionador": "", "total_2027": None}]
+        self.assertEqual(self.ns["resumo_da_proposta"](linhas), (2, 1, 100.0))
+
+
+    def test_anualizar_ignora_o_que_vem_depois_dos_meses_fechados(self):
+        """Mes ainda nao fechado pode ter numero na planilha (lancamento
+        adiantado, rateio ja provisionado). A base tem de parar no mes fechado,
+        senao ela mistura o que aconteceu com o que ainda vai acontecer."""
+        anualizar = self.ns["anualizar_realizado"]
+        self.assertAlmostEqual(anualizar([100]*7 + [999]*5, 7), 1200.0)
+        self.assertAlmostEqual(anualizar([100]*3 + [999]*9, 3), 1200.0)
+
+
+class TesteGeradorDoOrcamento2027(unittest.TestCase):
+    """O gerador do Excel, contra um arquivo de verdade.
+
+    Existe porque as duas travas mais perigosas do motor NAO eram cobertas por
+    teste nenhum: trocar a deteccao de formula por "texto que comeca com =" e
+    o gerador APAGA as formulas de matriz. As 6 abas consolidadas da planilha
+    real sao 100% formula de matriz -- 419 linhas cada uma -- e o openpyxl
+    devolve isso como objeto ArrayFormula, nao como texto. A suite ficava
+    verde enquanto a planilha do usuario era destruida."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["ler_estrutura_orcamento", "gerar_excel_orcamento",
+             "classificar_nome_orcamento"],
+            ["PADRAO_LINHA_DRE"],
+        )
+
+    def _modelo(self):
+        """Monta um modelo com as tres naturezas da planilha real: aba de
+        unidade (formula normal + valor), aba consolidada (formula de MATRIZ
+        em tudo) e linhas de plano de contas sob a linha da DRE."""
+        from openpyxl import Workbook
+        from openpyxl.worksheet.formula import ArrayFormula
+        wb = Workbook()
+        cons = wb.active
+        cons.title = "CONSOLIDADO"
+        uni = wb.create_sheet("UNIDADE A")
+        for ws in (cons, uni):
+            ws["A1"] = "Nome"
+            ws["B1"] = "01/2027"
+            ws["C1"] = "02/2027"
+            for linha, nome in ((2, "1 - Receita"), (3, "  Venda de mercadoria"),
+                                (4, "  Venda de servico"), (5, "2 - Despesas"),
+                                (6, "  Aluguel")):
+                ws.cell(row=linha, column=1, value=nome)
+        # Unidade: linha da DRE por formula normal, plano por valor.
+        for col in ("B", "C"):
+            uni[f"{col}2"] = f"=SUM({col}3:{col}4)"
+            uni[f"{col}5"] = f"=SUM({col}6)"
+            for linha in (3, 4, 6):
+                uni[f"{col}{linha}"] = 0
+        # Consolidada: TUDO formula de matriz, como na planilha real.
+        for col in ("B", "C"):
+            for linha in range(2, 7):
+                ref = f"{col}{linha}"
+                cons[ref] = ArrayFormula(ref, f"=SUMPRODUCT('UNIDADE A'!{ref})")
+        caminho = "/tmp/modelo_orcamento_teste.xlsx"
+        wb.save(caminho)
+        return caminho
+
+    def test_le_a_estrutura_e_separa_formula_de_valor(self):
+        estrutura, abas = self.ns["ler_estrutura_orcamento"](self._modelo())
+        tipos = {}
+        for e in estrutura:
+            tipos[e["tipo"]] = tipos.get(e["tipo"], 0) + 1
+        self.assertEqual(tipos.get("formula"), 2, "as 2 linhas da DRE sao formula")
+        self.assertEqual(tipos.get("plano"), 3, "os 3 planos sao de preencher")
+        self.assertEqual([e["nome"] for e in estrutura if e["editavel"]],
+                         ["Venda de mercadoria", "Venda de servico", "Aluguel"])
+
+    def test_a_aba_toda_calculada_fica_fora_da_lista_de_preencher(self):
+        """Escrever nela apagaria a soma das unidades. Ela se resolve sozinha
+        quando as unidades forem preenchidas."""
+        _, abas = self.ns["ler_estrutura_orcamento"](self._modelo())
+        self.assertEqual(abas, ["UNIDADE A"])
+
+    def test_a_referencia_nao_e_a_primeira_aba(self):
+        """A primeira aba da planilha real e "DRE CONSOLIDADO", 100% calculada:
+        dela nao se extrai linha de valor nenhuma, e a estrutura sairia vazia."""
+        estrutura, _ = self.ns["ler_estrutura_orcamento"](self._modelo())
+        self.assertTrue(any(e["editavel"] for e in estrutura),
+                        "leu a aba calculada e nao achou linha de valor")
+
+    def test_o_plano_aponta_para_a_linha_da_dre_dele(self):
+        estrutura, _ = self.ns["ler_estrutura_orcamento"](self._modelo())
+        por_nome = {e["nome"]: e for e in estrutura}
+        self.assertEqual(por_nome["Venda de mercadoria"]["linha_dre"], "1 - Receita")
+        self.assertEqual(por_nome["Aluguel"]["linha_dre"], "2 - Despesas")
+
+    def test_nenhuma_formula_e_destruida_nem_a_de_matriz(self):
+        """A trava que faltava. Sem ela, as 6 abas consolidadas da planilha
+        real perdiam as 419 formulas cada uma -- e o arquivo voltava para o
+        usuario parecendo certo, so que morto."""
+        from openpyxl import load_workbook
+        caminho = self._modelo()
+        estrutura, abas = self.ns["ler_estrutura_orcamento"](caminho)
+        # De proposito manda escrever em TODA linha, inclusive nas de formula
+        # e na aba calculada: o gerador tem de se recusar sozinho.
+        todas_as_linhas = {e["linha"]: [111.0, 222.0] for e in estrutura}
+        valores = {"UNIDADE A": todas_as_linhas, "CONSOLIDADO": todas_as_linhas}
+        saida, _ = self.ns["gerar_excel_orcamento"](caminho, valores)
+        with open("/tmp/saida_orcamento_teste.xlsx", "wb") as arq:
+            arq.write(saida)
+        antes = load_workbook(caminho)
+        depois = load_workbook("/tmp/saida_orcamento_teste.xlsx")
+        destruidas = 0
+        for aba in antes.sheetnames:
+            a, b = antes[aba], depois[aba]
+            for linha in range(2, a.max_row + 1):
+                for col in (2, 3):
+                    if a.cell(row=linha, column=col).data_type == "f":
+                        if b.cell(row=linha, column=col).data_type != "f":
+                            destruidas += 1
+        self.assertEqual(destruidas, 0, "o gerador apagou formula")
+        # E o valor TEM de ter entrado nas linhas de plano.
+        self.assertEqual(depois["UNIDADE A"]["B3"].value, 111.0)
+        self.assertEqual(depois["UNIDADE A"]["C6"].value, 222.0)
+
+
+
+class TesteTelaDoOrcamento2027(unittest.TestCase):
+    """Travas da aba: o que a tela tem de fazer antes de mostrar numero."""
+
+    def _bloco(self):
+        i = FONTE.index("Orçamento 2027 — por plano de contas")
+        return FONTE[i:FONTE.index("# ABA 6: GESTÃO DE USUÁRIOS", i)]
+
+    def test_o_casamento_dos_nomes_vem_antes_dos_numeros(self):
+        """Nome que nao casa vira base zero, e a tela mostraria "R$ 0,00"
+        igualzinho a uma conta que de fato nao teve gasto -- quem olha nao tem
+        como distinguir. Por isso a conferencia aparece ANTES, e nao escondida
+        num expander fechado."""
+        bloco = self._bloco()
+        self.assertIn("conferir_casamento_dos_planos(", bloco)
+        posicao_conferencia = bloco.index("conferir_casamento_dos_planos(")
+        posicao_editor = bloco.index("st.data_editor(")
+        self.assertLess(posicao_conferencia, posicao_editor,
+                        "o casamento tem de ser conferido antes da tabela de valores")
+        self.assertIn("não foram", bloco)
+
+    def test_a_estrutura_e_lida_do_arquivo_e_nao_cravada(self):
+        """A lista de planos muda de um ano para o outro. Cravada no codigo,
+        ela viraria mentira em silencio na primeira mudanca -- escrevendo
+        valores na linha errada da planilha do usuario."""
+        bloco = self._bloco()
+        self.assertIn("st.file_uploader(", bloco)
+        self.assertIn("ler_estrutura_orcamento(", bloco)
+
+    def test_a_tela_avisa_das_contas_sem_direcionador(self):
+        """Conta em branco nao e conta zerada, e conta esquecida. Num
+        orcamento de 219 planos ninguem percebe uma faltando olhando a tela."""
+        bloco = self._bloco()
+        self.assertIn("resumo_da_proposta(", bloco)
+        self.assertIn("SEM DIRECIONADOR", bloco)
+        self.assertIn("Não orçar", bloco)
 
 
 # ============================================================================
