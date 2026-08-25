@@ -2120,6 +2120,115 @@ class TesteMetasDeRecebimento(unittest.TestCase):
 # ============================================================================
 # 5n. MÉTRICAS DA ABA ANÁLISES
 # ============================================================================
+class TestePrazoMedioECicloFinanceiro(unittest.TestCase):
+    """PMR, PMP e ciclo financeiro (25/08/2026), e os dois cartoes da aba
+    Analises cujo calculo nao media o que o rotulo prometia."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["dias_de_giro", "formata_dias"])
+
+    # -- PMR / PMP -------------------------------------------------------
+    def test_prazo_medio_e_saldo_em_aberto_sobre_movimento(self):
+        """R$ 300 mil parados contra R$ 900 mil movimentados em 90 dias sao 30
+        dias de giro. E a formula da Controladoria na versao que esta base
+        permite."""
+        self.assertAlmostEqual(
+            self.ns["dias_de_giro"](300_000, 900_000, 90), 30.0, places=6)
+
+    def test_prazo_medio_ignora_o_sinal(self):
+        """Saida vem negativa no CSV e entrada positiva. Sinais MISTOS sao o
+        caso que morde: sem o abs, um saldo negativo sobre um movimento
+        positivo daria "-30 dias de prazo de pagamento". Com os dois negativos
+        o erro se esconde, porque eles se cancelam na divisao."""
+        giro = self.ns["dias_de_giro"]
+        self.assertAlmostEqual(giro(-300_000, 900_000, 90), 30.0, places=6)
+        self.assertAlmostEqual(giro(300_000, -900_000, 90), 30.0, places=6)
+        self.assertAlmostEqual(giro(-300_000, -900_000, 90), 30.0, places=6)
+
+    def test_sem_movimento_no_periodo_nao_ha_prazo(self):
+        """Dividir por zero aqui produziria um prazo infinito que a tela
+        mostraria como numero."""
+        self.assertIsNone(self.ns["dias_de_giro"](300_000, 0, 90))
+        self.assertIsNone(self.ns["dias_de_giro"](300_000, 900_000, 0))
+
+    def test_nada_em_aberto_da_prazo_zero_e_nao_vazio(self):
+        """Zero em aberto e uma resposta: recebe a vista."""
+        self.assertEqual(self.ns["dias_de_giro"](0, 900_000, 90), 0.0)
+
+    def test_ciclo_financeiro_e_a_diferenca_dos_dois(self):
+        pmr = self.ns["dias_de_giro"](300_000, 900_000, 90)     # 30
+        pmp = self.ns["dias_de_giro"](600_000, 900_000, 90)     # 60
+        self.assertAlmostEqual(pmr - pmp, -30.0, places=6)
+
+    def test_dias_corridos_e_nao_dias_com_movimento(self):
+        """Prazo medio se mede contra o CALENDARIO. Usar "dias com movimento"
+        encurtaria o prazo em todo mes com feriado, e o indicador melhoraria
+        por motivo nenhum."""
+        i = FONTE.index("# ---- PMR, PMP e ciclo financeiro ----")
+        trecho = FONTE[i:i + 1500]
+        self.assertIn('(df_a["DiaOrd"].max() - df_a["DiaOrd"].min()).days + 1', trecho)
+        self.assertNotIn("dias_com_mov_a", trecho,
+                         "o prazo medio nao pode usar dias com movimento")
+
+    # -- formatacao ------------------------------------------------------
+    def test_dias_saem_com_virgula_decimal(self):
+        """O painel inteiro escreve numero em portugues; estes cartoes
+        escapavam com ponto ("-8.4 dias") por usarem f-string crua."""
+        formata = self.ns["formata_dias"]
+        self.assertEqual(formata(19.7), "19,7 dias")
+        self.assertEqual(formata(-8.4, com_sinal=True), "-8,4 dias")
+        self.assertEqual(formata(0.0, com_sinal=True), "+0,0 dias")
+        self.assertEqual(formata(None), "—")
+        self.assertEqual(formata(float("nan")), "—")
+
+    # -- os dois cartoes corrigidos --------------------------------------
+    def test_liquidez_imediata_divide_pelo_que_falta_pagar(self):
+        """Ate 25/08/2026 dividia pelo TOTAL DE SAIDAS do periodo, que inclui
+        tudo que ja foi pago: com "todo o periodo" o denominador era R$ 133 mi
+        e o cartao marcava 4%, um numero que nao mede liquidez nenhuma."""
+        i = FONTE.index("liquidez_imediata_a = ")
+        trecho = FONTE[i:i + 260]
+        self.assertIn("valor_aberto_a", trecho)
+        self.assertNotIn("abs(saidas_a)", trecho,
+                         "voltou a dividir pelo total de saidas do periodo")
+        # E o subtexto tem de dizer qual e o denominador.
+        j = FONTE.index('label="LIQUIDEZ IMEDIATA"')
+        self.assertIn("EM ABERTO", FONTE[j:j + 500])
+
+    def test_recebiveis_realizados_usam_os_movimentos_que_existem(self):
+        """Ate 25/08/2026 procurava a palavra "projetado" no nome do movimento
+        -- que NAO EXISTE nesta base. Dava sempre zero projetado e sempre 100%
+        realizado: um cartao que nunca variava e por isso nunca informava."""
+        i = FONTE.index("projetado_a = ")
+        trecho = FONTE[i:i + 400]
+        self.assertNotIn("projetad", trecho.replace("projetado_a", ""),
+                         "voltou a procurar um nome de movimento inexistente")
+        self.assertIn("valor_receber_aberto_a", trecho)
+        self.assertIn("valor_recebido_a", trecho)
+
+    def test_contas_a_receber_separa_pelo_nome_do_movimento(self):
+        """Aqui o que diz se o titulo foi recebido e o NOME DO MOVIMENTO, nao a
+        data de liquidacao -- e a mesma leitura do Fluxo Mensal. Ler pela data
+        aqui e pelo movimento la faria as duas telas discordarem."""
+        i = FONTE.index("# ---- Contas a RECEBER em aberto ----")
+        trecho = FONTE[i:i + 1600]
+        self.assertIn("MOV_RECEBER_AVENCER", trecho)
+        self.assertIn("MOV_RECEBER_LIQUIDADO", trecho)
+
+    def test_filtro_de_mes_abre_no_mes_corrente(self):
+        """Em "todo o periodo" a base junta 2025, 2026 e os recebiveis de 2027,
+        e metrica de ritmo perde o sentido: concentracao nos 3 maiores dias
+        sobre 484 dias dava 7% e parecia baixa quando e altissima."""
+        i = FONTE.index("meses_disp_a = sorted(")
+        trecho = FONTE[i:i + 1400]
+        self.assertIn("_mes_corrente_a", trecho)
+        self.assertIn("index=_indice_mes_a", trecho)
+        # Mes corrente ausente da base tem de cair em "Todo o periodo" (0), e
+        # nao estourar no .index().
+        self.assertIn("if _mes_corrente_a in meses_disp_a else 0", trecho)
+
+
 class TesteMetricasDeAnalise(unittest.TestCase):
     """Com vencimento e liquidacao completos, os prazos passaram a ser
     ponderados PELO VALOR. A media simples por titulo trata um pagamento de
@@ -2177,14 +2286,21 @@ class TesteMetricasDeAnalise(unittest.TestCase):
                          "o titulo a vencer entrou no aging")
 
     def test_aba_usa_as_metricas_ponderadas(self):
-        i = FONTE.index("with sub_prazos:")
-        trecho = FONTE[max(0, i - 4000):i + 3000]
+        # Recorte por MARCOS, nao por janela de N caracteres: a janela fixa
+        # quebrou quando o bloco cresceu, e o teste passou a falhar por
+        # posicao em vez de por defeito.
+        i = FONTE.index("# ---- Prazos e cobertura ----")
+        trecho = FONTE[i:FONTE.index("with sub_aberto:")]
         self.assertIn("atraso_ponderado_por_valor(", trecho)
         self.assertIn("pontualidade_por_valor(", trecho)
         self.assertIn("Ponderado por valor", trecho,
                       "o cartao precisa dizer que e ponderado, senao engana")
         j = FONTE.index("with sub_aberto:")
-        self.assertIn("aging_de_vencidos(", FONTE[j:j + 6000])
+        self.assertIn("aging_de_vencidos(", FONTE[j:FONTE.index("with sub_receber:")])
+        # O contas a RECEBER tem de usar a MESMA funcao de faixas -- duas
+        # construcoes da mesma conta sao duas chances de elas discordarem.
+        k = FONTE.index("with sub_receber:")
+        self.assertIn("aging_de_vencidos(", FONTE[k:FONTE.index("with sub_estrutura:")])
 
 
 # ============================================================================

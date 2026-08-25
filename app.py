@@ -4486,6 +4486,36 @@ def _avaliar_alertas_fluxo(
 TETO_LANCAMENTOS_POR_CELULA = 300
 
 
+def dias_de_giro(saldo_em_aberto, movimentado_no_periodo, dias_do_periodo):
+    """Prazo médio em dias: quantos dias de movimento estão parados em aberto.
+
+    É a fórmula clássica de PMR/PMP da Controladoria na versão que a base
+    permite: saldo em aberto ÷ movimento do período × dias do período. Aplicada
+    ao contas a receber dá o PMR; ao contas a pagar, o PMP.
+
+    O QUE ELA NÃO É: o prazo contado da emissão do documento até a baixa. Esse
+    exige a data de emissão, que o CSV do fluxo não traz -- e é por isso que a
+    aba também mostra o ATRASO médio (baixa contra vencimento), que é outra
+    pergunta. Os dois convivem: o atraso diz se a empresa paga no dia
+    combinado; o prazo médio diz quanto tempo o dinheiro fica parado.
+
+    Devolve None quando não há movimento no período: dividir por zero aqui
+    produziria um "prazo infinito" que a tela mostraria como número."""
+    if not movimentado_no_periodo or not dias_do_periodo:
+        return None
+    return abs(saldo_em_aberto) / abs(movimentado_no_periodo) * dias_do_periodo
+
+
+def formata_dias(valor, com_sinal=False):
+    """Dias com uma casa e vírgula decimal. O painel inteiro escreve número em
+    português; estes cartões escapavam com ponto ("-8.4 dias") porque usavam
+    f-string crua."""
+    if valor is None or pd.isna(valor):
+        return "—"
+    texto = f"{valor:+.1f}" if com_sinal else f"{valor:.1f}"
+    return texto.replace(".", ",") + " dias"
+
+
 def atraso_ponderado_por_valor(df, coluna_dias, coluna_valor):
     """Atraso médio PONDERADO PELO VALOR, em dias.
 
@@ -8257,9 +8287,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
         meses_disp_a = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
         rotulos_a = ["Todo o período"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_a]
+        # A tela abre no MÊS CORRENTE, não em "Todo o período" (25/08/2026).
+        # Em todo o período a base junta 2025, 2026 e os recebíveis de 2027, e
+        # métricas de ritmo perdem o sentido: "concentração nos 3 maiores dias"
+        # sobre 484 dias dava 7% e parecia baixa quando é altíssima. Se o mês
+        # corrente não estiver na base, cai em "Todo o período".
+        _mes_corrente_a = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
+        _indice_mes_a = (meses_disp_a.index(_mes_corrente_a) + 1
+                         if _mes_corrente_a in meses_disp_a else 0)
         col_a1, col_a2, col_a3 = st.columns(3)
         with col_a1:
-            mes_sel_a = st.selectbox("Mês:", rotulos_a, key="fin_mes_sel_analise")
+            mes_sel_a = st.selectbox("Mês:", rotulos_a, index=_indice_mes_a,
+                                     key="fin_mes_sel_analise")
         with col_a2:
             opcoes_canal_a = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_a = st.selectbox("Canal:", opcoes_canal_a, key="fin_canal_sel_analise")
@@ -8369,26 +8408,130 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 valor_vencido_a = qtd_vencido_a = 0
                 valor_prazo_interno_a = qtd_prazo_interno_a = 0
 
-            sub_prazos, sub_aberto, sub_estrutura = st.tabs(
-                ["⏱️ Prazos e Cobertura", "📌 Contas a Pagar", "🧾 Estrutura e Composição"]
+            # ---- Contas a RECEBER em aberto ----
+            # Espelho do bloco de contas a pagar, que existia sozinho. Aqui o
+            # que diz se o título foi recebido NÃO é a data de liquidação, e
+            # sim o NOME DO MOVIMENTO: a planilha separa "2.1 - Contas a
+            # Receber" (a vencer) de "2.2 - Contas a Receber Liquidado". É a
+            # mesma leitura que o Fluxo Mensal usa; ler pela data aqui e pelo
+            # movimento lá faria as duas telas discordarem.
+            df_receber_a = df_a[df_a["Tipo Movimento"] == "entrada"].copy()
+            _movimento_txt_a = df_receber_a[COL_FIN_MOVIMENTO].astype(str)
+            df_receber_aberto = df_receber_a[_movimento_txt_a == MOV_RECEBER_AVENCER].copy()
+            df_receber_recebido = df_receber_a[_movimento_txt_a == MOV_RECEBER_LIQUIDADO].copy()
+            valor_receber_aberto_a = abs(df_receber_aberto[COL_FIN_VALOR].sum())
+            valor_recebido_a = abs(df_receber_recebido[COL_FIN_VALOR].sum())
+            total_receber_a = valor_receber_aberto_a + valor_recebido_a
+            pct_recebido_a = (valor_recebido_a / total_receber_a * 100) if total_receber_a else 0.0
+
+            if not df_receber_aberto.empty:
+                _venc_receb = df_receber_aberto[COL_FIN_VENCIMENTO]
+                _mask_venc_receb = _venc_receb < hoje_analise
+                valor_receber_vencido_a = abs(
+                    df_receber_aberto.loc[_mask_venc_receb, COL_FIN_VALOR].sum())
+                qtd_receber_vencido_a = int(_mask_venc_receb.sum())
+                _mask_receb_30 = (
+                    (_venc_receb >= hoje_analise)
+                    & (_venc_receb <= hoje_analise + pd.Timedelta(days=30))
+                )
+                valor_receber_30_a = abs(
+                    df_receber_aberto.loc[_mask_receb_30, COL_FIN_VALOR].sum())
+                qtd_receber_30_a = int(_mask_receb_30.sum())
+            else:
+                valor_receber_vencido_a = qtd_receber_vencido_a = 0
+                valor_receber_30_a = qtd_receber_30_a = 0
+
+            # ---- PMR, PMP e ciclo financeiro ----
+            # Dias corridos do recorte, não dias com movimento: prazo médio se
+            # mede contra o calendário. Usar "dias com movimento" encurtaria o
+            # prazo em todo mês com feriado, e o indicador ficaria melhor por
+            # motivo nenhum.
+            _dias_corridos_a = max(
+                (df_a["DiaOrd"].max() - df_a["DiaOrd"].min()).days + 1, 1)
+            pmr_a = dias_de_giro(valor_receber_aberto_a, valor_recebido_a, _dias_corridos_a)
+            pmp_a = dias_de_giro(valor_aberto_a, valor_quitado_a, _dias_corridos_a)
+            ciclo_a = (pmr_a - pmp_a) if (pmr_a is not None and pmp_a is not None) else None
+
+            pontualidade_receb_a = pontualidade_por_valor(
+                entradas_prazo_a, "DiasAteLiquidar", COL_FIN_VALOR)
+            pct_receb_em_dia_a = (
+                (pontualidade_receb_a[0] + pontualidade_receb_a[1])
+                if pontualidade_receb_a else None)
+
+            # Cobertura do que vence nos próximos 30 dias: o saldo de hoje dá
+            # conta do desembolso já contratado do mês que vem?
+            if not df_pagar_aberto.empty:
+                _mask_pagar_30 = (
+                    (df_pagar_aberto[COL_FIN_VENCIMENTO] >= hoje_analise)
+                    & (df_pagar_aberto[COL_FIN_VENCIMENTO] <= hoje_analise + pd.Timedelta(days=30))
+                )
+                valor_pagar_30_a = abs(df_pagar_aberto.loc[_mask_pagar_30, COL_FIN_VALOR].sum())
+            else:
+                valor_pagar_30_a = 0.0
+            _compromisso_30_a = valor_vencido_a + valor_pagar_30_a
+            cobertura_30_a = (saldo_a / _compromisso_30_a * 100) if _compromisso_30_a else None
+
+            sub_prazos, sub_aberto, sub_receber, sub_estrutura = st.tabs(
+                ["⏱️ Prazos e Cobertura", "📌 Contas a Pagar", "📥 Contas a Receber",
+                 "🧾 Estrutura e Composição"]
             )
 
             with sub_prazos:
-                st.markdown('<div class="section-title">⏱️ Prazos e Cobertura de Caixa</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-title">⏱️ Prazo Médio e Ciclo Financeiro</div>', unsafe_allow_html=True)
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="PMR — PRAZO MÉDIO DE RECEBIMENTO",
+                             value=formata_dias(pmr_a),
+                             value_color=(COLORS["positive"] if (pmr_a or 999) <= 30
+                                          else COLORS["warning"]),
+                             subtext=(f"{formata_m(valor_receber_aberto_a)} em aberto ÷ "
+                                      f"{formata_m(valor_recebido_a)} recebidos em {_dias_corridos_a} dias"
+                                      if pmr_a is not None else "Nada recebido no recorte"),
+                             icon="📥"),
+                        dict(label="PMP — PRAZO MÉDIO DE PAGAMENTO",
+                             value=formata_dias(pmp_a),
+                             value_color=(COLORS["positive"] if (pmp_a or 0) >= (pmr_a or 0)
+                                          else COLORS["warning"]),
+                             subtext=(f"{formata_m(valor_aberto_a)} em aberto ÷ "
+                                      f"{formata_m(valor_quitado_a)} pagos em {_dias_corridos_a} dias"
+                                      if pmp_a is not None else "Nada pago no recorte"),
+                             icon="📤"),
+                        dict(label="CICLO FINANCEIRO",
+                             value=formata_dias(ciclo_a, com_sinal=True),
+                             value_color=(COLORS["positive"] if (ciclo_a or 0) <= 0
+                                          else COLORS["negative"]),
+                             subtext=("PMR − PMP · negativo = o fornecedor financia a operação"
+                                      if ciclo_a is not None else "Falta um dos dois prazos"),
+                             icon="🔄"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "**PMR e PMP** medem quantos dias de movimento estão parados em aberto: saldo em aberto "
+                    "÷ movimentado no período × dias corridos do recorte. É a fórmula da Controladoria na "
+                    "versão que esta base permite — o prazo contado da **emissão** do documento até a baixa "
+                    "exigiria a data de emissão, que o CSV do fluxo não traz. **Ciclo financeiro** negativo "
+                    "significa que você recebe antes de pagar, ou seja, o fornecedor financia o giro."
+                )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">⏱️ Pontualidade e Cobertura de Caixa</div>', unsafe_allow_html=True)
                 st.markdown(
                     render_kpi_row([
                         dict(label="ATRASO MÉDIO NO PAGAMENTO",
-                             value=(f"{atraso_medio_pagto_a:+.1f} dias" if atraso_medio_pagto_a is not None else "—"),
+                             value=formata_dias(atraso_medio_pagto_a, com_sinal=True),
                              value_color=(COLORS["positive"] if (atraso_medio_pagto_a or 0) <= 0 else COLORS["negative"]),
                              subtext=(f"Ponderado por valor · média simples "
-                                      f"{atraso_simples_pagto_a:+.1f} d · {len(saidas_prazo_a)} títulos"
+                                      f"{formata_dias(atraso_simples_pagto_a, com_sinal=True)} · "
+                                      f"{len(saidas_prazo_a)} títulos"
                                       if atraso_medio_pagto_a is not None else "Nenhum título pago no recorte"),
                              icon="📤"),
                         dict(label="ATRASO MÉDIO NO RECEBIMENTO",
-                             value=(f"{atraso_medio_receb_a:+.1f} dias" if atraso_medio_receb_a is not None else "—"),
+                             value=formata_dias(atraso_medio_receb_a, com_sinal=True),
                              value_color=(COLORS["positive"] if (atraso_medio_receb_a or 0) <= 0 else COLORS["warning"]),
                              subtext=(f"Ponderado por valor · média simples "
-                                      f"{atraso_simples_receb_a:+.1f} d · {len(entradas_prazo_a)} títulos"
+                                      f"{formata_dias(atraso_simples_receb_a, com_sinal=True)} · "
+                                      f"{len(entradas_prazo_a)} títulos"
                                       if atraso_medio_receb_a is not None
                                       else "Sem data de baixa nos títulos a receber"),
                              icon="📥"),
@@ -8400,10 +8543,25 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                       f"{pontualidade_pagto_a[2]:.0f}% em atraso"
                                       if pontualidade_pagto_a else "Sem títulos pagos no recorte"),
                              icon="✅"),
+                        dict(label="RECEBIDO NO PRAZO",
+                             value=(f"{pct_receb_em_dia_a:.0f}%" if pct_receb_em_dia_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (pct_receb_em_dia_a or 0) >= 90 else COLORS["warning"]),
+                             subtext=(f"Do VALOR recebido · {pontualidade_receb_a[0]:.0f}% antecipado, "
+                                      f"{pontualidade_receb_a[1]:.0f}% no dia, "
+                                      f"{pontualidade_receb_a[2]:.0f}% em atraso"
+                                      if pontualidade_receb_a else "Sem títulos recebidos no recorte"),
+                             icon="🎯"),
                         dict(label="DIAS DE CAIXA",
-                             value=(f"{dias_de_caixa_a:.1f} dias" if dias_de_caixa_a is not None else "—"),
+                             value=formata_dias(dias_de_caixa_a),
                              value_color=(COLORS["positive"] if (dias_de_caixa_a or 0) >= 30 else COLORS["negative"]),
                              subtext=f"Ao ritmo de {formata_m(saida_media_diaria_a)}/dia de saídas", icon="🛡️"),
+                        dict(label="COBERTURA DOS PRÓXIMOS 30 DIAS",
+                             value=(f"{cobertura_30_a:.0f}%" if cobertura_30_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (cobertura_30_a or 0) >= 100
+                                          else COLORS["negative"]),
+                             subtext=(f"Saldo ÷ {formata_m(_compromisso_30_a)} já vencido + a vencer em 30 dias"
+                                      if cobertura_30_a is not None else "Nada a pagar nos próximos 30 dias"),
+                             icon="📅"),
                         dict(label="MÉDIA DIÁRIA (ENT. / SAÍ.)",
                              value=f"{formata_m(entrada_media_diaria_a)} / {formata_m(saida_media_diaria_a)}",
                              value_color=COLORS["text"], subtext=f"Em {dias_com_mov_a} dias com movimento", icon="📊"),
@@ -8415,11 +8573,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
                 st.caption(
                     "**Atraso médio** compara a data em que o título foi baixado com a data em que ele vencia, "
-                    "só entre os já liquidados: negativo é antecipação, positivo é atraso. Não confundir com o "
-                    "PMP/PMR da Controladoria, que se mede da compra (ou da venda) até o pagamento — o CSV do "
-                    "fluxo não traz a data de emissão do documento, então esse cálculo não sai daqui. "
-                    "**Dias de caixa** estima por quantos dias o saldo atual cobriria as saídas no ritmo médio "
-                    "do período. **Concentração** mostra o quanto do desembolso está espremido em poucos dias."
+                    "só entre os já liquidados: negativo é antecipação, positivo é atraso. Ele responde *pago "
+                    "no dia combinado?*; o PMP acima responde *quanto tempo o dinheiro fica parado?* — são "
+                    "perguntas diferentes. **Dias de caixa** estima por quantos dias o saldo atual cobriria as "
+                    "saídas no ritmo médio do período. **Cobertura dos próximos 30 dias** compara o saldo com "
+                    "o que já venceu somado ao que vence no mês seguinte: abaixo de 100% falta caixa para o "
+                    "compromisso já contratado. **Concentração** mostra o quanto do desembolso está espremido "
+                    "em poucos dias."
                 )
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -8498,6 +8658,68 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.markdown("<br>", unsafe_allow_html=True)
 
 
+            with sub_receber:
+                # Espelho do bloco de contas a pagar, que existia sozinho: dá
+                # para ver com detalhe o que a empresa deve e nada do que ela
+                # tem a receber -- e é o recebimento que sustenta o pagamento.
+                st.markdown(
+                    '<div class="section-title">📥 Contas a Receber em Aberto '
+                    f'<span style="font-size:0.72rem; color:{COLORS["text_muted"]}; font-weight:500;">'
+                    f'(posição em {hoje_analise.strftime("%d/%m/%Y")})</span></div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Aqui o que separa recebido de em aberto é o **nome do movimento** na planilha "
+                    f"(*{MOV_RECEBER_AVENCER}* contra *{MOV_RECEBER_LIQUIDADO}*), não a data de "
+                    "liquidação — é a mesma leitura do Fluxo Mensal, para as duas telas não discordarem."
+                )
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="TOTAL A RECEBER NO RECORTE", value=formata_brl(total_receber_a),
+                             value_color=COLORS["text"],
+                             subtext=f"{len(df_receber_a)} títulos no período filtrado", icon="🧾"),
+                        dict(label="JÁ RECEBIDO", value=formata_brl(valor_recebido_a),
+                             value_color=COLORS["positive"],
+                             subtext=f"{pct_recebido_a:.0f}% do total · {len(df_receber_recebido)} títulos",
+                             progress_pct=pct_recebido_a, icon="✅"),
+                        dict(label="AINDA EM ABERTO", value=formata_brl(valor_receber_aberto_a),
+                             value_color=COLORS["warning"],
+                             subtext=f"{len(df_receber_aberto)} títulos a vencer ou vencidos", icon="⏳"),
+                        dict(label="VENCIDO E NÃO RECEBIDO", value=formata_brl(valor_receber_vencido_a),
+                             value_color=(COLORS["negative"] if valor_receber_vencido_a else COLORS["positive"]),
+                             subtext=f"{qtd_receber_vencido_a} títulos com vencimento passado", icon="🚨"),
+                        dict(label="A RECEBER EM ATÉ 30 DIAS", value=formata_brl(valor_receber_30_a),
+                             value_color=COLORS["primary"],
+                             subtext=f"{qtd_receber_30_a} títulos · entra para cobrir o mês seguinte",
+                             icon="📅"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                _faixas_receber_a = aging_de_vencidos(
+                    df_receber_aberto, COL_FIN_VENCIMENTO, COL_FIN_VALOR, hoje_analise)
+                if _faixas_receber_a and any(v for _f, v, _q in _faixas_receber_a):
+                    st.markdown('<div class="section-title">⏳ Há quanto tempo estão vencidos</div>',
+                                unsafe_allow_html=True)
+                    _total_venc_receber = sum(v for _f, v, _q in _faixas_receber_a) or 1.0
+                    _tabela_aging_receber = pd.DataFrame(
+                        [[formata_brl(valor), f"{valor / _total_venc_receber * 100:.1f}%".replace(".", ","),
+                          quantidade]
+                         for _faixa, valor, quantidade in _faixas_receber_a],
+                        index=[faixa for faixa, _v, _q in _faixas_receber_a],
+                        columns=["Valor", "% do vencido", "Títulos"],
+                    )
+                    _tabela_aging_receber.index.name = "Tempo de atraso"
+                    st.dataframe(_tabela_aging_receber, width="stretch")
+                    st.caption(
+                        "Recebível vencido é dinheiro que a operação já contou como certo e não entrou. "
+                        "Quanto mais à direita da tabela, menor a chance de entrar — e a mesma régua do "
+                        "contas a pagar vale aqui, porque é a mesma função que monta as duas faixas."
+                    )
+                else:
+                    st.success("Nenhum recebível vencido no recorte selecionado.")
+
             with sub_estrutura:
                 # ---- Estrutura e composição ----
                 qtd_lanc_a = len(df_a)
@@ -8506,15 +8728,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ticket_entrada_a = entradas_a / qtd_entradas_a if qtd_entradas_a else 0
                 ticket_saida_a = abs(saidas_a) / qtd_saidas_a if qtd_saidas_a else 0
                 cobertura_a = (entradas_a / abs(saidas_a) * 100) if saidas_a else 0
-                liquidez_imediata_a = (saldo_a / abs(saidas_a) * 100) if saidas_a else 0
+                # LIQUIDEZ IMEDIATA: saldo contra o que ainda há PARA PAGAR.
+                # Até 25/08/2026 dividia pelo total de saídas do período, que
+                # inclui tudo que JÁ FOI PAGO -- com "todo o período" o
+                # denominador era R$ 133 mi e o cartão marcava 4%, um número
+                # que não mede liquidez nenhuma. O certo é o que está em
+                # aberto, que é a dívida que o saldo precisa cobrir.
+                liquidez_imediata_a = (
+                    (saldo_a / valor_aberto_a * 100) if valor_aberto_a else None)
 
-                projetado_a = df_a.loc[
-                    (df_a["Tipo Movimento"] == "entrada")
-                    & df_a[COL_FIN_MOVIMENTO].astype(str).str.contains("projetad", case=False, na=False),
-                    COL_FIN_VALOR,
-                ].sum()
-                realizado_a = entradas_a - projetado_a
-                pct_realizado_a = (realizado_a / entradas_a * 100) if entradas_a else 0
+                # RECEBÍVEIS JÁ REALIZADOS: recebido contra o total a receber.
+                # Até 25/08/2026 procurava a palavra "projetado" no nome do
+                # movimento -- que NÃO EXISTE nesta base. O resultado era
+                # sempre zero projetado e sempre 100% realizado: um cartão que
+                # nunca variava e por isso nunca informava nada. Os nomes reais
+                # são "2.1 - Contas a Receber" e "2.2 - ... Liquidado", e são
+                # esses que o resto do painel já usa.
+
+                projetado_a = valor_receber_aberto_a
+                realizado_a = valor_recebido_a
+                pct_realizado_a = (realizado_a / total_receber_a * 100) if total_receber_a else 0
 
                 st.markdown('<div class="section-title">🧾 Estrutura das Movimentações</div>', unsafe_allow_html=True)
                 st.markdown(
@@ -8529,12 +8762,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         dict(label="COBERTURA ENTRADAS/SAÍDAS", value=f"{cobertura_a:.0f}%",
                              value_color=(COLORS["positive"] if cobertura_a >= 100 else COLORS["negative"]),
                              subtext="Acima de 100% = entra mais do que sai", icon="⚖️"),
-                        dict(label="LIQUIDEZ IMEDIATA", value=f"{liquidez_imediata_a:.0f}%",
-                             value_color=(COLORS["positive"] if liquidez_imediata_a >= 100 else COLORS["warning"]),
-                             subtext="Saldo em caixa ÷ contas a pagar", icon="💧"),
+                        dict(label="LIQUIDEZ IMEDIATA",
+                             value=(f"{liquidez_imediata_a:.0f}%" if liquidez_imediata_a is not None else "—"),
+                             value_color=(COLORS["positive"] if (liquidez_imediata_a or 0) >= 100 else COLORS["warning"]),
+                             subtext=(f"Saldo ÷ {formata_m(valor_aberto_a)} a pagar EM ABERTO"
+                                      if liquidez_imediata_a is not None else "Nada em aberto no recorte"),
+                             icon="💧"),
                         dict(label="RECEBÍVEIS JÁ REALIZADOS", value=f"{pct_realizado_a:.0f}%",
                              value_color=(COLORS["positive"] if pct_realizado_a >= 50 else COLORS["warning"]),
-                             subtext=f"Projetado: {formata_m(projetado_a)}", icon="⏳"),
+                             subtext=f"Ainda a receber: {formata_m(projetado_a)}",
+                             progress_pct=pct_realizado_a, icon="⏳"),
+                        dict(label="RESULTADO DO PERÍODO",
+                             value=formata_m(entradas_a - abs(saidas_a)),
+                             value_color=(COLORS["positive"] if entradas_a >= abs(saidas_a)
+                                          else COLORS["negative"]),
+                             subtext=f"{formata_m(entradas_a)} de entrada − {formata_m(abs(saidas_a))} de saída",
+                             icon="➖"),
                     ]),
                     unsafe_allow_html=True,
                 )
