@@ -6764,31 +6764,51 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 }
             )
 
-            # CADA MÊS RESPONDE POR SI -- nenhum mês herda a sobra do anterior.
+            # HERANÇA: cada mês de previsão recebe a SOBRA do mês anterior --
+            # mas só a sobra mesmo, sem as metas de trás dentro dela
+            # (25/08/2026, terceira decisão do dia).
             #
-            # A primeira versão encadeava: setembro batia a meta, sobrava, e
-            # essa sobra entrava em outubro. A conta fecha, mas empilha
-            # hipótese: em dezembro, R$ 32,2 milhões do disponível eram meta
-            # não realizada, mais do que os R$ 20,5 mi que a linha mostrava --
-            # e nada na tela dizia isso. Novembro aparecia com 29,7% de reserva
-            # que só existia porque TRÊS metas anteriores tinham sido dadas
-            # como certas; sozinho ele é -5,0%.
+            # A primeira versão encadeava a sobra JÁ COM meta, e ela ia se
+            # empilhando: novembro carregava as metas de setembro e outubro, e
+            # em dezembro R$ 32,2 milhões do disponível eram alvo não
+            # realizado, mais do que os R$ 20,5 mi que a linha mostrava. O
+            # 29,7% de novembro só existia porque três metas anteriores tinham
+            # sido dadas como certas.
             #
-            # Retirar só as metas anteriores, mantendo o saldo encadeado, não
-            # resolve: seria um cenário que não existe -- novembro bate a meta,
-            # mas setembro e outubro não bateram a delas -- e o vermelho volta
-            # (novembro -26,5%, dezembro -568%).
+            # Agora o que passa adiante é a sobra CONTRATADA: abertura mais o
+            # que o mês recebe de fato, menos o que ele paga. A meta entra no
+            # mês em que está sendo cobrada e morre ali -- não vira herança.
+            # É uma leitura conservadora de propósito: para o mês na tela vale
+            # a meta dele, para o passado vale só o que está contratado.
             #
-            # Então a pergunta passou a ser por mês, que é a frase da própria
-            # meta: pagando as contas DO MÊS, sobra 30% do que entrou NO MÊS?
-            # Mês realizado e corrente já respondiam assim, porque as posições
-            # reais de caixa e banco estão dentro deles; a previsão não tem
-            # posição nenhuma e agora também não tem herança.
+            # PISO EM ZERO: mês que não se paga passa ZERO adiante, não o
+            # buraco. Sem isso o déficit cascateia e volta o absurdo que a
+            # sessão inteira tentou tirar da tela (novembro -26,5%, dezembro
+            # -568%). O buraco não some: ele aparece na linha de Sobra DO MÊS
+            # em que acontece, que é onde ele tem de ser resolvido.
+            _heranca_m, _contratado_anterior = {}, max(float(saldo_anterior_ao_periodo_m), 0.0)
+            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
+                _abertura_col = (float(pivot_m.loc[_saldos_abertura_m, _coluna].sum())
+                                 if _saldos_abertura_m else 0.0)
+                _entradas_col = (float(pivot_m.loc[_entradas_do_mes_m, _coluna].sum())
+                                 if _entradas_do_mes_m else 0.0)
+                # Passado e corrente têm as posições reais de caixa e banco
+                # dentro deles: herdar por cima contaria o mesmo dinheiro duas
+                # vezes. É a mesma regra do saldo inicial do diário.
+                _heranca_m[_coluna] = (
+                    max(_contratado_anterior, 0.0) if _periodo > _mes_corrente_m else 0.0)
+                _contratado_anterior = (
+                    _heranca_m[_coluna] + _abertura_col + _entradas_col
+                    - abs(float(serie_a_pagar.get(_coluna, 0.0)))
+                )
+            serie_heranca = pd.Series(_heranca_m)
+
             serie_disponivel_total = pd.Series(
                 {
                     coluna: (
-                        (float(pivot_m.loc[_saldos_abertura_m, coluna].sum())
-                         if _saldos_abertura_m else 0.0)
+                        float(serie_heranca[coluna])
+                        + (float(pivot_m.loc[_saldos_abertura_m, coluna].sum())
+                           if _saldos_abertura_m else 0.0)
                         + (float(pivot_m.loc[_entradas_do_mes_m, coluna].sum())
                            if _entradas_do_mes_m else 0.0)
                         + float(serie_meta_a_realizar[coluna])
@@ -6818,9 +6838,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
 
             LINHA_PCT_SOBRA = "% de sobra"
+            LINHA_HERANCA = "↳ sobra herdada do mês anterior"
             LINHA_META_RESERVA = "↳ meta ainda a realizar (previsão)"
             LINHAS_EM_REAIS = [
-                "Disponível", LINHA_META_RESERVA, "A pagar no mês",
+                "Disponível", LINHA_HERANCA, LINHA_META_RESERVA, "A pagar no mês",
                 "Sobra depois de pagar tudo",
             ]
 
@@ -6841,9 +6862,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # precisa decidir como desenhar um número que não há. A série
             # numérica continua viva ao lado, para o gráfico e para a cor.
             df_reserva_m = pd.DataFrame(
-                [serie_disponivel_total, serie_meta_a_realizar, serie_obrigacoes,
-                 serie_sobra, serie_pct_sobra.map(_formata_pct_sobra)],
-                index=["Disponível", LINHA_META_RESERVA, "A pagar no mês",
+                [serie_disponivel_total, serie_heranca, serie_meta_a_realizar,
+                 serie_obrigacoes, serie_sobra, serie_pct_sobra.map(_formata_pct_sobra)],
+                index=["Disponível", LINHA_HERANCA, LINHA_META_RESERVA, "A pagar no mês",
                        "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
             )
 
@@ -6851,8 +6872,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 """Na linha de % a cor não segue o sinal, e sim a META: abaixo
                 de 30% fica vermelho, e mês sem disponível também (não bateu
                 meta nenhuma). A cor sai da série NUMÉRICA, porque na tabela
-                essa linha já é texto. A linha da meta a realizar fica em
-                laranja: é alvo, não dinheiro em caixa."""
+                essa linha já é texto. As duas linhas de composição ficam em
+                laranja: são o que o disponível tem de hipótese e de passado,
+                não dinheiro que o mês gerou."""
                 if linha.name == LINHA_PCT_SOBRA:
                     return [
                         "color: "
@@ -6861,7 +6883,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         + "; font-weight: 600;"
                         for v in serie_pct_sobra.reindex(linha.index)
                     ]
-                if linha.name == LINHA_META_RESERVA:
+                if linha.name in (LINHA_HERANCA, LINHA_META_RESERVA):
                     return [f"color: {COLORS['warning']};" for _ in linha]
                 return [cor_valor(v) for v in linha]
 
@@ -6879,13 +6901,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais."
             )
             st.caption(
-                "⚠️ **Mês que ainda não aconteceu responde por SI.** Ele conta só com o que ele mesmo "
-                "recebe — as parcelas já emitidas mais o que falta para a **meta de recebimento** do mês, na "
-                "linha em laranja — contra o que ele mesmo paga. **Não herda a sobra dos meses anteriores**, "
-                "porque essa sobra dependeria de todas as metas anteriores terem sido batidas, e empilhar "
-                "hipótese faz o número parecer confortável sem ser. Se a meta do mês não for cumprida, a sobra "
-                "real é menor. Por isso a linha Sobra é igual ao TOTAL GERAL da tabela acima nos meses já "
-                "realizados e no corrente, e diferente nos de previsão."
+                "⚠️ **Mês que ainda não aconteceu tem duas parcelas que não são dinheiro do mês**, as duas em "
+                "laranja. A **sobra herdada** é o que o mês anterior deixou, contando só o que ele tinha "
+                "contratado — as metas dos meses de trás não vêm junto, senão o número iria empilhando "
+                "hipótese até parecer confortável sem ser. Mês que não se paga passa **zero** adiante, não o "
+                "buraco; o buraco fica visível na linha de Sobra do mês em que ele acontece. A **meta ainda a "
+                "realizar** completa a entrada do mês, porque o a receber de um mês futuro traz só as parcelas "
+                "já emitidas. Se a meta não for cumprida, a sobra real é menor."
             )
 
             # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----

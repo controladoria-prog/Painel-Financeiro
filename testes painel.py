@@ -1373,14 +1373,11 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # a receber, liquidado) -- nunca de TODAS, o que arrastaria a META.
         self.assertIn("_saldos_abertura_m", bloco_reserva)
         self.assertIn("_entradas_do_mes_m", bloco_reserva)
-        # 25/08/2026: nenhum mes de previsao herda a sobra do anterior -- ver
-        # test_cada_mes_de_previsao_responde_por_si.
-        self.assertNotIn("_sobra_anterior_reserva", bloco_reserva,
-                         "a cadeia empilha hipotese e foi retirada")
-        self.assertNotIn("saldos_iniciais_m.get(coluna, 0.0)", bloco_reserva,
-                         "a Reserva nao herda nem o saldo inicial da tabela de cima")
+        # 25/08/2026: a heranca do mes anterior e a sobra CONTRATADA -- a meta
+        # nao pode entrar nela. Ver test_reserva_herda_so_a_sobra_contratada.
+        self.assertIn("_heranca_m", bloco_reserva)
         self.assertIn("_periodo > _mes_corrente_m", bloco_reserva,
-                      "so mes de previsao recebe a meta")
+                      "so mes de previsao recebe meta e heranca")
 
     def test_reserva_monta_cada_parte_da_sua_fonte(self):
         """Regra da area, LEITURA DE FLUXO (25/08/2026):
@@ -1428,11 +1425,40 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("LINHA_META_RESERVA", depois)
         self.assertIn("meta ainda a realizar", depois)
 
-    def test_cada_mes_de_previsao_responde_por_si(self):
-        """O numero que a decisao produz, mes a mes. Nenhum mes de previsao
-        herda a sobra do anterior: conta so com o que ele mesmo recebe (as
-        parcelas ja emitidas mais o que falta para a meta DELE) contra o que
-        ele mesmo paga. Valores reais de 25/08/2026."""
+    def test_reserva_herda_so_a_sobra_contratada(self):
+        """O mes de previsao herda a sobra do anterior -- mas SO a sobra: o que
+        passa adiante e a sobra CONTRATADA (abertura + o que o mes recebe de
+        fato - o que ele paga), sem a meta dentro. A meta entra no mes em que
+        esta sendo cobrada e morre ali. Encadear a sobra JA COM meta empilhava
+        hipotese: em dezembro R$ 32,2 mi do disponivel eram alvo nao
+        realizado, mais do que os R$ 20,5 mi que a linha mostrava."""
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 9000):i]
+        # A conta que avanca a cadeia nao pode conter a meta.
+        avanco = bloco[bloco.index("_contratado_anterior = ("):]
+        avanco = avanco[:avanco.index(")\n") + 1]
+        self.assertNotIn("meta", avanco,
+                         "a meta nao pode entrar na sobra que passa adiante")
+        self.assertIn("_abertura_col", avanco)
+        self.assertIn("_entradas_col", avanco)
+        self.assertIn("serie_a_pagar", avanco)
+        # Piso em zero: mes que nao se paga passa ZERO, nao o buraco.
+        self.assertIn("max(_contratado_anterior, 0.0) if _periodo > _mes_corrente_m else 0.0",
+                      bloco, "faltou o piso em zero ou a regra de so-previsao")
+        # E a heranca tem de somar DE FATO no disponivel, nao so existir.
+        soma_disponivel = bloco[bloco.index("serie_disponivel_total = pd.Series("):
+                                bloco.index("serie_sobra = ")]
+        self.assertIn("serie_heranca[coluna]", soma_disponivel,
+                      "a heranca existe mas nao esta entrando no disponivel")
+        # E ficar VISIVEL na tabela, como a meta.
+        depois = FONTE[i:i + 8000]
+        self.assertIn("LINHA_HERANCA", depois)
+        self.assertIn("sobra herdada do mês anterior", depois)
+
+    def test_previsao_herda_a_sobra_com_piso_em_zero(self):
+        """O numero que a decisao produz, mes a mes. Valores reais de
+        25/08/2026. Sem o piso, o deficit de novembro cascateia e volta o
+        absurdo que a sessao inteira tirou da tela (dezembro -568%)."""
         mes_corrente = pd.Period("2026-08", "M")
         meses = [pd.Period(f"2026-{m:02d}", "M") for m in range(7, 13)]
         # abertura de caixa/banco + a receber + a receber liquidado do mes
@@ -1443,46 +1469,48 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         a_pagar = [9_704_926.16, 8_625_812.77, 9_336_790.37,
                    11_689_048.42, 13_785_703.74, 11_298_162.96]
 
-        disponiveis, sobras = [], []
-        for periodo, entrada, meta, pagar in zip(meses, proprio, metas, a_pagar):
-            # A meta entra como QUANTO FALTA, com piso em zero, e SO na previsao.
-            falta = max(meta - entrada, 0.0) if periodo > mes_corrente else 0.0
-            disponivel = entrada + falta          # sem heranca de mes anterior
-            disponiveis.append(disponivel)
-            sobras.append(disponivel - pagar)
+        def roda(com_piso):
+            heranca, disponiveis, sobras, contratado = [], [], [], 0.0
+            for periodo, entrada, meta, pagar in zip(meses, proprio, metas, a_pagar):
+                previsao = periodo > mes_corrente
+                base = (max(contratado, 0.0) if com_piso else contratado) if previsao else 0.0
+                falta = max(meta - entrada, 0.0) if previsao else 0.0
+                disponivel = base + entrada + falta
+                heranca.append(base)
+                disponiveis.append(disponivel)
+                sobras.append(disponivel - pagar)
+                # o que passa adiante e a sobra CONTRATADA, sem a meta
+                contratado = base + entrada - pagar
+            return heranca, disponiveis, sobras
 
-        # Mes realizado e corrente: sem meta, iguais ao que ja estava na tela.
+        heranca, disponiveis, sobras = roda(com_piso=True)
+
+        # Mes realizado e corrente: sem meta e sem heranca.
+        self.assertEqual(heranca[0], 0.0)
+        self.assertEqual(heranca[1], 0.0)
         self.assertAlmostEqual(sobras[0], 2_273_688.24, places=2)
         self.assertAlmostEqual(sobras[1], 4_941_825.83, places=2)
-        # Previsao: o disponivel do mes E a meta do mes, quando ela e maior
-        # que o emitido -- nada vem de tras.
-        for i in (2, 3, 4, 5):
-            self.assertAlmostEqual(disponiveis[i], metas[i], places=2)
-        self.assertAlmostEqual(sobras[2], 1_125_431.21, places=2)
-        self.assertAlmostEqual(sobras[3], 422_548.93, places=2)
+        # Setembro herda a sobra de agosto, que e dinheiro de verdade.
+        self.assertAlmostEqual(heranca[2], 4_941_825.83, places=2)
+        self.assertAlmostEqual(sobras[2], 6_067_257.04, places=2)
+        # Outubro herda a sobra CONTRATADA de setembro (3.955.333,90) -- NAO os
+        # 6.067.257,04 que a linha Sobra mostra, que tem a meta dentro.
+        self.assertAlmostEqual(heranca[3], 3_955_333.90, places=2)
+        self.assertNotAlmostEqual(heranca[3], sobras[2], places=2)
+        self.assertAlmostEqual(sobras[3], 4_377_882.83, places=2)
+        # Novembro e dezembro herdam ZERO: o mes anterior nao se pagou.
+        self.assertEqual(heranca[4], 0.0)
+        self.assertEqual(heranca[5], 0.0)
         self.assertAlmostEqual(sobras[4], -657_364.36, places=2)
         self.assertAlmostEqual(sobras[5], 3_386_879.69, places=2)
 
         pcts = [s / d * 100 for s, d in zip(sobras, disponiveis)]
-        self.assertAlmostEqual(pcts[2], 10.76, places=1)
-        self.assertAlmostEqual(pcts[3], 3.49, places=1)
-        self.assertAlmostEqual(pcts[5], 23.06, places=1)
-        # O achado que essa leitura revela: NENHUM mes de previsao se paga com
-        # 30% so com a receita da meta. A operacao conta com caixa acumulado.
-        for pct in pcts[2:]:
-            self.assertLess(pct, 30.0)
+        for esperado, obtido in zip([19.0, 36.4, 39.4, 27.2, -5.0, 23.1], pcts):
+            self.assertAlmostEqual(obtido, esperado, places=1)
 
-        # A CADEIA, para o teste morder: com ela setembro dava 39,4% e novembro
-        # 29,7%, numeros que so existiam porque as metas anteriores tinham sido
-        # dadas como certas.
-        encadeado, anterior = [], 0.0
-        for periodo, entrada, meta, pagar in zip(meses, proprio, metas, a_pagar):
-            falta = max(meta - entrada, 0.0) if periodo > mes_corrente else 0.0
-            disp = (anterior if periodo > mes_corrente else 0.0) + entrada + falta
-            anterior = disp - pagar
-            encadeado.append(anterior)
-        self.assertAlmostEqual(encadeado[4], 5_832_441.61, places=2)
-        self.assertNotAlmostEqual(sobras[4], encadeado[4], places=2)
+        # SEM o piso, o deficit cascateia e dezembro volta para o absurdo.
+        _, disp_sem, sobras_sem = roda(com_piso=False)
+        self.assertAlmostEqual(sobras_sem[5] / disp_sem[5] * 100, -568.4, places=1)
 
     def test_meta_ja_batida_nao_soma_nada(self):
         """Piso em zero: se o a receber ja emitido passou da meta do mes, o
@@ -1630,18 +1658,18 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertEqual(list(texto), ["39.4%", "—", "29.7%"])
         self.assertFalse(texto.isna().any(), "nenhum ausente pode sobreviver ao map")
 
-    def test_reserva_nao_herda_sobra_de_mes_nenhum(self):
-        """Mes realizado e mes corrente ja respondiam por si, porque as
-        posicoes reais de caixa e banco estao dentro deles. Desde 25/08/2026 a
-        previsao tambem: sem posicao e sem heranca, so o que o mes recebe
-        contra o que o mes paga."""
+    def test_realizado_e_corrente_nao_herdam_nada(self):
+        """Mes que ja passou e o mes corrente tem as posicoes reais de caixa e
+        banco DENTRO deles: herdar por cima contaria o mesmo dinheiro duas
+        vezes. E a mesma regra do saldo inicial do diario. So a previsao
+        herda."""
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 8000):i]
+        bloco = FONTE[max(0, i - 9000):i]
         self.assertIn("serie_sobra = serie_disponivel_total - serie_a_pagar.abs()", bloco)
-        self.assertNotIn("_sobra_anterior_reserva", bloco,
-                         "a cadeia empilha hipotese e foi retirada")
+        self.assertIn("if _periodo > _mes_corrente_m else 0.0", bloco,
+                      "mes realizado e corrente tem de herdar zero")
         self.assertNotIn("saldos_iniciais_m", bloco,
-                         "a Reserva nao pode voltar a herdar o saldo inicial")
+                         "a Reserva monta a propria heranca, com piso em zero")
 
     def test_faixa_do_eixo_da_pct_tem_trava(self):
         """Um mes fora da curva achatava o grafico inteiro: com novembro em
