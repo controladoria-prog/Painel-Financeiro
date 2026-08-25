@@ -6716,16 +6716,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # muda é o DENOMINADOR, e com ele o sentido da porcentagem. Aqui os
             # 30% são sobre tudo que passou pelo mês, que é a frase da meta.
             #
-            # A sobra do mês anterior entra pelo SALDO INICIAL nos meses de
-            # previsão. ATENÇÃO: a partir de 25/08/2026 a Reserva encadeia a
-            # SUA PRÓPRIA sobra nesses meses, e não o TOTAL GERAL da tabela de
-            # cima -- ver o bloco da meta logo abaixo, que explica por quê.
+            # A sobra do mês anterior NÃO entra nos meses de previsão
+            # (25/08/2026, segunda decisão do dia). Ver o bloco da meta logo
+            # abaixo, que explica por quê.
             #
             # CONSEQUÊNCIA: a Sobra é igual ao TOTAL GERAL da tabela Movimentos
             # por Mês nos meses REALIZADOS e no CORRENTE. Nos de previsão as
-            # duas divergem de propósito, pelo tanto que falta para a meta: a
-            # tabela de cima mostra só o contratado, esta mostra o cenário com
-            # a meta cumprida.
+            # duas divergem de propósito: a tabela de cima encadeia o
+            # contratado, esta lê cada mês por si com a meta dele.
             _saldos_abertura_m = [
                 m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "saldo"
@@ -6752,11 +6750,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # (pivot_m já guarda a linha de meta como "quanto falta", com piso
             # em zero: se o emitido passar do alvo, esta parcela é zero e nada
             # muda). Mês realizado e mês corrente seguem sem meta, como sempre.
-            #
-            # POR QUE A CADEIA É PRÓPRIA: se setembro recebe a meta, é a sobra
-            # DE SETEMBRO COM A META que entra em outubro. Puxar o saldo
-            # inicial da tabela de cima, que ignora a meta, faria cada mês
-            # somar a sua meta e jogar fora a do anterior.
             _falta_para_meta_m = [
                 m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "meta"
@@ -6771,26 +6764,39 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 }
             )
 
-            _disponivel_m, _sobra_m = {}, {}
-            _sobra_anterior_reserva = float(saldo_anterior_ao_periodo_m)
-            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
-                _do_proprio_mes = (
-                    (float(pivot_m.loc[_saldos_abertura_m, _coluna].sum())
-                     if _saldos_abertura_m else 0.0)
-                    + (float(pivot_m.loc[_entradas_do_mes_m, _coluna].sum())
-                       if _entradas_do_mes_m else 0.0)
-                    + float(serie_meta_a_realizar[_coluna])
-                )
-                # Passado e corrente têm as posições reais de caixa e banco
-                # dentro deles: somar abertura por cima contaria duas vezes.
-                _base = _sobra_anterior_reserva if _periodo > _mes_corrente_m else 0.0
-                _disponivel_m[_coluna] = _base + _do_proprio_mes
-                _sobra_m[_coluna] = (
-                    _disponivel_m[_coluna] - abs(float(serie_a_pagar.get(_coluna, 0.0))))
-                _sobra_anterior_reserva = _sobra_m[_coluna]
-
-            serie_disponivel_total = pd.Series(_disponivel_m)
-            serie_sobra = pd.Series(_sobra_m)
+            # CADA MÊS RESPONDE POR SI -- nenhum mês herda a sobra do anterior.
+            #
+            # A primeira versão encadeava: setembro batia a meta, sobrava, e
+            # essa sobra entrava em outubro. A conta fecha, mas empilha
+            # hipótese: em dezembro, R$ 32,2 milhões do disponível eram meta
+            # não realizada, mais do que os R$ 20,5 mi que a linha mostrava --
+            # e nada na tela dizia isso. Novembro aparecia com 29,7% de reserva
+            # que só existia porque TRÊS metas anteriores tinham sido dadas
+            # como certas; sozinho ele é -5,0%.
+            #
+            # Retirar só as metas anteriores, mantendo o saldo encadeado, não
+            # resolve: seria um cenário que não existe -- novembro bate a meta,
+            # mas setembro e outubro não bateram a delas -- e o vermelho volta
+            # (novembro -26,5%, dezembro -568%).
+            #
+            # Então a pergunta passou a ser por mês, que é a frase da própria
+            # meta: pagando as contas DO MÊS, sobra 30% do que entrou NO MÊS?
+            # Mês realizado e corrente já respondiam assim, porque as posições
+            # reais de caixa e banco estão dentro deles; a previsão não tem
+            # posição nenhuma e agora também não tem herança.
+            serie_disponivel_total = pd.Series(
+                {
+                    coluna: (
+                        (float(pivot_m.loc[_saldos_abertura_m, coluna].sum())
+                         if _saldos_abertura_m else 0.0)
+                        + (float(pivot_m.loc[_entradas_do_mes_m, coluna].sum())
+                           if _entradas_do_mes_m else 0.0)
+                        + float(serie_meta_a_realizar[coluna])
+                    )
+                    for coluna in colunas_meses_m
+                }
+            )
+            serie_sobra = serie_disponivel_total - serie_a_pagar.abs()
             serie_pct_sobra = pd.Series(
                 [
                     # Porcentagem só existe com disponível positivo. Com os
@@ -6873,12 +6879,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais."
             )
             st.caption(
-                "⚠️ **Mês que ainda não aconteceu é CENÁRIO, não previsão fechada.** Nele o a receber traz só "
-                "as parcelas já emitidas, que são poucas — o que ainda falta para bater a **meta de "
-                "recebimento** entra na linha em laranja e completa o disponível. Se a meta não for cumprida, "
-                "a sobra real é menor. Cada mês de previsão parte da sobra do anterior, em cadeia. Por isso a "
-                "linha Sobra é igual ao TOTAL GERAL da tabela acima nos meses já realizados e no corrente, e "
-                "maior nos de previsão — exatamente pelo tanto que falta para a meta."
+                "⚠️ **Mês que ainda não aconteceu responde por SI.** Ele conta só com o que ele mesmo "
+                "recebe — as parcelas já emitidas mais o que falta para a **meta de recebimento** do mês, na "
+                "linha em laranja — contra o que ele mesmo paga. **Não herda a sobra dos meses anteriores**, "
+                "porque essa sobra dependeria de todas as metas anteriores terem sido batidas, e empilhar "
+                "hipótese faz o número parecer confortável sem ser. Se a meta do mês não for cumprida, a sobra "
+                "real é menor. Por isso a linha Sobra é igual ao TOTAL GERAL da tabela acima nos meses já "
+                "realizados e no corrente, e diferente nos de previsão."
             )
 
             # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
