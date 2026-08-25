@@ -2217,16 +2217,65 @@ class TestePrazoMedioECicloFinanceiro(unittest.TestCase):
         self.assertIn("MOV_RECEBER_LIQUIDADO", trecho)
 
     def test_filtro_de_mes_abre_no_mes_corrente(self):
-        """Em "todo o periodo" a base junta 2025, 2026 e os recebiveis de 2027,
-        e metrica de ritmo perde o sentido: concentracao nos 3 maiores dias
-        sobre 484 dias dava 7% e parecia baixa quando e altissima."""
+        """Em "todo o periodo" a base junta de outubro/2023 a fevereiro/2027, e
+        metrica de ritmo perde o sentido: concentracao nos 3 maiores dias sobre
+        484 dias dava 7% e parecia baixa quando e altissima, e o PMR ia a 418
+        dias porque o denominador diluia o recebimento em 1400 dias."""
         i = FONTE.index("meses_disp_a = sorted(")
-        trecho = FONTE[i:i + 1400]
+        trecho = FONTE[i:FONTE.index("col_a1, col_a2, col_a3 = st.columns(3)", i)]
         self.assertIn("_mes_corrente_a", trecho)
-        self.assertIn("index=_indice_mes_a", trecho)
         # Mes corrente ausente da base tem de cair em "Todo o periodo" (0), e
         # nao estourar no .index().
         self.assertIn("if _mes_corrente_a in meses_disp_a else 0", trecho)
+
+    def test_padrao_do_mes_e_semeado_na_sessao(self):
+        """O `index=` do selectbox NAO basta: o Streamlit o IGNORA quando a
+        chave do widget ja existe em st.session_state. Quem tinha aberto a aba
+        antes da mudanca carregava "Todo o periodo" guardado na sessao, e o
+        padrao novo nunca aparecia -- aconteceu em 25/08/2026 com o codigo
+        certo no ar. A marca forca o padrao UMA vez por sessao; depois a
+        escolha da pessoa manda."""
+        i = FONTE.index("meses_disp_a = sorted(")
+        trecho = FONTE[i:FONTE.index("col_a1, col_a2, col_a3 = st.columns(3)", i)]
+        self.assertIn('if not st.session_state.get("_fin_mes_analise_iniciado"):', trecho)
+        self.assertIn('st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]', trecho)
+        self.assertIn('st.session_state["_fin_mes_analise_iniciado"] = True', trecho)
+        # Rotulo guardado que sumiu da lista travaria o widget.
+        self.assertIn('st.session_state.get("fin_mes_sel_analise") not in rotulos_a', trecho)
+
+    def test_semeadura_so_vale_na_primeira_vez(self):
+        """Modelo do que o codigo faz: sem a marca, semeia; com a marca, a
+        escolha da pessoa sobrevive ao proximo desenho da tela."""
+        rotulos = ["Todo o período", "Julho/2026", "Agosto/2026"]
+
+        def semear(sessao, indice_padrao):
+            if not sessao.get("_fin_mes_analise_iniciado"):
+                sessao["fin_mes_sel_analise"] = rotulos[indice_padrao]
+                sessao["_fin_mes_analise_iniciado"] = True
+            elif sessao.get("fin_mes_sel_analise") not in rotulos:
+                sessao["fin_mes_sel_analise"] = rotulos[indice_padrao]
+            return sessao
+
+        # Sessao velha, com o valor antigo guardado: o padrao TEM de vencer.
+        velha = semear({"fin_mes_sel_analise": "Todo o período"}, 2)
+        self.assertEqual(velha["fin_mes_sel_analise"], "Agosto/2026")
+        # Depois de semeada, a escolha da pessoa manda.
+        velha["fin_mes_sel_analise"] = "Julho/2026"
+        self.assertEqual(semear(velha, 2)["fin_mes_sel_analise"], "Julho/2026")
+        # Rotulo que sumiu da lista volta para o padrao em vez de travar.
+        velha["fin_mes_sel_analise"] = "Dezembro/2019"
+        self.assertEqual(semear(velha, 2)["fin_mes_sel_analise"], "Agosto/2026")
+
+    def test_recorte_longo_avisa_que_o_prazo_nao_significa_nada(self):
+        """Com o recorte inteiro o valor em aberto e a foto de hoje e o
+        movimentado soma o intervalo todo: a razao entre os dois vira artefato
+        do tamanho do recorte, nao prazo."""
+        ns = carregar([], ["LIMITE_DIAS_PRAZO_CONFIAVEL"])
+        self.assertEqual(ns["LIMITE_DIAS_PRAZO_CONFIAVEL"], 120)
+        i = FONTE.index('label="CICLO FINANCEIRO"')
+        trecho = FONTE[i:i + 3000]
+        self.assertIn("if _dias_corridos_a > LIMITE_DIAS_PRAZO_CONFIAVEL:", trecho)
+        self.assertIn("Escolha um mês", trecho)
 
 
 class TesteMetricasDeAnalise(unittest.TestCase):

@@ -4255,6 +4255,11 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
 # configuráveis porque o que é "grave" muda de empresa para empresa -- alerta
 # que dispara sempre vira ruído e passa a ser ignorado.
 META_RESERVA_PADRAO = 30      # % do disponível que deve sobrar após pagar tudo
+# Acima de quantos dias corridos o prazo médio deixa de descrever a operação.
+# Com o recorte inteiro (1400 dias, de out/2023 a fev/2027) o PMR deu 418
+# dias: o valor em aberto é a foto de hoje e o movimentado soma o intervalo
+# todo, então a razão entre os dois vira artefato do tamanho do recorte.
+LIMITE_DIAS_PRAZO_CONFIAVEL = 120
 # Até onde o eixo da % de sobra pode abrir no gráfico executivo. Sem trava, um
 # mês fora da curva (novembro chegou a -1643%) achata todos os outros numa
 # linha reta e some com a referência da meta.
@@ -8288,13 +8293,29 @@ if st.session_state["painel_escolhido"] == "financeiro":
         meses_disp_a = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
         rotulos_a = ["Todo o período"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_a]
         # A tela abre no MÊS CORRENTE, não em "Todo o período" (25/08/2026).
-        # Em todo o período a base junta 2025, 2026 e os recebíveis de 2027, e
-        # métricas de ritmo perdem o sentido: "concentração nos 3 maiores dias"
-        # sobre 484 dias dava 7% e parecia baixa quando é altíssima. Se o mês
-        # corrente não estiver na base, cai em "Todo o período".
+        # Em todo o período a base junta de outubro/2023 a fevereiro/2027, e
+        # métrica de ritmo perde o sentido: "concentração nos 3 maiores dias"
+        # sobre 484 dias dava 7% e parecia baixa quando é altíssima, e o PMR
+        # ia a 418 dias porque o denominador diluía o recebimento em 1400 dias.
+        # Se o mês corrente não estiver na base, cai em "Todo o período".
+        #
+        # POR QUE NÃO BASTA O `index=`: o Streamlit IGNORA o index quando a
+        # chave do widget já existe em st.session_state. Quem já tinha aberto
+        # a aba antes desta mudança carregava "Todo o período" guardado na
+        # sessão, e o padrão novo nunca aparecia -- foi exatamente o que
+        # aconteceu em 25/08/2026, com o código certo no ar. A marca abaixo
+        # força o padrão UMA vez por sessão; depois disso a escolha da pessoa
+        # manda, como tem de ser.
         _mes_corrente_a = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
         _indice_mes_a = (meses_disp_a.index(_mes_corrente_a) + 1
                          if _mes_corrente_a in meses_disp_a else 0)
+        if not st.session_state.get("_fin_mes_analise_iniciado"):
+            st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]
+            st.session_state["_fin_mes_analise_iniciado"] = True
+        # Rótulo guardado que não existe mais na lista (a base mudou de
+        # recorte) travaria o widget: volta para o padrão.
+        elif st.session_state.get("fin_mes_sel_analise") not in rotulos_a:
+            st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]
         col_a1, col_a2, col_a3 = st.columns(3)
         with col_a1:
             mes_sel_a = st.selectbox("Mês:", rotulos_a, index=_indice_mes_a,
@@ -8513,6 +8534,18 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "exigiria a data de emissão, que o CSV do fluxo não traz. **Ciclo financeiro** negativo "
                     "significa que você recebe antes de pagar, ou seja, o fornecedor financia o giro."
                 )
+                if _dias_corridos_a > LIMITE_DIAS_PRAZO_CONFIAVEL:
+                    # Com um recorte de anos, o "em aberto" é uma foto de hoje
+                    # e o "movimentado" é a soma de todo o intervalo: a razão
+                    # entre os dois deixa de ser prazo e vira artefato. Em
+                    # 25/08/2026, com todo o período (1400 dias), o PMR deu
+                    # 418 dias — número que não descreve operação nenhuma.
+                    st.warning(
+                        f"⚠️ O recorte tem **{_dias_corridos_a} dias corridos**. Prazo médio só significa "
+                        "alguma coisa num período homogêneo: aqui o valor em aberto é a posição de hoje, "
+                        "mas o movimentado soma o intervalo inteiro, e a divisão entre os dois infla o "
+                        "prazo. **Escolha um mês** no filtro acima para ler PMR e PMP."
+                    )
 
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.markdown('<div class="section-title">⏱️ Pontualidade e Cobertura de Caixa</div>', unsafe_allow_html=True)
