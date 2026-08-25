@@ -59,6 +59,10 @@ DEPENDENCIAS = {
     "meta_diaria_que_ainda_falta": [],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
+    "preparar_checklist_da_planilha": ["resolver_colunas_fluxo", "_assinatura_coluna_fin",
+                                      "_normalizar_coluna_fin", "_texto_ou_vazio",
+                                      "normalizar_status_fechamento", "_normalizar_coluna_fin"],
+    "normalizar_status_fechamento": ["_normalizar_coluna_fin"],
 }
 CONSTANTES_DE_DEPENDENCIA_CONST = {
     # Constante que depende de outra constante para ser avaliada.
@@ -3576,6 +3580,350 @@ class TesteMemoriaELeitura(unittest.TestCase):
         # Sem medicao possivel, nao age -- e nao quebra.
         ns["memoria_em_uso_mb"] = lambda: None
         self.assertEqual(ns["guardar_memoria"](), (None, False))
+
+
+# ============================================================================
+# 5o. CHECKLIST DE FECHAMENTO MENSAL (lido da Planilha Google)
+# ============================================================================
+class TesteEnderecoDaPlanilhaDeFechamento(unittest.TestCase):
+    """O que a pessoa cola e o que o painel precisa buscar sao coisas
+    diferentes. Aqui entra o link do botao Compartilhar; tem de sair o
+    endereco que devolve CSV."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["url_csv_do_fechamento"])
+
+    def _url(self, texto):
+        return self.ns["url_csv_do_fechamento"](texto)
+
+    def test_link_de_compartilhamento_vira_endereco_de_csv(self):
+        ident = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
+        for link in (
+            f"https://docs.google.com/spreadsheets/d/{ident}/edit?usp=sharing",
+            f"https://docs.google.com/spreadsheets/d/{ident}/edit#gid=0",
+            f"https://docs.google.com/spreadsheets/d/{ident}",
+        ):
+            self.assertEqual(
+                self._url(link),
+                f"https://docs.google.com/spreadsheets/d/{ident}/export?format=csv",
+                f"nao reconheceu {link}",
+            )
+
+    def test_endereco_sai_sem_gid(self):
+        """Sem gid de proposito: sem ele o Google devolve a PRIMEIRA aba, e a
+        aba de dados e a primeira da planilha. No painel financeiro o gid mudou
+        sozinho tres vezes num dia e derrubou a leitura toda vez."""
+        url = self._url("https://docs.google.com/spreadsheets/d/1AbC_def-123456789012/edit#gid=847362")
+        self.assertNotIn("gid", url)
+
+    def test_endereco_de_csv_pronto_passa_direto(self):
+        """Quem ja tem o link de publicacao na web nao pode ter o endereco
+        reescrito -- ele nao tem /spreadsheets/d/ e seria perdido."""
+        publicado = ("https://docs.google.com/spreadsheets/d/e/2PACX-1vQB1ygqIm/pub?output=csv")
+        self.assertEqual(self._url(publicado), publicado)
+
+    def test_id_solto_tambem_serve(self):
+        ident = "1Qfg95yYd-6J55drs5p4lMgGF6SVAV6vH"
+        self.assertEqual(
+            self._url(ident),
+            f"https://docs.google.com/spreadsheets/d/{ident}/export?format=csv")
+
+    def test_texto_que_nao_e_link_devolve_nada(self):
+        """Melhor a tela pedir o link do que sair buscando um endereco
+        inventado e mostrar erro de rede."""
+        for lixo in ("", "   ", None, "planilha do fechamento", "abc123"):
+            self.assertIsNone(self._url(lixo), f"aceitou {lixo!r}")
+
+
+class TesteLeituraDoChecklist(unittest.TestCase):
+    """Do CSV cru da planilha ate a tabela que a tela mostra."""
+
+    CABECALHO = "Ano,Mês,Competência,Processo,Status,Responsável,Concluído em,Observação"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["preparar_checklist_da_planilha", "checklist_da_competencia",
+             "normalizar_status_fechamento", "_texto_ou_vazio",
+             "resumo_do_fechamento", "pendentes_do_fechamento",
+             "competencias_da_planilha", "competencia_padrao",
+             "rotulo_competencia", "resolver_colunas_fluxo",
+             "_assinatura_coluna_fin", "_normalizar_coluna_fin", "_normalizar_texto"],
+            ["PROCESSOS_FECHAMENTO", "COL_FECH_ANO", "COL_FECH_MES",
+             "COL_FECH_PROCESSO", "COL_FECH_STATUS", "COL_FECH_QUEM",
+             "COL_FECH_QUANDO", "COL_FECH_OBS", "COLUNAS_FECHAMENTO",
+             "COLUNAS_VISIVEIS_FECHAMENTO", "STATUS_OK", "STATUS_PENDENTE",
+             "STATUS_EM_ANDAMENTO", "STATUS_NAO_SE_APLICA", "STATUS_FECHAMENTO",
+             "LIGACOES_NOME_COLUNA", "_ACENTOS_FIN"],
+        )
+
+    def _csv(self, linhas, cabecalho=None):
+        texto = (cabecalho or self.CABECALHO) + "\n" + "\n".join(linhas)
+        return pd.read_csv(io.StringIO(texto), dtype=str,
+                           keep_default_na=False, na_values=[""])
+
+    def _preparar(self, linhas, cabecalho=None):
+        return self.ns["preparar_checklist_da_planilha"](self._csv(linhas, cabecalho))
+
+    def _linhas_de_um_mes(self, ano, mes, statuses):
+        return [
+            f'{ano},{mes},{mes:02d}/{ano},"{nome}",{status},,,'
+            for nome, status in zip(self.ns["PROCESSOS_FECHAMENTO"], statuses)
+        ]
+
+    # -- leitura --------------------------------------------------------
+    def test_le_a_planilha_e_devolve_ano_e_mes_como_numero(self):
+        """Ano e Mes sao numeros separados de proposito, nunca uma data: o CSV
+        do Google entrega data em mes/dia/ano e isso ja trocou dia por mes em
+        187 mil lancamentos do fluxo. Numero nao tem idioma."""
+        limpo, faltando = self._preparar(
+            self._linhas_de_um_mes(2026, 7, ["OK"] * 8))
+        self.assertEqual(faltando, [])
+        self.assertEqual(len(limpo), 8)
+        self.assertEqual(limpo[self.ns["COL_FECH_ANO"]].iloc[0], 2026)
+        self.assertEqual(limpo[self.ns["COL_FECH_MES"]].iloc[0], 7)
+        self.assertTrue(pd.api.types.is_integer_dtype(limpo[self.ns["COL_FECH_MES"]]))
+
+    def test_coluna_com_escrita_diferente_ainda_e_encontrada(self):
+        """Mesmo resolvedor do fluxo: acento, caixa e espaco sobrando nao
+        podem derrubar a leitura. Quem edita a planilha e gente.
+
+        O que NAO e tolerado, de proposito: trocar a palavra. "Observacoes"
+        no plural nao casa com "Observacao", e a tela aponta a coluna pelo
+        nome -- melhor pedir o nome certo do que adivinhar qual coluna a
+        pessoa quis dizer e ler a errada em silencio."""
+        cabecalho = "ANO,mes,Competencia,PROCESSO, status ,Responsavel,Concluido em,Observacao"
+        limpo, faltando = self._preparar(
+            self._linhas_de_um_mes(2026, 7, ["OK"] * 8), cabecalho=cabecalho)
+        self.assertEqual(faltando, [], "a leitura ficou presa na escrita exata")
+        self.assertEqual(len(limpo), 8)
+
+    def test_coluna_que_falta_de_verdade_e_apontada_pelo_nome(self):
+        """Erro generico manda a pessoa adivinhar. O nome da coluna que falta
+        resolve em segundos."""
+        cabecalho = "Ano,Mês,Competência,Processo,Responsável,Concluído em,Observação"
+        linhas = [f'2026,7,07/2026,"{n}",,,' for n in self.ns["PROCESSOS_FECHAMENTO"]]
+        limpo, faltando = self._preparar(linhas, cabecalho=cabecalho)
+        self.assertIn(self.ns["COL_FECH_STATUS"], faltando)
+        self.assertTrue(limpo.empty)
+
+    def test_linha_sem_ano_ou_mes_e_descartada(self):
+        """Linha em branco no fim da planilha e o caso mais comum -- nao pode
+        virar uma competencia fantasma no seletor."""
+        linhas = self._linhas_de_um_mes(2026, 7, ["OK"] * 8)
+        linhas += [",,,,,,,", "ano,mes,,Contas a Pagar,OK,,,"]
+        limpo, _ = self._preparar(linhas)
+        self.assertEqual(len(limpo), 8)
+
+    def test_celula_vazia_nao_vira_o_texto_nan(self):
+        """Em 20/08 um ausente convertido para texto virou 'nan' e zerou o
+        mapa das tabelas do fluxo. O tratamento vem ANTES da conversao."""
+        limpo, _ = self._preparar(self._linhas_de_um_mes(2026, 7, ["OK"] * 8))
+        for coluna in (self.ns["COL_FECH_QUEM"], self.ns["COL_FECH_QUANDO"],
+                       self.ns["COL_FECH_OBS"]):
+            self.assertEqual(set(limpo[coluna]), {""}, f"{coluna} veio suja")
+
+    def test_planilha_vazia_nao_quebra(self):
+        limpo, faltando = self.ns["preparar_checklist_da_planilha"](None)
+        self.assertTrue(limpo.empty)
+        self.assertEqual(faltando, [])
+
+    # -- status ---------------------------------------------------------
+    def test_status_aceita_variacao_de_quem_digita(self):
+        normalizar = self.ns["normalizar_status_fechamento"]
+        self.assertEqual(normalizar("ok"), self.ns["STATUS_OK"])
+        self.assertEqual(normalizar(" OK "), self.ns["STATUS_OK"])
+        self.assertEqual(normalizar("Concluído"), self.ns["STATUS_OK"])
+        self.assertEqual(normalizar("N/A"), self.ns["STATUS_NAO_SE_APLICA"])
+        self.assertEqual(normalizar("n.a."), self.ns["STATUS_NAO_SE_APLICA"])
+        self.assertEqual(normalizar("não se aplica"), self.ns["STATUS_NAO_SE_APLICA"])
+        self.assertEqual(normalizar("Em Andamento"), self.ns["STATUS_EM_ANDAMENTO"])
+
+    def test_status_desconhecido_vira_pendente_e_nao_categoria_nova(self):
+        """Devolver o texto original faria a contagem ter tantas categorias
+        quanto erros de digitacao -- e 'okk' contaria como concluido em nenhum
+        lugar e apareceria na tela em todos."""
+        normalizar = self.ns["normalizar_status_fechamento"]
+        for esquisito in ("okk", "?", "talvez", "", None, float("nan")):
+            self.assertEqual(normalizar(esquisito), self.ns["STATUS_PENDENTE"],
+                             f"{esquisito!r} escapou")
+
+    # -- recorte por competencia ----------------------------------------
+    def test_processo_que_falta_no_mes_entra_pendente(self):
+        """A planilha pode nao ter todos os processos num mes (linha apagada,
+        mes recem-criado). A tela mostra os oito, e o que falta e pendente --
+        nunca some da lista."""
+        limpo, _ = self._preparar(self._linhas_de_um_mes(2026, 7, ["OK"] * 8)[:3])
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        self.assertEqual(list(tabela[self.ns["COL_FECH_PROCESSO"]]),
+                         self.ns["PROCESSOS_FECHAMENTO"])
+        self.assertEqual(tabela[self.ns["COL_FECH_STATUS"]].iloc[0], self.ns["STATUS_OK"])
+        self.assertEqual(tabela[self.ns["COL_FECH_STATUS"]].iloc[5],
+                         self.ns["STATUS_PENDENTE"])
+
+    def test_processo_a_mais_na_planilha_e_ignorado(self):
+        """Se a planilha ganhar um processo antes do painel, a tela nao pode
+        quebrar -- ele so nao aparece ate a lista daqui ser atualizada."""
+        linhas = self._linhas_de_um_mes(2026, 7, ["OK"] * 8)
+        linhas.append("2026,7,07/2026,Processo Novo Que O Painel Nao Conhece,OK,,,")
+        limpo, _ = self._preparar(linhas)
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        self.assertEqual(list(tabela[self.ns["COL_FECH_PROCESSO"]]),
+                         self.ns["PROCESSOS_FECHAMENTO"])
+
+    def test_ordem_e_a_oficial_nao_a_da_planilha(self):
+        """A ordem e a que a area segue no fechamento. Reordenar a planilha
+        por engano nao pode reordenar a tela."""
+        linhas = self._linhas_de_um_mes(2026, 7, ["OK"] * 8)[::-1]
+        limpo, _ = self._preparar(linhas)
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        self.assertEqual(list(tabela[self.ns["COL_FECH_PROCESSO"]]),
+                         self.ns["PROCESSOS_FECHAMENTO"])
+
+    def test_um_mes_nao_contamina_o_outro(self):
+        """Erro classico de filtro: julho marcado aparecendo em agosto."""
+        linhas = (self._linhas_de_um_mes(2026, 7, ["OK"] * 8)
+                  + self._linhas_de_um_mes(2026, 8, ["Pendente"] * 8))
+        limpo, _ = self._preparar(linhas)
+        julho = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        agosto = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-08", "M"))
+        self.assertTrue((julho[self.ns["COL_FECH_STATUS"]] == self.ns["STATUS_OK"]).all())
+        self.assertTrue((agosto[self.ns["COL_FECH_STATUS"]] == self.ns["STATUS_PENDENTE"]).all())
+
+    def test_mesmo_mes_e_ano_de_anos_diferentes_nao_se_misturam(self):
+        """Julho de 2026 e julho de 2027 sao meses diferentes -- filtrar so
+        pelo mes juntaria os dois."""
+        linhas = (self._linhas_de_um_mes(2026, 7, ["OK"] * 8)
+                  + self._linhas_de_um_mes(2027, 7, ["Pendente"] * 8))
+        limpo, _ = self._preparar(linhas)
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2027-07", "M"))
+        self.assertTrue((tabela[self.ns["COL_FECH_STATUS"]] == self.ns["STATUS_PENDENTE"]).all())
+
+    def test_linha_repetida_vale_a_de_baixo(self):
+        """Se a mesma linha aparecer duas vezes, vale a ultima: e a que a
+        pessoa acabou de preencher."""
+        linhas = self._linhas_de_um_mes(2026, 7, ["Pendente"] * 8)
+        linhas.append("2026,7,07/2026,Contas a Pagar,OK,,,")
+        limpo, _ = self._preparar(linhas)
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        self.assertEqual(tabela[self.ns["COL_FECH_STATUS"]].iloc[0], self.ns["STATUS_OK"])
+
+    def test_observacao_e_responsavel_chegam_na_tela(self):
+        linhas = ["2026,7,07/2026,Contas a Pagar,OK,Richards,05/08/2026,Lancado no dia 5"]
+        limpo, _ = self._preparar(linhas)
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        self.assertEqual(tabela[self.ns["COL_FECH_QUEM"]].iloc[0], "Richards")
+        self.assertEqual(tabela[self.ns["COL_FECH_QUANDO"]].iloc[0], "05/08/2026")
+        self.assertEqual(tabela[self.ns["COL_FECH_OBS"]].iloc[0], "Lancado no dia 5")
+
+    # -- contagem -------------------------------------------------------
+    def test_na_sai_da_conta_dos_dois_lados(self):
+        """Processo que nao se aplica ao mes nao e trabalho feito nem
+        pendencia. Conta-lo como feito inflaria o percentual; como pendente
+        prenderia o fechamento em algo que nao existe."""
+        statuses = ["OK", "OK", "N/A", "Pendente", "Pendente", "Pendente", "Pendente", "Pendente"]
+        limpo, _ = self._preparar(self._linhas_de_um_mes(2026, 7, statuses))
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        concluidos, aplicaveis, pct = self.ns["resumo_do_fechamento"](tabela)
+        self.assertEqual(concluidos, 2)
+        self.assertEqual(aplicaveis, 7, "o N/A tem de sair do denominador")
+        self.assertAlmostEqual(pct, 2 / 7 * 100, places=6)
+        faltando = self.ns["pendentes_do_fechamento"](tabela)
+        self.assertEqual(len(faltando), 5)
+        self.assertNotIn(self.ns["PROCESSOS_FECHAMENTO"][2], faltando)
+
+    def test_em_andamento_nao_conta_como_concluido(self):
+        statuses = ["Em andamento"] * 8
+        limpo, _ = self._preparar(self._linhas_de_um_mes(2026, 7, statuses))
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        concluidos, aplicaveis, pct = self.ns["resumo_do_fechamento"](tabela)
+        self.assertEqual((concluidos, aplicaveis), (0, 8))
+        self.assertEqual(pct, 0.0)
+        self.assertEqual(len(self.ns["pendentes_do_fechamento"](tabela)), 8)
+
+    def test_mes_inteiro_em_na_nao_divide_por_zero(self):
+        limpo, _ = self._preparar(self._linhas_de_um_mes(2026, 7, ["N/A"] * 8))
+        tabela = self.ns["checklist_da_competencia"](limpo, pd.Period("2026-07", "M"))
+        concluidos, aplicaveis, pct = self.ns["resumo_do_fechamento"](tabela)
+        self.assertEqual((concluidos, aplicaveis), (0, 0))
+        self.assertEqual(pct, 100.0)
+        self.assertEqual(self.ns["pendentes_do_fechamento"](tabela), [])
+
+    # -- seletor de competencia -----------------------------------------
+    def test_competencias_saem_da_planilha_da_mais_nova_para_tras(self):
+        linhas = (self._linhas_de_um_mes(2026, 7, ["OK"] * 8)
+                  + self._linhas_de_um_mes(2026, 9, ["OK"] * 8)
+                  + self._linhas_de_um_mes(2026, 8, ["OK"] * 8))
+        limpo, _ = self._preparar(linhas)
+        comps = self.ns["competencias_da_planilha"](limpo)
+        self.assertEqual(comps, [pd.Period("2026-09", "M"), pd.Period("2026-08", "M"),
+                                 pd.Period("2026-07", "M")])
+        self.assertEqual(self.ns["rotulo_competencia"](comps[-1]), "07/2026")
+
+    def test_tela_abre_no_mes_anterior(self):
+        """Fechamento se faz do mes que acabou: abrir no corrente faria a tela
+        aparecer zerada todo dia 1o."""
+        comps = [pd.Period(f"2026-{m:02d}", "M") for m in range(12, 0, -1)]
+        self.assertEqual(self.ns["competencia_padrao"](comps, date(2026, 8, 25)),
+                         pd.Period("2026-07", "M"))
+
+    def test_mes_anterior_ausente_cai_no_disponivel_mais_proximo(self):
+        """Planilha que so tem ate maio nao pode abrir vazia em agosto."""
+        comps = [pd.Period("2026-05", "M"), pd.Period("2026-04", "M")]
+        self.assertEqual(self.ns["competencia_padrao"](comps, date(2026, 8, 25)),
+                         pd.Period("2026-05", "M"))
+
+    def test_so_ha_meses_futuros_cai_no_mais_recente(self):
+        comps = [pd.Period("2027-03", "M"), pd.Period("2027-02", "M")]
+        self.assertEqual(self.ns["competencia_padrao"](comps, date(2026, 8, 25)),
+                         pd.Period("2027-03", "M"))
+
+    def test_planilha_sem_competencia_nenhuma_devolve_nada(self):
+        self.assertIsNone(self.ns["competencia_padrao"]([], date(2026, 8, 25)))
+
+    def test_virada_de_ano_anda_para_tras(self):
+        comps = [pd.Period("2026-01", "M"), pd.Period("2025-12", "M")]
+        self.assertEqual(self.ns["competencia_padrao"](comps, date(2026, 1, 3)),
+                         pd.Period("2025-12", "M"))
+
+
+class TesteTelaDoFechamento(unittest.TestCase):
+    """Travas da aba: o que a tela tem de dizer quando algo nao esta no lugar."""
+
+    def _bloco(self, tamanho=8000):
+        i = FONTE.index("Fechamento Mensal — lançamentos e conferências")
+        return FONTE[i:i + tamanho]
+
+    def test_sem_planilha_ligada_a_tela_explica_o_que_fazer(self):
+        """Mostrar oito linhas pendentes sem planilha ligada seria mentira: a
+        tela nao sabe se esta pendente ou se nao ha dado."""
+        bloco = self._bloco()
+        self.assertIn("if not _url_fech:", bloco)
+        self.assertIn("FECHAMENTO_CSV_URL", bloco)
+        self.assertIn("Qualquer pessoa com o link", bloco)
+
+    def test_erro_de_leitura_chega_na_tela_com_o_motivo(self):
+        """Licao de 20/08: erro guardado em variavel e nunca exibido custou
+        muitos turnos de palpite."""
+        bloco = self._bloco()
+        self.assertIn("_dados_fech, _erro_fech = carregar_planilha_fechamento(", bloco)
+        self.assertIn("st.error(_erro_fech)", bloco)
+
+    def test_a_aba_nao_finge_que_grava(self):
+        """A marcacao e na planilha. Um editor aqui daria a entender que o
+        painel salva -- e ele nao tem onde."""
+        bloco = self._bloco()
+        self.assertNotIn("st.data_editor", bloco,
+                         "a aba voltou a ter editor, mas o painel nao grava")
+        self.assertIn("A marcação é feita **na planilha**", bloco)
+
+    def test_a_leitura_da_planilha_tem_validade(self):
+        """Cache sem ttl deixaria a tela mostrando o fechamento de ontem."""
+        i = FONTE.index("def carregar_planilha_fechamento(")
+        cabecalho = FONTE[max(0, i - 200):i]
+        self.assertIn("@st.cache_data(ttl=", cabecalho)
+        self.assertIn("max_entries=", cabecalho)
 
 
 # ============================================================================

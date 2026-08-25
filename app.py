@@ -10733,6 +10733,243 @@ else:
 
 
 # ============================================================================
+# 7.9 CHECKLIST DE FECHAMENTO MENSAL — Controladoria
+# ============================================================================
+# Os lançamentos manuais e as conferências que precisam estar prontos antes de
+# fechar o mês. A ordem é a que a área usa, não alfabética nem por tamanho.
+#
+# A MARCAÇÃO É FEITA NA PLANILHA, não aqui: o painel não tem onde gravar (não
+# há banco, nem arquivo que sobreviva ao reinício do Streamlit Cloud), e uma
+# tabela de fechamento que esquece em silêncio é pior do que nenhuma. Então a
+# Controladoria mantém uma Planilha Google e o painel só LÊ, pelo mesmo
+# caminho já usado no fluxo de caixa: CSV pelo endereço de exportação.
+#
+# A lista abaixo tem de continuar igual à da planilha. Processo que existe
+# aqui e não lá aparece como Pendente; processo que existe lá e não aqui é
+# ignorado -- assim dá para acertar os dois lados sem a tela quebrar no meio.
+PROCESSOS_FECHAMENTO = [
+    "Contas a Pagar",
+    "Faturamento, CMV e TRF",
+    "Centro de Custos",
+    "FOPAG",
+    "Depreciação",
+    "ICMS",
+    "Rateio PJ",
+    "Rateio G&A Variável",
+]
+
+COL_FECH_ANO = "Ano"
+COL_FECH_MES = "Mês"
+COL_FECH_PROCESSO = "Processo"
+COL_FECH_STATUS = "Status"
+COL_FECH_QUEM = "Responsável"
+COL_FECH_QUANDO = "Concluído em"
+COL_FECH_OBS = "Observação"
+COLUNAS_FECHAMENTO = [COL_FECH_ANO, COL_FECH_MES, COL_FECH_PROCESSO,
+                      COL_FECH_STATUS, COL_FECH_QUEM, COL_FECH_QUANDO, COL_FECH_OBS]
+COLUNAS_VISIVEIS_FECHAMENTO = [COL_FECH_PROCESSO, COL_FECH_STATUS,
+                               COL_FECH_QUEM, COL_FECH_QUANDO, COL_FECH_OBS]
+
+STATUS_OK = "OK"
+STATUS_NAO_SE_APLICA = "N/A"
+STATUS_PENDENTE = "Pendente"
+STATUS_EM_ANDAMENTO = "Em andamento"
+STATUS_FECHAMENTO = [STATUS_PENDENTE, STATUS_EM_ANDAMENTO, STATUS_OK, STATUS_NAO_SE_APLICA]
+
+
+def rotulo_competencia(periodo):
+    """MM/AAAA — o formato de competência que a área usa. Mesmo formato da
+    coluna Competência da planilha, para a tela e a origem falarem igual."""
+    return f"{periodo.month:02d}/{periodo.year}"
+
+
+def url_csv_do_fechamento(link):
+    """Converte o que a pessoa colou no endereço que devolve CSV.
+
+    Aceita o link de compartilhamento comum da Planilha Google (o que sai do
+    botão Compartilhar), o link de publicação e o ID solto. Devolve None
+    quando não reconhece -- e aí a tela pede o link, em vez de tentar buscar
+    um endereço inventado.
+
+    Sem gid de propósito: `export?format=csv` sem gid devolve a PRIMEIRA aba,
+    e a aba de dados é a primeira da planilha. No outro painel o gid mudava
+    sozinho e derrubava a leitura três vezes no mesmo dia."""
+    texto = str(link or "").strip()
+    if not texto:
+        return None
+    # Já é um endereço de CSV (publicação na web): usa como está.
+    if "output=csv" in texto or "format=csv" in texto:
+        return texto
+    achado = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", texto)
+    if achado:
+        return f"https://docs.google.com/spreadsheets/d/{achado.group(1)}/export?format=csv"
+    # ID solto: só letras, números, hífen e sublinhado, e comprido o bastante
+    # para não confundir com alguém tendo colado outra coisa.
+    if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", texto):
+        return f"https://docs.google.com/spreadsheets/d/{texto}/export?format=csv"
+    return None
+
+
+def normalizar_status_fechamento(valor):
+    """Reduz o que veio escrito a um dos quatro status.
+
+    Aceita variação de caixa e de ACENTO porque o campo é digitado por gente:
+    "ok", "Ok", "Concluído", "N.A.", "não se aplica". Usa
+    _normalizar_coluna_fin, e não _normalizar_texto, justamente pelo acento --
+    este último só passa para maiúsculas, e "CONCLUÍDO" não bate com
+    "CONCLUIDO". O que não reconhece volta como Pendente, e não como o texto
+    original: senão a contagem teria tantas categorias quanto erros de
+    digitação."""
+    texto = _normalizar_coluna_fin(valor).replace(".", "").replace("-", " ")
+    texto = re.sub(r"\s+", " ", texto).strip()
+    if not texto or texto in {"nan", "none", "nat"}:
+        return STATUS_PENDENTE
+    if texto in {"ok", "concluido", "concluida", "feito", "pronto", "sim"}:
+        return STATUS_OK
+    if texto in {"n/a", "na", "n a", "nao se aplica", "nao aplica", "nao aplicavel"}:
+        return STATUS_NAO_SE_APLICA
+    if texto in {"em andamento", "andamento", "fazendo", "iniciado", "parcial"}:
+        return STATUS_EM_ANDAMENTO
+    return STATUS_PENDENTE
+
+
+def _texto_ou_vazio(valor):
+    """Célula em branco da planilha chega como NaN e vira o texto 'nan' se for
+    convertida sem cuidado -- foi o que zerou o mapa das tabelas do fluxo em
+    20/08. O tratamento do ausente vem ANTES da conversão."""
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    if pd.isna(valor):
+        return ""
+    return str(valor).strip()
+
+
+def preparar_checklist_da_planilha(df_bruto):
+    """Recebe o CSV cru da planilha e devolve (tabela limpa, faltando).
+
+    A tabela limpa tem Ano e Mês como número e o status já reduzido aos
+    quatro valores. `faltando` lista as colunas que não apareceram -- a tela
+    mostra o nome delas, em vez de um erro genérico."""
+    if df_bruto is None or len(df_bruto) == 0:
+        return pd.DataFrame(columns=COLUNAS_FECHAMENTO), []
+    df, faltando, _ = resolver_colunas_fluxo(df_bruto.copy(), COLUNAS_FECHAMENTO)
+    if faltando:
+        return pd.DataFrame(columns=COLUNAS_FECHAMENTO), faltando
+
+    limpo = df[COLUNAS_FECHAMENTO].copy()
+    limpo[COL_FECH_ANO] = pd.to_numeric(limpo[COL_FECH_ANO], errors="coerce")
+    limpo[COL_FECH_MES] = pd.to_numeric(limpo[COL_FECH_MES], errors="coerce")
+    limpo = limpo.dropna(subset=[COL_FECH_ANO, COL_FECH_MES])
+    limpo[COL_FECH_ANO] = limpo[COL_FECH_ANO].astype(int)
+    limpo[COL_FECH_MES] = limpo[COL_FECH_MES].astype(int)
+    limpo[COL_FECH_PROCESSO] = limpo[COL_FECH_PROCESSO].map(_texto_ou_vazio)
+    limpo[COL_FECH_STATUS] = limpo[COL_FECH_STATUS].map(normalizar_status_fechamento)
+    for coluna in (COL_FECH_QUEM, COL_FECH_QUANDO, COL_FECH_OBS):
+        limpo[coluna] = limpo[coluna].map(_texto_ou_vazio)
+    return limpo, []
+
+
+def competencias_da_planilha(df):
+    """Competências que existem na planilha, da mais recente para trás."""
+    if df is None or len(df) == 0:
+        return []
+    pares = df[[COL_FECH_ANO, COL_FECH_MES]].drop_duplicates()
+    periodos = [pd.Period(f"{int(a)}-{int(m):02d}", "M")
+                for a, m in zip(pares[COL_FECH_ANO], pares[COL_FECH_MES])
+                if 1 <= int(m) <= 12]
+    return sorted(set(periodos), reverse=True)
+
+
+def competencia_padrao(competencias, hoje):
+    """O mês que a tela abre: o ANTERIOR ao de hoje, porque fechamento se faz
+    do mês que acabou. Se ele não estiver na planilha, cai na competência
+    disponível mais próxima para trás; se nem isso, na mais recente."""
+    if not competencias:
+        return None
+    alvo = pd.Timestamp(hoje).to_period("M") - 1
+    if alvo in competencias:
+        return alvo
+    anteriores = [c for c in competencias if c <= alvo]
+    return anteriores[0] if anteriores else competencias[0]
+
+
+def checklist_da_competencia(df, competencia):
+    """As linhas de uma competência, com UM processo por linha da lista
+    oficial e na ordem oficial.
+
+    Processo que a planilha não tem para aquele mês entra como Pendente, e
+    processo que a planilha tem a mais é descartado. É o que permite acertar a
+    lista dos dois lados sem que a tela quebre no meio do caminho."""
+    base = pd.DataFrame(
+        [{COL_FECH_PROCESSO: nome, COL_FECH_STATUS: STATUS_PENDENTE,
+          COL_FECH_QUEM: "", COL_FECH_QUANDO: "", COL_FECH_OBS: ""}
+         for nome in PROCESSOS_FECHAMENTO],
+        columns=COLUNAS_VISIVEIS_FECHAMENTO,
+    )
+    if df is None or len(df) == 0 or competencia is None:
+        return base
+    do_mes = df[(df[COL_FECH_ANO] == competencia.year)
+                & (df[COL_FECH_MES] == competencia.month)]
+    if do_mes.empty:
+        return base
+    # keep="last": se a planilha tiver a mesma linha duas vezes, vale a de
+    # baixo -- é a que a pessoa acabou de preencher.
+    do_mes = do_mes.drop_duplicates(subset=[COL_FECH_PROCESSO], keep="last")
+    por_processo = do_mes.set_index(COL_FECH_PROCESSO)
+    for i, nome in enumerate(PROCESSOS_FECHAMENTO):
+        if nome not in por_processo.index:
+            continue
+        linha = por_processo.loc[nome]
+        for coluna in COLUNAS_VISIVEIS_FECHAMENTO[1:]:
+            base.loc[i, coluna] = linha.get(coluna, "")
+    return base
+
+
+def resumo_do_fechamento(df):
+    """(concluídos, aplicáveis, percentual).
+
+    N/A sai do DENOMINADOR, não entra como concluído: um processo que não se
+    aplica àquele mês não é trabalho feito nem trabalho pendente. Contá-lo
+    como feito inflaria o percentual; contá-lo como pendente prenderia o
+    fechamento em algo que não existe."""
+    if df is None or len(df) == 0:
+        return 0, 0, 0.0
+    status = df[COL_FECH_STATUS]
+    aplicaveis = int((status != STATUS_NAO_SE_APLICA).sum())
+    concluidos = int((status == STATUS_OK).sum())
+    if aplicaveis == 0:
+        return 0, 0, 100.0
+    return concluidos, aplicaveis, concluidos / aplicaveis * 100
+
+
+def pendentes_do_fechamento(df):
+    """Nomes do que ainda falta, na ordem oficial — é o que vai no aviso.
+    N/A não é pendência."""
+    if df is None or len(df) == 0:
+        return []
+    falta = df[~df[COL_FECH_STATUS].isin([STATUS_OK, STATUS_NAO_SE_APLICA])]
+    return list(falta[COL_FECH_PROCESSO])
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=2)
+def carregar_planilha_fechamento(url):
+    """Lê a planilha de fechamento. Devolve (tabela, erro) -- e o erro é TEXTO
+    para a tela, nunca uma exceção engolida: em 20/08 um erro guardado numa
+    variável e nunca exibido custou muitos turnos de palpite."""
+    if not url:
+        return pd.DataFrame(columns=COLUNAS_FECHAMENTO), "sem_url"
+    try:
+        bruto = pd.read_csv(url, dtype=str, keep_default_na=False, na_values=[""])
+    except Exception as erro:                                    # noqa: BLE001
+        return pd.DataFrame(columns=COLUNAS_FECHAMENTO), f"Não consegui ler a planilha: {erro}"
+    limpo, faltando = preparar_checklist_da_planilha(bruto)
+    if faltando:
+        return limpo, ("A planilha não tem estas colunas: " + ", ".join(faltando)
+                       + ". Confira se a aba de dados é a PRIMEIRA da planilha.")
+    return limpo, ""
+
+
+# ============================================================================
 # 8. ABAS
 # ============================================================================
 # ============================================================================
@@ -11828,6 +12065,7 @@ if departamento_ativo:
     ])
     tab6 = None
     tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
+    tab_fech = None  # Checklist de fechamento é operação da Controladoria
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -11836,12 +12074,13 @@ else:
         "🔬 Diagnóstico Executivo",
         "🔮 Previsões & Trends",
         "📤 Emitir Relatório",
+        "✅ Fechamento Mensal",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab_diag, tab4, tab5 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -14777,6 +15016,122 @@ with tab5:
             "linha da DRE, por loja, a partir do DIÁRIO) e **Lançamentos** (cópia filtrada da DIÁRIO). "
             "No modelo de MKT entra também a aba **MKT - 1% x Outras Despesas**."
         )
+
+# ---------------------------------------------------------------------------
+# ABA: FECHAMENTO MENSAL (checklist da Controladoria)
+# ---------------------------------------------------------------------------
+if tab_fech is not None:
+    with tab_fech:
+        st.markdown(
+            '<div class="section-title">✅ Fechamento Mensal — lançamentos e conferências</div>',
+            unsafe_allow_html=True,
+        )
+
+        _url_fech = url_csv_do_fechamento(_segredo("FECHAMENTO_CSV_URL"))
+        if not _url_fech:
+            # Sem planilha ligada não há o que mostrar -- e a tela explica o
+            # que fazer, em vez de exibir oito linhas pendentes que não
+            # significam nada.
+            st.info(
+                "**A planilha de controle ainda não está ligada.** Este checklist é mantido numa "
+                "Planilha Google pela Controladoria; o painel apenas lê e mostra. Para ligar: suba a "
+                "planilha para o Drive, converta para Planilha Google (Arquivo → Salvar como Planilha "
+                "Google), compartilhe como *Qualquer pessoa com o link → Leitor* e cole o link em "
+                "**FECHAMENTO_CSV_URL**, nos Secrets do app."
+            )
+            st.caption(
+                "Os processos acompanhados são: " + " · ".join(PROCESSOS_FECHAMENTO) + "."
+            )
+        else:
+            _dados_fech, _erro_fech = carregar_planilha_fechamento(_url_fech)
+            if _erro_fech and _erro_fech != "sem_url":
+                # O erro vai para a TELA com o motivo dentro. Guardar numa
+                # variável e não exibir foi o que transformou um defeito de uma
+                # linha em muitos turnos de palpite, em 20/08.
+                st.error(_erro_fech)
+                st.caption(
+                    "Confira se o compartilhamento está em *Qualquer pessoa com o link → Leitor* e se "
+                    "a aba de dados é a **primeira** da planilha — o painel lê a primeira aba."
+                )
+            elif _dados_fech.empty:
+                st.warning(
+                    "A planilha respondeu, mas veio sem nenhuma linha de competência válida. "
+                    "Confira as colunas **Ano** e **Mês**: elas têm de ser números."
+                )
+            else:
+                _competencias = competencias_da_planilha(_dados_fech)
+                _padrao = competencia_padrao(_competencias, datetime.now(FUSO_BR).date())
+                _indice_padrao = _competencias.index(_padrao) if _padrao in _competencias else 0
+
+                _col_comp, _col_kpi = st.columns([1, 2])
+                with _col_comp:
+                    _competencia_fech = st.selectbox(
+                        "Competência",
+                        _competencias,
+                        index=_indice_padrao,
+                        format_func=rotulo_competencia,
+                        key="fech_competencia",
+                        help="O mês que está sendo fechado. Abre no mês anterior ao de hoje.",
+                    )
+
+                _checklist = checklist_da_competencia(_dados_fech, _competencia_fech)
+                _concluidos, _aplicaveis, _pct = resumo_do_fechamento(_checklist)
+                _nao_aplica = len(_checklist) - _aplicaveis
+
+                with _col_kpi:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    st.progress(
+                        min(max(_pct / 100, 0.0), 1.0),
+                        text=(f"{_concluidos} de {_aplicaveis} concluídos ({_pct:.0f}%)".replace(".", ",")
+                              + (f" · {_nao_aplica} não se aplica" if _nao_aplica else "")),
+                    )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                def _cor_status_fechamento(linha):
+                    """Verde no que está OK, laranja no que está em andamento,
+                    vermelho no pendente e cinza no que não se aplica. A cor
+                    fica só na coluna de status: pintar a linha inteira faz a
+                    observação competir com o status pela atenção."""
+                    cores = {
+                        STATUS_OK: COLORS["positive"],
+                        STATUS_EM_ANDAMENTO: COLORS["warning"],
+                        STATUS_PENDENTE: COLORS["negative"],
+                        STATUS_NAO_SE_APLICA: COLORS["text_muted"],
+                    }
+                    return [
+                        (f"color: {cores.get(valor, COLORS['text'])}; font-weight: 600;"
+                         if coluna == COL_FECH_STATUS else "")
+                        for coluna, valor in zip(linha.index, linha)
+                    ]
+
+                st.dataframe(
+                    _checklist.style.apply(_cor_status_fechamento, axis=1),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                _faltando = pendentes_do_fechamento(_checklist)
+                if not _faltando:
+                    st.success(
+                        f"**Fechamento de {rotulo_competencia(_competencia_fech)} completo** — "
+                        f"{_concluidos} de {_aplicaveis} processos concluídos"
+                        + (f" e {_nao_aplica} sem aplicação no mês." if _nao_aplica else ".")
+                    )
+                else:
+                    st.warning(f"**Faltam {len(_faltando)}:** " + " · ".join(_faltando))
+
+                st.caption(
+                    "A marcação é feita **na planilha**, não aqui — o painel só lê e mostra, e "
+                    "recarrega a cada 5 minutos. **N/A** sai da conta: processo que não se aplica "
+                    "ao mês não é trabalho feito nem pendência, então não entra nem no numerador "
+                    "nem no denominador do percentual."
+                )
+                st.caption(
+                    "O ICMS tem robô próprio (lê o SPED, preenche a planilha de valores manuais e "
+                    "importa no portal) — marque OK depois que a importação for conferida, não "
+                    "quando o robô terminar de rodar."
+                )
 
 # ---------------------------------------------------------------------------
 # ABA 6: GESTÃO DE USUÁRIOS (somente administrador)
