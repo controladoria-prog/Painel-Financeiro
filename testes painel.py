@@ -69,6 +69,11 @@ DEPENDENCIAS = {
                                       "normalizar_status_fechamento", "_normalizar_coluna_fin"],
     "normalizar_status_fechamento": ["_normalizar_coluna_fin"],
     "chave_conta_orcamento": ["_normalizar_coluna_fin"],
+    "realizado_da_dre_por_aba": ["realizado_da_linha_dre", "chave_conta_orcamento",
+                                 "_normalizar_coluna_fin"],
+    "realizado_da_linha_dre": ["chave_conta_orcamento", "_normalizar_coluna_fin"],
+    "ler_meta_da_industria": ["chave_conta_orcamento", "_normalizar_nome_aba",
+                              "_normalizar_coluna_fin", "_normalizar_texto"],
 }
 CONSTANTES_DE_DEPENDENCIA_CONST = {
     # Constante que depende de outra constante para ser avaliada.
@@ -4726,11 +4731,11 @@ class TesteGeradorDoOrcamento2027(unittest.TestCase):
 
 
 
-class TesteTelaDoOrcamento2027(unittest.TestCase):
+class TesteTelaDoOrcamento(unittest.TestCase):
     """Travas da aba: o que a tela tem de fazer antes de mostrar numero."""
 
     def _bloco(self):
-        i = FONTE.index("Orçamento 2027 — por plano de contas")
+        i = FONTE.index("Orçamento — por plano de contas")
         return FONTE[i:FONTE.index("# ABA 6: GESTÃO DE USUÁRIOS", i)]
 
     def test_o_casamento_dos_nomes_vem_antes_dos_numeros(self):
@@ -4744,7 +4749,7 @@ class TesteTelaDoOrcamento2027(unittest.TestCase):
         posicao_editor = bloco.index("st.data_editor(")
         self.assertLess(posicao_conferencia, posicao_editor,
                         "o casamento tem de ser conferido antes da tabela de valores")
-        self.assertIn("não foram", bloco)
+        self.assertIn("não tiveram", bloco)
 
     def test_a_estrutura_e_lida_do_arquivo_e_nao_cravada(self):
         """A lista de planos muda de um ano para o outro. Cravada no codigo,
@@ -4754,6 +4759,39 @@ class TesteTelaDoOrcamento2027(unittest.TestCase):
         self.assertIn("st.file_uploader(", bloco)
         self.assertIn("ler_estrutura_orcamento(", bloco)
 
+    def test_o_ano_sai_do_modelo_e_nao_do_codigo(self):
+        """A aba serve para 2027, 2028 e os que vierem. Ano cravado faria a
+        tela buscar o realizado do ano errado, sem nada avisando."""
+        bloco = self._bloco()
+        self.assertIn("anos_do_modelo_orcamento(", bloco)
+        self.assertIn("_ano_base_orc", bloco)
+        self.assertNotIn('f"{m:02d}/2026"', bloco, "o ano voltou a ser cravado")
+
+    def test_o_realizado_das_linhas_da_dre_e_buscado(self):
+        """Elas nao estao no DIARIO -- ele tem plano de contas, nao linha. Sem
+        esta busca apareciam TODAS zeradas, e o zero se confundia com "nao teve
+        gasto". A cascata cai na aba DRE MENSAL para as linhas que a planilha
+        de Realizado guarda so la."""
+        bloco = self._bloco()
+        self.assertIn("realizado_da_dre_por_aba(", bloco)
+        self.assertIn("DRE MENSAL", bloco)
+        self.assertIn('"Origem"', bloco,
+                      "a tela precisa dizer de onde veio a base de cada linha")
+
+    def test_plano_sem_movimento_nao_e_tratado_como_erro(self):
+        """Plano sem lancamento no DIARIO simplesmente nao foi usado no ano. O
+        aviso vermelho tratava fato normal como defeito e mandava conferir nome
+        que estava certo."""
+        bloco = self._bloco()
+        # A frase quebra entre duas linhas do codigo -- procurar o texto
+        # inteiro falharia por formatacao, nao por defeito.
+        self.assertIn("não tiveram ", bloco)
+        self.assertIn("movimento no ano anterior", bloco)
+        self.assertNotIn("não foram encontrados no DIÁRIO", bloco,
+                         "o aviso de erro voltou para um fato normal")
+        self.assertIn("Valor fixo (ano)", bloco,
+                      "a tela precisa dizer COMO orcar uma conta de base zero")
+
     def test_a_tela_avisa_das_contas_sem_direcionador(self):
         """Conta em branco nao e conta zerada, e conta esquecida. Num
         orcamento de 219 planos ninguem percebe uma faltando olhando a tela."""
@@ -4761,6 +4799,298 @@ class TesteTelaDoOrcamento2027(unittest.TestCase):
         self.assertIn("resumo_da_proposta(", bloco)
         self.assertIn("SEM DIRECIONADOR", bloco)
         self.assertIn("Não orçar", bloco)
+
+
+
+class TesteRealizadoDaDreNoOrcamento(unittest.TestCase):
+    """A cascata que busca o realizado das LINHAS DA DRE.
+
+    Elas nao estao no DIARIO -- ele tem plano de contas, nao linha -- e
+    algumas nem estao nas abas de unidade: a planilha de Realizado as guarda
+    numa aba propria, a DRE MENSAL. Sem a cascata, essas linhas apareciam
+    TODAS zeradas na tela, e o zero se confundia com "nao teve gasto"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["realizado_da_dre_por_aba", "realizado_da_linha_dre",
+             "chave_conta_orcamento", "_normalizar_coluna_fin"],
+            ["_ACENTOS_FIN"],
+        )
+        cls.meses = ["01/2026", "02/2026"]
+
+    def _aba(self, pares):
+        return pd.DataFrame([{"Nome": n, "01/2026": v, "02/2026": v} for n, v in pares])
+
+    def test_acha_na_aba_da_unidade(self):
+        dados = {"LOJA A": (pd.DataFrame(), self._aba([("4.1 - CMV", -100)]))}
+        saida = self.ns["realizado_da_dre_por_aba"](
+            dados, pd.DataFrame(), ["4.1 - CMV"], self.meses)
+        valor, origem = saida[("LOJA A", self.ns["chave_conta_orcamento"]("4.1 - CMV"))]
+        self.assertAlmostEqual(valor, -200.0)
+        self.assertEqual(origem, "unidade")
+
+    def test_cai_na_dre_mensal_quando_a_unidade_nao_tem(self):
+        """O caso real: 1.1 - Vendas de mercadorias, ICMS, CMV e devolucoes
+        nao existem nas abas de unidade da planilha de Realizado."""
+        dados = {"LOJA A": (pd.DataFrame(), self._aba([("outra linha", -5)]))}
+        mensal = self._aba([("1.1 - Vendas de mercadorias", 900)])
+        saida = self.ns["realizado_da_dre_por_aba"](
+            dados, mensal, ["1.1 - Vendas de mercadorias"], self.meses)
+        valor, origem = saida[("LOJA A", self.ns["chave_conta_orcamento"]("1.1 - Vendas de mercadorias"))]
+        self.assertAlmostEqual(valor, 1800.0)
+        self.assertEqual(origem, "DRE MENSAL",
+                         "a origem precisa viajar junto: esse numero e da empresa "
+                         "inteira, nao daquela unidade")
+
+    def test_sem_movimento_em_lugar_nenhum_e_dito_como_tal(self):
+        """Zero por falta de lancamento e zero por nome que nao casa parecem
+        iguais na tela. A origem e o que separa os dois."""
+        dados = {"LOJA A": (pd.DataFrame(), self._aba([("outra", -5)]))}
+        saida = self.ns["realizado_da_dre_por_aba"](
+            dados, self._aba([("mais outra", 1)]), ["4.1 - CMV"], self.meses)
+        valor, origem = saida[("LOJA A", self.ns["chave_conta_orcamento"]("4.1 - CMV"))]
+        self.assertEqual(valor, 0.0)
+        self.assertEqual(origem, "sem movimento")
+
+    def test_a_unidade_tem_prioridade_sobre_a_dre_mensal(self):
+        """Quando a unidade tem o numero, ele vale: a DRE MENSAL e da empresa
+        inteira e sobrescreveria a unidade com um valor 21 vezes maior."""
+        dados = {"LOJA A": (pd.DataFrame(), self._aba([("4.1 - CMV", -100)]))}
+        mensal = self._aba([("4.1 - CMV", -99999)])
+        saida = self.ns["realizado_da_dre_por_aba"](
+            dados, mensal, ["4.1 - CMV"], self.meses)
+        valor, origem = saida[("LOJA A", self.ns["chave_conta_orcamento"]("4.1 - CMV"))]
+        self.assertAlmostEqual(valor, -200.0)
+        self.assertEqual(origem, "unidade")
+
+
+
+class TesteDirecionadorPorLoja(unittest.TestCase):
+    """A camada de excecao por loja (25/08/2026).
+
+    Sao 219 planos x 21 lojas -- quase 4.600 decisoes. Ninguem preenche isso
+    numa tabela, entao a regra e definida uma vez e sobreposta so onde a loja
+    foge dela. A tela entrega as contas que merecem a segunda olhada."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["direcionador_efetivo", "peso_da_loja_no_total",
+             "desvio_do_padrao_da_loja", "contas_fora_do_padrao",
+             "resumo_das_excecoes"])
+
+    def test_a_excecao_da_loja_manda_sobre_a_regra_geral(self):
+        efetivo = self.ns["direcionador_efetivo"]
+        geral = {"Aluguel": ("Inflação (IPCA)", 0.0)}
+        excecoes = {("LOJA A", "Aluguel"): ("Crescimento %", 0.15)}
+        self.assertEqual(efetivo("Aluguel", "LOJA A", geral, excecoes),
+                         ("Crescimento %", 0.15, "exceção da loja"))
+        self.assertEqual(efetivo("Aluguel", "LOJA B", geral, excecoes),
+                         ("Inflação (IPCA)", 0.0, "regra geral"))
+
+    def test_excecao_vazia_faz_a_conta_voltar_a_herdar(self):
+        """E assim que se desfaz uma excecao: apagar o direcionador da loja."""
+        efetivo = self.ns["direcionador_efetivo"]
+        geral = {"Aluguel": ("Inflação (IPCA)", 0.0)}
+        self.assertEqual(efetivo("Aluguel", "LOJA A", geral, {("LOJA A", "Aluguel"): ("", 0.0)}),
+                         ("Inflação (IPCA)", 0.0, "regra geral"))
+
+    def test_a_origem_viaja_junto(self):
+        """Na reuniao a primeira pergunta e "por que esta loja esta
+        diferente" -- a resposta tem de estar na tela."""
+        efetivo = self.ns["direcionador_efetivo"]
+        self.assertEqual(efetivo("X", "LOJA A", {}, {})[2], "sem direcionador")
+
+    def test_peso_da_loja_usa_valor_absoluto(self):
+        """Receita e positiva e despesa e negativa. Somar sem modulo daria um
+        total perto de zero e faria qualquer loja parecer ter peso infinito."""
+        pesos = self.ns["peso_da_loja_no_total"](
+            {"A": {"receita": 1000, "despesa": -900},
+             "B": {"receita": 100, "despesa": -0}})
+        self.assertAlmostEqual(pesos["A"], 1900 / 2000, places=6)
+        self.assertAlmostEqual(pesos["B"], 100 / 2000, places=6)
+        self.assertAlmostEqual(sum(pesos.values()), 1.0, places=9)
+
+    def test_desvio_compara_a_conta_com_o_padrao_da_loja(self):
+        """A loja que responde por 8% da empresa deveria responder por perto
+        de 8% de cada conta. 30% numa conta e onde a regra geral nao serve."""
+        desvio = self.ns["desvio_do_padrao_da_loja"]
+        self.assertAlmostEqual(desvio(30, 100, 0.08), 0.30 / 0.08 - 1, places=6)
+        self.assertAlmostEqual(desvio(8, 100, 0.08), 0.0, places=9)
+        self.assertAlmostEqual(desvio(2, 100, 0.08), 0.02 / 0.08 - 1, places=6)
+
+    def test_sem_como_comparar_devolve_nada_e_nao_um_numero(self):
+        """Inventar um numero aqui encheria o topo da lista de contas que nao
+        significam nada -- exatamente as que a tela existe para esconder."""
+        desvio = self.ns["desvio_do_padrao_da_loja"]
+        self.assertIsNone(desvio(10, 0, 0.08))
+        self.assertIsNone(desvio(10, 100, 0))
+
+    def test_a_lista_vem_ordenada_pelo_tamanho_do_desvio(self):
+        """O objetivo e entregar as poucas contas que merecem uma segunda
+        olhada, nao devolver as 219 numa ordem qualquer."""
+        # A ordem de ENTRADA e proposital: o desvio maior vem por ULTIMO no
+        # dicionario. Com os dados ja na ordem certa, tirar o sorted nao muda
+        # nada e o teste nao provaria a ordenacao.
+        fora = self.ns["contas_fora_do_padrao"](
+            {"desvio pequeno": 2, "no padrao": 10, "desvio enorme": 90},
+            {"desvio pequeno": 100, "no padrao": 100, "desvio enorme": 100},
+            0.10, minimo=0.5)
+        self.assertEqual([a["conta"] for a in fora], ["desvio enorme", "desvio pequeno"],
+                         "a lista tem de vir do maior desvio para o menor")
+        self.assertNotIn("no padrao", [a["conta"] for a in fora])
+        self.assertGreater(abs(fora[0]["desvio"]), abs(fora[1]["desvio"]))
+
+    def test_o_corte_controla_o_tamanho_da_lista(self):
+        """Sem corte a lista viria com tudo e nao pouparia trabalho nenhum."""
+        bases = {f"c{i}": v for i, v in enumerate((11, 12, 30, 5))}
+        empresa = {f"c{i}": 100 for i in range(4)}
+        self.assertEqual(len(self.ns["contas_fora_do_padrao"](bases, empresa, 0.10, 0.5)), 2)
+        self.assertEqual(len(self.ns["contas_fora_do_padrao"](bases, empresa, 0.10, 3.0)), 0)
+
+    def test_resumo_conta_so_as_excecoes_de_verdade(self):
+        """Direcionador vazio nao e excecao: e heranca da regra geral."""
+        self.assertEqual(self.ns["resumo_das_excecoes"]({
+            ("A", "x"): ("Crescimento %", 0.1),
+            ("A", "y"): ("", 0.0),
+            ("B", "z"): ("Repetir 2026", 0.0)}), (2, 2))
+        self.assertEqual(self.ns["resumo_das_excecoes"]({}), (0, 0))
+
+
+class TesteTelaDasExcecoesPorLoja(unittest.TestCase):
+    """Travas da tela de excecoes."""
+
+    def _bloco(self):
+        i = FONTE.index("🏪 Exceções por loja")
+        return FONTE[i:FONTE.index("# ---- Resumo do que já foi decidido", i)]
+
+    def test_a_tela_mostra_o_que_esta_valendo_e_de_onde_vem(self):
+        bloco = self._bloco()
+        self.assertIn("direcionador_efetivo(", bloco)
+        self.assertIn("Valendo hoje", bloco)
+
+    def test_a_lista_e_so_do_que_foge_do_padrao(self):
+        """Listar as 219 contas de cada loja nao pouparia trabalho nenhum."""
+        bloco = self._bloco()
+        self.assertIn("contas_fora_do_padrao(", bloco)
+        self.assertIn("peso_da_loja_no_total(", bloco)
+
+    def test_a_proposta_e_calculada_UMA_vez_e_reusada(self):
+        """A memoria de calculo, o confronto com a meta e o gerador do Excel
+        precisam do MESMO numero. Calcular em tres lugares seriam tres chances
+        de eles discordarem -- e a discordancia entre a tela e o arquivo so
+        apareceria depois de o Excel ja estar colado."""
+        i = FONTE.index("_proposta_por_loja, _memoria_itens = {}, []")
+        trecho = FONTE[i:i + 3000]
+        self.assertIn("direcionador_efetivo(", trecho,
+                      "o calculo unico tem de respeitar a excecao da loja")
+        self.assertIn("_excecoes_orc", trecho)
+        # O gerador NAO pode refazer a conta: ele le a proposta pronta.
+        j = FONTE.index("Gerar a planilha preenchida")
+        gerador = FONTE[j:FONTE.index("gerar_excel_orcamento(", j)]
+        self.assertIn("_proposta_por_loja.get(", gerador)
+        self.assertNotIn("aplicar_direcionador_2027(", gerador,
+                         "o gerador voltou a refazer a conta por conta propria")
+
+
+
+class TesteConfrontoComAMeta(unittest.TestCase):
+    """A comparacao entre a proposta do painel e a meta da industria, que
+    chega por loja e por mes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["ler_meta_da_industria", "confrontar_com_a_meta", "memoria_de_calculo",
+             "chave_conta_orcamento", "_normalizar_nome_aba", "_normalizar_coluna_fin",
+             "_normalizar_texto"],
+            ["_ACENTOS_FIN"])
+
+    def _planilha_meta(self, linhas, cabecalho=None):
+        colunas = cabecalho or (["Loja", "Conta"] + [f"{m:02d}/2027" for m in range(1, 13)])
+        caminho = "/tmp/meta_teste.xlsx"
+        pd.DataFrame(linhas, columns=colunas).to_excel(caminho, index=False)
+        return caminho
+
+    def test_le_a_planilha_padrao(self):
+        arq = self._planilha_meta([["LJ MARECHAL 6039", "1.1 - Vendas de mercadorias"] + [1000] * 12])
+        meta, meses, erro = self.ns["ler_meta_da_industria"](arq)
+        self.assertEqual(erro, "")
+        self.assertEqual(len(meses), 12)
+        self.assertEqual(len(meta), 1)
+        self.assertEqual(meta["chave_loja"].iloc[0],
+                         self.ns["_normalizar_nome_aba"]("LJ MARECHAL 6039"))
+
+    def test_planilha_sem_as_colunas_obrigatorias_e_apontada(self):
+        """Erro generico manda a pessoa adivinhar; o nome da coluna resolve em
+        segundos."""
+        arq = self._planilha_meta([["x", 1]], cabecalho=["Unidade", "Valor"])
+        _meta, _meses, erro = self.ns["ler_meta_da_industria"](arq)
+        self.assertIn("Loja", erro)
+        self.assertIn("Conta", erro)
+
+    def test_mes_fora_do_formato_e_apontado(self):
+        """Os meses sao TEXTO 01/2027. Data viraria mes/dia/ano na exportacao
+        e trocaria janeiro por outra coisa."""
+        arq = self._planilha_meta([["LOJA", "conta", 1]],
+                                  cabecalho=["Loja", "Conta", "Janeiro"])
+        _meta, _meses, erro = self.ns["ler_meta_da_industria"](arq)
+        self.assertIn("01/2027", erro)
+
+    def test_confronto_soma_o_ano_e_calcula_a_diferenca(self):
+        arq = self._planilha_meta([["LJ MARECHAL 6039", "1.1 - Vendas de mercadorias"] + [1000] * 12])
+        meta, meses, _ = self.ns["ler_meta_da_industria"](arq)
+        chave = (self.ns["_normalizar_nome_aba"]("LJ MARECHAL 6039"),
+                 self.ns["chave_conta_orcamento"]("1.1 - Vendas de mercadorias"))
+        confronto, so_meta, so_prop = self.ns["confrontar_com_a_meta"](
+            {chave: [1100.0] * 12}, meta, meses)
+        self.assertEqual(len(confronto), 1)
+        self.assertAlmostEqual(confronto["Proposta do painel"].iloc[0], 13200.0)
+        self.assertAlmostEqual(confronto["Meta da indústria"].iloc[0], 12000.0)
+        self.assertAlmostEqual(confronto["Diferença"].iloc[0], 1200.0)
+        self.assertAlmostEqual(confronto["Diferença %"].iloc[0], 0.10, places=6)
+        self.assertEqual((so_meta, so_prop), ([], []))
+
+    def test_o_que_ficou_de_um_lado_so_e_devolvido(self):
+        """Quase sempre e nome escrito diferente, nao meta faltando. Sem esta
+        lista a pessoa compara um subconjunto achando que comparou tudo."""
+        arq = self._planilha_meta([["LOJA QUE NAO EXISTE", "conta"] + [10] * 12])
+        meta, meses, _ = self.ns["ler_meta_da_industria"](arq)
+        confronto, so_meta, so_prop = self.ns["confrontar_com_a_meta"](
+            {("outra", "outra conta"): [1.0] * 12}, meta, meses)
+        self.assertTrue(confronto.empty)
+        self.assertEqual(len(so_meta), 1)
+        self.assertEqual(len(so_prop), 1)
+
+    def test_meta_zerada_nao_vira_divisao_por_zero(self):
+        arq = self._planilha_meta([["LJ A", "conta"] + [0] * 12])
+        meta, meses, _ = self.ns["ler_meta_da_industria"](arq)
+        chave = (self.ns["_normalizar_nome_aba"]("LJ A"),
+                 self.ns["chave_conta_orcamento"]("conta"))
+        confronto, _sm, _sp = self.ns["confrontar_com_a_meta"](
+            {chave: [100.0] * 12}, meta, meses)
+        self.assertIsNone(confronto["Diferença %"].iloc[0])
+
+    def test_a_memoria_diz_de_onde_cada_numero_saiu(self):
+        """"O painel calculou" nao e resposta quando um departamento questiona
+        o valor dele. A defesa tem de caber numa linha."""
+        tabela = self.ns["memoria_de_calculo"]([{
+            "loja": "LJ A", "linha_dre": "6 - Despesas", "conta": "Aluguel",
+            "base": 1000.0, "origem_base": "DIÁRIO", "direcionador": "Inflação (IPCA)",
+            "parametro": 0.0, "origem_direcionador": "regra geral", "proposto": 1042.5,
+        }])
+        linha = tabela.iloc[0]
+        self.assertEqual(linha["Origem da base"], "DIÁRIO")
+        self.assertEqual(linha["Vem de"], "regra geral")
+        self.assertAlmostEqual(linha["Variação %"], 0.0425, places=6)
+
+    def test_memoria_com_base_zero_nao_inventa_variacao(self):
+        """Conta que nao teve movimento no ano anterior: dividir por zero daria
+        infinito, e a tela mostraria isso como se fosse informacao."""
+        tabela = self.ns["memoria_de_calculo"]([{
+            "loja": "LJ A", "conta": "Nova", "base": 0.0, "proposto": 5000.0}])
+        self.assertIsNone(tabela.iloc[0]["Variação %"])
 
 
 # ============================================================================

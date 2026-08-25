@@ -11791,6 +11791,221 @@ def realizado_da_linha_dre(df_real_aba, nome_linha, colunas_meses_fechados):
     return total
 
 
+def anos_do_modelo_orcamento(arquivo):
+    """(ano do orçamento, colunas de mês) lidos do CABEÇALHO do modelo.
+
+    O ano sai do arquivo e não do código: esta aba vai ser usada em 2027, 2028
+    e nos que vierem, e um ano cravado aqui faria a tela buscar o realizado do
+    ano errado sem nada na tela avisando."""
+    from openpyxl import load_workbook
+
+    livro = load_workbook(arquivo, data_only=False, read_only=True)
+    try:
+        ws = livro[livro.sheetnames[0]]
+        cabecalho = [ws.cell(row=1, column=c).value for c in range(2, 15)]
+    finally:
+        livro.close()
+    meses = [str(c).strip() for c in cabecalho
+             if c and re.fullmatch(r"\d{2}/\d{4}", str(c).strip())]
+    if not meses:
+        return None, []
+    ano = int(meses[0].split("/")[1])
+    return ano, meses
+
+
+def realizado_da_dre_por_aba(dados_por_aba, aba_dre_mensal, nomes, colunas_meses):
+    """Realizado dos meses fechados para as linhas da DRE, por aba.
+
+    Estas linhas NÃO vêm do DIÁRIO -- elas existem só na DRE. E algumas delas
+    (vendas de mercadorias, ICMS, CMV, devoluções) nem estão nas abas de
+    unidade: a planilha de Realizado as puxa de uma aba própria, a DRE MENSAL.
+    Por isso a busca é em cascata: primeiro a aba da unidade, e o que vier
+    zerado é procurado na DRE MENSAL.
+
+    Devolve {(aba, chave_do_nome): (valor, origem)} -- a ORIGEM viaja junto
+    porque um número de origem diferente precisa ser identificado na tela: o
+    que vem da DRE MENSAL é da empresa inteira, não daquela unidade."""
+    saida = {}
+    for aba, (_df_o, df_r) in dados_por_aba.items():
+        for nome in nomes:
+            valor = realizado_da_linha_dre(df_r, nome, colunas_meses)
+            origem = "unidade"
+            if valor == 0 and aba_dre_mensal is not None and not aba_dre_mensal.empty:
+                valor = realizado_da_linha_dre(aba_dre_mensal, nome, colunas_meses)
+                origem = "DRE MENSAL" if valor else "sem movimento"
+            saida[(aba, chave_conta_orcamento(nome))] = (valor, origem)
+    return saida
+
+
+def direcionador_efetivo(nome_conta, aba, escolhas_gerais, excecoes_por_loja):
+    """(direcionador, parâmetro, origem) valendo para aquela conta naquela loja.
+
+    Camadas: a EXCEÇÃO da loja manda; sem exceção, vale a regra GERAL. É o
+    único desenho que cabe na prática -- são 219 planos por 21 lojas, quase
+    4.600 decisões, e ninguém preenche isso numa tabela. Define-se a regra uma
+    vez e sobrepõe-se só onde a loja foge dela.
+
+    A ORIGEM viaja junto porque, na hora de defender o número numa reunião, a
+    primeira pergunta é "por que esta loja está diferente" -- e a resposta tem
+    de estar na tela, não na memória de quem montou."""
+    excecao = (excecoes_por_loja or {}).get((aba, nome_conta))
+    if excecao and excecao[0]:
+        return excecao[0], excecao[1], "exceção da loja"
+    geral = (escolhas_gerais or {}).get(nome_conta)
+    if geral and geral[0]:
+        return geral[0], geral[1], "regra geral"
+    return "", 0.0, "sem direcionador"
+
+
+def peso_da_loja_no_total(bases_por_loja):
+    """{loja: quanto ela representa do total} — a participação de referência.
+
+    É contra este número que se mede se uma conta está fora do padrão da loja.
+    Usa o valor ABSOLUTO: receita é positiva e despesa é negativa, e somar os
+    dois sem módulo daria um total perto de zero, fazendo qualquer loja
+    parecer ter peso infinito."""
+    totais = {loja: sum(abs(float(v or 0)) for v in contas.values())
+              for loja, contas in (bases_por_loja or {}).items()}
+    geral = sum(totais.values())
+    if geral <= 0:
+        return {loja: 0.0 for loja in totais}
+    return {loja: valor / geral for loja, valor in totais.items()}
+
+
+def desvio_do_padrao_da_loja(base_loja, base_empresa, peso_esperado):
+    """Quanto esta conta foge do padrão daquela loja, em proporção.
+
+    A loja que responde por 8% da empresa deveria responder por perto de 8% de
+    cada conta. Uma conta em que ela responde por 30% é onde a regra geral
+    provavelmente não serve -- e é exatamente essa a lista que a pessoa
+    precisa ver, em vez de percorrer 219 linhas procurando.
+
+    Devolve None quando não há como comparar (conta zerada na empresa, ou loja
+    sem peso): inventar um número aqui encheria o topo da lista de contas que
+    não significam nada."""
+    if not base_empresa or not peso_esperado:
+        return None
+    participacao = abs(float(base_loja or 0)) / abs(float(base_empresa))
+    return participacao / peso_esperado - 1
+
+
+def contas_fora_do_padrao(bases_da_loja, bases_da_empresa, peso_esperado, minimo=0.5):
+    """As contas daquela loja ordenadas pelo quanto fogem do padrão dela.
+
+    `minimo` é o corte: 0,5 significa "pesa 50% mais (ou menos) do que devia".
+    Sem corte, a lista viria com as 219 contas e não pouparia trabalho nenhum
+    -- o objetivo é entregar as poucas que merecem uma segunda olhada."""
+    achados = []
+    for conta, base_loja in (bases_da_loja or {}).items():
+        desvio = desvio_do_padrao_da_loja(
+            base_loja, (bases_da_empresa or {}).get(conta, 0.0), peso_esperado)
+        if desvio is None or abs(desvio) < minimo:
+            continue
+        achados.append({"conta": conta, "base_loja": base_loja,
+                        "base_empresa": bases_da_empresa.get(conta, 0.0),
+                        "desvio": desvio})
+    return sorted(achados, key=lambda a: abs(a["desvio"]), reverse=True)
+
+
+def resumo_das_excecoes(excecoes_por_loja):
+    """(quantas exceções, quantas lojas com exceção) — para a tela dizer, sem
+    o usuário procurar, se ele já sobrepôs alguma coisa e onde."""
+    validas = [(aba, conta) for (aba, conta), escolha in (excecoes_por_loja or {}).items()
+               if escolha and escolha[0]]
+    return len(validas), len({aba for aba, _conta in validas})
+
+
+def ler_meta_da_industria(arquivo):
+    """Lê a planilha padrão da meta e devolve (tabela, colunas de mês, erro).
+
+    A tabela vem com chaves normalizadas de loja e conta, porque o casamento é
+    por NOME e a indústria escreve à mão: "LJ PVH1" onde a nossa planilha
+    escreve "LJ PVH1 11927" faria a linha sumir da comparação sem erro nenhum
+    na tela -- e sumir em silêncio é pior do que falhar alto."""
+    try:
+        bruto = pd.read_excel(arquivo, sheet_name=0)
+    except Exception as erro:                                    # noqa: BLE001
+        return pd.DataFrame(), [], f"Não consegui ler a planilha da meta: {erro}"
+    bruto.columns = [str(c).strip() for c in bruto.columns]
+    if "Loja" not in bruto.columns or "Conta" not in bruto.columns:
+        return pd.DataFrame(), [], (
+            "A planilha da meta precisa ter as colunas **Loja** e **Conta**. "
+            "Use o modelo padrão que o painel gera.")
+    meses = [c for c in bruto.columns if re.fullmatch(r"\d{2}/\d{4}", str(c).strip())]
+    if not meses:
+        return pd.DataFrame(), [], (
+            "Não achei coluna de mês no formato 01/2027. Confira o cabeçalho: "
+            "os meses são TEXTO, não data.")
+    limpo = bruto[["Loja", "Conta"] + meses].copy()
+    limpo["chave_loja"] = limpo["Loja"].map(_normalizar_nome_aba)
+    limpo["chave_conta"] = limpo["Conta"].map(chave_conta_orcamento)
+    for coluna in meses:
+        limpo[coluna] = pd.to_numeric(limpo[coluna], errors="coerce").fillna(0.0)
+    return limpo, meses, ""
+
+
+def confrontar_com_a_meta(proposta_por_loja, meta, meses_meta):
+    """Compara a proposta do painel com a meta da indústria, loja a loja.
+
+    `proposta_por_loja` é {(loja, chave_conta): [12 valores]}.
+
+    Devolve uma linha por (loja, conta) presente NOS DOIS lados, mais as listas
+    do que ficou só de um lado. O que sobra de um lado só é o que merece
+    atenção primeiro: quase sempre é nome escrito diferente, não meta
+    faltando -- e sem essa lista a pessoa compara um subconjunto achando que
+    comparou tudo."""
+    linhas, so_na_meta, so_na_proposta = [], [], []
+    vistos = set()
+    for _, linha_meta in meta.iterrows():
+        chave = (linha_meta["chave_loja"], linha_meta["chave_conta"])
+        vistos.add(chave)
+        valores_meta = [float(linha_meta[c]) for c in meses_meta]
+        valores_prop = proposta_por_loja.get(chave)
+        if valores_prop is None:
+            so_na_meta.append((linha_meta["Loja"], linha_meta["Conta"]))
+            continue
+        total_meta = sum(valores_meta)
+        total_prop = sum(v or 0 for v in valores_prop)
+        linhas.append({
+            "Loja": linha_meta["Loja"],
+            "Conta": linha_meta["Conta"],
+            "Proposta do painel": total_prop,
+            "Meta da indústria": total_meta,
+            "Diferença": total_prop - total_meta,
+            "Diferença %": ((total_prop / total_meta - 1) if total_meta else None),
+            "_meses_proposta": [v or 0 for v in valores_prop],
+            "_meses_meta": valores_meta,
+        })
+    for chave in proposta_por_loja:
+        if chave not in vistos:
+            so_na_proposta.append(chave)
+    return pd.DataFrame(linhas), so_na_meta, so_na_proposta
+
+
+def memoria_de_calculo(itens):
+    """A tabela que se leva para a reunião.
+
+    Cada linha diz de onde o número saiu: base do ano anterior, de qual fonte
+    ela veio, qual direcionador foi aplicado, com que parâmetro, se aquilo é
+    regra geral ou exceção da loja, e quanto isso muda contra o ano anterior.
+
+    Existe porque "o painel calculou" não é resposta quando um departamento
+    questiona o valor dele. A defesa tem de caber numa linha."""
+    return pd.DataFrame([{
+        "Loja": i.get("loja", ""),
+        "Linha DRE": i.get("linha_dre", ""),
+        "Conta": i.get("conta", ""),
+        "Base do ano anterior": i.get("base", 0.0),
+        "Origem da base": i.get("origem_base", ""),
+        "Direcionador": i.get("direcionador", ""),
+        "Parâmetro": i.get("parametro", 0.0),
+        "Vem de": i.get("origem_direcionador", ""),
+        "Proposto": i.get("proposto", 0.0),
+        "Variação %": ((i.get("proposto", 0.0) / i["base"] - 1)
+                       if i.get("base") else None),
+    } for i in itens])
+
+
 # ============================================================================
 # 8. ABAS
 # ============================================================================
@@ -12888,7 +13103,7 @@ if departamento_ativo:
     tab6 = None
     tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
     tab_fech = None  # Checklist de fechamento é operação da Controladoria
-    tab_orc = None   # Orçamento 2027 é montado pela Controladoria, visão inteira
+    tab_orc = None   # O orçamento é montado pela Controladoria, visão inteira
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -12898,7 +13113,7 @@ else:
         "🔮 Previsões & Trends",
         "📤 Emitir Relatório",
         "✅ Fechamento Mensal",
-        "🎯 Orçamento 2027",
+        "🎯 Orçamento",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
@@ -16077,14 +16292,14 @@ if tab_fech is not None:
 if tab_orc is not None:
     with tab_orc:
         st.markdown(
-            '<div class="section-title">🎯 Orçamento 2027 — por plano de contas</div>',
+            '<div class="section-title">🎯 Orçamento — por plano de contas</div>',
             unsafe_allow_html=True,
         )
         st.caption(
-            "O orçamento de 2026 foi lançado no nível da **linha da DRE**. O de 2027 desce ao "
-            "**plano de contas**: cada plano tem a sua linha, e a soma dos planos fecha a linha. "
-            "Esta aba propõe um valor por conta a partir do que 2026 realizou, e devolve a sua "
-            "planilha modelo preenchida — as fórmulas dela ficam intactas."
+            "Propõe um valor **por plano de contas** a partir do que o ano anterior realizou, e "
+            "devolve a sua planilha modelo preenchida — as fórmulas dela ficam intactas. O ano "
+            "não está fixo no código: sai das colunas do modelo que você enviar, então a mesma "
+            "aba serve para 2027, 2028 e os que vierem."
         )
 
         _modelo_2027 = st.file_uploader(
@@ -16143,13 +16358,17 @@ if tab_orc is not None:
                 _casaram_orc, _faltaram_orc = conferir_casamento_dos_planos(
                     _estrutura_orc, _diario_orc)
                 if _faltaram_orc:
-                    st.warning(
-                        f"**{len(_faltaram_orc)} de {len(_planos_orc)} planos de contas não foram "
-                        "encontrados no DIÁRIO.** Eles vão aparecer com base zero — o que é "
-                        "diferente de não terem tido gasto. Confira se o nome está escrito igual "
-                        "nos dois lugares antes de orçar."
+                    # NAO e erro: plano sem lancamento no DIARIO simplesmente
+                    # nao foi usado no ano. O aviso vermelho tratava isso como
+                    # defeito e mandava conferir nome que estava certo.
+                    st.info(
+                        f"**{len(_faltaram_orc)} de {len(_planos_orc)} planos de contas não tiveram "
+                        "movimento no ano anterior** — a base deles é zero, e por isso os "
+                        "direcionadores que multiplicam a base (IPCA, crescimento) devolvem zero "
+                        "também. Para orçar um deles, use **Valor fixo (ano)** ou **% da receita**. "
+                        "Se algum da lista devia ter tido movimento, aí sim vale conferir o nome."
                     )
-                    with st.expander(f"Ver os {len(_faltaram_orc)} planos sem correspondência"):
+                    with st.expander(f"Ver os {len(_faltaram_orc)} planos sem movimento"):
                         st.dataframe(
                             pd.DataFrame({"Plano de contas na planilha modelo": _faltaram_orc}),
                             width="stretch", hide_index=True,
@@ -16193,7 +16412,10 @@ if tab_orc is not None:
                                   "receita_2027": _receita_orc}
 
                 # ---- Base 2026 por conta (empresa inteira, para a tela) -----
-                _meses_2026 = [f"{m:02d}/2026" for m in range(1, 13)]
+                _ano_modelo, _meses_modelo = anos_do_modelo_orcamento(_modelo_2027)
+                _ano_base_orc = (_ano_modelo - 1) if _ano_modelo else datetime.now(FUSO_BR).year
+                _rotulo_base_orc = f"Realizado {_ano_base_orc} anualizado"
+                _meses_2026 = [f"{m:02d}/{_ano_base_orc}" for m in range(1, 13)]
                 _meses_fechados_cols = _meses_2026[:int(_meses_fech_orc)]
                 _realizado_por_conta = realizado_por_conta_e_loja(
                     _diario_orc, _meses_fechados_cols)
@@ -16202,14 +16424,34 @@ if tab_orc is not None:
                 for _chave, _por_mes in _realizado_por_conta.items():
                     _base_empresa[_chave[1]] = _base_empresa.get(_chave[1], 0.0) + sum(_por_mes.values())
 
+                # As linhas da DRE nao estao no DIARIO -- ele tem plano de
+                # contas, nao linha. Sem esta busca elas apareciam TODAS
+                # zeradas na tela, e o zero se confundia com "nao teve gasto".
+                _dados_abas_tela = carregar_dados_por_loja(path_orc, path_real, _abas_orc)
+                _dre_mensal = _ler_aba_ou_vazio(path_real, "DRE MENSAL")
+                _nomes_dre_folha = [e["nome"] for e in _editaveis_orc if e["tipo"] == "dre"]
+                _realizado_dre = realizado_da_dre_por_aba(
+                    _dados_abas_tela, _dre_mensal, _nomes_dre_folha, _meses_fechados_cols)
+                _base_dre_empresa, _origem_dre = {}, {}
+                for (_aba_k, _chave_k), (_valor_k, _origem_k) in _realizado_dre.items():
+                    _base_dre_empresa[_chave_k] = _base_dre_empresa.get(_chave_k, 0.0) + _valor_k
+                    if _origem_k != "sem movimento":
+                        _origem_dre[_chave_k] = _origem_k
+
                 _linhas_editor = []
                 for _item in _editaveis_orc:
-                    _bruto = _base_empresa.get(chave_conta_orcamento(_item["nome"]), 0.0)
+                    _chave_item = chave_conta_orcamento(_item["nome"])
+                    if _item["tipo"] == "dre":
+                        _bruto = _base_dre_empresa.get(_chave_item, 0.0)
+                    else:
+                        _bruto = _base_empresa.get(_chave_item, 0.0)
                     _linhas_editor.append({
                         "Linha DRE": _item["linha_dre"],
                         "Conta": _item["nome"],
-                        "Realizado 2026 anualizado": anualizar_realizado(
+                        _rotulo_base_orc: anualizar_realizado(
                             [_bruto / max(int(_meses_fech_orc), 1)] * 12, int(_meses_fech_orc)),
+                        "Origem": ("DIÁRIO" if _item["tipo"] == "plano"
+                                   else _origem_dre.get(_chave_item, "sem movimento")),
                         "Direcionador": "",
                         "Parâmetro %": 0.0,
                     })
@@ -16261,8 +16503,12 @@ if tab_orc is not None:
                     column_config={
                         "Linha DRE": st.column_config.TextColumn(disabled=True, width="medium"),
                         "Conta": st.column_config.TextColumn(disabled=True, width="medium"),
-                        "Realizado 2026 anualizado": st.column_config.NumberColumn(
+                        _rotulo_base_orc: st.column_config.NumberColumn(
                             disabled=True, format="R$ %.2f", width="small"),
+                        "Origem": st.column_config.TextColumn(
+                            disabled=True, width="small",
+                            help="De onde veio a base: DIÁRIO (plano de contas), aba da "
+                                 "unidade, DRE MENSAL (empresa inteira) ou sem movimento."),
                         "Direcionador": st.column_config.SelectboxColumn(
                             options=[""] + DIRECIONADORES_2027, width="medium"),
                         "Parâmetro %": st.column_config.NumberColumn(
@@ -16271,12 +16517,148 @@ if tab_orc is not None:
                     },
                 )
 
+
+                # ---- Camada 2: exceções por loja ---------------------------
+                # A regra geral acima vale para as 21 unidades. Aqui se
+                # sobrepõe SÓ onde a loja foge dela -- 219 planos x 21 lojas
+                # são quase 4.600 decisões, e ninguém preenche isso numa
+                # tabela. A tela entrega as contas que merecem a segunda
+                # olhada, em vez de deixar a pessoa percorrer 219 linhas.
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">🏪 Exceções por loja</div>',
+                            unsafe_allow_html=True)
+
+                if "orc_excecoes" not in st.session_state:
+                    st.session_state["orc_excecoes"] = {}
+                _excecoes_orc = st.session_state["orc_excecoes"]
+
+                # Base por (loja, conta): plano vem do DIÁRIO, linha da DRE vem
+                # da cascata unidade -> DRE MENSAL.
+                _bases_por_loja = {}
+                for _aba in _abas_orc:
+                    _contas_aba = {}
+                    for _item in _editaveis_orc:
+                        _chave_i = chave_conta_orcamento(_item["nome"])
+                        if _item["tipo"] == "plano":
+                            _por_mes = _realizado_por_conta.get(
+                                (_normalizar_nome_aba(_aba), _chave_i), {})
+                            _contas_aba[_item["nome"]] = sum(_por_mes.values())
+                        else:
+                            _contas_aba[_item["nome"]] = _realizado_dre.get(
+                                (_aba, _chave_i), (0.0, ""))[0]
+                    _bases_por_loja[_aba] = _contas_aba
+                _pesos_orc = peso_da_loja_no_total(_bases_por_loja)
+                _bases_empresa_conta = {}
+                for _contas_aba in _bases_por_loja.values():
+                    for _conta, _valor in _contas_aba.items():
+                        _bases_empresa_conta[_conta] = _bases_empresa_conta.get(_conta, 0.0) + _valor
+
+                _qtd_exc, _lojas_exc = resumo_das_excecoes(_excecoes_orc)
+                _cl1, _cl2, _cl3 = st.columns([2, 1, 1])
+                with _cl1:
+                    _loja_orc = st.selectbox(
+                        "Loja", _abas_orc, key="orc_loja",
+                        help="A regra geral vale para todas. Aqui você sobrepõe só esta.")
+                with _cl2:
+                    _corte_orc = st.slider(
+                        "Fora do padrão a partir de", min_value=0.2, max_value=3.0,
+                        value=0.5, step=0.1, key="orc_corte",
+                        help="0,5 = a conta pesa 50% mais (ou menos) do que a loja costuma pesar.")
+                with _cl3:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    st.metric("Exceções ativas", f"{_qtd_exc} em {_lojas_exc} loja(s)")
+
+                _peso_loja = _pesos_orc.get(_loja_orc, 0.0)
+                st.caption(
+                    f"**{_loja_orc}** responde por **{_peso_loja * 100:.1f}%**".replace(".", ",")
+                    + " de tudo o que a empresa movimentou no ano anterior. A conta em que ela "
+                    "pesa muito mais (ou muito menos) do que isso é onde a regra geral "
+                    "provavelmente não serve — é essa a lista abaixo, ordenada pelo tamanho do "
+                    "desvio. As demais contas seguem a regra geral e não precisam ser tocadas."
+                )
+
+                _fora = contas_fora_do_padrao(
+                    _bases_por_loja.get(_loja_orc, {}), _bases_empresa_conta,
+                    _peso_loja, minimo=_corte_orc)
+
+                if not _fora:
+                    st.success(
+                        f"Nenhuma conta de **{_loja_orc}** foge do padrão dela acima do corte "
+                        "escolhido. A regra geral serve para esta loja inteira."
+                    )
+                else:
+                    _linhas_exc = []
+                    for _achado in _fora:
+                        _dir_ef, _par_ef, _origem_ef = direcionador_efetivo(
+                            _achado["conta"], _loja_orc,
+                            {i["nome"]: (str(_editado_orc.loc[j, "Direcionador"] or ""),
+                                         float(_editado_orc.loc[j, "Parâmetro %"] or 0))
+                             for j, i in enumerate(_editaveis_orc)},
+                            _excecoes_orc)
+                        _linhas_exc.append({
+                            "Conta": _achado["conta"],
+                            "Base da loja": _achado["base_loja"],
+                            "Base da empresa": _achado["base_empresa"],
+                            "Peso nesta conta": (abs(_achado["base_loja"]) / abs(_achado["base_empresa"])
+                                                 if _achado["base_empresa"] else 0.0),
+                            "Desvio vs padrão": _achado["desvio"],
+                            "Valendo hoje": f"{_dir_ef or '—'} ({_origem_ef})",
+                            "Direcionador da loja": (_excecoes_orc.get((_loja_orc, _achado["conta"]), ("", 0.0))[0]),
+                            "Parâmetro da loja": (_excecoes_orc.get((_loja_orc, _achado["conta"]), ("", 0.0))[1]),
+                        })
+                    _editado_exc = st.data_editor(
+                        pd.DataFrame(_linhas_exc), width="stretch", hide_index=True,
+                        height=340, key=f"orc_editor_exc_{_loja_orc}",
+                        column_config={
+                            "Conta": st.column_config.TextColumn(disabled=True, width="medium"),
+                            "Base da loja": st.column_config.NumberColumn(
+                                disabled=True, format="R$ %.2f", width="small"),
+                            "Base da empresa": st.column_config.NumberColumn(
+                                disabled=True, format="R$ %.2f", width="small"),
+                            "Peso nesta conta": st.column_config.NumberColumn(
+                                disabled=True, format="%.1f%%", width="small",
+                                help="Quanto desta conta é desta loja."),
+                            "Desvio vs padrão": st.column_config.NumberColumn(
+                                disabled=True, format="%.0f%%", width="small",
+                                help="Positivo: a loja pesa mais nesta conta do que costuma pesar."),
+                            "Valendo hoje": st.column_config.TextColumn(
+                                disabled=True, width="medium",
+                                help="O direcionador em vigor e de onde ele vem."),
+                            "Direcionador da loja": st.column_config.SelectboxColumn(
+                                options=[""] + DIRECIONADORES_2027, width="medium",
+                                help="Deixe vazio para herdar a regra geral."),
+                            "Parâmetro da loja": st.column_config.NumberColumn(
+                                format="%.4f", width="small"),
+                        },
+                    )
+                    _cg1, _cg2 = st.columns([1, 3])
+                    with _cg1:
+                        if st.button("Guardar exceções desta loja", width="stretch",
+                                     key=f"orc_guardar_exc_{_loja_orc}"):
+                            for _j, _achado in enumerate(_fora):
+                                _dir_l = str(_editado_exc.loc[_j, "Direcionador da loja"] or "")
+                                _par_l = float(_editado_exc.loc[_j, "Parâmetro da loja"] or 0)
+                                _chave_exc = (_loja_orc, _achado["conta"])
+                                if _dir_l:
+                                    _excecoes_orc[_chave_exc] = (_dir_l, _par_l)
+                                else:
+                                    _excecoes_orc.pop(_chave_exc, None)
+                            st.rerun()
+                    with _cg2:
+                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                        st.caption(
+                            "Deixar o direcionador da loja vazio faz a conta **voltar a herdar a "
+                            "regra geral** — é assim que se desfaz uma exceção. A coluna "
+                            "*Valendo hoje* mostra o que está em vigor e de onde vem, que é a "
+                            "primeira pergunta de quem cobrar o número numa reunião."
+                        )
+
                 # ---- Resumo do que já foi decidido -------------------------
                 _linhas_resumo = []
                 for _i, _item in enumerate(_editaveis_orc):
                     _dir = str(_editado_orc.loc[_i, "Direcionador"] or "")
                     _par = float(_editado_orc.loc[_i, "Parâmetro %"] or 0)
-                    _base = float(_editado_orc.loc[_i, "Realizado 2026 anualizado"] or 0)
+                    _base = float(_editado_orc.loc[_i, _rotulo_base_orc] or 0)
                     _linhas_resumo.append({
                         "direcionador": _dir,
                         "total_2027": aplicar_direcionador_2027(_base, _dir, _par, _premissas_orc),
@@ -16299,6 +16681,196 @@ if tab_orc is not None:
                     unsafe_allow_html=True,
                 )
 
+
+                # ---- Proposta por loja, calculada UMA vez -------------------
+                # Os três blocos abaixo (memória de cálculo, confronto com a
+                # meta e o gerador do Excel) precisam do mesmo número. Calcular
+                # em três lugares seria três chances de eles discordarem -- e a
+                # discordância só apareceria com o arquivo já colado.
+                _escolhas_gerais_orc = {
+                    _item["nome"]: (str(_editado_orc.loc[_j, "Direcionador"] or ""),
+                                    float(_editado_orc.loc[_j, "Parâmetro %"] or 0))
+                    for _j, _item in enumerate(_editaveis_orc)
+                }
+                _proposta_por_loja, _memoria_itens = {}, []
+                for _aba in _abas_orc:
+                    for _item in _editaveis_orc:
+                        _chave_i = chave_conta_orcamento(_item["nome"])
+                        _dir_e, _par_e, _origem_e = direcionador_efetivo(
+                            _item["nome"], _aba, _escolhas_gerais_orc, _excecoes_orc)
+                        if _item["tipo"] == "plano":
+                            _base_i = sum(_realizado_por_conta.get(
+                                (_normalizar_nome_aba(_aba), _chave_i), {}).values())
+                            _origem_base = "DIÁRIO"
+                        else:
+                            _base_i, _origem_base = _realizado_dre.get(
+                                (_aba, _chave_i), (0.0, "sem movimento"))
+                        _base_anual = anualizar_realizado(
+                            [_base_i / max(int(_meses_fech_orc), 1)] * 12,
+                            int(_meses_fech_orc))
+                        _total_i = aplicar_direcionador_2027(
+                            _base_anual, _dir_e, _par_e, _premissas_orc)
+                        if _total_i is None:
+                            continue
+                        _curva_i = curva_do_ano(base_e_curva_da_linha(
+                            _dados_abas_tela.get(_aba, (pd.DataFrame(), pd.DataFrame()))[0],
+                            _item["linha_dre"], _meses_2026))
+                        _proposta_por_loja[(_normalizar_nome_aba(_aba), _chave_i)] = \
+                            distribuir_no_ano(_total_i, _curva_i)
+                        _memoria_itens.append({
+                            "loja": _aba, "linha_dre": _item["linha_dre"],
+                            "conta": _item["nome"], "base": _base_anual,
+                            "origem_base": _origem_base, "direcionador": _dir_e,
+                            "parametro": _par_e, "origem_direcionador": _origem_e,
+                            "proposto": _total_i,
+                        })
+
+                # ---- Confronto com a meta da indústria ---------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">🏭 Confronto com a meta da indústria</div>',
+                            unsafe_allow_html=True)
+                st.caption(
+                    "A indústria manda a meta **por loja e por mês**. Aqui as duas ficam lado a "
+                    "lado para você decidir qual orçamento usar — e, quando decidir pelo seu, "
+                    "para ter na mão de quanto e onde vocês discordam."
+                )
+                _meta_arquivo = st.file_uploader(
+                    "Planilha da meta da indústria (.xlsx)", type=["xlsx"], key="orc_meta",
+                    help="Use o modelo padrão: colunas Loja, Conta e os 12 meses como texto.",
+                )
+                if _meta_arquivo is None:
+                    st.info(
+                        "**Sem a planilha da meta, este bloco fica em branco.** Baixe o modelo "
+                        "padrão, mande para a indústria preencher (ou preencha com o que eles "
+                        "enviarem) e suba aqui."
+                    )
+                else:
+                    _meta_df, _meses_meta, _erro_meta = ler_meta_da_industria(_meta_arquivo)
+                    if _erro_meta:
+                        st.error(_erro_meta)
+                    else:
+                        _confronto, _so_meta, _so_prop = confrontar_com_a_meta(
+                            _proposta_por_loja, _meta_df, _meses_meta)
+                        if _so_meta:
+                            # Quase sempre é nome escrito diferente, não meta
+                            # faltando -- e sem esta lista a pessoa compara um
+                            # subconjunto achando que comparou tudo.
+                            st.warning(
+                                f"**{len(_so_meta)} linhas da meta não encontraram par na "
+                                "proposta.** Costuma ser nome escrito diferente entre as duas "
+                                "planilhas, não meta faltando."
+                            )
+                            with st.expander("Ver as linhas sem par"):
+                                st.dataframe(
+                                    pd.DataFrame(_so_meta, columns=["Loja", "Conta"]),
+                                    width="stretch", hide_index=True)
+                        if _confronto.empty:
+                            st.warning("Nenhuma linha da meta casou com a proposta.")
+                        else:
+                            _tp = float(_confronto["Proposta do painel"].sum())
+                            _tm = float(_confronto["Meta da indústria"].sum())
+                            st.markdown(
+                                render_kpi_row([
+                                    dict(label="PROPOSTA DO PAINEL", value=formata_valor_curto(_tp),
+                                         value_color=COLORS["primary"],
+                                         subtext=f"{len(_confronto)} pares loja × conta", icon="🧮"),
+                                    dict(label="META DA INDÚSTRIA", value=formata_valor_curto(_tm),
+                                         value_color=COLORS["text"],
+                                         subtext="somando as mesmas linhas", icon="🏭"),
+                                    dict(label="DIFERENÇA", value=formata_valor_curto(_tp - _tm),
+                                         value_color=(COLORS["positive"] if _tp >= _tm
+                                                      else COLORS["negative"]),
+                                         subtext=(f"{(_tp / _tm - 1) * 100:+.1f}% contra a meta".replace(".", ",")
+                                                  if _tm else "meta zerada"),
+                                         icon="⚖️"),
+                                ]),
+                                unsafe_allow_html=True,
+                            )
+                            _visivel = _confronto.drop(
+                                columns=["_meses_proposta", "_meses_meta"])
+                            st.dataframe(
+                                _visivel.sort_values("Diferença", key=abs, ascending=False)
+                                .style.format({
+                                    "Proposta do painel": formata_brl,
+                                    "Meta da indústria": formata_brl,
+                                    "Diferença": formata_brl,
+                                    "Diferença %": lambda v: ("—" if v is None or pd.isna(v)
+                                                              else f"{v * 100:+.1f}%".replace(".", ",")),
+                                }),
+                                width="stretch", hide_index=True,
+                            )
+                            st.caption(
+                                "Ordenado pela maior diferença em reais, não em percentual: uma "
+                                "loja pequena 40% acima da meta move menos caixa que uma grande "
+                                "5% abaixo, e é a segunda que precisa de conversa."
+                            )
+                            _linha_det = st.selectbox(
+                                "Ver mês a mês", _confronto.index,
+                                format_func=lambda i: f"{_confronto.loc[i, 'Loja']} · {_confronto.loc[i, 'Conta']}",
+                                key="orc_meta_detalhe")
+                            _det = pd.DataFrame({
+                                "Mês": _meses_meta,
+                                "Proposta": _confronto.loc[_linha_det, "_meses_proposta"][:len(_meses_meta)],
+                                "Meta": _confronto.loc[_linha_det, "_meses_meta"],
+                            })
+                            _det["Diferença"] = _det["Proposta"] - _det["Meta"]
+                            st.dataframe(
+                                _det.style.format({c: formata_brl for c in
+                                                   ("Proposta", "Meta", "Diferença")}),
+                                width="stretch", hide_index=True)
+
+                # ---- Memória de cálculo ------------------------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">📑 Memória de cálculo</div>',
+                            unsafe_allow_html=True)
+                st.caption(
+                    "É o documento da reunião. Cada linha diz de onde o número saiu: a base do "
+                    "ano anterior e de qual fonte ela veio, o direcionador aplicado, o parâmetro, "
+                    "se aquilo é regra geral ou exceção da loja, e quanto muda contra o ano "
+                    "anterior. **\"O painel calculou\" não é resposta** quando um departamento "
+                    "questiona o valor dele — a defesa tem de caber numa linha."
+                )
+                _memoria_df = memoria_de_calculo(_memoria_itens)
+                if _memoria_df.empty:
+                    st.info("Escolha ao menos um direcionador para a memória de cálculo aparecer.")
+                else:
+                    _cm1, _cm2 = st.columns([1, 2])
+                    with _cm1:
+                        _filtro_loja_mem = st.selectbox(
+                            "Loja", ["Todas"] + list(_abas_orc), key="orc_mem_loja")
+                    with _cm2:
+                        _filtro_linha_mem = st.multiselect(
+                            "Linha da DRE", sorted(_memoria_df["Linha DRE"].unique()),
+                            key="orc_mem_linha")
+                    _mem_vista = _memoria_df
+                    if _filtro_loja_mem != "Todas":
+                        _mem_vista = _mem_vista[_mem_vista["Loja"] == _filtro_loja_mem]
+                    if _filtro_linha_mem:
+                        _mem_vista = _mem_vista[_mem_vista["Linha DRE"].isin(_filtro_linha_mem)]
+                    st.dataframe(
+                        _mem_vista.head(500).style.format({
+                            "Base do ano anterior": formata_brl,
+                            "Proposto": formata_brl,
+                            "Parâmetro": lambda v: f"{v:.4f}".replace(".", ","),
+                            "Variação %": lambda v: ("—" if v is None or pd.isna(v)
+                                                     else f"{v * 100:+.1f}%".replace(".", ",")),
+                        }),
+                        width="stretch", hide_index=True, height=360,
+                    )
+                    if len(_mem_vista) > 500:
+                        st.caption(
+                            f"Mostrando 500 das {len(_mem_vista):,} linhas na tela — o arquivo "
+                            "abaixo traz todas.".replace(",", ".")
+                        )
+                    _csv_mem = _mem_vista.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+                    st.download_button(
+                        "⬇️ Baixar a memória de cálculo (CSV)", data=_csv_mem,
+                        file_name="memoria_de_calculo_orcamento.csv", mime="text/csv",
+                        key="orc_mem_baixar",
+                        help="Ponto e vírgula, vírgula decimal e BOM: abre no Excel em português "
+                             "sem pedir nada.",
+                    )
+
                 # ---- Geração do Excel --------------------------------------
                 st.markdown("<br>", unsafe_allow_html=True)
                 if _pendentes:
@@ -16309,41 +16881,22 @@ if tab_orc is not None:
                         "registrado como decisão."
                     )
                 if st.button("📊 Gerar a planilha preenchida", type="primary", key="orc27_gerar"):
-                    _escolhas_orc = {
-                        _item["nome"]: (str(_editado_orc.loc[_i, "Direcionador"] or ""),
-                                        float(_editado_orc.loc[_i, "Parâmetro %"] or 0))
-                        for _i, _item in enumerate(_editaveis_orc)
-                    }
-                    with st.spinner("Calculando conta a conta, aba por aba..."):
-                        _dados_abas = carregar_dados_por_loja(path_orc, path_real, _abas_orc)
-                        _valores_orc = {}
-                        for _aba in _abas_orc:
-                            _df_o, _df_r = _dados_abas.get(_aba, (pd.DataFrame(), pd.DataFrame()))
-                            _linhas_aba = {}
-                            for _item in _editaveis_orc:
-                                _dir, _par = _escolhas_orc.get(_item["nome"], ("", 0.0))
-                                if not _dir:
-                                    continue
-                                if _item["tipo"] == "plano":
-                                    _por_mes = _realizado_por_conta.get(
-                                        (_normalizar_nome_aba(_aba),
-                                         chave_conta_orcamento(_item["nome"])), {})
-                                    _bruto = sum(_por_mes.values())
-                                else:
-                                    _bruto = realizado_da_linha_dre(
-                                        _df_r, _item["nome"], _meses_fechados_cols)
-                                _base_aba = anualizar_realizado(
-                                    [_bruto / max(int(_meses_fech_orc), 1)] * 12,
-                                    int(_meses_fech_orc))
-                                _total_linha = aplicar_direcionador_2027(
-                                    _base_aba, _dir, _par, _premissas_orc)
-                                if _total_linha is None:
-                                    continue
-                                _curva = curva_do_ano(base_e_curva_da_linha(
-                                    _df_o, _item["linha_dre"], _meses_2026))
-                                _linhas_aba[_item["linha"]] = distribuir_no_ano(_total_linha, _curva)
-                            _valores_orc[_aba] = _linhas_aba
-                        _modelo_2027.seek(0)
+                    # Reusa a proposta JÁ calculada acima, em vez de refazer a
+                    # conta aqui. Dois caminhos para o mesmo número são duas
+                    # chances de eles divergirem -- e a divergência entre a
+                    # tela e o arquivo só apareceria depois de colado.
+                    _valores_orc = {}
+                    for _aba in _abas_orc:
+                        _linhas_aba = {}
+                        for _item in _editaveis_orc:
+                            _meses_i = _proposta_por_loja.get(
+                                (_normalizar_nome_aba(_aba),
+                                 chave_conta_orcamento(_item["nome"])))
+                            if _meses_i is not None:
+                                _linhas_aba[_item["linha"]] = _meses_i
+                        _valores_orc[_aba] = _linhas_aba
+                    _modelo_2027.seek(0)
+                    with st.spinner("Escrevendo a planilha, aba por aba..."):
                         _bytes_orc, _escritas_orc = gerar_excel_orcamento(
                             _modelo_2027, _valores_orc)
                     st.success(
