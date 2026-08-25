@@ -60,6 +60,8 @@ DEPENDENCIAS = {
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
     "_segredo": ["_segredo_com_origem"],
+    "seletor_periodo_meses": ["_rotulo_mes_pt_extenso"],
+    "rotulo_periodo_meses": ["_rotulo_mes_pt_extenso"],
     "prazo_do_fechamento": ["pendentes_do_fechamento", "_data_do_texto_br"],
     "panorama_do_ano": ["checklist_da_competencia", "resumo_do_fechamento"],
     "preparar_checklist_da_planilha": ["resolver_colunas_fluxo", "_assinatura_coluna_fin",
@@ -2222,49 +2224,131 @@ class TestePrazoMedioECicloFinanceiro(unittest.TestCase):
         484 dias dava 7% e parecia baixa quando e altissima, e o PMR ia a 418
         dias porque o denominador diluia o recebimento em 1400 dias."""
         i = FONTE.index("meses_disp_a = sorted(")
-        trecho = FONTE[i:FONTE.index("col_a1, col_a2, col_a3 = st.columns(3)", i)]
+        trecho = FONTE[i:FONTE.index('if canal_sel_a != "Todos":', i)]
         self.assertIn("_mes_corrente_a", trecho)
-        # Mes corrente ausente da base tem de cair em "Todo o periodo" (0), e
-        # nao estourar no .index().
-        self.assertIn("if _mes_corrente_a in meses_disp_a else 0", trecho)
+        self.assertIn("seletor_periodo_meses(", trecho)
+        # Mes corrente ausente da base nao pode estourar: vira None, e o
+        # seletor cai no primeiro e no ultimo mes existentes.
+        self.assertIn("if _mes_corrente_a in meses_disp_a else None", trecho)
+        # E o recorte tem de usar o INTERVALO. Filtrar so pelo mes inicial
+        # deixaria o seletor de fim desenhado na tela sem efeito nenhum --
+        # pior que nao ter o campo.
+        self.assertIn(">= periodo_ini_a", trecho)
+        self.assertIn("<= periodo_fim_a", trecho)
 
-    def test_padrao_do_mes_e_semeado_na_sessao(self):
+    def test_as_duas_abas_usam_o_MESMO_seletor_de_meses(self):
+        """Duas copias da mesma escolha sao duas chances de elas divergirem --
+        e a semeadura na sessao, que o defeito do filtro revelou, precisa valer
+        nas duas telas."""
+        self.assertEqual(FONTE.count("seletor_periodo_meses("), 3,
+                         "1 definicao + 2 usos (Fluxo Mensal e Analises)")
+        # O Fluxo Mensal nao pode ter voltado a montar os seletores na mao.
+        self.assertNotIn('key="fin_mes_ini"', FONTE)
+        self.assertNotIn('key="fin_mes_fim"', FONTE)
+
+
+class TesteSeletorDeIntervaloDeMeses(unittest.TestCase):
+    """O seletor "Do mes / Ate o mes" compartilhado pelo Fluxo Mensal e pela
+    aba Analises (25/08/2026)."""
+
+    class _StFalso:
+        """Dubla o que o seletor usa do Streamlit. selectbox devolve o que
+        estiver na sessao -- que e exatamente como o Streamlit se comporta
+        quando a chave ja existe, e e esse comportamento que o teste precisa
+        reproduzir para o `index` nao mascarar a semeadura."""
+
+        class _Coluna:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def __init__(self):
+            self.session_state = {}
+
+        def columns(self, quantas):
+            n = quantas if isinstance(quantas, int) else len(quantas)
+            return [self._Coluna() for _ in range(n)]
+
+        def selectbox(self, _rotulo, opcoes, index=0, key=None, help=None):
+            if key in self.session_state:
+                return self.session_state[key]
+            return opcoes[index]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.st_falso = cls._StFalso()
+        cls.ns = carregar(
+            ["seletor_periodo_meses", "rotulo_periodo_meses", "_rotulo_mes_pt_extenso"],
+            ["MESES_PT_FIN"],
+            extras={"st": cls.st_falso},
+        )
+
+    def setUp(self):
+        self.st_falso.session_state.clear()
+        self.meses = [pd.Period(f"2026-{m:02d}", "M") for m in range(1, 13)]
+
+    def _rodar(self, ini=None, fim=None):
+        return self.ns["seletor_periodo_meses"](
+            self.meses, "teste", periodo_ini_padrao=ini, periodo_fim_padrao=fim)
+
+    def test_um_mes_so_quando_os_dois_padroes_sao_iguais(self):
+        agosto = pd.Period("2026-08", "M")
+        self.assertEqual(self._rodar(agosto, agosto), (agosto, agosto))
+
+    def test_intervalo_de_varios_meses(self):
+        ini, fim = pd.Period("2026-03", "M"), pd.Period("2026-07", "M")
+        self.assertEqual(self._rodar(ini, fim), (ini, fim))
+
+    def test_padrao_ausente_cai_no_primeiro_e_no_ultimo(self):
+        """Mes corrente fora da base nao pode estourar nem abrir vazio."""
+        self.assertEqual(self._rodar(None, None), (self.meses[0], self.meses[-1]))
+        fora = pd.Period("2019-05", "M")
+        self.assertEqual(self._rodar(fora, fora), (self.meses[0], self.meses[-1]))
+
+    def test_meses_invertidos_sao_ordenados_e_nao_viram_erro(self):
+        """O painel entende a intencao em vez de exigir a ordem certa."""
+        self.st_falso.session_state["teste_ini"] = "Setembro/2026"
+        self.st_falso.session_state["teste_fim"] = "Março/2026"
+        self.st_falso.session_state["_teste_iniciado"] = True
+        ini, fim = self._rodar()
+        self.assertEqual((ini, fim), (pd.Period("2026-03", "M"), pd.Period("2026-09", "M")))
+
+    def test_padrao_vence_sessao_antiga_uma_vez_so(self):
         """O `index=` do selectbox NAO basta: o Streamlit o IGNORA quando a
-        chave do widget ja existe em st.session_state. Quem tinha aberto a aba
-        antes da mudanca carregava "Todo o periodo" guardado na sessao, e o
-        padrao novo nunca aparecia -- aconteceu em 25/08/2026 com o codigo
-        certo no ar. A marca forca o padrao UMA vez por sessao; depois a
-        escolha da pessoa manda."""
-        i = FONTE.index("meses_disp_a = sorted(")
-        trecho = FONTE[i:FONTE.index("col_a1, col_a2, col_a3 = st.columns(3)", i)]
-        self.assertIn('if not st.session_state.get("_fin_mes_analise_iniciado"):', trecho)
-        self.assertIn('st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]', trecho)
-        self.assertIn('st.session_state["_fin_mes_analise_iniciado"] = True', trecho)
-        # Rotulo guardado que sumiu da lista travaria o widget.
-        self.assertIn('st.session_state.get("fin_mes_sel_analise") not in rotulos_a', trecho)
+        chave ja existe na sessao. Foi assim que o padrao novo do filtro da
+        Analises nunca apareceu, em 25/08/2026, com o codigo certo no ar."""
+        agosto = pd.Period("2026-08", "M")
+        # Sessao velha, com escolha antiga guardada e SEM a marca.
+        self.st_falso.session_state["teste_ini"] = "Janeiro/2026"
+        self.st_falso.session_state["teste_fim"] = "Dezembro/2026"
+        self.assertEqual(self._rodar(agosto, agosto), (agosto, agosto),
+                         "o padrao novo tem de vencer a sessao antiga")
+        # Semeado. Agora a escolha da pessoa manda e sobrevive ao redesenho.
+        self.st_falso.session_state["teste_ini"] = "Abril/2026"
+        self.st_falso.session_state["teste_fim"] = "Junho/2026"
+        self.assertEqual(self._rodar(agosto, agosto),
+                         (pd.Period("2026-04", "M"), pd.Period("2026-06", "M")))
 
-    def test_semeadura_so_vale_na_primeira_vez(self):
-        """Modelo do que o codigo faz: sem a marca, semeia; com a marca, a
-        escolha da pessoa sobrevive ao proximo desenho da tela."""
-        rotulos = ["Todo o período", "Julho/2026", "Agosto/2026"]
+    def test_rotulo_que_sumiu_da_lista_volta_ao_padrao(self):
+        """Base que muda de recorte deixaria o widget travado num rotulo que
+        nao existe mais."""
+        agosto = pd.Period("2026-08", "M")
+        self.st_falso.session_state["_teste_iniciado"] = True
+        self.st_falso.session_state["teste_ini"] = "Dezembro/2019"
+        self.st_falso.session_state["teste_fim"] = "Dezembro/2019"
+        self.assertEqual(self._rodar(agosto, agosto), (agosto, agosto))
 
-        def semear(sessao, indice_padrao):
-            if not sessao.get("_fin_mes_analise_iniciado"):
-                sessao["fin_mes_sel_analise"] = rotulos[indice_padrao]
-                sessao["_fin_mes_analise_iniciado"] = True
-            elif sessao.get("fin_mes_sel_analise") not in rotulos:
-                sessao["fin_mes_sel_analise"] = rotulos[indice_padrao]
-            return sessao
+    def test_lista_vazia_nao_quebra(self):
+        self.assertEqual(self.ns["seletor_periodo_meses"]([], "vazio"), (None, None))
 
-        # Sessao velha, com o valor antigo guardado: o padrao TEM de vencer.
-        velha = semear({"fin_mes_sel_analise": "Todo o período"}, 2)
-        self.assertEqual(velha["fin_mes_sel_analise"], "Agosto/2026")
-        # Depois de semeada, a escolha da pessoa manda.
-        velha["fin_mes_sel_analise"] = "Julho/2026"
-        self.assertEqual(semear(velha, 2)["fin_mes_sel_analise"], "Julho/2026")
-        # Rotulo que sumiu da lista volta para o padrao em vez de travar.
-        velha["fin_mes_sel_analise"] = "Dezembro/2019"
-        self.assertEqual(semear(velha, 2)["fin_mes_sel_analise"], "Agosto/2026")
+    def test_rotulo_do_recorte(self):
+        rotulo = self.ns["rotulo_periodo_meses"]
+        um = pd.Period("2026-08", "M")
+        self.assertEqual(rotulo(um, um), "Agosto/2026")
+        self.assertEqual(rotulo(um, pd.Period("2026-10", "M")), "Agosto/2026 a Outubro/2026")
+        self.assertEqual(rotulo(None, None), "")
 
     def test_recorte_longo_avisa_que_o_prazo_nao_significa_nada(self):
         """Com o recorte inteiro o valor em aberto e a foto de hoje e o
@@ -4380,6 +4464,38 @@ class TesteBuscaDeSegredo(unittest.TestCase):
                       bloco)
         self.assertIn("caiu dentro de uma seção", bloco,
                       "a tela precisa avisar da armadilha do TOML")
+
+
+class TesteNomesIndefinidos(unittest.TestCase):
+    """Nome usado e nunca definido — de VARIAVEL, nao so de funcao.
+
+    Nasceu de um defeito real em 25/08/2026: ao trocar os dois selectbox do
+    Fluxo Mensal pela funcao compartilhada, as variaveis mes_ini_sel_fin e
+    mes_fim_sel_fin deixaram de existir, mas o bloco "Ajuste fino por dia"
+    continuava usando as duas. A tela quebraria com NameError ao abrir o
+    expansor, e a suite inteira ficou VERDE: a trava que existia
+    (test_toda_funcao_chamada_existe) so olha CHAMADAS DE FUNCAO.
+
+    Escrever um analisador de escopo aqui seria reinventar mal uma roda que ja
+    existe, entao a checagem usa o pyflakes. Sem ele instalado o teste PULA
+    com instrucao -- pular avisando e melhor que passar em silencio."""
+
+    def test_nenhum_nome_indefinido_no_app(self):
+        try:
+            from pyflakes.api import check
+            from pyflakes.reporter import Reporter
+        except ImportError:
+            self.skipTest(
+                "pyflakes não instalado — rode `pip install pyflakes` para ligar "
+                "esta trava (ela pega variável usada e nunca definida)")
+
+        saida, erros = io.StringIO(), io.StringIO()
+        check(FONTE, CAMINHO_APP, Reporter(saida, erros))
+        # So os nomes indefinidos: import sem uso e f-string sem placeholder
+        # sao ruido de estilo, e reprovar por eles faria a trava ser ignorada.
+        indefinidos = [linha for linha in saida.getvalue().splitlines()
+                       if "undefined name" in linha]
+        self.assertEqual(indefinidos, [], "\n".join(indefinidos))
 
 
 # ============================================================================

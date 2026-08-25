@@ -3967,6 +3967,75 @@ def calcular_saldo_inicial_diario(df, coluna_valor):
     return saldo_inicial, total_dia
 
 
+def seletor_periodo_meses(meses, chave, periodo_ini_padrao=None, periodo_fim_padrao=None,
+                          ajuda_ini="", ajuda_fim="", colunas=None):
+    """Dois seletores "Do mês / Até o mês" que definem um intervalo de meses.
+
+    POR QUE NÃO O CALENDÁRIO DO STREAMLIT: o `date_input` segue o idioma do
+    servidor e aparece em inglês ("July", "Su/Mo/Tu"), sem jeito de forçar
+    português por configuração. Para fluxo de caixa, escolher por mês também é
+    mais prático — e quem precisa de recorte exato por dia usa o
+    `seletor_periodo_dias`, que existe ao lado.
+
+    A SEMEADURA NA SESSÃO não é preciosismo: o Streamlit IGNORA o `index=`
+    quando a chave do widget já existe em `st.session_state`. Sem semear, quem
+    já tinha aberto a tela antes de o padrão mudar continuava vendo o padrão
+    antigo, com o código novo no ar -- foi o que aconteceu em 25/08/2026 no
+    filtro da aba Análises. A marca força o padrão UMA vez por sessão; depois
+    a escolha da pessoa manda. E rótulo guardado que sumiu da lista (a base
+    mudou de recorte) volta ao padrão em vez de travar o widget.
+
+    Devolve (período inicial, período final), já ordenados: mês inicial depois
+    do final não vira erro, o painel entende a intenção e inverte."""
+    if not len(meses):
+        return None, None
+    meses = list(meses)
+    rotulos = [_rotulo_mes_pt_extenso(p) for p in meses]
+
+    def _indice(periodo, quando_falta):
+        if periodo is not None and periodo in meses:
+            return meses.index(periodo)
+        return quando_falta
+
+    idx_ini = _indice(periodo_ini_padrao, 0)
+    idx_fim = _indice(periodo_fim_padrao, len(meses) - 1)
+
+    campo_ini, campo_fim = f"{chave}_ini", f"{chave}_fim"
+    marca = f"_{chave}_iniciado"
+    if not st.session_state.get(marca):
+        st.session_state[campo_ini] = rotulos[idx_ini]
+        st.session_state[campo_fim] = rotulos[idx_fim]
+        st.session_state[marca] = True
+    else:
+        if st.session_state.get(campo_ini) not in rotulos:
+            st.session_state[campo_ini] = rotulos[idx_ini]
+        if st.session_state.get(campo_fim) not in rotulos:
+            st.session_state[campo_fim] = rotulos[idx_fim]
+
+    col_ini, col_fim = colunas if colunas else st.columns(2)
+    with col_ini:
+        rotulo_ini = st.selectbox("Do mês:", rotulos, index=idx_ini, key=campo_ini,
+                                  help=ajuda_ini or None)
+    with col_fim:
+        rotulo_fim = st.selectbox("Até o mês:", rotulos, index=idx_fim, key=campo_fim,
+                                  help=ajuda_fim or None)
+
+    periodo_ini = meses[rotulos.index(rotulo_ini)]
+    periodo_fim = meses[rotulos.index(rotulo_fim)]
+    if periodo_ini > periodo_fim:
+        periodo_ini, periodo_fim = periodo_fim, periodo_ini
+    return periodo_ini, periodo_fim
+
+
+def rotulo_periodo_meses(periodo_ini, periodo_fim):
+    """Texto curto do recorte de meses, para títulos e legendas."""
+    if periodo_ini is None or periodo_fim is None:
+        return ""
+    if periodo_ini == periodo_fim:
+        return _rotulo_mes_pt_extenso(periodo_ini)
+    return f"{_rotulo_mes_pt_extenso(periodo_ini)} a {_rotulo_mes_pt_extenso(periodo_fim)}"
+
+
 def seletor_periodo_dias(datas, chave, padrao_ini=None, padrao_fim=None, ajuda=""):
     """Dois campos de data (De / Até) que definem o recorte das visões
     diárias. Substitui o par "escolha o mês + escolha os dias": com datas,
@@ -6472,37 +6541,31 @@ if st.session_state["painel_escolhido"] == "financeiro":
         # por seletores de MÊS -- que ficam 100% em português e, para fluxo de
         # caixa, são até mais práticos. O ajuste fino por dia fica disponível
         # logo abaixo, para quem precisar de um recorte exato.
+        #
+        # 25/08/2026: os dois seletores saíram daqui para a função
+        # seletor_periodo_meses, porque a aba Análises passou a precisar do
+        # MESMO recorte por intervalo de meses. Duas cópias da mesma escolha
+        # são duas chances de elas divergirem -- e a semeadura na sessão, que
+        # o problema do filtro da Análises revelou, precisa valer nas duas.
         meses_disponiveis_fin = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
-        rotulos_meses_fin = [_rotulo_mes_pt_extenso(p) for p in meses_disponiveis_fin]
 
         periodo_ini_padrao = pd.Period(padrao_ini_fin.strftime("%Y-%m"), freq="M")
         periodo_fim_padrao = pd.Period(padrao_fim_fin.strftime("%Y-%m"), freq="M")
-        idx_ini_padrao = meses_disponiveis_fin.index(periodo_ini_padrao) if periodo_ini_padrao in meses_disponiveis_fin else 0
-        idx_fim_padrao = meses_disponiveis_fin.index(periodo_fim_padrao) if periodo_fim_padrao in meses_disponiveis_fin else len(meses_disponiveis_fin) - 1
 
         col_f1, col_f2, col_f3, col_f4 = st.columns([1.2, 1.2, 1, 1])
-        with col_f1:
-            mes_ini_sel_fin = st.selectbox(
-                "Do mês:", rotulos_meses_fin, index=idx_ini_padrao, key="fin_mes_ini",
-                help="Por padrão começa no mês anterior ao atual.",
-            )
-        with col_f2:
-            mes_fim_sel_fin = st.selectbox(
-                "Até o mês:", rotulos_meses_fin, index=idx_fim_padrao, key="fin_mes_fim",
-                help="Por padrão vai até o fim do ano atual.",
-            )
+        periodo_ini_fin, periodo_fim_fin = seletor_periodo_meses(
+            meses_disponiveis_fin, "fin_periodo_mensal",
+            periodo_ini_padrao=periodo_ini_padrao, periodo_fim_padrao=periodo_fim_padrao,
+            ajuda_ini="Por padrão começa no mês anterior ao atual.",
+            ajuda_fim="Por padrão vai até o fim do ano atual.",
+            colunas=(col_f1, col_f2),
+        )
         with col_f3:
             opcoes_canal_fin = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_fin = st.selectbox("Canal:", opcoes_canal_fin, key="fin_canal_sel")
         with col_f4:
             opcoes_modal_fin = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str).tolist())
             modal_sel_fin = st.selectbox("Modalidade:", opcoes_modal_fin, key="fin_modal_sel")
-
-        periodo_ini_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_ini_sel_fin)]
-        periodo_fim_fin = meses_disponiveis_fin[rotulos_meses_fin.index(mes_fim_sel_fin)]
-        if periodo_ini_fin > periodo_fim_fin:
-            st.warning("O mês inicial está depois do mês final — inverti os dois para continuar.")
-            periodo_ini_fin, periodo_fim_fin = periodo_fim_fin, periodo_ini_fin
 
         data_ini_fin = periodo_ini_fin.start_time.date()
         data_fim_fin = periodo_fim_fin.end_time.date()
@@ -6513,14 +6576,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "Use aqui se precisar de um recorte exato dentro desses meses."
             )
             col_dia_a, col_dia_b = st.columns(2)
+            # Os rótulos saem dos PERÍODOS devolvidos pelo seletor. Em
+            # 25/08/2026 este bloco ainda lia mes_ini_sel_fin/mes_fim_sel_fin,
+            # variáveis que morreram quando os dois selectbox viraram a função
+            # compartilhada -- a tela quebraria com NameError ao abrir o
+            # expansor. Ver o teste que roda o pyflakes.
             with col_dia_a:
                 dia_ini_fin = st.number_input(
-                    f"Dia inicial (em {mes_ini_sel_fin})", min_value=1, max_value=31, value=1, step=1, key="fin_dia_ini",
+                    f"Dia inicial (em {_rotulo_mes_pt_extenso(periodo_ini_fin)})",
+                    min_value=1, max_value=31, value=1, step=1, key="fin_dia_ini",
                 )
             with col_dia_b:
                 ultimo_dia_mes_fim = periodo_fim_fin.end_time.day
                 dia_fim_fin = st.number_input(
-                    f"Dia final (em {mes_fim_sel_fin})", min_value=1, max_value=31,
+                    f"Dia final (em {_rotulo_mes_pt_extenso(periodo_fim_fin)})",
+                    min_value=1, max_value=31,
                     value=ultimo_dia_mes_fim, step=1, key="fin_dia_fim",
                 )
             # Se a pessoa digitar um dia que não existe naquele mês (ex.: 31 em
@@ -8291,50 +8361,47 @@ if st.session_state["painel_escolhido"] == "financeiro":
     with tab_fin_analises:
 
         meses_disp_a = sorted(df_fin["Data Efetiva"].dt.to_period("M").unique())
-        rotulos_a = ["Todo o período"] + [_rotulo_mes_pt_extenso(p) for p in meses_disp_a]
-        # A tela abre no MÊS CORRENTE, não em "Todo o período" (25/08/2026).
-        # Em todo o período a base junta de outubro/2023 a fevereiro/2027, e
+        # INTERVALO de meses, não um mês só (25/08/2026): dá para olhar o
+        # trimestre, o semestre ou o ano inteiro sem trocar de tela. Mesmo
+        # seletor do Fluxo Mensal -- em português, porque o calendário do
+        # Streamlit aparece em inglês e não há como forçar o idioma nele.
+        #
+        # O PADRÃO É O MÊS CORRENTE nos dois campos. Em todo o período a base
+        # junta de outubro/2023 a fevereiro/2027 (1400 dias corridos), e
         # métrica de ritmo perde o sentido: "concentração nos 3 maiores dias"
         # sobre 484 dias dava 7% e parecia baixa quando é altíssima, e o PMR
-        # ia a 418 dias porque o denominador diluía o recebimento em 1400 dias.
-        # Se o mês corrente não estiver na base, cai em "Todo o período".
-        #
-        # POR QUE NÃO BASTA O `index=`: o Streamlit IGNORA o index quando a
-        # chave do widget já existe em st.session_state. Quem já tinha aberto
-        # a aba antes desta mudança carregava "Todo o período" guardado na
-        # sessão, e o padrão novo nunca aparecia -- foi exatamente o que
-        # aconteceu em 25/08/2026, com o código certo no ar. A marca abaixo
-        # força o padrão UMA vez por sessão; depois disso a escolha da pessoa
-        # manda, como tem de ser.
+        # ia a 418 dias. Mês corrente ausente da base cai no primeiro e no
+        # último mês existentes.
         _mes_corrente_a = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
-        _indice_mes_a = (meses_disp_a.index(_mes_corrente_a) + 1
-                         if _mes_corrente_a in meses_disp_a else 0)
-        if not st.session_state.get("_fin_mes_analise_iniciado"):
-            st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]
-            st.session_state["_fin_mes_analise_iniciado"] = True
-        # Rótulo guardado que não existe mais na lista (a base mudou de
-        # recorte) travaria o widget: volta para o padrão.
-        elif st.session_state.get("fin_mes_sel_analise") not in rotulos_a:
-            st.session_state["fin_mes_sel_analise"] = rotulos_a[_indice_mes_a]
-        col_a1, col_a2, col_a3 = st.columns(3)
-        with col_a1:
-            mes_sel_a = st.selectbox("Mês:", rotulos_a, index=_indice_mes_a,
-                                     key="fin_mes_sel_analise")
-        with col_a2:
+        _padrao_a = _mes_corrente_a if _mes_corrente_a in meses_disp_a else None
+        col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+        periodo_ini_a, periodo_fim_a = seletor_periodo_meses(
+            meses_disp_a, "fin_periodo_analise",
+            periodo_ini_padrao=_padrao_a, periodo_fim_padrao=_padrao_a,
+            ajuda_ini="Por padrão abre no mês corrente.",
+            ajuda_fim="Deixe igual ao inicial para ver um mês só.",
+            colunas=(col_a1, col_a2),
+        )
+        with col_a3:
             opcoes_canal_a = ["Todos"] + sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str).tolist())
             canal_sel_a = st.selectbox("Canal:", opcoes_canal_a, key="fin_canal_sel_analise")
-        with col_a3:
+        with col_a4:
             opcoes_modal_a = ["Todas"] + sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str).tolist())
             modal_sel_a = st.selectbox("Modalidade:", opcoes_modal_a, key="fin_modal_sel_analise")
 
         df_a = df_fin[df_fin["Tipo Movimento"] != "aplicacao"].copy()
-        if mes_sel_a != "Todo o período":
-            periodo_a = meses_disp_a[rotulos_a.index(mes_sel_a) - 1]
-            df_a = df_a[df_a["Data Efetiva"].dt.to_period("M") == periodo_a]
+        if periodo_ini_a is not None:
+            _periodo_linha_a = df_a["Data Efetiva"].dt.to_period("M")
+            df_a = df_a[(_periodo_linha_a >= periodo_ini_a) & (_periodo_linha_a <= periodo_fim_a)]
         if canal_sel_a != "Todos":
             df_a = df_a[df_a[COL_FIN_CANAL].astype(str) == canal_sel_a]
         if modal_sel_a != "Todas":
             df_a = df_a[df_a[COL_FIN_MODALIDADE].astype(str) == modal_sel_a]
+
+        st.caption(
+            "Recorte: **" + (rotulo_periodo_meses(periodo_ini_a, periodo_fim_a) or "sem período")
+            + "**. Todos os números desta aba seguem os três filtros acima."
+        )
 
         if df_a.empty:
             st.info("Nenhum lançamento para os filtros selecionados.")
