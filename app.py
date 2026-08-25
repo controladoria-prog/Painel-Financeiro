@@ -4207,6 +4207,10 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
 # configuráveis porque o que é "grave" muda de empresa para empresa -- alerta
 # que dispara sempre vira ruído e passa a ser ignorado.
 META_RESERVA_PADRAO = 30      # % do disponível que deve sobrar após pagar tudo
+# Até onde o eixo da % de sobra pode abrir no gráfico executivo. Sem trava, um
+# mês fora da curva (novembro chegou a -1643%) achata todos os outros numa
+# linha reta e some com a referência da meta.
+LIMITE_EIXO_PCT_SOBRA = 150
 HORIZONTE_ALERTA_SEMANAS = 13
 
 
@@ -6712,16 +6716,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # muda é o DENOMINADOR, e com ele o sentido da porcentagem. Aqui os
             # 30% são sobre tudo que passou pelo mês, que é a frase da meta.
             #
-            # A sobra do mês anterior entra pelo SALDO INICIAL, que já é zero
-            # em mês realizado e no mês corrente -- então não é preciso repetir
-            # aqui a regra de "só na previsão".
+            # A sobra do mês anterior entra pelo SALDO INICIAL nos meses de
+            # previsão. ATENÇÃO: a partir de 25/08/2026 a Reserva encadeia a
+            # SUA PRÓPRIA sobra nesses meses, e não o TOTAL GERAL da tabela de
+            # cima -- ver o bloco da meta logo abaixo, que explica por quê.
             #
-            # CONSEQUÊNCIA: a Sobra é agora IGUAL ao TOTAL GERAL da tabela
-            # Movimentos por Mês, que sempre usou abertura. Antes elas
-            # divergiam de propósito, e a divergência era o sintoma da dupla
-            # contagem. É isso que faz a cadeia dos meses de previsão fechar:
-            # o saldo inicial de cada um é o TOTAL GERAL do anterior, que agora
-            # é a mesma coisa que a sobra do anterior.
+            # CONSEQUÊNCIA: a Sobra é igual ao TOTAL GERAL da tabela Movimentos
+            # por Mês nos meses REALIZADOS e no CORRENTE. Nos de previsão as
+            # duas divergem de propósito, pelo tanto que falta para a meta: a
+            # tabela de cima mostra só o contratado, esta mostra o cenário com
+            # a meta cumprida.
             _saldos_abertura_m = [
                 m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "saldo"
@@ -6730,19 +6734,63 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 m for m in pivot_m.index
                 if _classificar_movimento_fin(m) == "entrada"
             ]
-            serie_disponivel_total = pd.Series(
+            # META COMO PREVISÃO DE ENTRADA (25/08/2026) -- exceção à regra de
+            # que a meta nunca entra em total, e a única.
+            #
+            # O PROBLEMA: nos meses à frente o "a receber" é só a cauda das
+            # parcelas já emitidas (dezembro tinha R$ 1,3 mi porque quase nada
+            # de dezembro foi vendido ainda), enquanto o "a pagar" já está
+            # quase completo, porque compromisso se contrata com antecedência.
+            # A tabela comparava uma entrada sabidamente incompleta com uma
+            # saída completa e chamava a diferença de rombo: novembro dava
+            # -1643% de reserva. Não era previsão de problema, era o formato
+            # do dado.
+            #
+            # A REGRA: mês que ainda não aconteceu não tem realizado nenhum
+            # para inflar -- a meta É a previsão de entrada da empresa. Então
+            # só nos meses de PREVISÃO entra o que ainda falta para a meta
+            # (pivot_m já guarda a linha de meta como "quanto falta", com piso
+            # em zero: se o emitido passar do alvo, esta parcela é zero e nada
+            # muda). Mês realizado e mês corrente seguem sem meta, como sempre.
+            #
+            # POR QUE A CADEIA É PRÓPRIA: se setembro recebe a meta, é a sobra
+            # DE SETEMBRO COM A META que entra em outubro. Puxar o saldo
+            # inicial da tabela de cima, que ignora a meta, faria cada mês
+            # somar a sua meta e jogar fora a do anterior.
+            _falta_para_meta_m = [
+                m for m in pivot_m.index
+                if _classificar_movimento_fin(m) == "meta"
+            ]
+            serie_meta_a_realizar = pd.Series(
                 {
                     coluna: (
-                        saldos_iniciais_m.get(coluna, 0.0)
-                        + (float(pivot_m.loc[_saldos_abertura_m, coluna].sum())
-                           if _saldos_abertura_m else 0.0)
-                        + (float(pivot_m.loc[_entradas_do_mes_m, coluna].sum())
-                           if _entradas_do_mes_m else 0.0)
+                        abs(float(pivot_m.loc[_falta_para_meta_m, coluna].sum()))
+                        if (_falta_para_meta_m and _periodo > _mes_corrente_m) else 0.0
                     )
-                    for coluna in colunas_meses_m
+                    for _periodo, coluna in zip(meses_ordenados_m, colunas_meses_m)
                 }
             )
-            serie_sobra = serie_disponivel_total - serie_a_pagar.abs()
+
+            _disponivel_m, _sobra_m = {}, {}
+            _sobra_anterior_reserva = float(saldo_anterior_ao_periodo_m)
+            for _periodo, _coluna in zip(meses_ordenados_m, colunas_meses_m):
+                _do_proprio_mes = (
+                    (float(pivot_m.loc[_saldos_abertura_m, _coluna].sum())
+                     if _saldos_abertura_m else 0.0)
+                    + (float(pivot_m.loc[_entradas_do_mes_m, _coluna].sum())
+                       if _entradas_do_mes_m else 0.0)
+                    + float(serie_meta_a_realizar[_coluna])
+                )
+                # Passado e corrente têm as posições reais de caixa e banco
+                # dentro deles: somar abertura por cima contaria duas vezes.
+                _base = _sobra_anterior_reserva if _periodo > _mes_corrente_m else 0.0
+                _disponivel_m[_coluna] = _base + _do_proprio_mes
+                _sobra_m[_coluna] = (
+                    _disponivel_m[_coluna] - abs(float(serie_a_pagar.get(_coluna, 0.0))))
+                _sobra_anterior_reserva = _sobra_m[_coluna]
+
+            serie_disponivel_total = pd.Series(_disponivel_m)
+            serie_sobra = pd.Series(_sobra_m)
             serie_pct_sobra = pd.Series(
                 [
                     # Porcentagem só existe com disponível positivo. Com os
@@ -6764,10 +6812,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
 
             LINHA_PCT_SOBRA = "% de sobra"
-            df_reserva_m = pd.DataFrame(
-                [serie_disponivel_total, serie_obrigacoes, serie_sobra, serie_pct_sobra],
-                index=["Disponível", "A pagar no mês", "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
-            )
+            LINHA_META_RESERVA = "↳ meta ainda a realizar (previsão)"
+            LINHAS_EM_REAIS = [
+                "Disponível", LINHA_META_RESERVA, "A pagar no mês",
+                "Sobra depois de pagar tudo",
+            ]
 
             def _formata_pct_sobra(valor):
                 """Mês sem disponível não tem porcentagem — mostra traço. Um
@@ -6776,26 +6825,43 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     return "—"
                 return f"{valor:.1f}%".replace(".", ",")
 
+            # A linha de % entra na tabela JÁ COMO TEXTO, e não como número com
+            # ausente. Em 25/08/2026 dezembro apareceu escrito "None" na tela,
+            # com o valor ausente atravessando a formatação -- e não deu para
+            # reproduzir aqui (pandas 2.2 e 3.0, e a própria função do
+            # Streamlit que monta as células, todos devolviam o traço). Como
+            # não dá para consertar a camada que não se sabe qual é, o valor
+            # ausente deixa de existir antes de sair daqui: nenhuma camada
+            # precisa decidir como desenhar um número que não há. A série
+            # numérica continua viva ao lado, para o gráfico e para a cor.
+            df_reserva_m = pd.DataFrame(
+                [serie_disponivel_total, serie_meta_a_realizar, serie_obrigacoes,
+                 serie_sobra, serie_pct_sobra.map(_formata_pct_sobra)],
+                index=["Disponível", LINHA_META_RESERVA, "A pagar no mês",
+                       "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
+            )
+
             def _cor_pct_meta_fin(linha):
-                """Na linha de % de sobra a cor não segue o sinal, e sim a
-                META: abaixo de 30% fica vermelho. Vazio também é vermelho —
-                mês sem disponível não bateu meta nenhuma."""
+                """Na linha de % a cor não segue o sinal, e sim a META: abaixo
+                de 30% fica vermelho, e mês sem disponível também (não bateu
+                meta nenhuma). A cor sai da série NUMÉRICA, porque na tabela
+                essa linha já é texto. A linha da meta a realizar fica em
+                laranja: é alvo, não dinheiro em caixa."""
                 if linha.name == LINHA_PCT_SOBRA:
                     return [
                         "color: "
                         + (COLORS["positive"] if (not pd.isna(v) and v >= 30)
                            else COLORS["negative"])
                         + "; font-weight: 600;"
-                        for v in linha
+                        for v in serie_pct_sobra.reindex(linha.index)
                     ]
+                if linha.name == LINHA_META_RESERVA:
+                    return [f"color: {COLORS['warning']};" for _ in linha]
                 return [cor_valor(v) for v in linha]
 
             st.dataframe(
                 df_reserva_m.style.format(
-                    {c: formata_brl for c in colunas_meses_m}
-                ).format(
-                    {c: _formata_pct_sobra for c in colunas_meses_m},
-                    subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :],
+                    formata_brl, subset=pd.IndexSlice[LINHAS_EM_REAIS, :]
                 ).apply(_cor_pct_meta_fin, axis=1),
                 width="stretch",
             )
@@ -6804,9 +6870,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "**Disponível** = o saldo de caixa e banco com que o mês **começou** + tudo que se recebeu e "
                 "ainda há para receber **dentro do mês**. **A pagar** = o total de contas a pagar do mês. "
                 "**% de sobra** = (disponível − a pagar) ÷ disponível: de tudo que passou pelo mês, quanto "
-                "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais. Nos meses de "
-                "previsão o disponível já começa com a sobra do mês anterior — por isso a linha Sobra é a "
-                "mesma coisa que o TOTAL GERAL da tabela acima."
+                "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais."
+            )
+            st.caption(
+                "⚠️ **Mês que ainda não aconteceu é CENÁRIO, não previsão fechada.** Nele o a receber traz só "
+                "as parcelas já emitidas, que são poucas — o que ainda falta para bater a **meta de "
+                "recebimento** entra na linha em laranja e completa o disponível. Se a meta não for cumprida, "
+                "a sobra real é menor. Cada mês de previsão parte da sobra do anterior, em cadeia. Por isso a "
+                "linha Sobra é igual ao TOTAL GERAL da tabela acima nos meses já realizados e no corrente, e "
+                "maior nos de previsão — exatamente pelo tanto que falta para a meta."
             )
 
             # ---- Gráfico executivo: entradas x saídas, resultado e reserva ----
@@ -6859,14 +6931,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ))
                 # % de sobra x meta de 30%, no eixo da direita
                 cores_pontos_sobra = [
-                    COLORS["positive"] if v >= 30 else COLORS["negative"] for v in pct_sobra_grafico
+                    COLORS["negative"] if (pd.isna(v) or v < 30) else COLORS["positive"]
+                    for v in pct_sobra_grafico
                 ]
                 fig_es.add_trace(go.Scatter(
                     name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
                     mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2.5),
                     marker=dict(size=10, color=cores_pontos_sobra,
                                 line=dict(color=COLORS["bg"], width=2)),
-                    text=[f"{v:.0f}%" for v in pct_sobra_grafico],
+                    text=["" if pd.isna(v) else f"{v:.0f}%" for v in pct_sobra_grafico],
                     textposition="top center", textfont=dict(size=10, color=COLORS["text"]),
                     hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
                 ))
@@ -6877,7 +6950,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ))
 
                 teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
-                teto_pct = max(pct_sobra_grafico) if pct_sobra_grafico else 60
+                # FAIXA DO EIXO DA DIREITA com trava (25/08/2026): um único mês
+                # fora da curva achatava o gráfico inteiro -- com novembro em
+                # -1643% de reserva, todos os outros meses viravam uma linha
+                # reta colada no topo e a meta de 30% sumia. A faixa passou a
+                # sair só dos meses com resposta (ausente não conta) e nunca
+                # abre mais que LIMITE_EIXO_PCT_SOBRA para cada lado; o mês que
+                # estourar sai fora do desenho, mas o número dele continua
+                # escrito ao lado do ponto e no hover.
+                pct_com_resposta = [v for v in pct_sobra_grafico if not pd.isna(v)]
+                piso_pct = min(pct_com_resposta) if pct_com_resposta else 0
+                teto_pct = max(pct_com_resposta) if pct_com_resposta else 60
+                faixa_pct = [
+                    max(-LIMITE_EIXO_PCT_SOBRA, min(0, piso_pct - 10)),
+                    min(LIMITE_EIXO_PCT_SOBRA, max(60, teto_pct + 15)),
+                ]
                 estilo_grafico(
                     fig_es, height=470, barmode="group", bargap=0.3, bargroupgap=0.08,
                     xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
@@ -6892,7 +6979,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
                         overlaying="y", side="right", showgrid=False, fixedrange=True,
                         ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
-                        range=[0, max(60, teto_pct * 1.4)],
+                        range=faixa_pct,
                     ),
                     legend=dict(orientation="h", yanchor="bottom", y=-0.28, xanchor="center", x=0.5,
                                 font=dict(size=10)),

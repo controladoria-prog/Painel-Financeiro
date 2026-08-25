@@ -1373,30 +1373,114 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # a receber, liquidado) -- nunca de TODAS, o que arrastaria a META.
         self.assertIn("_saldos_abertura_m", bloco_reserva)
         self.assertIn("_entradas_do_mes_m", bloco_reserva)
-        # A sobra do mes anterior entra pelo SALDO INICIAL, que a tabela de
-        # cima ja calcula -- a Reserva nao faz a propria cadeia.
-        self.assertIn("saldos_iniciais_m.get(coluna, 0.0)", bloco_reserva)
-        self.assertNotIn("_sobra_anterior_m", bloco_reserva,
-                         "a Reserva voltou a encadear por conta propria")
+        # 25/08/2026: nos meses de PREVISAO a Reserva encadeia a SUA propria
+        # sobra, porque ela soma a meta e o saldo inicial da tabela de cima
+        # nao. Puxar o saldo inicial de la faria cada mes somar a sua meta e
+        # jogar fora a do anterior.
+        self.assertIn("_sobra_anterior_reserva", bloco_reserva,
+                      "a Reserva precisa encadear a propria sobra na previsao")
+        self.assertIn("_periodo > _mes_corrente_m", bloco_reserva,
+                      "so mes de previsao parte da sobra anterior")
 
     def test_reserva_monta_cada_parte_da_sua_fonte(self):
-        """Regra definida pela area em 25/08/2026, LEITURA DE FLUXO:
+        """Regra da area, LEITURA DE FLUXO (25/08/2026):
           caixa e banco  -> ABERTURA do mes (primeiro dia)
           a receber e liquidado -> TOTAL do mes
           a pagar        -> TOTAL do mes
-        A pergunta e "de tudo que passou pelo mes, quanto sobrou depois de
-        pagar tudo" -- e a abertura e o unico saldo que conversa com os totais
-        do mes sem contar o mesmo dinheiro duas vezes."""
+          meta           -> SO nos meses de previsao (ver o teste da meta)
+        A abertura e o unico saldo que conversa com os totais do mes sem contar
+        o mesmo dinheiro duas vezes."""
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 4500):i]
-        self.assertIn("pivot_m.loc[_saldos_abertura_m, coluna]", bloco,
+        bloco = FONTE[max(0, i - 7000):i]
+        self.assertIn("pivot_m.loc[_saldos_abertura_m, _coluna]", bloco,
                       "caixa e banco vem da ABERTURA")
-        self.assertIn("pivot_m.loc[_entradas_do_mes_m, coluna]", bloco,
+        self.assertIn("pivot_m.loc[_entradas_do_mes_m, _coluna]", bloco,
                       "a receber e liquidado somam o mes")
         self.assertIn('_classificar_movimento_fin(m) == "saldo"', bloco)
         self.assertIn('_classificar_movimento_fin(m) == "entrada"', bloco)
-        # A meta continua fora: e balizador, nao dinheiro em caixa.
-        self.assertNotIn('"meta"', bloco)
+        self.assertNotIn("pivot_m_fechamento", bloco,
+                         "o pivo de fechamento traz a dupla contagem de volta")
+
+    def test_meta_entra_no_disponivel_so_na_previsao(self):
+        """25/08/2026, EXCECAO UNICA a regra de que a meta nunca entra em
+        total. Mes que ainda nao aconteceu tem so a cauda das parcelas ja
+        emitidas no a receber (dezembro tinha R$ 1,3 mi), enquanto o a pagar ja
+        esta quase completo -- a tabela comparava entrada incompleta com saida
+        completa e chamava de rombo. Mes realizado e mes corrente seguem sem
+        meta: la existe realizado de verdade, e a meta so inflaria."""
+        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
+        bloco = FONTE[max(0, i - 7000):i]
+        self.assertIn("serie_meta_a_realizar", bloco)
+        self.assertIn('_classificar_movimento_fin(m) == "meta"', bloco)
+        # A condicao de previsao tem de estar na propria montagem da serie.
+        trecho_meta = bloco[bloco.index("serie_meta_a_realizar = pd.Series("):]
+        self.assertIn("_periodo > _mes_corrente_m", trecho_meta[:600],
+                      "a meta nao pode entrar em mes realizado nem no corrente")
+        # E a linha tem de ficar VISIVEL na tabela, nao embutida no disponivel.
+        depois = FONTE[i:i + 6000]
+        self.assertIn("LINHA_META_RESERVA", depois)
+        self.assertIn("meta ainda a realizar", depois)
+
+    def test_cadeia_da_previsao_carrega_a_sobra_com_a_meta(self):
+        """O numero que a decisao produz, mes a mes. Se setembro recebe a meta,
+        e a sobra DE SETEMBRO COM A META que entra em outubro -- puxar o saldo
+        inicial da tabela de cima (que ignora a meta) faria cada mes somar a
+        sua meta e jogar fora a do anterior. Valores reais de 25/08/2026."""
+        mes_corrente = pd.Period("2026-08", "M")
+        meses = [pd.Period(f"2026-{m:02d}", "M") for m in range(7, 13)]
+        # abertura de caixa/banco + a receber + a receber liquidado do mes
+        proprio = [11_978_614.40, 13_567_638.60, 8_350_298.44,
+                   5_504_942.44, 3_019_686.31, 1_295_467.83]
+        metas = [4_300_482.26, 7_776_935.86, 10_462_221.58,
+                 12_111_597.35, 13_128_339.38, 14_685_042.65]
+        a_pagar = [9_704_926.16, 8_625_812.77, 9_336_790.37,
+                   11_689_048.42, 13_785_703.74, 11_298_162.96]
+
+        disponiveis, sobras = [], []
+        anterior = 0.0
+        for periodo, entrada, meta, pagar in zip(meses, proprio, metas, a_pagar):
+            eh_previsao = periodo > mes_corrente
+            # A meta entra como QUANTO FALTA, com piso em zero.
+            falta = max(meta - entrada, 0.0) if eh_previsao else 0.0
+            disponivel = (anterior if eh_previsao else 0.0) + entrada + falta
+            sobra = disponivel - pagar
+            disponiveis.append(disponivel)
+            sobras.append(sobra)
+            anterior = sobra
+
+        # Mes realizado e corrente: sem meta, iguais ao que ja estava na tela.
+        self.assertAlmostEqual(sobras[0], 2_273_688_24 / 100, places=2)
+        self.assertAlmostEqual(sobras[1], 4_941_825.83, places=2)
+        # Previsao: a meta completa a entrada e a cadeia carrega a sobra.
+        self.assertAlmostEqual(disponiveis[2], 15_404_047.41, places=2)
+        self.assertAlmostEqual(sobras[2], 6_067_257.04, places=2)
+        self.assertAlmostEqual(sobras[3], 6_489_805.97, places=2)
+        self.assertAlmostEqual(sobras[4], 5_832_441.61, places=2)
+        self.assertAlmostEqual(sobras[5], 9_219_321.30, places=2)
+        # Nenhum mes fica negativo -- era o sintoma que motivou a mudanca.
+        for sobra in sobras:
+            self.assertGreater(sobra, 0.0)
+        # E a % sai da faixa do absurdo para perto da meta.
+        pcts = [s / d * 100 for s, d in zip(sobras, disponiveis)]
+        self.assertAlmostEqual(pcts[2], 39.39, places=1)
+        self.assertAlmostEqual(pcts[4], 29.73, places=1)
+
+        # A CADEIA ERRADA, para o teste morder: se outubro partisse do TOTAL
+        # GERAL da tabela de cima (setembro sem meta = 3.955.333,90), daria
+        # 27,3% em vez de 35,7%.
+        setembro_sem_meta = 4_941_825.83 + 8_350_298.44 - 9_336_790.37
+        outubro_errado = setembro_sem_meta + 12_111_597.35
+        self.assertNotAlmostEqual(disponiveis[3], outubro_errado, places=2)
+
+    def test_meta_ja_batida_nao_soma_nada(self):
+        """Piso em zero: se o a receber ja emitido passou da meta do mes, o
+        excedente ja esta nas linhas de a receber e a parcela da meta e zero.
+        Somar a meta cheia por cima contaria o mesmo recebimento duas vezes."""
+        entrada, meta = 12_000_000.0, 10_000_000.0
+        self.assertEqual(max(meta - entrada, 0.0), 0.0)
+        # A funcao que produz esse numero e a mesma do resto do painel.
+        self.assertIn(".clip(lower=0)", FONTE[FONTE.index("def _aplicar_meta_como_falta("):
+                                              FONTE.index("def _total_geral_sem_meta(")])
 
     def test_fechamento_com_total_do_mes_conta_o_dinheiro_duas_vezes(self):
         """O defeito que motivou a mudanca, em numeros. O saldo do ULTIMO dia
@@ -1467,49 +1551,109 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertAlmostEqual(sobra, (4_800_000.0 + 500_000.0) - 500_000.0, places=2)
 
     def test_sobra_da_reserva_e_o_total_geral_do_mensal(self):
-        """Consequencia da leitura de fluxo, e a melhor trava que existe para
-        ela: as duas tabelas passaram a ler pela mesma base, entao a linha
-        Sobra tem de ser o TOTAL GERAL da tabela de cima, coluna a coluna.
-        Enquanto divergiam, a diferenca era o sintoma da dupla contagem."""
-        saldo_inicial = 1_200_000.0
+        """As duas tabelas leem pela mesma abertura, entao a linha Sobra e o
+        TOTAL GERAL da tabela de cima sao o MESMO numero -- nos meses
+        REALIZADOS e no CORRENTE. Enquanto divergiam ali, a diferenca era o
+        sintoma da dupla contagem.
+
+        Nos meses de PREVISAO elas divergem de proposito, exatamente pelo tanto
+        que falta para a meta: a tabela de cima mostra so o contratado, a
+        Reserva mostra o cenario com a meta cumprida."""
         abertura, a_receber, liquidado, a_pagar = 2_000_000.0, 500_000.0, 12_000_000.0, -9_700_000.0
 
-        # TOTAL GERAL = saldo inicial + tudo que nao e meta (a meta fica fora).
-        total_geral = saldo_inicial + abertura + a_receber + liquidado + a_pagar
-        # Reserva = disponivel - a pagar.
-        disponivel = saldo_inicial + abertura + a_receber + liquidado
-        sobra = disponivel - abs(a_pagar)
-        self.assertAlmostEqual(sobra, total_geral, places=2)
+        # --- Mes realizado: sem meta, os dois numeros batem. ---
+        total_geral = abertura + a_receber + liquidado + a_pagar
+        disponivel = abertura + a_receber + liquidado
+        self.assertAlmostEqual(disponivel - abs(a_pagar), total_geral, places=2)
+
+        # --- Mes de previsao: a Reserva soma o que falta para a meta. ---
+        falta_meta = 3_000_000.0
+        total_geral_prev = a_receber + liquidado + a_pagar          # sem meta
+        sobra_prev = (a_receber + liquidado + falta_meta) - abs(a_pagar)
+        self.assertAlmostEqual(sobra_prev - total_geral_prev, falta_meta, places=2)
 
         # E o codigo tem de continuar montando as duas do mesmo pivo.
-        i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 4500):i]
-        self.assertNotIn("pivot_m_fechamento", bloco)
         self.assertIn("movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)", FONTE)
+        self.assertNotIn("pivot_m_fechamento", FONTE)
 
     def test_pct_sem_disponivel_fica_vazia_e_nao_inventa_numero(self):
         """Com disponivel zero ou negativo nao ha porcentagem. A divisao com
         os dois lados negativos devolve numero POSITIVO (197% de sobra num mes
-        sem dinheiro), e o -100% que ficava no lugar era invencao igual."""
+        sem dinheiro), e o -100% que ficava no lugar era invencao igual.
+
+        25/08/2026: dezembro apareceu escrito "None" na tela, com o ausente
+        atravessando a formatacao -- e nao reproduziu em pandas 2.2 nem 3.0,
+        nem na funcao do Streamlit que monta as celulas. Como nao da para
+        consertar a camada que nao se sabe qual e, o ausente deixou de chegar
+        la: a linha de % entra na tabela JA COMO TEXTO."""
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 4500):i]
+        bloco = FONTE[max(0, i - 7000):i]
         self.assertIn('if disp > 0 else float("nan")', bloco,
                       "sem disponivel a porcentagem tem de ficar vazia")
         self.assertNotIn("else (0.0 if sobra == 0 else -100.0)", bloco,
                          "o -100% inventado voltou")
-        depois = FONTE[i:i + 4000]
+        depois = FONTE[i:i + 7000]
         self.assertIn("def _formata_pct_sobra(", depois, "falta o formatador do traco")
         self.assertIn('return "—"', depois)
-        # A cor da meta nao pode quebrar com valor vazio.
+        # O ausente nao pode voltar a chegar na tabela como numero.
+        self.assertIn("serie_pct_sobra.map(_formata_pct_sobra)", depois,
+                      "a linha de % tem de entrar na tabela ja como texto")
+        self.assertNotIn("subset=pd.IndexSlice[[LINHA_PCT_SOBRA], :]", depois,
+                         "formatar a linha de % no Styler deixa o ausente passar")
+        # A cor sai da serie NUMERICA, porque na tabela a linha ja e texto.
+        self.assertIn("for v in serie_pct_sobra.reindex(linha.index)", depois)
         self.assertIn("not pd.isna(v) and v >= 30", depois)
 
+    def test_map_aplica_o_formatador_tambem_no_ausente(self):
+        """O conserto acima depende de Series.map CHAMAR a funcao no valor
+        ausente (na_action=None e o padrao). Se isso mudar no pandas, o ausente
+        volta a escapar para a tabela -- e este teste avisa antes da tela."""
+        def formata(valor):
+            return "—" if pd.isna(valor) else f"{valor:.1f}%"
+
+        serie = pd.Series([39.4, float("nan"), 29.7], index=["SET", "OUT", "NOV"])
+        texto = serie.map(formata)
+        self.assertEqual(list(texto), ["39.4%", "—", "29.7%"])
+        self.assertFalse(texto.isna().any(), "nenhum ausente pode sobreviver ao map")
+
     def test_reserva_soma_a_sobra_anterior_so_na_previsao(self):
-        """A sobra do mes anterior entra pelo SALDO INICIAL, que ja e zero em
-        mes realizado e no mes corrente."""
+        """Mes realizado e mes corrente tem as posicoes reais de caixa e banco
+        dentro deles: somar uma abertura por cima contaria o mesmo dinheiro
+        duas vezes. So a previsao parte do que sobrou do anterior."""
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 4000):i]
-        self.assertIn("saldos_iniciais_m.get(coluna, 0.0)", bloco)
-        self.assertIn("serie_sobra = serie_disponivel_total - serie_a_pagar.abs()", bloco)
+        bloco = FONTE[max(0, i - 7000):i]
+        self.assertIn(
+            "_base = _sobra_anterior_reserva if _periodo > _mes_corrente_m else 0.0",
+            bloco)
+        self.assertIn("_sobra_anterior_reserva = _sobra_m[_coluna]", bloco,
+                      "a cadeia precisa avancar com a sobra deste mes")
+
+    def test_faixa_do_eixo_da_pct_tem_trava(self):
+        """Um mes fora da curva achatava o grafico inteiro: com novembro em
+        -1643%, os outros meses viravam uma linha reta colada no topo e o
+        tracejado da meta sumia. A faixa sai so dos meses com resposta e nunca
+        abre mais que o limite para cada lado."""
+        limite = 150
+        for valores, esperado_dentro in [
+            ([19.0, 36.4, 29.8, 35.7], True),
+            ([19.0, -1643.0, 29.8], False),
+        ]:
+            piso, teto = min(valores), max(valores)
+            faixa = [max(-limite, min(0, piso - 10)), min(limite, max(60, teto + 15))]
+            self.assertGreaterEqual(faixa[0], -limite)
+            self.assertLessEqual(faixa[1], limite)
+            self.assertEqual(piso >= faixa[0], esperado_dentro)
+        # Mes sem resposta nao pode entrar na conta da faixa.
+        self.assertIn("pct_com_resposta = [v for v in pct_sobra_grafico if not pd.isna(v)]",
+                      FONTE)
+        self.assertIn("LIMITE_EIXO_PCT_SOBRA = 150", FONTE)
+        self.assertIn("range=faixa_pct,", FONTE)
+        self.assertNotIn("range=[0, max(60, teto_pct * 1.4)]", FONTE,
+                         "a faixa sem trava voltou")
+        # E o ausente nao pode quebrar a cor nem o rotulo dos pontos.
+        self.assertIn("COLORS[\"negative\"] if (pd.isna(v) or v < 30)", FONTE)
+        self.assertIn('text=["" if pd.isna(v) else f"{v:.0f}%" for v in pct_sobra_grafico]',
+                      FONTE)
 
     def test_disponivel_nunca_fica_negativo(self):
         """Mes que fecha no vermelho nao entrega caixa negativo ao seguinte:
