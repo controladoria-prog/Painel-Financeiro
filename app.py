@@ -10999,6 +10999,111 @@ def pendentes_do_fechamento(df):
     return list(falta[COL_FECH_PROCESSO])
 
 
+def url_para_editar_planilha(link):
+    """Endereço para ABRIR a planilha e marcar. O painel só lê, então o botão
+    que leva para a edição é o caminho natural entre ver a pendência e
+    resolvê-la. Devolve None quando o que está guardado é um link de
+    publicação, que não tem edição correspondente."""
+    texto = str(link or "").strip()
+    achado = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", texto)
+    if achado and "/d/e/" not in texto:
+        return f"https://docs.google.com/spreadsheets/d/{achado.group(1)}/edit"
+    if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", texto):
+        return f"https://docs.google.com/spreadsheets/d/{texto}/edit"
+    return None
+
+
+def _data_do_texto_br(texto):
+    """dd/mm/aaaa para data. Devolve None em vez de chutar.
+
+    Formato fixo e explícito, sem `dayfirst` nem inferência: a coluna é
+    digitada à mão e exportada por um Google que pode estar em local dos
+    Estados Unidos. Um parser esperto leria 05/08 como 8 de maio e ninguém
+    perceberia. Aqui, o que não estiver em dd/mm/aaaa simplesmente não conta."""
+    valor = str(texto or "").strip()
+    if not re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", valor):
+        return None
+    try:
+        return datetime.strptime(valor, "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def prazo_do_fechamento(competencia, df, hoje):
+    """Quanto tempo o fechamento daquela competência levou ou está levando.
+
+    Devolve (estado, dias, rótulo). Os estados:
+      "em_curso"   — o mês ainda não acabou; não há prazo a contar.
+      "concluido"  — tudo OK ou N/A; `dias` são os corridos entre o fim do mês
+                     e a última conclusão registrada (None se as datas não
+                     estiverem preenchidas em dd/mm/aaaa).
+      "aberto"     — o mês acabou e ainda falta coisa; `dias` são os corridos
+                     desde o fim do mês até hoje. É o número que interessa
+                     numa Controladoria: há quanto tempo este fechamento está
+                     em aberto."""
+    hoje = pd.Timestamp(hoje).date()
+    fim_do_mes = competencia.end_time.date()
+    if hoje <= fim_do_mes:
+        return "em_curso", None, "mês em curso"
+    pendentes = pendentes_do_fechamento(df)
+    if not pendentes:
+        datas = [d for d in (_data_do_texto_br(v) for v in df[COL_FECH_QUANDO]) if d]
+        if not datas:
+            return "concluido", None, "concluído"
+        dias = (max(datas) - fim_do_mes).days
+        return "concluido", dias, f"fechado em {dias} dia" + ("s" if dias != 1 else "")
+    dias = (hoje - fim_do_mes).days
+    return "aberto", dias, f"aberto há {dias} dia" + ("s" if dias != 1 else "")
+
+
+SIMBOLOS_FECHAMENTO = {
+    STATUS_OK: "OK",
+    STATUS_EM_ANDAMENTO: "···",
+    STATUS_PENDENTE: "—",
+    STATUS_NAO_SE_APLICA: "n/a",
+}
+LINHA_PANORAMA_PCT = "% concluído"
+
+
+def panorama_do_ano(df, ano):
+    """Matriz processo × mês de um ano, com o status de cada célula e uma
+    linha final de percentual.
+
+    Existe porque a tela de um mês só responde "como estou agora". A matriz
+    responde outra coisa, que é o que se quer numa Controladoria: QUAL
+    processo atrasa sempre. Um Rateio PJ pendente em quatro meses seguidos
+    salta aos olhos aqui e é invisível na tela de mês."""
+    meses = sorted({int(m) for m in df.loc[df[COL_FECH_ANO] == ano, COL_FECH_MES]
+                    if 1 <= int(m) <= 12}) if len(df) else []
+    colunas = [f"{m:02d}" for m in meses]
+    if not colunas:
+        return pd.DataFrame()
+    linhas = {}
+    percentuais = {}
+    por_mes = {}
+    for mes, coluna in zip(meses, colunas):
+        por_mes[coluna] = checklist_da_competencia(
+            df, pd.Period(f"{ano}-{mes:02d}", "M"))
+        concluidos, aplicaveis, pct = resumo_do_fechamento(por_mes[coluna])
+        percentuais[coluna] = "—" if aplicaveis == 0 else f"{pct:.0f}%"
+    for i, processo in enumerate(PROCESSOS_FECHAMENTO):
+        linhas[processo] = {
+            coluna: SIMBOLOS_FECHAMENTO.get(
+                por_mes[coluna][COL_FECH_STATUS].iloc[i], "—")
+            for coluna in colunas
+        }
+    matriz = pd.DataFrame.from_dict(linhas, orient="index", columns=colunas)
+    matriz.loc[LINHA_PANORAMA_PCT] = pd.Series(percentuais)
+    return matriz
+
+
+def anos_da_planilha(df):
+    """Anos presentes, do mais recente para trás."""
+    if df is None or len(df) == 0:
+        return []
+    return sorted({int(a) for a in df[COL_FECH_ANO]}, reverse=True)
+
+
 @st.cache_data(ttl=300, show_spinner=False, max_entries=2)
 def carregar_planilha_fechamento(url):
     """Lê a planilha de fechamento. Devolve (tabela, erro) -- e o erro é TEXTO
@@ -15125,10 +15230,11 @@ if tab_fech is not None:
                 )
             else:
                 _competencias = competencias_da_planilha(_dados_fech)
-                _padrao = competencia_padrao(_competencias, datetime.now(FUSO_BR).date())
+                _hoje_fech = datetime.now(FUSO_BR).date()
+                _padrao = competencia_padrao(_competencias, _hoje_fech)
                 _indice_padrao = _competencias.index(_padrao) if _padrao in _competencias else 0
 
-                _col_comp, _col_kpi = st.columns([1, 2])
+                _col_comp, _col_abrir, _col_atualizar = st.columns([2, 1, 1])
                 with _col_comp:
                     _competencia_fech = st.selectbox(
                         "Competência",
@@ -15138,18 +15244,57 @@ if tab_fech is not None:
                         key="fech_competencia",
                         help="O mês que está sendo fechado. Abre no mês anterior ao de hoje.",
                     )
+                _link_editar = url_para_editar_planilha(_valor_secret)
+                with _col_abrir:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if _link_editar:
+                        # O caminho entre ver a pendência e resolvê-la tem de
+                        # ser um clique: o painel só lê, a marcação é lá.
+                        st.link_button("📝 Abrir planilha", _link_editar, width="stretch")
+                with _col_atualizar:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("🔄 Atualizar", width="stretch", key="btn_fech_atualizar",
+                                 help="Busca a planilha agora, sem esperar os 5 minutos"):
+                        carregar_planilha_fechamento.clear()
+                        st.rerun()
 
                 _checklist = checklist_da_competencia(_dados_fech, _competencia_fech)
                 _concluidos, _aplicaveis, _pct = resumo_do_fechamento(_checklist)
+                _faltando = pendentes_do_fechamento(_checklist)
                 _nao_aplica = len(_checklist) - _aplicaveis
+                _em_andamento = int(
+                    (_checklist[COL_FECH_STATUS] == STATUS_EM_ANDAMENTO).sum())
+                _estado_prazo, _dias_prazo, _rotulo_prazo = prazo_do_fechamento(
+                    _competencia_fech, _checklist, _hoje_fech)
 
-                with _col_kpi:
-                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                    st.progress(
-                        min(max(_pct / 100, 0.0), 1.0),
-                        text=(f"{_concluidos} de {_aplicaveis} concluídos ({_pct:.0f}%)".replace(".", ",")
-                              + (f" · {_nao_aplica} não se aplica" if _nao_aplica else "")),
-                    )
+                _cor_progresso = (COLORS["positive"] if not _faltando
+                                  else COLORS["warning"] if _pct >= 50
+                                  else COLORS["negative"])
+                _cor_prazo = {
+                    "em_curso": COLORS["text_muted"],
+                    "concluido": COLORS["positive"],
+                }.get(_estado_prazo, COLORS["negative"] if (_dias_prazo or 0) > 10
+                      else COLORS["warning"])
+                st.markdown(
+                    render_kpi_row([
+                        dict(label="Concluídos", value=f"{_concluidos} de {_aplicaveis}",
+                             value_color=_cor_progresso,
+                             subtext=f"{_pct:.0f}% do que se aplica ao mês".replace(".", ","),
+                             progress_pct=_pct),
+                        dict(label="Pendentes", value=str(len(_faltando)),
+                             value_color=COLORS["positive"] if not _faltando else COLORS["negative"],
+                             subtext=(f"{_em_andamento} em andamento" if _em_andamento
+                                      else "nada em aberto" if not _faltando
+                                      else "nenhum iniciado")),
+                        dict(label="Não se aplica", value=str(_nao_aplica),
+                             value_color=COLORS["text_muted"],
+                             subtext="fora da conta do percentual"),
+                        dict(label="Prazo", value=(str(_dias_prazo) if _dias_prazo is not None else "—"),
+                             value_color=_cor_prazo,
+                             subtext=_rotulo_prazo),
+                    ]),
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -15176,7 +15321,6 @@ if tab_fech is not None:
                     hide_index=True,
                 )
 
-                _faltando = pendentes_do_fechamento(_checklist)
                 if not _faltando:
                     st.success(
                         f"**Fechamento de {rotulo_competencia(_competencia_fech)} completo** — "
@@ -15186,12 +15330,70 @@ if tab_fech is not None:
                 else:
                     st.warning(f"**Faltam {len(_faltando)}:** " + " · ".join(_faltando))
 
+                # As observações ficam numa coluna larga que costuma estar
+                # vazia; quando têm conteúdo, é o que precisa ser lido, e não
+                # perdido no meio da grade.
+                _com_observacao = _checklist[_checklist[COL_FECH_OBS].astype(str).str.strip() != ""]
+                if len(_com_observacao):
+                    with st.expander(f"📝 Observações do mês ({len(_com_observacao)})", expanded=True):
+                        for _, _linha_obs in _com_observacao.iterrows():
+                            st.markdown(
+                                f"**{_linha_obs[COL_FECH_PROCESSO]}** "
+                                f"({_linha_obs[COL_FECH_STATUS]}) — {_linha_obs[COL_FECH_OBS]}"
+                            )
+
                 st.caption(
                     "A marcação é feita **na planilha**, não aqui — o painel só lê e mostra, e "
                     "recarrega a cada 5 minutos. **N/A** sai da conta: processo que não se aplica "
                     "ao mês não é trabalho feito nem pendência, então não entra nem no numerador "
                     "nem no denominador do percentual."
                 )
+
+                # ---- Panorama do ano ------------------------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="section-title">📅 Panorama do ano</div>',
+                    unsafe_allow_html=True,
+                )
+                _anos = anos_da_planilha(_dados_fech)
+                _ano_fech = st.selectbox(
+                    "Ano", _anos,
+                    index=_anos.index(_competencia_fech.year)
+                    if _competencia_fech.year in _anos else 0,
+                    key="fech_ano_panorama",
+                )
+                _panorama = panorama_do_ano(_dados_fech, _ano_fech)
+                if _panorama.empty:
+                    st.info(f"A planilha não tem nenhum mês de {_ano_fech}.")
+                else:
+                    def _cor_panorama(coluna):
+                        cores = {
+                            SIMBOLOS_FECHAMENTO[STATUS_OK]: COLORS["positive"],
+                            SIMBOLOS_FECHAMENTO[STATUS_EM_ANDAMENTO]: COLORS["warning"],
+                            SIMBOLOS_FECHAMENTO[STATUS_PENDENTE]: COLORS["negative"],
+                            SIMBOLOS_FECHAMENTO[STATUS_NAO_SE_APLICA]: COLORS["text_muted"],
+                        }
+                        return [
+                            # A linha de percentual não é status: ela segue a
+                            # própria escala, senão o "100%" apareceria com a
+                            # cor de "pendente" só por não estar no dicionário.
+                            (f"color: {COLORS['text']}; font-weight: 700;"
+                             if indice == LINHA_PANORAMA_PCT
+                             else f"color: {cores.get(valor, COLORS['text'])}; font-weight: 600;")
+                            for indice, valor in zip(coluna.index, coluna)
+                        ]
+
+                    st.dataframe(
+                        _panorama.style.apply(_cor_panorama, axis=0),
+                        width="stretch",
+                    )
+                    st.caption(
+                        "**OK** concluído · **···** em andamento · **—** pendente · **n/a** não se "
+                        "aplica. A tela de um mês responde *como estou agora*; esta responde *qual "
+                        "processo atrasa sempre* — quatro meses seguidos de pendência na mesma linha "
+                        "salta aos olhos aqui e é invisível lá em cima."
+                    )
+
                 st.caption(
                     "O ICMS tem robô próprio (lê o SPED, preenche a planilha de valores manuais e "
                     "importa no portal) — marque OK depois que a importação for conferida, não "
