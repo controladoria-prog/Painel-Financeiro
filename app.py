@@ -1762,12 +1762,60 @@ TIPOS_ECONOMICOS_FLUXO = {
 COLUNAS_MINIMAS_FLUXO = ("Movimento", "Valor.1", "Vencimento.1")
 
 
+def _segredo_com_origem(nome):
+    """Procura um segredo e devolve (valor, onde) — "topo", "seção [x]" ou
+    ("", "") quando não existe.
+
+    PROCURA DENTRO DAS SEÇÕES, e não só no topo, por um motivo que já custou
+    uma tarde: o arquivo de Secrets é TOML, e em TOML toda chave escrita
+    DEPOIS de um cabeçalho [secao] pertence àquela seção. Colar uma linha no
+    fim do arquivo — que é o lugar mais natural do mundo para colar — faz a
+    chave sumir do topo sem aviso nenhum, e `st.secrets.get(nome)` devolve
+    vazio como se ela nunca tivesse sido escrita. Aconteceu em 25/08/2026 com
+    FECHAMENTO_CSV_URL.
+
+    O "onde" existe para a tela poder dizer onde encontrou, em vez de deixar
+    quem configurou adivinhando por que a chave "não existe"."""
+
+    def _procurar(bloco, caminho):
+        try:
+            chaves = list(bloco.keys())
+        except Exception:                                        # noqa: BLE001
+            return None
+        if nome in chaves:
+            return str(bloco[nome] or "").strip(), (caminho or "topo")
+        for chave in chaves:
+            try:
+                sub = bloco[chave]
+            except Exception:                                    # noqa: BLE001
+                continue
+            onde = f"seção [{chave}]" if not caminho else f"{caminho} → [{chave}]"
+            # Tabela: desce direto. Texto NÃO -- ele também responde a `in`, e
+            # aí um trecho de e-mail viraria "achei o segredo".
+            if hasattr(sub, "keys"):
+                achado = _procurar(sub, onde)
+                if achado:
+                    return achado
+            # Lista de tabelas é o que o TOML monta para [[users]], e a chave
+            # colada depois de um cabeçalho desses cai DENTRO do último item.
+            elif isinstance(sub, (list, tuple)):
+                for i, item in enumerate(sub):
+                    if hasattr(item, "keys"):
+                        achado = _procurar(item, f"{onde}[{i}]")
+                        if achado:
+                            return achado
+        return None
+
+    try:
+        achado = _procurar(st.secrets, "")
+    except Exception:                                            # noqa: BLE001
+        return "", ""
+    return achado if achado else ("", "")
+
+
 def _segredo(nome):
     """Lê um segredo sem quebrar em ambiente que não tenha Secrets."""
-    try:
-        return str(st.secrets.get(nome, "") or "").strip()
-    except Exception:
-        return ""
+    return _segredo_com_origem(nome)[0]
 
 
 def fontes_csv_fluxo():
@@ -15027,18 +15075,35 @@ if tab_fech is not None:
             unsafe_allow_html=True,
         )
 
-        _url_fech = url_csv_do_fechamento(_segredo("FECHAMENTO_CSV_URL"))
+        _valor_secret, _onde_secret = _segredo_com_origem("FECHAMENTO_CSV_URL")
+        _url_fech = url_csv_do_fechamento(_valor_secret)
         if not _url_fech:
-            # Sem planilha ligada não há o que mostrar -- e a tela explica o
-            # que fazer, em vez de exibir oito linhas pendentes que não
-            # significam nada.
-            st.info(
-                "**A planilha de controle ainda não está ligada.** Este checklist é mantido numa "
-                "Planilha Google pela Controladoria; o painel apenas lê e mostra. Para ligar: suba a "
-                "planilha para o Drive, converta para Planilha Google (Arquivo → Salvar como Planilha "
-                "Google), compartilhe como *Qualquer pessoa com o link → Leitor* e cole o link em "
-                "**FECHAMENTO_CSV_URL**, nos Secrets do app."
-            )
+            # DOIS casos diferentes, e a tela precisa dizer QUAL. Antes ela
+            # mostrava a mesma mensagem para "não configurei" e para
+            # "configurei e não funcionou", o que deixava quem configurou sem
+            # saber onde procurar.
+            if _valor_secret:
+                st.error(
+                    f"**O segredo FECHAMENTO_CSV_URL existe** (encontrado no {_onde_secret}), "
+                    "**mas não reconheci o conteúdo como um link de planilha.** Valor lido: "
+                    f"`{_valor_secret[:120]}`. Esperado: o link do botão Compartilhar da Planilha "
+                    "Google, o link de publicação na web ou o ID do arquivo."
+                )
+            else:
+                st.info(
+                    "**A planilha de controle ainda não está ligada.** Este checklist é mantido numa "
+                    "Planilha Google pela Controladoria; o painel apenas lê e mostra. Para ligar: suba a "
+                    "planilha para o Drive, converta para Planilha Google (Arquivo → Salvar como Planilha "
+                    "Google), compartilhe como *Qualquer pessoa com o link → Leitor* e cole o link em "
+                    "**FECHAMENTO_CSV_URL**, nos Secrets do app."
+                )
+                st.warning(
+                    "⚠️ **Se você já colou e continua aparecendo esta mensagem, é quase certo que a linha "
+                    "caiu dentro de uma seção.** O arquivo de Secrets é TOML: toda chave escrita depois de "
+                    "um cabeçalho como `[usuarios]` passa a pertencer àquela seção, e o painel não a "
+                    "encontra no topo. Mova a linha **FECHAMENTO_CSV_URL = \"...\"** para o **começo** do "
+                    "arquivo, antes de qualquer linha entre colchetes, e salve."
+                )
             st.caption(
                 "Os processos acompanhados são: " + " · ".join(PROCESSOS_FECHAMENTO) + "."
             )

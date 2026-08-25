@@ -59,6 +59,7 @@ DEPENDENCIAS = {
     "meta_diaria_que_ainda_falta": [],
     "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
     "_cor_valor_invertido": ["cor_valor"],
+    "_segredo": ["_segredo_com_origem"],
     "preparar_checklist_da_planilha": ["resolver_colunas_fluxo", "_assinatura_coluna_fin",
                                       "_normalizar_coluna_fin", "_texto_ou_vazio",
                                       "normalizar_status_fechamento", "_normalizar_coluna_fin"],
@@ -3924,6 +3925,115 @@ class TesteTelaDoFechamento(unittest.TestCase):
         cabecalho = FONTE[max(0, i - 200):i]
         self.assertIn("@st.cache_data(ttl=", cabecalho)
         self.assertIn("max_entries=", cabecalho)
+
+
+class TesteBuscaDeSegredo(unittest.TestCase):
+    """A armadilha do TOML que custou uma tarde em 25/08/2026: o arquivo de
+    Secrets e TOML, e toda chave escrita DEPOIS de um cabecalho [secao]
+    pertence aquela secao. Colar a linha no fim do arquivo -- o lugar mais
+    natural do mundo -- faz a chave sumir do topo, e st.secrets.get devolve
+    vazio como se ela nunca tivesse sido escrita."""
+
+    LINK = "https://docs.google.com/spreadsheets/d/1p1T_2VWR4RY6lWq1_cn3omo7Iss_uX_l9D8j6_Sl8cA/edit"
+
+    class _SecretsFalso:
+        """Dubla o objeto de Secrets do Streamlit: tabela que responde a
+        keys(), `in` e indexacao, com sub-tabelas aninhadas."""
+
+        def __init__(self, dados):
+            self._dados = dados
+
+        def keys(self):
+            return self._dados.keys()
+
+        def __contains__(self, chave):
+            return chave in self._dados
+
+        def __getitem__(self, chave):
+            valor = self._dados[chave]
+            if isinstance(valor, dict):
+                return TesteBuscaDeSegredo._SecretsFalso(valor)
+            if isinstance(valor, list):
+                return [TesteBuscaDeSegredo._SecretsFalso(v) if isinstance(v, dict) else v
+                        for v in valor]
+            return valor
+
+    def _buscar(self, dados, nome="FECHAMENTO_CSV_URL"):
+        ns = carregar(["_segredo_com_origem", "_segredo"],
+                      extras={"st": type("St", (), {"secrets": self._SecretsFalso(dados)})})
+        return ns["_segredo_com_origem"](nome), ns["_segredo"](nome)
+
+    def test_acha_no_topo(self):
+        (valor, onde), simples = self._buscar(
+            {"email": "a@b.c", "FECHAMENTO_CSV_URL": self.LINK})
+        self.assertEqual(valor, self.LINK)
+        self.assertEqual(onde, "topo")
+        self.assertEqual(simples, self.LINK)
+
+    def test_acha_dentro_de_secao(self):
+        (valor, onde), _ = self._buscar(
+            {"email": "a@b.c", "usuarios": {"FECHAMENTO_CSV_URL": self.LINK}})
+        self.assertEqual(valor, self.LINK, "chave dentro de secao continua invisivel")
+        self.assertIn("usuarios", onde, "a tela precisa dizer ONDE achou")
+
+    def test_acha_dentro_de_secao_aninhada(self):
+        (valor, onde), _ = self._buscar(
+            {"usuarios": {"fulano": {"email": "y", "FECHAMENTO_CSV_URL": self.LINK}}})
+        self.assertEqual(valor, self.LINK)
+        self.assertIn("fulano", onde)
+
+    def test_o_que_nao_existe_volta_vazio(self):
+        (valor, onde), simples = self._buscar({"email": "a@b.c", "usuarios": {"x": {"email": "y"}}})
+        self.assertEqual((valor, onde), ("", ""))
+        self.assertEqual(simples, "")
+
+    def test_acha_dentro_de_lista_de_tabelas(self):
+        """[[users]] no TOML vira uma LISTA de tabelas, e a chave colada
+        depois de um cabecalho desses cai dentro do ultimo item. Sem descer em
+        lista, o segredo continuaria invisivel exatamente no formato que o
+        arquivo de Secrets deles ja usa."""
+        (valor, onde), _ = self._buscar(
+            {"email": "a@b.c",
+             "users": [{"email": "x@y.z"},
+                       {"email": "w@y.z", "FECHAMENTO_CSV_URL": self.LINK}]})
+        self.assertEqual(valor, self.LINK)
+        self.assertIn("users", onde)
+        self.assertIn("[1]", onde, "a tela precisa dizer QUAL item da lista")
+
+    def test_nao_desce_em_texto(self):
+        """Texto tambem responde a `in`. Sem a checagem de tabela, um trecho
+        de e-mail poderia ser lido como se fosse o segredo."""
+        (valor, _), _ = self._buscar({"email": "FECHAMENTO_CSV_URL@grupobeea.com.br"})
+        self.assertEqual(valor, "")
+
+    def test_lista_de_texto_nao_quebra_a_busca(self):
+        """Nem toda lista e lista de tabelas -- uma lista de e-mails no meio do
+        caminho nao pode derrubar a leitura dos Secrets."""
+        (valor, _), _ = self._buscar(
+            {"permitidos": ["a@b.c", "d@e.f"], "FECHAMENTO_CSV_URL": self.LINK})
+        self.assertEqual(valor, self.LINK)
+
+    def test_ambiente_sem_secrets_nao_quebra(self):
+        """Rodar fora do Streamlit Cloud nao pode derrubar o app."""
+        class Explode:
+            @property
+            def secrets(self):
+                raise RuntimeError("sem Secrets aqui")
+        ns = carregar(["_segredo_com_origem", "_segredo"], extras={"st": Explode()})
+        self.assertEqual(ns["_segredo"]("QUALQUER"), "")
+
+    def test_a_tela_distingue_ausente_de_nao_reconhecido(self):
+        """Antes a mesma mensagem servia para "nao configurei" e para
+        "configurei e nao funcionou" -- e quem configurou ficava sem saber
+        onde procurar."""
+        i = FONTE.index("Fechamento Mensal — lançamentos e conferências")
+        bloco = FONTE[i:i + 4000]
+        self.assertIn("_valor_secret, _onde_secret = _segredo_com_origem(", bloco)
+        self.assertIn("if _valor_secret:", bloco)
+        self.assertIn("nao reconheci o conteudo".replace("nao", "não").replace("conteudo", "conteúdo"),
+                      bloco)
+        self.assertIn("caiu dentro de uma seção", bloco,
+                      "a tela precisa avisar da armadilha do TOML")
 
 
 # ============================================================================
