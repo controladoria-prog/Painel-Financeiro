@@ -4856,7 +4856,14 @@ ALTURA_BARRA_SOMA_PX = 46
 # A barra de rolagem HORIZONTAL fica dentro da área que rola e come altura.
 # Sem reservar esse espaço, sobra sempre um filete de rolagem vertical --
 # foi exatamente o que apareceu na tela com as 21 linhas cravadas.
-ALTURA_BARRA_ROLAGEM_PX = 18
+# 26 e nao 18: em tela com escala de 125% ou 150% do Windows a barra passa
+# dos 18px, e o que faltava cortava a ultima linha da tabela. Este numero vale
+# so ate o JavaScript MEDIR a barra de verdade, logo no primeiro desenho --
+# sobrar alguns pixels por um instante e invisivel, faltar corta o TOTAL GERAL.
+ALTURA_BARRA_ROLAGEM_PX = 26
+# Folga entre a caixa da tabela e a barra de soma. Sem ela as duas se tocam, e
+# qualquer erro de um pixel na medicao vira sobreposicao na tela.
+FOLGA_ABAIXO_TABELA_PX = 16
 # Até esta quantidade de colunas a tabela cabe na largura da tela e não
 # aparece barra horizontal -- é o caso do fluxo mensal, com 6 ou 7 meses.
 COLUNAS_SEM_ROLAGEM_HORIZONTAL = 9
@@ -5141,7 +5148,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                       + ALTURA_LINHA_TABELA_PX * linhas_visiveis
                       + reserva_rolagem
                       + 2)  # as bordas de cima e de baixo da própria caixa
-    altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + 10
+    altura_total = altura_rolagem + ALTURA_BARRA_SOMA_PX + FOLGA_ABAIXO_TABELA_PX
 
     codigo = f"""
 <style>
@@ -5523,20 +5530,40 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   const ALTURA_CABECALHO = {ALTURA_CABECALHO_TABELA_PX};
   const RESERVA_ROLAGEM = {reserva_rolagem};
   const ALTURA_BARRA = {ALTURA_BARRA_SOMA_PX};
+  const FOLGA_ABAIXO_PX = {FOLGA_ABAIXO_TABELA_PX};
 
   function ajustarCaixa() {{
     // A caixa acompanha o número de linhas VISÍVEIS: abrir uma linha faz o
     // quadro crescer em vez de criar rolagem por dentro.
+    //
+    // A ALTURA É MEDIDA, não calculada. A conta em pixels cravados
+    // (cabeçalho + linha x quantidade + reserva de barra) errava em tela
+    // menor: com o Windows em 125% ou 150% de escala -- o padrão em notebook
+    // de tela pequena -- a barra de rolagem horizontal passa dos 18px
+    // reservados. O excedente vazava, o overflow-y:hidden cortava, e a
+    // última linha (justo o TOTAL GERAL) sumia debaixo da barra de soma.
+    // Deixar o navegador medir resolve para qualquer escala, zoom, fonte do
+    // sistema ou espessura de barra, sem eu ter de adivinhar nenhuma delas.
+    const rolagem = document.getElementById('rolagem');
     const visiveis = Array.from(document.querySelectorAll('tbody tr'))
       .filter(linha => linha.style.display !== 'none').length;
-    const alturaCaixa = ALTURA_CABECALHO + ALTURA_LINHA * visiveis + RESERVA_ROLAGEM + 2;
-    const rolagem = document.getElementById('rolagem');
-    if (rolagem) rolagem.style.height = alturaCaixa + 'px';
+    let alturaCaixa = ALTURA_CABECALHO + ALTURA_LINHA * visiveis + RESERVA_ROLAGEM + 2;
+    if (rolagem) {{
+      // 'auto' faz o navegador dimensionar pelo conteúdo real, já somando a
+      // borda e a barra horizontal na espessura de verdade daquela tela.
+      const alturaAntes = rolagem.style.height;
+      rolagem.style.height = 'auto';
+      const medida = rolagem.offsetHeight;
+      // Se a medição falhar (quadro escondido, tela ainda desenhando), o
+      // valor volta a ser o da conta antiga em vez de virar zero.
+      alturaCaixa = medida > 0 ? medida : alturaCaixa;
+      rolagem.style.height = (medida > 0 ? medida : parseInt(alturaAntes, 10) || alturaCaixa) + 'px';
+    }}
 
     // O quadro de fora também precisa acompanhar, senão a caixa cresce
     // dentro de um espaço que continua do mesmo tamanho. As duas tentativas
     // podem falhar em silêncio -- e aí sobra a rolagem, como antes.
-    const alturaTotal = alturaCaixa + ALTURA_BARRA + 10;
+    const alturaTotal = alturaCaixa + ALTURA_BARRA + FOLGA_ABAIXO_PX;
     try {{
       if (window.frameElement) window.frameElement.style.height = alturaTotal + 'px';
     }} catch (erro) {{ /* sem acesso ao quadro */ }}

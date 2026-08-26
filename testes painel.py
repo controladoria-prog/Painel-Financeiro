@@ -90,6 +90,7 @@ CONSTANTES_DE_DEPENDENCIA = {
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
                             "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
+                            "FOLGA_ABAIXO_TABELA_PX",
                             "FUNDO_TABELA_FLUXO", "PARAM_LINHAS_ABERTAS",
                             "SEPARADOR_LINHAS_ABERTAS", "PREFIXO_BOTAO_ABRIR"],
     "botoes_de_abrir": ["PREFIXO_BOTAO_ABRIR"],
@@ -1927,7 +1928,8 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                             ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
                              "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                              "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
-                             "ALTURA_BARRA_ROLAGEM_PX"])
+                             "ALTURA_BARRA_ROLAGEM_PX",
+                             "FOLGA_ABAIXO_TABELA_PX"])
         capturado = {}
         ns_local["html_embutido"] = dubla_html_embutido(capturado)
         # Colunas suficientes para haver rolagem horizontal, que e o caso das
@@ -1957,7 +1959,8 @@ class TesteMetasDeRecebimento(unittest.TestCase):
             esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
                         + ns_local["ALTURA_LINHA_TABELA_PX"] * n_linhas
                         + ns_local["ALTURA_BARRA_ROLAGEM_PX"] + 2
-                        + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
+                        + ns_local["ALTURA_BARRA_SOMA_PX"]
+                        + ns_local["FOLGA_ABAIXO_TABELA_PX"])
             self.assertEqual(capturado["altura"], esperado, f"{n_linhas} linhas")
 
     def test_tabela_pequena_nao_ganha_espaco_vazio(self):
@@ -1972,14 +1975,19 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         esperado = (ns_local["ALTURA_CABECALHO_TABELA_PX"]
                     + ns_local["ALTURA_LINHA_TABELA_PX"] * teto
                     + ns_local["ALTURA_BARRA_ROLAGEM_PX"] + 2
-                    + ns_local["ALTURA_BARRA_SOMA_PX"] + 10)
+                    + ns_local["ALTURA_BARRA_SOMA_PX"]
+                    + ns_local["FOLGA_ABAIXO_TABELA_PX"])
         self.assertEqual(capturado["altura"], esperado)
 
     def test_altura_da_caixa_fecha_com_o_conteudo(self):
         """A conta em Python e o CSS tem de falar a mesma altura de
         cabecalho. Enquanto o cabecalho herdava os 34px das linhas e a conta
         somava 40, sobrava um filete vazio embaixo da ultima linha."""
-        for n_linhas, n_colunas, folga_esperada in [(7, 7, 0), (21, 31, 18)]:
+        # A folga da barra de rolagem sai da CONSTANTE, nao cravada: ela subiu
+        # de 18 para 26 quando a tela em escala de 125% cortou a ultima linha,
+        # e um numero cravado aqui faria o teste falhar por isso.
+        _reserva = carregar([], ["ALTURA_BARRA_ROLAGEM_PX"])["ALTURA_BARRA_ROLAGEM_PX"]
+        for n_linhas, n_colunas, folga_esperada in [(7, 7, 0), (21, 31, _reserva)]:
             capturado, ns_local = self._medir(n_linhas, n_colunas)
             css = capturado["codigo"]
             altura_cabecalho = int(
@@ -3010,6 +3018,41 @@ class TesteDiarioConsolidado(unittest.TestCase):
             self.assertEqual(repetidas, [],
                              f"{descricao}: declarado mais de uma vez no mesmo escopo "
                              f"-- isso e erro de sintaxe e mata o script inteiro")
+
+    def test_a_altura_da_tabela_e_MEDIDA_e_nao_chutada(self):
+        """26/08/2026: em tela menor a ultima linha (o TOTAL GERAL) sumia
+        debaixo da barra de soma. A conta era em pixels cravados -- cabecalho
+        + altura de linha x quantidade + 18px reservados para a barra de
+        rolagem. Com o Windows em 125% ou 150% de escala, o padrao em notebook
+        de tela pequena, a barra passa dos 18px; o excedente vazava e o
+        overflow-y:hidden cortava.
+
+        Deixar o navegador MEDIR resolve para qualquer escala, zoom, fonte do
+        sistema ou espessura de barra -- sem ninguem ter de adivinhar nenhuma
+        delas."""
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("rolagem.style.height = 'auto'", corpo,
+                      "a altura voltou a ser calculada em vez de medida")
+        self.assertIn("rolagem.offsetHeight", corpo)
+        # E a conta antiga tem de continuar como plano B: medicao que falha
+        # (quadro escondido, tela ainda desenhando) nao pode virar altura zero.
+        self.assertIn("medida > 0 ? medida : alturaCaixa", corpo)
+
+    def test_a_reserva_da_barra_cobre_tela_com_escala(self):
+        """Este numero vale so ate o JavaScript medir, no primeiro desenho.
+        Sobrar alguns pixels por um instante e invisivel; faltar corta a linha
+        do TOTAL GERAL, que e justo a que se olha."""
+        ns = carregar([], ["ALTURA_BARRA_ROLAGEM_PX", "FOLGA_ABAIXO_TABELA_PX"])
+        self.assertGreaterEqual(ns["ALTURA_BARRA_ROLAGEM_PX"], 24,
+                                "18px nao cobre tela em 125% ou 150% de escala")
+        self.assertGreaterEqual(ns["FOLGA_ABAIXO_TABELA_PX"], 12,
+                                "sem folga a caixa e a barra de soma se tocam")
+        # A folga tem de ser USADA nos dois lugares: no HTML servido e no JS.
+        i = FONTE.index("def tabela_selecionavel(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("+ FOLGA_ABAIXO_TABELA_PX", corpo)
+        self.assertIn("+ FOLGA_ABAIXO_PX", corpo)
 
     def test_uma_conta_de_altura_so_no_javascript(self):
         """Duas versoes da mesma conta no mesmo script foi o que gerou a
