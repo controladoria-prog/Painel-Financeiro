@@ -5206,11 +5206,17 @@ class TestePainelTV(unittest.TestCase):
         """Antes era um mes so, e a tela SEMPRE mostrava o acumulado ate ele --
         nao havia como ver um mes isolado nem um trimestre."""
         bloco = self._bloco_tv()
-        self.assertIn("meses_escolhidos_tv = st.multiselect(", bloco)
+        self.assertIn("st.multiselect(", bloco)
+        # E o seletor tem de morar DENTRO de um popover: solto no cabecalho,
+        # oito meses viravam oito pilulas que cobriam os cartoes de KPI.
+        self.assertIn("with st.popover(", bloco)
         self.assertIn('["Acumulado", "Mês a mês"]', bloco)
         # O padrao reproduz o comportamento antigo, para quem ja usava nao
         # estranhar a tela.
-        self.assertIn("default=nomes_meses_tv[: idx_mes_atual + 1]", bloco)
+        # O padrao e semeado na sessao (o multiselect vive dentro do popover,
+        # e `default=` nao vale quando a chave ja existe).
+        self.assertIn('st.session_state["tv_sel_meses"] = nomes_meses_tv[: idx_mes_atual + 1]',
+                      bloco)
 
     def test_os_meses_saem_em_ordem_de_calendario(self):
         """O multiselect devolve na ordem em que a pessoa CLICOU. Escolher
@@ -5256,8 +5262,11 @@ class TestePainelTV(unittest.TestCase):
         """Com um mes so, abrir por mes daria uma coluna unica -- a mesma
         tela do acumulado, so que pior."""
         bloco = self._bloco_tv()
-        self.assertIn('_abrir_por_mes_tv = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1',
+        self.assertIn('_abrir_por_mes_tv_kpi = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1',
                       bloco)
+        # UMA marca so, reusada: duas condicoes iguais em dois lugares seriam
+        # duas chances de a tela ficar meio num modo e meio no outro.
+        self.assertIn("_abrir_por_mes_tv = _abrir_por_mes_tv_kpi", bloco)
 
     def test_as_duas_listas_abrem_por_mes_com_cabecalho(self):
         """Sem cabecalho a pessoa ve quatro numeros numa linha e nao sabe qual
@@ -5274,6 +5283,67 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn("_abrir_por_mes_tv", bloco[i_ranque:i_ranque + 3000],
                       "o ranque de grupos nao respeita o tipo de visao")
         self.assertIn("_cab_grp", bloco)
+
+
+    def test_o_seletor_de_meses_cabe_num_botao(self):
+        """Num painel de parede o filtro e o que menos importa: ele tem de
+        caber num botao e sair da frente. A primeira versao era um multiselect
+        aberto -- com oito meses, as pilulas cobriam os cartoes de KPI."""
+        bloco = self._bloco_tv()
+        self.assertIn("with st.popover(", bloco)
+        self.assertIn("_rotulo_botao", bloco, "o botao precisa mostrar o recorte resolvido")
+        # E atalhos, para o caso comum nao exigir clicar mes a mes.
+        self.assertIn("tv_atalho_", bloco)
+        for atalho in ('"Mês"', '"Tri"', '"YTD"', '"Ano"'):
+            self.assertIn(atalho, bloco, f"sumiu o atalho {atalho}")
+
+    def test_os_cartoes_mostram_a_serie_no_mes_a_mes(self):
+        """Receita Bruta, Margem e Custos/Receita nao aparecem em grafico
+        nenhum da tela -- Receita Liquida e EBITDA tem o de Evolucao Mensal,
+        elas nao tinham nada. No mes a mes o cartao mostrava um acumulado que
+        nao respondia a pergunta que o modo faz."""
+        bloco = self._bloco_tv()
+        self.assertIn("def _tv_faisca(", bloco)
+        for chave in ("bruta", "liquida", "ebitda", "margem", "custos"):
+            self.assertIn(f'serie=_serie_kpi_tv.get("{chave}")', bloco,
+                          f"o cartao de {chave} ficou sem serie")
+
+    def test_a_faisca_de_razao_e_calculada_mes_a_mes(self):
+        """Margem e custos/receita sao RAZOES. Media de percentual nao e o
+        percentual da media -- interpolar do acumulado daria numero errado."""
+        bloco = self._bloco_tv()
+        self.assertIn("(e / r * 100) if r else 0", bloco)
+        self.assertIn("((r - e) / r * 100) if r else 0", bloco)
+
+    def test_a_serie_dos_cartoes_so_e_buscada_quando_serve(self):
+        """Buscar 12 meses de cinco linhas da DRE a toa custaria render num
+        painel que se redesenha sozinho a cada 90 segundos."""
+        bloco = self._bloco_tv()
+        i = bloco.index("_serie_kpi_tv = {}")
+        self.assertIn("if _abrir_por_mes_tv_kpi:", bloco[i:i + 200])
+
+    def test_o_cmv_nao_zera_no_mes_a_mes(self):
+        """O CMV mora numa linha sintetica "4 - " em algumas planilhas e
+        "4 - Custo das Vendas" em outras. O acumulado ja tratava os dois casos;
+        a leitura mes a mes nao -- e o CMV apareceu R$ 0M em TODOS os meses
+        enquanto o acumulado mostrava R$ 37,7M, na mesma tela."""
+        self.assertIn("def valor_da_linha_tv(", FONTE)
+        bloco = self._bloco_tv()
+        self.assertGreaterEqual(bloco.count("valor_da_linha_tv("), 2,
+                                "os dois blocos do mes a mes tem de usar a mesma leitura")
+        i = FONTE.index("def valor_da_linha_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("Custo das Vendas", corpo, "sumiu o caminho alternativo do CMV")
+
+    def test_a_pilha_e_ordenada_e_mostra_o_total(self):
+        """A base da pilha e a que se compara de relance entre os meses, e tem
+        de ser a parcela que manda no custo. E sem o total escrito em cima, a
+        pessoa compara alturas no olho -- que e o que uma tela de parede nao
+        permite fazer com precisao."""
+        bloco = self._bloco_tv()
+        self.assertIn("sorted(_series_tv, key=lambda t: sum(t[2])", bloco)
+        self.assertIn("_totais_mes_tv", bloco)
+        self.assertIn('textposition="top center"', bloco)
 
 
     def test_o_grafico_de_desvio_ocupa_a_lacuna(self):

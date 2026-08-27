@@ -2831,6 +2831,29 @@ DETALHES_DO_RANQUE_TV = {
 }
 
 
+
+
+def valor_da_linha_tv(lista_df, chave_linha, colunas):
+    """Valor absoluto de uma linha da DRE nas colunas pedidas, com o caminho
+    alternativo do CMV embutido.
+
+    O CMV mora numa linha sintética chamada só "4 - " em algumas planilhas e
+    "4 - Custo das Vendas" em outras. O acumulado já tratava esses dois casos;
+    a leitura mês a mês, não -- e o resultado foi o CMV aparecer R$ 0M em
+    TODOS os meses enquanto o acumulado mostrava R$ 37,7M, na mesma tela.
+    Duas leituras do mesmo número em dois lugares diferentes são duas chances
+    de discordarem, e aqui elas discordaram no primeiro dia.
+    """
+    valor = abs(get_valor_consolidado_multi(
+        lista_df, chave_linha, colunas,
+        exato_linha_sintetica=str(chave_linha).strip().endswith("-")))
+    if valor or not str(chave_linha).strip().endswith("-"):
+        return valor
+    numero = str(chave_linha).strip().rstrip("- ").strip()
+    return abs(get_valor_consolidado_multi(
+        lista_df, f"{numero} - Custo das Vendas", colunas))
+
+
 def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
@@ -2894,16 +2917,42 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             key="tv_sel_visao", label_visibility="collapsed",
         )
     with col_head_filtro_mes:
-        # ANTES era um mês só, e a tela sempre mostrava o ACUMULADO até ele --
-        # não havia como ver um mês isolado nem um trimestre. Agora escolhem-se
-        # os meses; o padrão reproduz o comportamento antigo (janeiro até o mês
-        # corrente), para quem já usava não estranhar a tela.
-        meses_escolhidos_tv = st.multiselect(
-            "Meses", nomes_meses_tv,
-            default=nomes_meses_tv[: idx_mes_atual + 1],
-            key="tv_sel_meses", label_visibility="collapsed",
-            placeholder="Meses",
+        # O SELETOR MORA DENTRO DE UM POPOVER, e não solto no cabeçalho.
+        # A primeira versão era um multiselect aberto: com oito meses
+        # escolhidos, as pílulas ocupavam meia tela e cobriam os cartões de
+        # KPI. Num painel de parede o filtro é o que menos importa -- ele tem
+        # de caber num botão e sair da frente. O botão mostra o recorte já
+        # resolvido ("Jan–Ago"), que é a única coisa que quem olha de longe
+        # precisa saber.
+        if "tv_sel_meses" not in st.session_state:
+            st.session_state["tv_sel_meses"] = nomes_meses_tv[: idx_mes_atual + 1]
+        _escolha_atual = [m for m in nomes_meses_tv
+                          if m in set(st.session_state.get("tv_sel_meses") or [])]
+        _rotulo_botao = (
+            "Sem mês" if not _escolha_atual
+            else _escolha_atual[0].capitalize()[:3] if len(_escolha_atual) == 1
+            else f"{_escolha_atual[0].capitalize()[:3]}–{_escolha_atual[-1].capitalize()[:3]}"
+            + (f" ({len(_escolha_atual)})" if len(_escolha_atual) > 2 else "")
         )
+        with st.popover(f"📅 {_rotulo_botao}", width="stretch"):
+            st.caption("Atalhos")
+            _a1, _a2, _a3, _a4 = st.columns(4)
+            _atalhos = [
+                (_a1, "Mês", nomes_meses_tv[idx_mes_atual: idx_mes_atual + 1]),
+                (_a2, "Tri", nomes_meses_tv[max(0, idx_mes_atual - 2): idx_mes_atual + 1]),
+                (_a3, "YTD", nomes_meses_tv[: idx_mes_atual + 1]),
+                (_a4, "Ano", list(nomes_meses_tv)),
+            ]
+            for _col_at, _rot_at, _meses_at in _atalhos:
+                with _col_at:
+                    if st.button(_rot_at, key=f"tv_atalho_{_rot_at}", width="stretch"):
+                        st.session_state["tv_sel_meses"] = list(_meses_at)
+                        st.rerun()
+            st.multiselect(
+                "Meses", nomes_meses_tv, key="tv_sel_meses",
+                label_visibility="collapsed", placeholder="Escolha os meses",
+            )
+        meses_escolhidos_tv = st.session_state.get("tv_sel_meses") or []
     with col_head_tipo:
         tipo_visao_tv = st.selectbox(
             "Tipo", ["Acumulado", "Mês a mês"], index=0,
@@ -2986,6 +3035,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-kpi .lbl {{ font-size: 10px; font-weight: 600; letter-spacing: 0.9px; text-transform: uppercase; color: {COLORS["text_muted"]}; }}
             .tv-kpi .val {{ font-family: {FONTE_MONO}; font-size: 25px; font-weight: 700; margin-top: 6px; letter-spacing: -0.3px; }}
             .tv-kpi .sub {{ font-size: 11.5px; margin-top: 4px; color: {COLORS["text_muted"]}; display:flex; align-items:center; gap:4px; }}
+            /* O minigráfico ocupa o espaço que já existia entre o número e o
+               subtexto -- o cartão não cresce, e a grade de KPIs continua
+               cabendo na mesma faixa da tela. */
+            .tv-kpi .tv-faisca {{ display:block; margin-top: 6px; opacity: 0.9; }}
             .tv-section-title {{
                 font-size: 12.5px; font-weight: 700; color: {COLORS["text_muted"]}; text-transform: uppercase;
                 letter-spacing: 0.6px; margin: 2px 0 8px 2px; border-left: 3px solid {COLORS["primary"]}; padding-left: 8px;
@@ -3102,30 +3155,98 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             altura=54,
         )
 
-    def _tv_kpi(cor_var, label, valor, sub, accent, icone=""):
+    def _tv_faisca(valores, cor):
+        """Minigráfico em SVG dentro do cartão, com um ponto por mês escolhido.
+
+        Receita Bruta, Margem e Custos/Receita não aparecem em gráfico nenhum
+        da tela -- Receita Líquida e EBITDA têm o de Evolução Mensal, elas não
+        tinham nada. No modo mês a mês o cartão mostrava um número acumulado
+        que não respondia à pergunta que o modo faz.
+
+        SVG desenhado à mão e não um gráfico do Plotly: são cinco cartões, e
+        cinco figuras a mais custariam meio segundo de render num painel que
+        se redesenha sozinho a cada 90 segundos.
+        """
+        limpos = [float(v or 0) for v in valores]
+        if len(limpos) < 2:
+            return ""
+        largura, altura = 108.0, 26.0
+        menor, maior = min(limpos), max(limpos)
+        faixa = (maior - menor) or 1.0
+        passo = largura / (len(limpos) - 1)
+        pontos = " ".join(
+            f"{i * passo:.1f},{altura - 3 - (v - menor) / faixa * (altura - 6):.1f}"
+            for i, v in enumerate(limpos)
+        )
+        ultimo_x, ultimo_y = pontos.split(" ")[-1].split(",")
+        return (
+            f'<svg class="tv-faisca" viewBox="0 0 {largura:.0f} {altura:.0f}" '
+            f'preserveAspectRatio="none" width="100%" height="{altura:.0f}">'
+            f'<polyline points="{pontos}" fill="none" stroke="{cor}" '
+            'stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" '
+            'vector-effect="non-scaling-stroke"/>'
+            f'<circle cx="{ultimo_x}" cy="{ultimo_y}" r="2.2" fill="{cor}"/></svg>'
+        )
+
+    def _tv_kpi(cor_var, label, valor, sub, accent, icone="", serie=None):
+        faisca = _tv_faisca(serie, accent) if serie else ""
         return (
             f'<div class="tv-kpi" style="--tv-accent:{accent};">'
             f'<div class="lbl">{label}</div>'
             f'<div class="val" style="color:{cor_var};">{valor}</div>'
+            f'{faisca}'
             f'<div class="sub">{icone} {sub}</div></div>'
         )
 
+    # Definida aqui, e não junto das listas lá embaixo: os cartões vêm antes
+    # na tela e precisam da mesma marca. Duas condições iguais em dois lugares
+    # seriam duas chances de a tela ficar meio num modo e meio no outro.
+    _abrir_por_mes_tv_kpi = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1
     seta_rec = "▲" if rec_liq_real >= rec_liq_orc else "▼"
     seta_eb = "▲" if ebitda_real >= ebitda_orc else "▼"
     pct_custos_sobre_receita = (total_custos_desp_tv / rec_liq_real * 100) if rec_liq_real else 0
 
+    # As séries dos cartões só são calculadas no modo mês a mês -- no
+    # acumulado a faísca não teria o que mostrar, e buscar 12 meses de cinco
+    # linhas da DRE à toa custaria render num painel que se redesenha sozinho.
+    _serie_kpi_tv = {}
+    if _abrir_por_mes_tv_kpi:
+        def _por_mes(chave):
+            return [get_valor_consolidado_multi(list_df_real_tv, chave, [m_map_tv[_m]])
+                    for _m in meses_ativos_tv]
+        _rec_bruta_mes = _por_mes("1 - Receita Operacional Bruta")
+        _rec_liq_mes = _por_mes("3 - Receita Operacional Liquida")
+        _ebitda_mes = _por_mes("11 - EBITDA")
+        _serie_kpi_tv = {
+            "bruta": _rec_bruta_mes,
+            "liquida": _rec_liq_mes,
+            "ebitda": _ebitda_mes,
+            # Margem e custos/receita são RAZÕES: a faísca delas é calculada
+            # mês a mês, não interpolada do acumulado -- média de percentual
+            # não é o percentual da média.
+            "margem": [(e / r * 100) if r else 0
+                       for e, r in zip(_ebitda_mes, _rec_liq_mes)],
+            "custos": [((r - e) / r * 100) if r else 0
+                       for e, r in zip(_ebitda_mes, _rec_liq_mes)],
+        }
+
     st.markdown(
         '<div class="tv-kpi-grid">'
         + _tv_kpi(COLORS["text"], "Receita Bruta (YTD)", formata_m(rec_bruta_real),
-                  "Antes de deduções", COLORS["muted_line"], "💰")
+                  "Antes de deduções", COLORS["muted_line"], "💰",
+                  serie=_serie_kpi_tv.get("bruta"))
         + _tv_kpi(cor_variacao(rec_liq_real - rec_liq_orc), "Receita Líquida (YTD)", formata_m(rec_liq_real),
-                  f"{seta_rec} {pct_atingimento_rec:.0f}% do orçado ({formata_m(rec_liq_orc)})", COLORS["primary"], "")
+                  f"{seta_rec} {pct_atingimento_rec:.0f}% do orçado ({formata_m(rec_liq_orc)})", COLORS["primary"], "",
+                  serie=_serie_kpi_tv.get("liquida"))
         + _tv_kpi(cor_variacao(ebitda_real - ebitda_orc), "EBITDA (YTD)", formata_m(ebitda_real),
-                  f"{seta_eb} {pct_atingimento_eb:.0f}% do orçado ({formata_m(ebitda_orc)})", COLORS["positive"], "")
+                  f"{seta_eb} {pct_atingimento_eb:.0f}% do orçado ({formata_m(ebitda_orc)})", COLORS["positive"], "",
+                  serie=_serie_kpi_tv.get("ebitda"))
         + _tv_kpi(cor_variacao(margem_ebitda - margem_ebitda_orc), "Margem EBITDA", f"{margem_ebitda:.1f}%",
-                  f"Orçado: {margem_ebitda_orc:.1f}% · Desvio: {formata_brl(desvio_ebitda)}", COLORS["secondary"], "")
+                  f"Orçado: {margem_ebitda_orc:.1f}% · Desvio: {formata_brl(desvio_ebitda)}", COLORS["secondary"], "",
+                  serie=_serie_kpi_tv.get("margem"))
         + _tv_kpi(cor_variacao(-(pct_custos_sobre_receita)), "Custos + Despesas / Receita", f"{pct_custos_sobre_receita:.1f}%",
-                  f"{formata_m(total_custos_desp_tv)} sobre {formata_m(rec_liq_real)}", COLORS["warning"], "")
+                  f"{formata_m(total_custos_desp_tv)} sobre {formata_m(rec_liq_real)}", COLORS["warning"], "",
+                  serie=_serie_kpi_tv.get("custos"))
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -3233,26 +3354,50 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # lado não cabem numa tela de parede. Empilhada por mês responde a
             # mesma pergunta ("de que é feito o custo") e ainda mostra o que a
             # rosca nunca mostrou: se a composição está mudando ao longo do ano.
+            _rotulos_x_tv = [_m.capitalize()[:3] for _m in meses_ativos_tv]
+            _series_tv = [
+                (_rot, _cor,
+                 [valor_da_linha_tv(list_df_real_tv, _linha, [m_map_tv[_m]])
+                  for _m in meses_ativos_tv])
+                for _rot, _linha, _cor in zip(_rotulos_composicao_tv,
+                                              _linhas_composicao_tv,
+                                              _cores_composicao_tv)
+            ]
             fig_tv_comp = go.Figure()
-            for _rot, _linha, _cor in zip(_rotulos_composicao_tv,
-                                          _linhas_composicao_tv, _cores_composicao_tv):
-                _valores_mes = [
-                    abs(get_valor_consolidado_multi(
-                        list_df_real_tv, _linha, [m_map_tv[_m]],
-                        exato_linha_sintetica=_linha.strip().endswith("-")))
-                    for _m in meses_ativos_tv
-                ]
+            # De baixo para cima, do MAIOR para o menor: a base da pilha é a
+            # que se compara de relance entre os meses, e ela tem de ser a
+            # parcela que manda no custo. Com a ordem da lista, o CMV ficava
+            # embaixo por acaso -- aqui é por regra.
+            for _rot, _cor, _vals in sorted(_series_tv, key=lambda t: sum(t[2]),
+                                            reverse=True):
                 fig_tv_comp.add_trace(go.Bar(
-                    name=_rot, x=[_m.capitalize() for _m in meses_ativos_tv],
-                    y=_valores_mes, marker_color=_cor,
+                    name=_rot, x=_rotulos_x_tv, y=_vals,
+                    marker=dict(color=_cor,
+                                line=dict(color=COLORS["surface"], width=1)),
+                    hovertemplate="%{fullData.name}: %{y:,.0f}<extra></extra>",
                 ))
+            # O TOTAL de cada mês fica escrito em cima da pilha. Sem ele a
+            # pessoa compara alturas no olho, que é justamente o que uma tela
+            # de parede não permite fazer com precisão.
+            _totais_mes_tv = [sum(_vals[i] for _r, _c, _vals in _series_tv)
+                              for i in range(len(meses_ativos_tv))]
+            fig_tv_comp.add_trace(go.Scatter(
+                x=_rotulos_x_tv, y=_totais_mes_tv, mode="text",
+                text=[formata_m(v) for v in _totais_mes_tv],
+                textposition="top center",
+                textfont=dict(size=10, color=COLORS["text_muted"]),
+                showlegend=False, hoverinfo="skip",
+            ))
             estilo_grafico(
-                fig_tv_comp, height=200, margin=dict(l=10, r=10, t=10, b=10),
-                barmode="stack", showlegend=True,
-                legend=dict(orientation="h", y=-0.18, font=dict(size=9)),
+                fig_tv_comp, height=248, margin=dict(l=6, r=6, t=26, b=4),
+                barmode="stack", bargap=0.42, showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="left", x=0, font=dict(size=10),
+                            bgcolor="rgba(0,0,0,0)"),
                 xaxis=dict(showgrid=False, fixedrange=True,
-                           tickfont=dict(size=10, color=COLORS["text_muted"])),
-                yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+                           tickfont=dict(size=11, color=COLORS["text_muted"])),
+                yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
+                           range=[0, max(_totais_mes_tv or [1]) * 1.18]),
             )
             st.plotly_chart(fig_tv_comp, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
         else:
@@ -3286,7 +3431,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"],
              "8 - Despesas Operacionais"),
         ]
-        _abrir_por_mes_tv = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1
+        _abrir_por_mes_tv = _abrir_por_mes_tv_kpi
         linhas_custo = ['<div class="tv-panel" style="padding-top:8px;">']
         if _abrir_por_mes_tv:
             # Cabeçalho com os meses. Sem ele a pessoa vê quatro números numa
@@ -3305,9 +3450,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 _valores = "".join(
                     '<span style="display:inline-block;min-width:58px;text-align:right;'
                     'font-variant-numeric:tabular-nums;">'
-                    + formata_m(abs(get_valor_consolidado_multi(
-                        list_df_real_tv, linha_dre_cat, [m_map_tv[_m]],
-                        exato_linha_sintetica=linha_dre_cat.strip().endswith("-"))))
+                    + formata_m(valor_da_linha_tv(
+                        list_df_real_tv, linha_dre_cat, [m_map_tv[_m]]))
                     + "</span>"
                     for _m in meses_ativos_tv)
                 linhas_custo.append(
