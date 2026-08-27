@@ -5688,7 +5688,10 @@ class TestePainelTV(unittest.TestCase):
     def test_o_titulo_dos_grupos_aparece_uma_vez_so(self):
         """O bloco muda de coluna conforme o modo, e o titulo viaja junto. O
         titulo antigo ficou para tras e a tela mostrava os dois."""
-        self.assertEqual(FONTE.count("Principais Grupos</div>"), 1)
+        # O titulo virou LINK, entao ele nao fecha mais com </div> logo
+        # depois do texto. Conta o TEXTO, que e o que nao pode aparecer duas
+        # vezes na tela.
+        self.assertEqual(FONTE.count("🏢 Despesas Operacionais — Principais Grupos"), 1)
 
 
     def test_os_grupos_viram_mapa_de_calor(self):
@@ -5883,6 +5886,150 @@ class TesteMemoriaDoPainel(unittest.TestCase):
         i = FONTE.index("df_d_completo = df_fin\n")
         self.assertIn('!= "aplicacao"].copy()', FONTE[i:i + 1400],
                       "sem a copia no recorte, criar DiaOrd tocaria a base original")
+
+
+
+class TesteRamificacaoDeDespesas(unittest.TestCase):
+    """A tela que abre variaveis e operacionais ate o plano de contas."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(
+            ["arvore_de_despesas", "ofensores_por_desvio", "ofensores_por_salto",
+             "_subgrupos_nivel2", "_filhos_diretos_do_conjunto",
+             "_linha_pertence_ao_grupo",
+             "_numero_linha_dre", "_nome_sem_numero_dre"])
+
+    LINHAS = ["8 - Despesas Operacionais", "8.3 - Pessoal", "8.3.1 - Salários",
+              "8.3.2 - Encargos", "8.8 - Serviços de Terceiros",
+              "8.8.10 - Serviços de Transporte", "6 - Despesas Variáveis",
+              "6.2 - Taxa com Cartão"]
+
+    def test_a_arvore_desce_ate_as_sublinhas(self):
+        valores = {"8.3 - Pessoal": 100.0, "8.3.1 - Salários": 70.0,
+                   "8.3.2 - Encargos": 30.0, "8.8 - Serviços de Terceiros": 40.0,
+                   "8.8.10 - Serviços de Transporte": 40.0}
+        arvore = self.ns["arvore_de_despesas"](
+            self.LINHAS, "8", lambda l: valores.get(l, 0.0))
+        self.assertEqual([g["nome"] for g in arvore],
+                         ["Pessoal", "Serviços de Terceiros"],
+                         "os subgrupos vem do maior para o menor")
+        self.assertEqual([f["nome"] for f in arvore[0]["filhos"]],
+                         ["Salários", "Encargos"])
+
+    def test_a_arvore_avisa_quando_o_detalhe_nao_fecha(self):
+        """Subgrupo cujo detalhe nao soma com ele tem lancamento direto no pai,
+        e mostrar a lista incompleta faria a pessoa procurar um dinheiro que a
+        tela escondeu."""
+        valores = {"8.3 - Pessoal": 100.0, "8.3.1 - Salários": 70.0}
+        arvore = self.ns["arvore_de_despesas"](
+            self.LINHAS, "8", lambda l: valores.get(l, 0.0))
+        pessoal = next(g for g in arvore if g["nome"] == "Pessoal")
+        self.assertAlmostEqual(pessoal["cobertura"], 0.70, places=6)
+        self.assertLess(pessoal["cobertura"], 0.99, "tem de acender o aviso")
+
+    def test_o_valor_vem_de_fora_da_arvore(self):
+        """A arvore nao sabe de onde o numero vem -- realizado, orcado ou um mes
+        so. E a mesma funcao para as tres leituras que a tela faz."""
+        chamadas = []
+        self.ns["arvore_de_despesas"](self.LINHAS, "6",
+                                      lambda l: chamadas.append(l) or 1.0)
+        self.assertIn("6.2 - Taxa com Cartão", chamadas)
+
+    def test_os_estouros_saem_em_REAIS(self):
+        """Uma conta de R$ 500 que gastou o dobro aparece como 100% de estouro e
+        nao muda nada no mes; uma de R$ 200 mil que passou 12% e a que precisa
+        de conversa. Percentual sozinho no topo de uma lista engana."""
+        itens = [
+            {"conta": "pequena dobrou", "realizado": 1000.0, "orcado": 500.0},
+            {"conta": "grande passou pouco", "realizado": 224_000.0, "orcado": 200_000.0},
+            {"conta": "dentro do orçado", "realizado": 90.0, "orcado": 100.0},
+        ]
+        saida = self.ns["ofensores_por_desvio"](itens)
+        self.assertEqual([o["conta"] for o in saida],
+                         ["grande passou pouco", "pequena dobrou"])
+        self.assertAlmostEqual(saida[0]["desvio"], 24_000.0)
+
+    def test_conta_dentro_do_orcado_nao_e_ofensor(self):
+        self.assertEqual(self.ns["ofensores_por_desvio"](
+            [{"conta": "ok", "realizado": 90.0, "orcado": 100.0}]), [])
+        self.assertEqual(self.ns["ofensores_por_desvio"]([]), [])
+
+    def test_o_salto_precisa_de_tres_meses(self):
+        """Com dois, a "media dos anteriores" e um mes so, e qualquer oscilacao
+        normal vira alarme."""
+        # Serie que SUBIU no segundo mes: com dois meses fechados a "media dos
+        # anteriores" e um mes so, e essa conta viraria alarme. Precisa sair
+        # vazia mesmo tendo subido.
+        serie = {"conta": [30.0, 90.0, 0.0, 0.0]}
+        self.assertEqual(self.ns["ofensores_por_salto"](serie, 2), [],
+                         "com dois meses qualquer oscilacao normal vira alarme")
+        self.assertNotEqual(self.ns["ofensores_por_salto"](
+            {"conta": [30.0, 30.0, 90.0]}, 3), [])
+
+    def test_o_salto_compara_com_a_propria_media(self):
+        # "quase parada" sobe 2%: ela ENTRA na lista (subiu), mas fica atras.
+        # Excluir quem subiu pouco exigiria um corte arbitrario, e um corte
+        # arbitrario esconde justamente a conta que comecou a escorregar.
+        saida = self.ns["ofensores_por_salto"](
+            {"triplicou": [30.0, 30.0, 90.0], "quase parada": [50.0, 50.0, 51.0]}, 3)
+        self.assertEqual(saida[0]["conta"], "triplicou")
+        self.assertEqual([o["conta"] for o in saida],
+                         ["triplicou", "quase parada"])
+        self.assertAlmostEqual(saida[0]["salto"], 2.0, places=6)
+        self.assertAlmostEqual(saida[0]["diferenca"], 60.0, places=6)
+
+    def test_o_salto_tambem_ordena_por_reais(self):
+        """Triplicar R$ 300 nao e noticia; subir 20% numa conta de milhoes e."""
+        saida = self.ns["ofensores_por_salto"]({
+            "pequena que triplicou": [100.0, 100.0, 300.0],
+            "grande que subiu pouco": [100_000.0, 100_000.0, 130_000.0],
+        }, 3)
+        self.assertEqual(saida[0]["conta"], "grande que subiu pouco")
+
+    def test_conta_que_caiu_nao_entra(self):
+        self.assertEqual(self.ns["ofensores_por_salto"](
+            {"caiu": [90.0, 90.0, 30.0]}, 3), [])
+        self.assertEqual(self.ns["ofensores_por_salto"](
+            {"do zero": [0.0, 0.0, 50.0]}, 3), [],
+            "media zero daria salto infinito")
+
+
+class TesteTelaDaRamificacao(unittest.TestCase):
+    """Travas do roteamento e do corpo da ramificacao."""
+
+    def test_o_titulo_dos_grupos_leva_a_ramificacao(self):
+        """Botao solto ao lado ocuparia espaco numa tela que ja disputa cada
+        pixel, e o titulo ja diz do que a outra tela trata."""
+        self.assertIn('href="?modo=tv&foco=despesas"', FONTE)
+        self.assertIn("abrir detalhe ›", FONTE)
+        self.assertIn('href="?modo=tv"', FONTE, "sumiu o caminho de volta")
+
+    def test_a_ramificacao_reusa_o_cabecalho_e_o_rodape(self):
+        """Duplicar o cabecalho numa funcao nova seria manter dois filtros que
+        precisam concordar para sempre -- e eles nao concordariam por muito
+        tempo."""
+        i = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[i:FONTE.index("\nif ", i)]
+        self.assertIn('if foco == "despesas":', corpo)
+        # E a funcao tem de ser CHAMADA de verdade: comentar a chamada deixava
+        # a tela abrir vazia, com cabecalho e rodape e nada no meio.
+        i_foco = corpo.index('if foco == "despesas":')
+        chamada = corpo[i_foco:corpo.index("else:", i_foco)]
+        self.assertIn("_corpo_despesas_tv(", chamada)
+        self.assertNotIn("pass", chamada, "a chamada foi desligada")
+        # A bifurcacao vem DEPOIS dos filtros e ANTES do letreiro.
+        self.assertLess(corpo.index("meses_ativos_tv = "),
+                        corpo.index('if foco == "despesas":'))
+        self.assertLess(corpo.index('if foco == "despesas":'),
+                        corpo.index("# ---------------- Ticker de destaques"))
+
+    def test_o_foco_vem_da_url(self):
+        self.assertIn('foco=str(st.query_params.get("foco") or "geral")', FONTE)
+
+    def test_a_ramificacao_cobre_os_dois_grupos(self):
+        self.assertIn('("6", "6 - Despesas Variáveis")', FONTE)
+        self.assertIn('("8", "8 - Despesas Operacionais")', FONTE)
 
 
 # ============================================================================
