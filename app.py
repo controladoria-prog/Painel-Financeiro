@@ -3131,6 +3131,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-rank-bar-bg {{ flex:1.1; background:{COLORS["border"]}; border-radius:4px; height:7px; overflow:hidden; }}
             .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["secondary"]}, {COLORS["warning"]}); }}
             .tv-rank-pct-rec {{ flex:0.6; font-size:12.5px; color:{COLORS["text_muted"]}; text-align:right; white-space:nowrap; }}
+            /* Peso nas SAÍDAS (operacionais + variáveis). Cor de destaque para
+               não se confundir com o % da receita, que fica logo ao lado e tem
+               denominador diferente. */
+            .tv-rank-pct-sai {{ flex:0.55; font-size:12.5px; color:{COLORS["warning"]};
+                text-align:right; white-space:nowrap; }}
             .tv-rank-val {{ font-size:13.5px; color:{COLORS["text_muted"]}; width: 130px; text-align:right; font-family:'Consolas','Courier New',monospace; }}
             /* ---- Matriz executiva do modo MÊS A MÊS ----
                A primeira versão era só valor e barra numa lista: ficava
@@ -3840,6 +3845,16 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     ranque_despop.append((_nome_det, _v_det, True, _linha_det,
                                           _v_grp, _linha_grp))
 
+        # BASE NOVA: as saídas operacionais + variáveis juntas.
+        #
+        # É o denominador que responde "quanto este grupo pesa em tudo o que a
+        # operação gasta fora do CMV". O % do bloco responde outra coisa (peso
+        # dentro das operacionais) e o % da receita responde uma terceira. As
+        # três convivem porque cada uma é usada numa conversa diferente: a
+        # primeira para comparar grupos entre si, esta para dimensionar o grupo
+        # no gasto total, e a da receita para saber se ele cabe no faturamento.
+        _saidas_op_var_tv = abs(desp_op_tv_kpi) + abs(desp_var_tv)
+
         if top_despop:
             # O título NÃO sai daqui: o bloco muda de coluna conforme o modo, e
             # o título viaja junto com ele lá embaixo. Emitir aqui deixava dois
@@ -3856,6 +3871,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 _despop_mes = [valor_da_linha_tv(
                     list_df_real_tv, "8 - Despesas Operacionais", [m_map_tv[_m]])
                     for _m in meses_ativos_tv]
+                # Saídas operacionais + variáveis de CADA mês, para o terceiro
+                # percentual da célula. Do próprio mês, nunca do período: o
+                # peso de janeiro medido contra oito meses de saída não
+                # significa nada.
+                _saidas_mes_tv = [
+                    _op + valor_da_linha_tv(
+                        list_df_real_tv, "6 - Despesas Variáveis", [m_map_tv[_m]])
+                    for _op, _m in zip(_despop_mes, meses_ativos_tv)]
                 _cab_grp = "".join(f"<th>{_m.capitalize()[:3]}</th>"
                                    for _m in meses_ativos_tv)
                 linhas_despop.append(
@@ -3887,6 +3910,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 # % que o grupo representa da Receita Líquida -- mesmo cálculo
                 # já usado no card "Resumo Gerencial" (tv-cost-pct) logo acima.
                 pct_da_receita = (v_grp / rec_liq_real * 100) if rec_liq_real else 0
+                _pct_saidas_linha = ((v_grp / _saidas_op_var_tv * 100)
+                                     if _saidas_op_var_tv else 0)
                 pct_barra = max(3, min(100, v_grp / (v_pai if eh_detalhe else max_despop) * 100))
                 # O detalhe entra recuado e em tom de apoio: quem bate o olho
                 # tem de ver na hora que aquilo está DENTRO da linha de cima, e
@@ -3934,22 +3959,30 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                         # inteiro -- e período inteiro não responde "em qual mês
                         # essa conta saiu da curva", que é a pergunta que se faz
                         # olhando uma tabela mensal.
+                        # TRÊS leituras por célula, sempre na mesma ordem:
+                        #   1º  peso no bloco (ou no PAI, na linha recuada);
+                        #   2º  peso nas saídas operacionais + variáveis do mês;
+                        #   3º  peso na receita líquida do mês.
+                        # A linha recuada tinha só a primeira -- faltava nela o
+                        # % da receita que todas as outras traziam.
+                        _base_sai = (_saidas_mes_tv[_i_m]
+                                     if _i_m < len(_saidas_mes_tv) else 0)
+                        _pct_sai_m = (f"{_v_m / _base_sai * 100:.0f}% saí"
+                                      if _base_sai else "—")
+                        _pct_rec_m = (f"{_pct_num:.1f}% rec".replace(".", ",")
+                                      if _pct_num else "—")
                         if eh_detalhe:
                             _base_pai = _pais_m[_i_m] if _i_m < len(_pais_m) else 0
-                            _pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"
-                                      if _base_pai else "—")
+                            _primeiro = (f"{_v_m / _base_pai * 100:.0f}% grupo"
+                                         if _base_pai else "—")
                         else:
                             _base_bloco = (_despop_mes[_i_m]
                                            if _i_m < len(_despop_mes) else 0)
-                            _pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}%"
-                                            if _base_bloco else "—")
-                            _pct_rec_m = (f"{_pct_num:.1f}% rec".replace(".", ",")
-                                          if _pct_num else "—")
-                            # Os dois na MESMA linha: três linhas por célula
-                            # (valor + dois percentuais empilhados) deixavam a
-                            # tabela alta demais para varrer com o olho. A
-                            # legenda diz qual é qual.
-                            _pct_m = f"{_pct_bloco_m} · {_pct_rec_m}"
+                            _primeiro = (f"{_v_m / _base_bloco * 100:.0f}% op"
+                                         if _base_bloco else "—")
+                        # Numa linha só: empilhar três percentuais deixava a
+                        # tabela alta demais para varrer com o olho.
+                        _pct_m = f"{_primeiro} · {_pct_sai_m} · {_pct_rec_m}"
                         _cels += (
                             f'<td class="calor" style="background:rgba(214,161,85,{_alfa:.3f});">'
                             f'{formata_m(_v_m)}'
@@ -3960,13 +3993,17 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                                 if _rec_liq_t else "—")
                     # O peso do período mora aqui agora, junto do valor, na
                     # mesma forma das células de mês.
+                    _sai_t = sum(_saidas_mes_tv)
+                    _pct_sai_t = (f"{_total_grp / _sai_t * 100:.0f}% saí"
+                                  if _sai_t else "—")
                     if eh_detalhe:
                         _peso_t = ((_total_grp / v_pai * 100) if v_pai else 0)
-                        _pct_tot = f"{_peso_t:.0f}% do grupo"
+                        _primeiro_t = f"{_peso_t:.0f}% grupo"
                     else:
                         _peso_t = ((_total_grp / desp_op_tv_kpi * 100)
                                    if desp_op_tv_kpi else 0)
-                        _pct_tot = f"{_peso_t:.0f}% · {_pct_tot}"
+                        _primeiro_t = f"{_peso_t:.0f}% op"
+                    _pct_tot = f"{_primeiro_t} · {_pct_sai_t} · {_pct_tot}"
                     _cels += (f'<td class="tot">{formata_m(_total_grp)}'
                               f'<span class="sec">{_pct_tot}</span></td>')
 
@@ -3982,6 +4019,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'<div class="tv-rank-name"{_estilo_nome} title="{nome_grp}">'
                     f'{_prefixo}{nome_grp}</div>'
                     f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
+                    f'<div class="tv-rank-pct-sai">{_pct_saidas_linha:.1f}% saí.</div>'
                     f'<div class="tv-rank-pct-rec">{pct_da_receita:.1f}% rec.</div>'
                     '<div class="tv-rank-val">'
                     # "20% do grupo" nao cabia na coluna e quebrava em duas
@@ -4005,23 +4043,30 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'{COLORS["border"]};margin-top:6px;padding-top:9px;font-weight:700;">'
                     '<div class="tv-rank-name">Total dos principais grupos</div>'
                     '<div class="tv-rank-bar-bg" style="visibility:hidden;"></div>'
+                    f'<div class="tv-rank-pct-sai">'
+                    + (f"{_soma_grupos / _saidas_op_var_tv * 100:.1f}% saí."
+                       if _saidas_op_var_tv else "—")
+                    + "</div>"
                     f'<div class="tv-rank-pct-rec">{_pct_soma_rec:.1f}% rec.</div>'
                     f'<div class="tv-rank-val">{formata_m(_soma_grupos)} · '
                     f"{_pct_soma:.0f}%</div></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:4px;">'
                     f"Os cinco maiores somam {_pct_soma:.0f}% das despesas operacionais "
-                    f"({formata_m(desp_op_tv_kpi)}). A linha recuada é um detalhe de dentro "
-                    "do grupo acima e não entra na soma.</div>"
+                    f"({formata_m(desp_op_tv_kpi)}). <b>saí.</b> = peso nas saídas "
+                    f"operacionais + variáveis ({formata_m(_saidas_op_var_tv)}); "
+                    "<b>rec.</b> = peso na receita líquida. A linha recuada é um detalhe "
+                    "de dentro do grupo acima e não entra na soma.</div>"
                 )
             if _abrir_por_mes_tv:
                 linhas_despop.append(
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Em cada célula: <b>peso nas despesas operacionais do mês</b> · "
-                    "<b>peso na receita líquida do mês</b>. Na linha recuada, o "
-                    "percentual é sobre o grupo acima.</div>"
+                    "Em cada célula, na ordem: <b>op</b> = peso nas despesas "
+                    "operacionais do mês (na linha recuada, <b>grupo</b> = peso no grupo "
+                    "acima) · <b>saí</b> = peso nas saídas operacionais + variáveis do "
+                    "mês · <b>rec</b> = peso na receita líquida do mês.</div>"
                 )
             linhas_despop.append("</div>")
             _html_grupos_tv = "".join(linhas_despop)

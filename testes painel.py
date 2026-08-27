@@ -5616,12 +5616,48 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn("(_v / total * 100) if total else 0", corpo[i_barra:i_barra + 200],
                       "a barra deixou de ser proporcao do custo")
 
+    def test_o_peso_nas_saidas_op_mais_var_existe_nos_dois_modos(self):
+        """Terceiro denominador, e ele responde uma pergunta que os outros dois
+        nao respondem: quanto o grupo pesa em TUDO o que a operacao gasta fora
+        do CMV. O % do bloco compara grupos entre si; o da receita diz se cabe
+        no faturamento; este dimensiona o grupo no gasto total."""
+        b = self._bloco_tv()
+        # Consolidado: coluna propria na lista.
+        self.assertIn("_saidas_op_var_tv = abs(desp_op_tv_kpi) + abs(desp_var_tv)", b)
+        # DENTRO da linha de grupo: a linha de TOTAL tambem tem a coluna, e
+        # procurar no bloco todo deixava mutilar a das linhas em silencio.
+        # Ancora no desenho da linha de grupo, que vem DEPOIS do ramo do mes
+        # a mes: o "if _abrir_por_mes_tv" aparece antes e o recorte parava ali.
+        i_linha = b.index('<div class="tv-rank-bar-bg">')
+        linha = b[i_linha:i_linha + 900]
+        self.assertIn('class="tv-rank-pct-sai"', linha,
+                      "a coluna de saidas sumiu das linhas de grupo")
+        self.assertIn("_pct_saidas_linha", linha)
+        # Mes a mes: terceiro percentual na celula, com a base do PROPRIO mes.
+        self.assertIn("_saidas_mes_tv = [", b)
+        i = b.index("_saidas_mes_tv = [")
+        self.assertIn("[m_map_tv[_m]]", b[i:i + 400],
+                      "a base tem de ser a saida do proprio mes, nao a do periodo")
+        self.assertIn('_pct_sai_m = (f"{_v_m / _base_sai * 100:.0f}% saí"', b)
+
+
     def test_o_detalhe_mostra_o_pct_do_grupo_em_cada_mes(self):
         """A pergunta na linha recuada e "quanto de Servicos de Terceiros foi
         transporte em marco". O % da receita ja aparece nas linhas de grupo."""
         b = self._bloco_tv()
         self.assertIn("_linha_pai_grp", b, "a linha do pai precisa viajar junto")
-        self.assertIn('_pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"', b)
+        self.assertIn('_primeiro = (f"{_v_m / _base_pai * 100:.0f}% grupo"', b)
+        # E a linha recuada tambem mostra o % da RECEITA -- ela era a unica
+        # que nao trazia, e a comparacao com as outras linhas ficava capenga.
+        # O % da receita e calculado ANTES do if do detalhe, entao vale para
+        # as duas -- e essa ordem que garante que a linha recuada tenha o
+        # numero. Calcular dentro do else deixaria ela sem, de novo.
+        i_sai = b.index("_pct_sai_m = ")
+        i_rec = b.index("_pct_rec_m = ", i_sai)
+        i_if = b.index("if eh_detalhe:", i_sai)
+        self.assertLess(i_rec, i_if,
+                        "o % da receita voltou para dentro do ramo e a linha "
+                        "recuada ficou sem ele")
 
 
     def test_o_nome_do_detalhe_tem_fonte_propria(self):
@@ -5642,8 +5678,9 @@ class TestePainelTV(unittest.TestCase):
         # transbordava POR CIMA da coluna vizinha. O peso mora nas celulas.
         self.assertNotIn('<th class="tot">Peso</th>', b,
                          "a coluna Peso voltou e a tabela transborda de novo")
-        self.assertIn('_pct_tot = f"{_peso_t:.0f}% do grupo"', b)
-        self.assertIn('_pct_tot = f"{_peso_t:.0f}% · {_pct_tot}"', b)
+        self.assertIn('_primeiro_t = f"{_peso_t:.0f}% grupo"', b)
+        self.assertIn('_primeiro_t = f"{_peso_t:.0f}% op"', b)
+        self.assertIn('_pct_tot = f"{_primeiro_t} · {_pct_sai_t} · {_pct_tot}"', b)
         # E a tabela ganha rolagem propria, para nunca escrever por cima do
         # bloco vizinho.
         self.assertIn("'<div style=\"overflow-x:auto;\">'", b)
@@ -5700,10 +5737,10 @@ class TestePainelTV(unittest.TestCase):
         que e a pergunta que se faz olhando uma tabela mensal."""
         b = self._bloco_tv()
         self.assertIn("_despop_mes = [valor_da_linha_tv(", b)
-        self.assertIn('_pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}%"', b)
+        self.assertIn('_primeiro = (f"{_v_m / _base_bloco * 100:.0f}% op"', b)
         # E ele tem de CHEGAR na celula: calcular e nao usar deixava a trava
         # verde com a coluna mostrando so o % da receita.
-        self.assertIn('_pct_m = f"{_pct_bloco_m} · {_pct_rec_m}"', b,
+        self.assertIn('_pct_m = f"{_primeiro} · {_pct_sai_m} · {_pct_rec_m}"', b,
                       "o peso do bloco foi calculado mas nao chega na celula")
         # A base e a despesa operacional DAQUELE mes, nao a do periodo: senao
         # janeiro sairia medido contra oito meses de despesa.
