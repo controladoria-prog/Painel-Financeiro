@@ -6123,7 +6123,10 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
         # As linhas de aluguel sao DESCOBERTAS pelo nome, nao cravadas: o
         # aluguel pode estar quebrado em mais de uma linha da DRE.
-        self.assertIn('"aluguel" in _normalizar_coluna_fin(str(l))', corpo)
+        # _normalizar_texto e NAO _normalizar_coluna_fin: o segundo so nasce
+        # DEPOIS da linha em que o painel de TV roda, e o app caia com
+        # NameError. Ver TesteOrdemDeDefinicao.
+        self.assertIn('"ALUGUEL" in _normalizar_texto(str(l))', corpo)
 
     def test_o_aluguel_tem_a_visao_mes_a_mes(self):
         i = FONTE.index("Aluguel sobre o faturamento")
@@ -6148,6 +6151,70 @@ class TesteTelaDaRamificacao(unittest.TestCase):
     def test_a_ramificacao_cobre_os_dois_grupos(self):
         self.assertIn('("6", "6 - Despesas Variáveis")', FONTE)
         self.assertIn('("8", "8 - Despesas Operacionais")', FONTE)
+
+
+
+class TesteOrdemDeDefinicao(unittest.TestCase):
+    """Nome definido DEPOIS do ponto em que o app o usa (27/08/2026).
+
+    O painel de TV roda no meio do arquivo, num `if` de modulo -- nao no fim.
+    Tudo o que ele chama precisa estar definido ANTES dessa linha. Uma funcao
+    definida mais abaixo existe para o pyflakes (ela esta no arquivo) mas NAO
+    existe na hora em que a tela desenha, e o app cai com NameError na cara do
+    usuario.
+
+    Foi assim que a tela de despesas caiu em producao: ela usava
+    _normalizar_coluna_fin, definido na linha 7169, e o painel de TV roda na
+    4699. Nenhum teste pegava, porque `carregar()` extrai a funcao com as
+    dependencias declaradas a mao -- a ordem do arquivo nunca entrava na
+    conta."""
+
+    def test_o_painel_de_tv_so_usa_o_que_ja_existe(self):
+        arvore = ARVORE   # ja parseada no topo da suite
+        # Onde o app dispara o painel de TV.
+        linha_disparo = None
+        for no in arvore.body:
+            if isinstance(no, ast.If) and "modo" in ast.dump(no.test):
+                if "renderizar_painel_tv" in ast.dump(no):
+                    linha_disparo = no.lineno
+                    break
+        self.assertIsNotNone(linha_disparo, "sumiu o disparo do painel de TV")
+
+        # Nomes de topo definidos ANTES do disparo.
+        definidos_antes = set()
+        funcoes = {}
+        for no in arvore.body:
+            nome = getattr(no, "name", None)
+            if isinstance(no, (ast.FunctionDef, ast.ClassDef)):
+                funcoes[nome] = no
+                if no.lineno < linha_disparo:
+                    definidos_antes.add(nome)
+            elif isinstance(no, ast.Assign) and no.lineno < linha_disparo:
+                definidos_antes |= {a.id for a in no.targets
+                                    if isinstance(a, ast.Name)}
+
+        # Fecho: tudo o que o painel de TV alcanca, direta ou indiretamente.
+        def _chamados(no):
+            fora = set()
+            for filho in ast.walk(no):
+                if isinstance(filho, ast.Name):
+                    fora.add(filho.id)
+            return fora
+
+        alcancados, pilha = set(), ["renderizar_painel_tv"]
+        while pilha:
+            atual = pilha.pop()
+            if atual in alcancados or atual not in funcoes:
+                continue
+            alcancados.add(atual)
+            pilha.extend(n for n in _chamados(funcoes[atual]) if n in funcoes)
+
+        faltando = []
+        for nome_funcao in sorted(alcancados):
+            for usado in sorted(_chamados(funcoes[nome_funcao])):
+                if usado in funcoes and usado not in definidos_antes:
+                    faltando.append(f"{nome_funcao} usa {usado}, definido depois")
+        self.assertEqual(faltando, [], "\n".join(faltando))
 
 
 # ============================================================================

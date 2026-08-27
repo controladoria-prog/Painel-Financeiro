@@ -3174,8 +3174,16 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
     st.markdown('<div class="tv-section-title">🏬 Aluguel sobre o faturamento, por loja</div>',
                 unsafe_allow_html=True)
 
+    # _normalizar_texto e NÃO _normalizar_coluna_fin: o segundo só nasce na
+    # linha 7169, e o painel de TV roda na 4699 -- a função ainda não existe
+    # quando esta tela desenha, e o app caía com NameError. É o tipo de erro
+    # que só aparece rodando: pyflakes vê a função definida no arquivo e não
+    # tem como saber que a EXECUÇÃO acontece antes.
+    #
+    # Para "aluguel" o normalizador simples basta: ele tira espaço sobrando e
+    # sobe para maiúsculas, e a palavra não tem acento.
     linhas_aluguel = [l for l in linhas_dre
-                      if "aluguel" in _normalizar_coluna_fin(str(l))]
+                      if "ALUGUEL" in _normalizar_texto(str(l))]
     lojas = _lojas_individuais_das_abas(abas_visao or [])
     if not linhas_aluguel:
         st.markdown(
