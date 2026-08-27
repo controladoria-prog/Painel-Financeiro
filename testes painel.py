@@ -1457,6 +1457,30 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("v < META_RESERVA_PADRAO", FONTE)
 
 
+    def test_o_grafico_da_reserva_nao_tem_mais_a_linha_de_resultado(self):
+        """Ela era a diferenca entre as duas barras que estao logo ali, entao
+        nao acrescentava leitura -- so puxava a escala da esquerda para baixo
+        (ia a -10 milhoes) e achatava as barras contra o topo do quadro."""
+        self.assertNotIn('name="Resultado do mês"', FONTE)
+        self.assertNotIn("resultado_mes = [e - s for e, s in zip(", FONTE)
+        # E a faixa da esquerda passa a comecar em ZERO.
+        self.assertIn("range=[0, teto_barras * 1.20]", FONTE)
+
+    def test_os_rotulos_das_duas_linhas_nao_se_cobrem(self):
+        """Com dois tracados no mesmo eixo, "top center" punha o numero da
+        sobra em cima do ponto da liquidez em todo mes em que as duas se
+        cruzam."""
+        # Ancora COMPLETA: "% de sobra" aparece antes disso no texto de
+        # legenda, e o recorte caia no lugar errado.
+        i = FONTE.index('name="% de sobra", x=rotulos_x_m')
+        self.assertIn('textposition="middle left"', FONTE[i:i + 1100])
+        j = FONTE.index('name="Liquidez imediata", x=rotulos_x_m')
+        self.assertIn('textposition="middle right"', FONTE[j:j + 1100])
+        # E os dois com cliponaxis desligado, senao o rotulo da ponta some.
+        self.assertIn("cliponaxis=False", FONTE[i:i + 1100])
+        self.assertIn("cliponaxis=False", FONTE[j:j + 1100])
+
+
     def test_a_liquidez_nao_repete_a_conta_da_sobra(self):
         """As duas chegam a 30% na meta, mas dividem por coisas diferentes: a
         de cima pelo DISPONIVEL, a de baixo pela DIVIDA. Modelo da conta."""
@@ -5639,8 +5663,13 @@ class TestePainelTV(unittest.TestCase):
         # duas tentativas anteriores falharam por inventar um desenho que nao
         # existia em nenhum outro lugar do painel.
         self.assertIn('barmode="group"', trecho, "as barras voltaram a se sobrepor")
-        self.assertIn("line=dict(color=COLORS[\"muted_line\"], width=1.6)", trecho,
+        self.assertIn('line=dict(color=COLORS["muted_line"], width=1.5)', trecho,
                       "o orcado deixou de ser barra vazada com contorno")
+        # O REALIZADO sai verde ou vermelho conforme bate a meta -- mesma
+        # convencao dos cartoes de KPI e da tabela de reserva. Sem isso e
+        # preciso conferir o desvio para saber se o mes foi bom.
+        self.assertIn("_preenche_real = [", trecho)
+        self.assertIn("line=dict(color=cores_desvio_tv, width=1.6)", trecho)
         self.assertIn('name="Desvio"', trecho, "o desvio deixou de ser uma linha")
         self.assertIn('yaxis="y2"', trecho)
         # Legenda EMBAIXO, como no grafico da Reserva de Caixa.
