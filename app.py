@@ -3160,7 +3160,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                variação, que é a única coisa que de fato é boa ou ruim. */
             .tv-mescards {{ display:flex; flex-wrap:wrap; gap:9px; }}
             .tv-mescard {{
-                flex:1 1 205px; background:rgba(255,255,255,0.028);
+                flex:1 1 262px; background:rgba(255,255,255,0.028);
                 border:none; border-left:3px solid var(--mes-cor, {COLORS["primary"]});
                 border-radius:4px 10px 10px 4px; padding:11px 14px 10px 13px;
             }}
@@ -3175,7 +3175,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             }}
             .tv-mescard .topo span {{ font-size:10.5px; color:{COLORS["text_muted"]}; }}
             .tv-mescard .parc {{
-                display:flex; align-items:baseline; gap:7px; font-size:11px;
+                display:flex; align-items:baseline; gap:6px; font-size:11px;
                 color:{COLORS["text_muted"]}; padding:3px 0;
                 border-bottom:1px dashed {COLORS["border_soft"]};
             }}
@@ -3183,20 +3183,29 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-mescard .parc .pt {{
                 width:8px; height:8px; border-radius:2px; flex:0 0 8px;
             }}
-            .tv-mescard .parc .nm {{ flex:1 1 auto; color:{COLORS["text"]}; }}
+            .tv-mescard .parc .nm {{
+                flex:1 1 auto; color:{COLORS["text"]}; white-space:nowrap;
+                overflow:hidden; text-overflow:ellipsis; min-width:0;
+            }}
+            /* Largura RESERVADA para o valor e proibição de quebra: sem isso o
+               nome empurrava "R$ 0,1M" para a linha de baixo, e o cartão
+               inteiro ficava com uma parcela alta e as outras baixas. */
             .tv-mescard .parc em {{
                 font-style:normal; font-family:{FONTE_MONO}; font-size:12px;
                 color:{COLORS["text"]}; font-variant-numeric:tabular-nums;
+                white-space:nowrap; flex:0 0 auto; min-width:56px;
+                text-align:right;
             }}
             /* Duas larguras fixas para as colunas de percentual: sem elas os
                números dançam de linha para linha e o olho perde a coluna. */
             .tv-mescard .parc .pc {{
-                width:34px; text-align:right; font-family:{FONTE_MONO};
-                font-variant-numeric:tabular-nums;
+                flex:0 0 32px; text-align:right; font-family:{FONTE_MONO};
+                font-variant-numeric:tabular-nums; white-space:nowrap;
             }}
             .tv-mescard .parc .pr {{
-                width:62px; text-align:right; font-family:{FONTE_MONO};
+                flex:0 0 58px; text-align:right; font-family:{FONTE_MONO};
                 font-variant-numeric:tabular-nums; font-size:10px;
+                white-space:nowrap;
             }}
             .tv-mescard .rod {{ padding-top:8px; margin-top:4px;
                 border-top:1px solid {COLORS["border_soft"]}; }}
@@ -3438,33 +3447,60 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # gráfico de linha e complementa a evolução com "quanto acima/abaixo
         # do orçado cada mês ficou", mês a mês. ----
         st.markdown('<div class="tv-section-title">📐 Desvio Mensal — EBITDA Real vs. Orçado</div>', unsafe_allow_html=True)
-        desvio_m_tv, cores_desvio_tv = [], []
+        # O gráfico mostrava SÓ o desvio: uma barra vermelha de R$ -0,8M sem
+        # dizer se era 0,8 sobre 1,5 (metade da meta perdida) ou 0,8 sobre 20
+        # (um arranhão). Agora traz os três números -- realizado, orçado e a
+        # diferença entre eles -- que é a leitura que se faz numa reunião.
+        eb_real_m_tv, eb_orc_m_tv, desvio_m_tv, cores_desvio_tv = [], [], [], []
         for m_nome, c in m_map_ate_hoje.items():
             eb_real_m = get_valor_consolidado_multi(list_df_real_tv, "11 - EBITDA", [c])
             eb_orc_m = get_valor_consolidado_multi(list_df_orc_tv, "11 - EBITDA", [c])
             d = eb_real_m - eb_orc_m
+            eb_real_m_tv.append(eb_real_m)
+            eb_orc_m_tv.append(eb_orc_m)
             desvio_m_tv.append(d)
             cores_desvio_tv.append(COLORS["positive"] if d >= 0 else COLORS["negative"])
         fig_tv_desvio = go.Figure()
+        # O ORÇADO fica atrás, em barra vazada: ele é a régua, não o assunto.
+        # Barra cheia nas duas faria a vista disputar qual das duas é o real.
         fig_tv_desvio.add_trace(go.Bar(
-            x=rot_m_tv, y=desvio_m_tv, marker=dict(color=cores_desvio_tv),
-            text=[formata_m(v) for v in desvio_m_tv], textposition="outside",
-            textfont=dict(size=10, color=COLORS["text_muted"]),
+            name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
+            marker=dict(color="rgba(0,0,0,0)",
+                        line=dict(color=COLORS["muted_line"], width=1.5)),
+            hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
         ))
-        # 250 e nao 160: a coluna da direita (rosca + as duas listas) e mais
-        # alta que a esquerda, e sobrava uma faixa morta embaixo deste grafico
-        # ate o letreiro. A altura foi medida no print de 26/08/2026 para
-        # ocupar a lacuna SEM empurrar o rodape -- o letreiro e os botoes de
-        # tela cheia tem de continuar visiveis sem rolagem, que e o ponto de
-        # um painel de parede.
+        fig_tv_desvio.add_trace(go.Bar(
+            name="Realizado", x=rot_m_tv, y=eb_real_m_tv,
+            marker=dict(color=cores_desvio_tv),
+            text=[formata_m(v) for v in eb_real_m_tv], textposition="outside",
+            textfont=dict(size=10, color=COLORS["text"]),
+            hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
+        ))
+        # O desvio vai ESCRITO embaixo de cada par, na cor do resultado. Uma
+        # terceira barra empilharia informação sobre informação; o texto diz o
+        # número exato sem disputar espaço com as barras.
+        fig_tv_desvio.add_trace(go.Scatter(
+            x=rot_m_tv, y=[0] * len(rot_m_tv), mode="text",
+            text=[f"{'▲' if d >= 0 else '▼'} {formata_m(d)}" for d in desvio_m_tv],
+            textposition="bottom center",
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+            showlegend=False, hoverinfo="skip",
+        ))
+        _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
         estilo_grafico(
             fig_tv_desvio, height=268,
-            margin=dict(l=20, r=20, t=10, b=30),
-            xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color=COLORS["text_muted"])),
-            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=True,
-                       zerolinecolor=COLORS["border"], zerolinewidth=1),
-            showlegend=False,
-            bargap=0.35,
+            margin=dict(l=20, r=20, t=18, b=30),
+            barmode="overlay", bargap=0.42,
+            xaxis=dict(showgrid=False, fixedrange=True,
+                       tickfont=dict(size=12, color=COLORS["text_muted"])),
+            # Faixa negativa reservada de propósito: é ali que o texto do
+            # desvio é escrito, e sem ela ele sairia por baixo do quadro.
+            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
+                       zeroline=True, zerolinecolor=COLORS["border"], zerolinewidth=1,
+                       range=[-_teto_desvio * 0.34, _teto_desvio * 1.22]),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right",
+                        x=1, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         )
         st.plotly_chart(fig_tv_desvio, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
@@ -3745,6 +3781,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             max_despop = max(v for _n, v, _d, _l, _p, _lp in ranque_despop if not _d) or 1.0
             linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
             if _abrir_por_mes_tv:
+                # Base do "% do bloco" em cada mês: as despesas operacionais
+                # DAQUELE mês, não a do período -- senão o percentual de
+                # janeiro sairia medido contra oito meses de despesa.
+                _despop_mes = [valor_da_linha_tv(
+                    list_df_real_tv, "8 - Despesas Operacionais", [m_map_tv[_m]])
+                    for _m in meses_ativos_tv]
                 _cab_grp = "".join(f"<th>{_m.capitalize()[:3]}</th>"
                                    for _m in meses_ativos_tv)
                 linhas_despop.append(
@@ -3811,17 +3853,31 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                         # Piso em 0,06 para a célula mais fraca ainda se
                         # distinguir do fundo: transparente demais some.
                         _alfa = 0.06 + (_pct_num / _teto_calor) * 0.22
+                        # DUAS leituras por célula, em cada mês:
+                        #   - grupo: quanto ele pesa nas despesas operacionais
+                        #     DAQUELE mês, e quanto pesa na receita do mês;
+                        #   - detalhe: quanto ele é do PAI naquele mês.
+                        # O peso só existia na última coluna, para o período
+                        # inteiro -- e período inteiro não responde "em qual mês
+                        # essa conta saiu da curva", que é a pergunta que se faz
+                        # olhando uma tabela mensal.
                         if eh_detalhe:
                             _base_pai = _pais_m[_i_m] if _i_m < len(_pais_m) else 0
                             _pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"
                                       if _base_pai else "—")
                         else:
-                            _pct_m = (f"{_pct_num:.1f}% rec.".replace(".", ",")
-                                      if _pct_num else "—")
+                            _base_bloco = (_despop_mes[_i_m]
+                                           if _i_m < len(_despop_mes) else 0)
+                            _pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}% do bloco"
+                                            if _base_bloco else "—")
+                            _pct_rec_m = (f"{_pct_num:.1f}% rec.".replace(".", ",")
+                                          if _pct_num else "—")
+                            _pct_m = f"{_pct_bloco_m}<br>{_pct_rec_m}"
                         _cels += (
                             f'<td class="calor" style="background:rgba(214,161,85,{_alfa:.3f});">'
                             f'{formata_m(_v_m)}'
                             f'<span class="sec">{_pct_m}</span></td>')
+
                     _total_grp = sum(_vals_m)
                     _pct_tot = (f"{_total_grp / _rec_liq_t * 100:.1f}%".replace(".", ",")
                                 if _rec_liq_t else "—")
@@ -3887,7 +3943,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     "</tbody></table>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Percentual sobre a receita líquida do próprio mês</div>"
+                    "Nas linhas de grupo, o primeiro percentual é o peso nas "
+                    "despesas operacionais do próprio mês e o segundo é sobre a "
+                    "receita líquida do mês. Na linha recuada, o percentual é "
+                    "sobre o grupo acima.</div>"
                 )
             linhas_despop.append("</div>")
             _html_grupos_tv = "".join(linhas_despop)

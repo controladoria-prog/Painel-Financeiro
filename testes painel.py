@@ -5549,6 +5549,53 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn("0.06 + (_pct_num / _teto_calor)", b)
 
 
+    def test_o_grafico_de_desvio_mostra_os_tres_numeros(self):
+        """Antes mostrava SO o desvio: uma barra vermelha de R$ -0,8M sem dizer
+        se era 0,8 sobre 1,5 (metade da meta perdida) ou 0,8 sobre 20 (um
+        arranhao). Realizado, orcado e a diferenca sao a leitura que se faz
+        numa reuniao."""
+        b = self._bloco_tv()
+        i = b.index("eb_real_m_tv, eb_orc_m_tv, desvio_m_tv")
+        trecho = b[i:b.index("st.plotly_chart(fig_tv_desvio", i)]
+        self.assertIn('name="Orçado"', trecho)
+        self.assertIn('name="Realizado"', trecho)
+        # O orcado fica VAZADO: barra cheia nas duas faria a vista disputar
+        # qual das duas e o real. A checagem e DENTRO do trace do orcado --
+        # procurar no bloco todo achava a cor transparente noutro grafico.
+        i_orc = trecho.index('name="Orçado"')
+        self.assertIn('color="rgba(0,0,0,0)"', trecho[i_orc:i_orc + 260],
+                      "o orcado virou barra cheia e disputa com o realizado")
+        # E o desvio vai escrito, nao como terceira barra.
+        self.assertIn('mode="text"', trecho)
+        self.assertIn("formata_m(d)", trecho)
+        # Faixa negativa reservada: e ali que o texto do desvio e escrito.
+        self.assertIn("range=[-_teto_desvio * 0.34", trecho)
+
+    def test_o_peso_do_grupo_aparece_em_cada_mes(self):
+        """O peso so existia na ultima coluna, para o periodo inteiro -- e
+        periodo inteiro nao responde "em qual mes essa conta saiu da curva",
+        que e a pergunta que se faz olhando uma tabela mensal."""
+        b = self._bloco_tv()
+        self.assertIn("_despop_mes = [valor_da_linha_tv(", b)
+        self.assertIn('_pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}% do bloco"', b)
+        # E ele tem de CHEGAR na celula: calcular e nao usar deixava a trava
+        # verde com a coluna mostrando so o % da receita.
+        self.assertIn('_pct_m = f"{_pct_bloco_m}<br>{_pct_rec_m}"', b,
+                      "o peso do bloco foi calculado mas nao chega na celula")
+        # A base e a despesa operacional DAQUELE mes, nao a do periodo: senao
+        # janeiro sairia medido contra oito meses de despesa.
+        i = b.index("_despop_mes = [valor_da_linha_tv(")
+        self.assertIn("[m_map_tv[_m]]", b[i:i + 300])
+
+    def test_as_parcelas_do_cartao_nao_quebram_linha(self):
+        """O nome empurrava "R$ 0,1M" para a linha de baixo, e o cartao ficava
+        com uma parcela alta e as outras baixas."""
+        b = self._bloco_tv()
+        i = b.index(".tv-mescard .parc em {{")
+        self.assertIn("white-space:nowrap", b[i:i + 300])
+        self.assertIn("min-width:56px", b[i:i + 300])
+
+
     def test_o_grafico_de_desvio_ocupa_a_lacuna(self):
         """A coluna da direita (rosca + as duas listas) e mais alta que a
         esquerda, e sobrava uma faixa morta embaixo do desvio ate o letreiro.
