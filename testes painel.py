@@ -5136,6 +5136,87 @@ class TesteConfrontoComAMeta(unittest.TestCase):
         self.assertIsNone(tabela.iloc[0]["Variação %"])
 
 
+
+class TestePainelTV(unittest.TestCase):
+    """A rosca de composicao e o ranque de despesas operacionais."""
+
+    def _bloco_tv(self):
+        i = FONTE.index("def renderizar_painel_tv(")
+        return FONTE[i:FONTE.index("\ndef ", i + 10)]
+
+    def test_a_rosca_tem_um_cinza_so(self):
+        """Eram TRES cinzas em 4 fatias: a rosca virava um borrao e so o azul
+        se distinguia."""
+        ns = carregar([], ["COLORS"])
+        cores = ns["COLORS"]
+        bloco = self._bloco_tv()
+        i = bloco.index("marker=dict(colors=[COLORS")
+        # So a LISTA de cores. Recortar ate o primeiro "]" nao serve: ele
+        # fecha COLORS["primary"], nao a lista. O fim e a linha da borda, que
+        # vem logo depois e usa uma cor que NAO e fatia.
+        trecho = bloco[i:bloco.index("line=dict(", i)]
+        usadas = re.findall(r'COLORS\["(\w+)"\]', trecho)
+        self.assertEqual(len(usadas), 4, "a rosca tem 4 fatias")
+        cinzentas = [c for c in usadas if c in ("muted_line", "secondary", "border_soft")]
+        self.assertEqual(len(cinzentas), 1,
+                         f"a rosca voltou a ter mais de um cinza: {cinzentas}")
+        self.assertIn("warning", usadas,
+                      "a Operacional tem de ser ambar, a mesma cor das barras "
+                      "da lista que detalha justamente ela")
+        self.assertIn("accent", cores, "sumiu a cor neutra da paleta")
+
+    def test_a_lista_ao_lado_usa_a_MESMA_cor_da_fatia(self):
+        """Divergir aqui faria o quadradinho de uma linha apontar para outra
+        fatia da rosca."""
+        bloco = self._bloco_tv()
+        i = bloco.index("categorias_custo = [")
+        trecho = bloco[i:i + 700]
+        self.assertIn('("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"])',
+                      trecho)
+
+    def test_o_detalhe_nao_disputa_lugar_no_ranque(self):
+        """A linha de detalhe e um recorte de DENTRO do pai. Se disputasse
+        posicao, o mesmo dinheiro apareceria duas vezes e empurraria um grupo
+        de verdade para fora do top 5."""
+        bloco = self._bloco_tv()
+        self.assertIn("top_despop = detalhe_despop[:5]", bloco)
+        i = bloco.index("ranque_despop = []")
+        trecho = bloco[i:i + 1400]
+        # O detalhe e pendurado DEPOIS do corte do top 5, nunca antes.
+        self.assertLess(bloco.index("top_despop = detalhe_despop[:5]"),
+                        bloco.index("ranque_despop = []"))
+        self.assertIn("DETALHES_DO_RANQUE_TV", trecho)
+
+    def test_a_escala_da_barra_segue_o_maior_GRUPO(self):
+        """O detalhe e sempre menor que o pai; deixa-lo definir a escala
+        encolheria todas as barras de uma vez."""
+        bloco = self._bloco_tv()
+        self.assertIn("max(v for _n, v, _d in ranque_despop if not _d)", bloco)
+
+    def test_o_detalhe_aparece_recuado_e_marcado(self):
+        """Quem bate o olho tem de ver na hora que aquilo esta DENTRO da linha
+        de cima, e nao somando com ela."""
+        bloco = self._bloco_tv()
+        self.assertIn('_prefixo = "↳ " if eh_detalhe else ""', bloco)
+        self.assertIn("padding-left:18px", bloco)
+
+    def test_a_linha_de_transporte_esta_configurada(self):
+        ns = carregar([], ["DETALHES_DO_RANQUE_TV"])
+        self.assertEqual(ns["DETALHES_DO_RANQUE_TV"].get("8.8.10"),
+                         "Serviços de Transporte")
+
+    def test_o_detalhe_so_pendura_no_pai_certo(self):
+        """Modelo do que o codigo faz: 8.8.10 pendura em 8.8, nunca em 8.5 nem
+        em 8 -- e a comparacao usa o PONTO, senao "8.8" casaria com "8.80"."""
+        detalhes = {"8.8.10": "Serviços de Transporte"}
+        for pai, esperado in (("8.8", True), ("8.5", False), ("8", False), ("8.80", False)):
+            achou = any(n.rsplit(".", 1)[0] == pai for n in detalhes)
+            self.assertEqual(achou, esperado, pai)
+        # E o codigo tem de usar a comparacao exata, nao startswith: "8.8.10"
+        # comeca com "8." e se penduraria no grupo "8" tambem.
+        self.assertIn('_num_det.rsplit(".", 1)[0] != _num_grp', FONTE)
+
+
 # ============================================================================
 # 6. FORMATACAO
 # ============================================================================

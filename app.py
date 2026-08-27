@@ -76,6 +76,11 @@ COLORS = {
     "negative": "#E08585",
     "warning": "#D6A155",
     "muted_line": "#A3AEBF",
+    # Cor neutra para categoria que precisa se distinguir sem ser lida como
+    # boa ou ruim. Verde e vermelho já significam "dentro" e "fora" no painel
+    # inteiro; usar um dos dois numa fatia de custo faria a pessoa ler juízo
+    # onde só há composição.
+    "accent": "#9B8CD1",
 }
 
 FONT_STACK = "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
@@ -2817,6 +2822,15 @@ def _obter_aba_consolidada_padrao(lista_abas):
     return lista_abas[0] if lista_abas else None
 
 
+# Linhas que aparecem no ranque como DETALHE de um grupo maior, logo abaixo
+# dele. Elas são um recorte de dentro do pai, não uma despesa a mais: entram
+# só para dar visibilidade, sem alterar o valor do pai nem disputar posição no
+# ranque. Chave = número da linha na DRE, valor = como ela aparece na tela.
+DETALHES_DO_RANQUE_TV = {
+    "8.8.10": "Serviços de Transporte",
+}
+
+
 def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
@@ -3176,7 +3190,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         fig_tv_donut = go.Figure(data=[go.Pie(
             labels=["CMV", "Desp. Variáveis", "Desp. Operacionais", "Deprec./Amort."],
             values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.66,
-            marker=dict(colors=[COLORS["primary"], COLORS["muted_line"], COLORS["secondary"], COLORS["border_soft"]],
+            # Eram TRÊS cinzas de 4 fatias: a rosca virava um borrão e só o
+            # azul se distinguia. Agora um cinza só, e a Operacional fica
+            # âmbar de propósito -- é a mesma cor das barras da lista
+            # "Principais Grupos" logo abaixo, que detalha justamente ela.
+            marker=dict(colors=[COLORS["primary"], COLORS["muted_line"],
+                                COLORS["warning"], COLORS["accent"]],
                         line=dict(color=COLORS["surface"], width=2)),
             textinfo="percent", textfont=dict(size=11), showlegend=False,
         )])
@@ -3192,7 +3211,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         categorias_custo = [
             ("CMV", cmv_tv, cmv_tv_o, COLORS["primary"]),
             ("Despesas Variáveis", desp_var_tv, desp_var_tv_o, COLORS["muted_line"]),
-            ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["secondary"]),
+            # A mesma cor da fatia. Divergir aqui faria o quadradinho da
+            # linha apontar para outra fatia da rosca.
+            ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"]),
         ]
         linhas_custo = ['<div class="tv-panel" style="padding-top:8px;">']
         for nome_cat, v_real, v_orc, cor_cat in categorias_custo:
@@ -3225,26 +3246,62 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         for sub in subgrupos_despop:
             v_sub = abs(get_valor_consolidado_multi(list_df_real_tv, sub, cols_ytd, exato_linha_sintetica=True))
             if v_sub:
-                detalhe_despop.append((_nome_sem_numero_dre(sub), v_sub))
-        detalhe_despop.sort(key=lambda x: x[1], reverse=True)
+                # O NÚMERO viaja junto: é por ele que se sabe qual linha de
+                # detalhe pendura embaixo de qual grupo.
+                detalhe_despop.append(
+                    (_numero_linha_dre(sub), _nome_sem_numero_dre(sub), v_sub))
+        detalhe_despop.sort(key=lambda x: x[2], reverse=True)
         top_despop = detalhe_despop[:5]
+
+        # Pendura as linhas de detalhe logo abaixo do grupo a que pertencem.
+        # Elas NÃO entram no ranque nem no top 5: são um recorte de dentro do
+        # pai, e disputar posição faria o mesmo dinheiro aparecer duas vezes na
+        # lista e empurrar um grupo de verdade para fora.
+        ranque_despop = []
+        for _num_grp, _nome_grp, _v_grp in top_despop:
+            ranque_despop.append((_nome_grp, _v_grp, False))
+            for _num_det, _nome_det in DETALHES_DO_RANQUE_TV.items():
+                # Comparação EXATA do pai, não startswith: "8.8.10" começa com
+                # "8." e se penduraria também no grupo "8" se ele aparecesse no
+                # ranque. Aqui o pai de "8.8.10" é "8.8" e ponto final.
+                if not _num_grp or _num_det.rsplit(".", 1)[0] != _num_grp:
+                    continue
+                _linha_det = next(
+                    (l for l in linhas_dre_tv if _numero_linha_dre(l) == _num_det), None)
+                if not _linha_det:
+                    continue
+                _v_det = abs(get_valor_consolidado_multi(
+                    list_df_real_tv, _linha_det, cols_ytd, exato_linha_sintetica=True))
+                if _v_det:
+                    ranque_despop.append((_nome_det, _v_det, True))
 
         if top_despop:
             st.markdown(
                 '<div class="tv-section-title" style="margin-top:10px;">🏢 Despesas Operacionais — Principais Grupos</div>',
                 unsafe_allow_html=True,
             )
-            max_despop = max(v for _, v in top_despop) or 1.0
+            # A barra segue o maior GRUPO, não o maior item da lista: o
+            # detalhe é sempre menor que o pai, e deixá-lo definir a escala
+            # encolheria todas as barras de uma vez.
+            max_despop = max(v for _n, v, _d in ranque_despop if not _d) or 1.0
             linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
-            for nome_grp, v_grp in top_despop:
+            for nome_grp, v_grp, eh_detalhe in ranque_despop:
                 pct_do_despop = (v_grp / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
                 # % que o grupo representa da Receita Líquida -- mesmo cálculo
                 # já usado no card "Resumo Gerencial" (tv-cost-pct) logo acima.
                 pct_da_receita = (v_grp / rec_liq_real * 100) if rec_liq_real else 0
                 pct_barra = max(3, min(100, v_grp / max_despop * 100))
+                # O detalhe entra recuado e em tom de apoio: quem bate o olho
+                # tem de ver na hora que aquilo está DENTRO da linha de cima, e
+                # não somando com ela.
+                _estilo_nome = (
+                    f' style="padding-left:18px;color:{COLORS["text_muted"]};'
+                    'font-weight:500;"' if eh_detalhe else "")
+                _prefixo = "↳ " if eh_detalhe else ""
                 linhas_despop.append(
                     '<div class="tv-rank-row">'
-                    f'<div class="tv-rank-name" title="{nome_grp}">{nome_grp}</div>'
+                    f'<div class="tv-rank-name"{_estilo_nome} title="{nome_grp}">'
+                    f'{_prefixo}{nome_grp}</div>'
                     f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
                     f'<div class="tv-rank-pct-rec">{pct_da_receita:.1f}% rec.</div>'
                     f'<div class="tv-rank-val">{formata_m(v_grp)} · {pct_do_despop:.0f}%</div>'
