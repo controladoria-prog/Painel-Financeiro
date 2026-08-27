@@ -5236,7 +5236,14 @@ class TestePainelTV(unittest.TestCase):
         i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
         cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
         self.assertNotIn('class="leg"', cartoes, "a legenda voltou para dentro do cartao")
-        self.assertIn('("CMV", COLORS["primary"])', cartoes)
+        # A legenda do BLOCO tambem saiu: o grafico de barras logo acima ja tem
+        # a dele, e duas legendas iguais na mesma coluna e ruido. Cada cartao
+        # traz os percentuais no rodape, junto do numero a que se referem --
+        # que dispensa legenda de cor.
+        self.assertNotIn('font-size:10.5px;color:{COLORS["text_muted"]};margin-bottom:8px;',
+                         cartoes, "a legenda do bloco voltou")
+        self.assertIn("CMV {pct(cmv)}", cartoes,
+                      "o rodape do cartao tem de nomear os percentuais")
 
     def test_os_iframes_do_rodape_nao_rolam(self):
         """Conteudo alguns pixels mais alto que a altura pedida faz o navegador
@@ -5469,13 +5476,19 @@ class TestePainelTV(unittest.TestCase):
         # Cada cartao tem de trazer o que o consolidado trazia: valor, margem,
         # variacao contra o orcado e a composicao em proporcao.
         self.assertIn("vs. orçado", cartoes)
-        # As DUAS barras: a do cartao de cada mes e a do cartao do periodo.
-        # Contar so uma deixava mutilar a outra em silencio.
-        self.assertEqual(cartoes.count('class="comp"'), 2,
-                         "sumiu a barra de composicao de um dos cartoes")
-        self.assertIn("da receita", cartoes)
-        self.assertIn("<b>Período</b>", cartoes,
+        # UMA barra so no codigo: o cartao do mes e o do periodo passaram a
+        # sair da MESMA funcao. Antes eram dois blocos de HTML escritos a mao,
+        # e eles ja tinham divergido uma vez.
+        self.assertEqual(cartoes.count('class="comp"'), 1,
+                         "sumiu a barra de composicao, ou o HTML voltou a ser duplicado")
+        self.assertIn("custos {pct(custo)}", cartoes,
+                      "sumiu o quanto os custos consomem da receita")
+        self.assertIn('"Período"', cartoes,
                       "sumiu o cartao do periodo, que evita somar de cabeca")
+        # Receita BRUTA mes a mes: faltava, e e o primeiro numero que se olha.
+        self.assertIn("bruta {formata_m(rec_bru)}", cartoes)
+        self.assertIn("Receita líquida", cartoes)
+        self.assertIn("EBITDA</span>", cartoes, "a margem precisa de rotulo")
 
     def test_a_barra_do_cartao_e_proporcao_e_nao_valor(self):
         """Proporcao se compara de relance entre cartoes; valor absoluto nao --
@@ -5484,7 +5497,45 @@ class TestePainelTV(unittest.TestCase):
         b = self._bloco_tv()
         i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
         cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
-        self.assertIn("_v / _custo_total * 100", cartoes)
+        self.assertIn("(_v / custo * 100) if custo else 0", cartoes)
+
+    def test_a_cor_do_cartao_mora_so_na_variacao(self):
+        """Pintar o EBITDA de vermelho porque o desvio e negativo fazia um
+        resultado POSITIVO parecer prejuizo -- era o que dava a tela aquele ar
+        de erro. O valor fica neutro; quem carrega juizo e a variacao."""
+        b = self._bloco_tv()
+        i = b.index("def _cartao_mes(")
+        corpo = b[i:b.index("_partes_mes = [", i)]
+        self.assertIn('class="v">{formata_m(eb)}', corpo)
+        self.assertNotIn('class="v" style="color:{cor', corpo,
+                         "o valor do EBITDA voltou a ser pintado pelo desvio")
+        self.assertIn('class="dev" style="color:{cor};"', corpo,
+                      "a variacao tem de ser a que carrega a cor")
+
+    def test_o_cartao_e_um_so_para_mes_e_periodo(self):
+        """Antes o cartao do periodo era escrito a parte, com o HTML repetido:
+        mudar o desenho exigia mexer nos dois, e eles ja tinham divergido uma
+        vez."""
+        b = self._bloco_tv()
+        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
+        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
+        self.assertEqual(cartoes.count("def _cartao_mes("), 1)
+        self.assertEqual(cartoes.count('class="tv-mescard"'), 1,
+                         "o HTML do cartao voltou a ser escrito em dois lugares")
+
+    def test_a_tabela_mensal_mostra_o_peso_do_grupo(self):
+        """No mes a mes a linha do detalhe nao dizia quanto ela representa do
+        grupo -- a informacao existia so no consolidado."""
+        b = self._bloco_tv()
+        self.assertIn('<th class="tot">Peso</th>', b)
+        self.assertIn('_rot_peso = "do grupo"', b)
+        self.assertIn('_rot_peso = "do bloco"', b)
+
+    def test_o_titulo_dos_grupos_aparece_uma_vez_so(self):
+        """O bloco muda de coluna conforme o modo, e o titulo viaja junto. O
+        titulo antigo ficou para tras e a tela mostrava os dois."""
+        self.assertEqual(FONTE.count("Principais Grupos</div>"), 1)
+
 
     def test_os_grupos_viram_mapa_de_calor(self):
         """Ler doze numeros e achar o maior e trabalho; ver a celula mais
