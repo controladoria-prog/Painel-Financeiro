@@ -2969,12 +2969,18 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # cabeçalho apagava a escolha. A chave comum não pertence a widget
         # nenhum e sobrevive a isso.
         _MODOS_TV = ["Acumulado", "Mês a mês"]
-        _modo_guardado = st.session_state.get("_tv_modo", "Acumulado")
-        if _modo_guardado not in _MODOS_TV:
-            _modo_guardado = "Acumulado"
-        st.session_state["tv_sel_tipo_visao"] = _modo_guardado
+        # A cópia em _tv_modo só é usada quando o estado do WIDGET sumiu --
+        # que é o caso do recolhimento pelo Streamlit. Escrever a cópia por
+        # cima do widget a CADA execução, como eu fazia, apagava a escolha no
+        # instante seguinte ao clique: o widget guardava "Mês a mês", vinha o
+        # rerun, e a linha de baixo devolvia "Acumulado" por cima. Ficou pior
+        # que o defeito original -- não dava nem para trocar.
+        if "tv_sel_tipo_visao" not in st.session_state:
+            _guardado = st.session_state.get("_tv_modo", "Acumulado")
+            st.session_state["tv_sel_tipo_visao"] = (
+                _guardado if _guardado in _MODOS_TV else "Acumulado")
         tipo_visao_tv = st.selectbox(
-            "Tipo", _MODOS_TV, index=_MODOS_TV.index(_modo_guardado),
+            "Tipo", _MODOS_TV,
             key="tv_sel_tipo_visao", label_visibility="collapsed",
             help="Acumulado soma os meses escolhidos num número só. "
                  "Mês a mês abre uma coluna para cada mês.",
@@ -3236,6 +3242,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     desp_op_tv_kpi = abs(get_valor_consolidado_multi(list_df_real_tv, "8 - Despesas Operacionais", cols_ytd))
     desp_op_tv_o = abs(get_valor_consolidado_multi(list_df_orc_tv, "8 - Despesas Operacionais", cols_ytd))
     deprec_tv = abs(get_valor_consolidado_multi(list_df_real_tv, "13 - Depreciação e Amortização", cols_ytd))
+    # O orçado da depreciação existe para a lista de composição poder mostrar
+    # o desvio dela, como já mostrava para as outras três categorias.
+    deprec_tv_o = abs(get_valor_consolidado_multi(list_df_orc_tv, "13 - Depreciação e Amortização", cols_ytd))
     total_saidas_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
     total_custos_desp_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi
 
@@ -3504,18 +3513,33 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # linha apontar para outra fatia da rosca.
             ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"],
              "8 - Despesas Operacionais"),
+            # Estava no gráfico e faltava aqui: a rosca mostrava quatro fatias
+            # e a lista explicava três, então a fatia de 1,37% não tinha nome
+            # em lugar nenhum.
+            ("Depreciação / Amort.", deprec_tv, deprec_tv_o, COLORS["accent"],
+             "13 - Depreciação e Amortização"),
         ]
         _abrir_por_mes_tv = _abrir_por_mes_tv_kpi
         if not _abrir_por_mes_tv:
             linhas_custo = ['<div class="tv-panel" style="padding-top:8px;">']
+            # A barra usa como escala a MAIOR categoria, e não o total das
+            # saídas: com o total, o CMV encostaria em 60% e as outras três
+            # virariam três tracinhos indistinguíveis. É a mesma escolha da
+            # lista de Principais Grupos logo abaixo.
+            _maior_cat = max((abs(v) for _n, v, _o, _c, _l in categorias_custo),
+                             default=0) or 1.0
             for nome_cat, v_real, v_orc, cor_cat, linha_dre_cat in categorias_custo:
                 pct_da_receita = (v_real / rec_liq_real * 100) if rec_liq_real else 0
                 desvio_cat = v_orc - v_real  # custo menor que orçado = positivo (bom)
                 cor_desvio = cor_variacao(desvio_cat)
+                _larg_cat = abs(v_real) / _maior_cat * 100
                 linhas_custo.append(
                     '<div class="tv-cost-row">'
                     f'<div class="tv-cost-dot" style="background:{cor_cat};"></div>'
                     f'<div class="tv-cost-nome">{nome_cat}</div>'
+                    '<div class="tv-rank-bar-bg" style="margin:0 12px;">'
+                    f'<div class="tv-rank-bar-fill" style="width:{_larg_cat:.0f}%;'
+                    f'background:{cor_cat};"></div></div>'
                     f'<div class="tv-cost-pct">{pct_da_receita:.1f}% rec.</div>'
                     f'<div class="tv-cost-val">{formata_m(v_real)}</div>'
                     f'<div class="tv-cost-desvio" style="color:{cor_desvio};">{formata_m(desvio_cat)}</div>'
@@ -3653,7 +3677,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # lista e empurrar um grupo de verdade para fora.
         ranque_despop = []
         for _num_grp, _nome_grp, _v_grp, _linha_grp in top_despop:
-            ranque_despop.append((_nome_grp, _v_grp, False, _linha_grp))
+            ranque_despop.append((_nome_grp, _v_grp, False, _linha_grp, _v_grp))
             for _num_det, _nome_det in DETALHES_DO_RANQUE_TV.items():
                 # Comparação EXATA do pai, não startswith: "8.8.10" começa com
                 # "8." e se penduraria também no grupo "8" se ele aparecesse no
@@ -3667,7 +3691,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 _v_det = abs(get_valor_consolidado_multi(
                     list_df_real_tv, _linha_det, cols_ytd, exato_linha_sintetica=True))
                 if _v_det:
-                    ranque_despop.append((_nome_det, _v_det, True, _linha_det))
+                    # O valor do PAI viaja junto: o detalhe se mede contra ele,
+                    # nunca contra o total das despesas operacionais.
+                    ranque_despop.append((_nome_det, _v_det, True, _linha_det, _v_grp))
 
         if top_despop:
             st.markdown(
@@ -3677,7 +3703,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # A barra segue o maior GRUPO, não o maior item da lista: o
             # detalhe é sempre menor que o pai, e deixá-lo definir a escala
             # encolheria todas as barras de uma vez.
-            max_despop = max(v for _n, v, _d, _l in ranque_despop if not _d) or 1.0
+            max_despop = max(v for _n, v, _d, _l, _p in ranque_despop if not _d) or 1.0
             linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
             if _abrir_por_mes_tv:
                 _cab_grp = "".join(f"<th>{_m.capitalize()[:3]}</th>"
@@ -3687,12 +3713,22 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'<thead><tr><th class="rot">Grupo</th>{_cab_grp}'
                     '<th class="tot">Período</th></tr></thead><tbody>'
                 )
-            for nome_grp, v_grp, eh_detalhe, linha_grp in ranque_despop:
-                pct_do_despop = (v_grp / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
+            for nome_grp, v_grp, eh_detalhe, linha_grp, v_pai in ranque_despop:
+                # O DETALHE se mede contra o PAI, não contra o total. Ele já
+                # está DENTRO de Serviços de Terceiros: mostrar "4% das
+                # despesas operacionais" ao lado dos outros convidava a somar a
+                # coluna, e a soma daria mais que os R$ 15,1M do cartão acima --
+                # o mesmo dinheiro contado duas vezes. Contra o pai, o número
+                # responde a pergunta certa: quanto de Serviços de Terceiros é
+                # transporte.
+                if eh_detalhe:
+                    pct_do_despop = (v_grp / v_pai * 100) if v_pai else 0
+                else:
+                    pct_do_despop = (v_grp / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
                 # % que o grupo representa da Receita Líquida -- mesmo cálculo
                 # já usado no card "Resumo Gerencial" (tv-cost-pct) logo acima.
                 pct_da_receita = (v_grp / rec_liq_real * 100) if rec_liq_real else 0
-                pct_barra = max(3, min(100, v_grp / max_despop * 100))
+                pct_barra = max(3, min(100, v_grp / (v_pai if eh_detalhe else max_despop) * 100))
                 # O detalhe entra recuado e em tom de apoio: quem bate o olho
                 # tem de ver na hora que aquilo está DENTRO da linha de cima, e
                 # não somando com ela.
@@ -3745,8 +3781,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'{_prefixo}{nome_grp}</div>'
                     f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
                     f'<div class="tv-rank-pct-rec">{pct_da_receita:.1f}% rec.</div>'
-                    f'<div class="tv-rank-val">{formata_m(v_grp)} · {pct_do_despop:.0f}%</div>'
-                    "</div>"
+                    '<div class="tv-rank-val">'
+                    + (f"{formata_m(v_grp)} · {pct_do_despop:.0f}% do grupo"
+                       if eh_detalhe else
+                       f"{formata_m(v_grp)} · {pct_do_despop:.0f}%")
+                    + "</div></div>"
                 )
             if _abrir_por_mes_tv:
                 linhas_despop.append(

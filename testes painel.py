@@ -5189,11 +5189,50 @@ class TestePainelTV(unittest.TestCase):
                         bloco.index("ranque_despop = []"))
         self.assertIn("DETALHES_DO_RANQUE_TV", trecho)
 
+    def test_o_detalhe_se_mede_contra_o_pai(self):
+        """O detalhe ja esta DENTRO do grupo. Mostrar "4% das despesas
+        operacionais" ao lado dos outros convidava a somar a coluna, e a soma
+        daria mais que o total do cartao acima -- o mesmo dinheiro contado duas
+        vezes. Contra o pai, o numero responde a pergunta certa: quanto de
+        Servicos de Terceiros e transporte."""
+        b = self._bloco_tv()
+        self.assertIn("pct_do_despop = (v_grp / v_pai * 100) if v_pai else 0", b)
+        # Recorte da LINHA do ranque: "% do grupo" tambem aparece noutro
+        # ponto do painel, e procurar no bloco inteiro deixava mutilar este.
+        i_rot = b.index('<div class="tv-rank-val">')
+        rotulo = b[i_rot:i_rot + 400]
+        self.assertIn("% do grupo", rotulo,
+                      "o rotulo tem de dizer contra o que e o %")
+        # E a CONDICAO, nao so o texto: desligar o ramo deixa a frase no
+        # codigo, inalcancavel, e a busca por texto continuava passando.
+        self.assertIn("if eh_detalhe else", rotulo,
+                      "o rotulo deixou de distinguir detalhe de grupo")
+        # A barra tambem: contra o pai, senao ela some ao lado dos grupos.
+        self.assertIn("v_grp / (v_pai if eh_detalhe else max_despop)", b)
+
+    def test_a_depreciacao_aparece_na_lista_de_composicao(self):
+        """A rosca mostrava quatro fatias e a lista explicava tres: a fatia de
+        1,37% nao tinha nome em lugar nenhum."""
+        b = self._bloco_tv()
+        i = b.index("categorias_custo = [")
+        trecho = b[i:b.index("]", b.index("13 - Depreciação", i))]
+        self.assertIn('"Depreciação / Amort."', trecho)
+        self.assertIn("deprec_tv_o", trecho, "sem o orcado nao ha desvio para mostrar")
+
+    def test_a_lista_de_composicao_tem_barra(self):
+        """A escala e a MAIOR categoria, nao o total das saidas: com o total, o
+        CMV encostaria em 60% e as outras tres virariam tracinhos."""
+        b = self._bloco_tv()
+        self.assertIn("_maior_cat = max(", b)
+        i = b.index("_maior_cat = max(")
+        self.assertIn("tv-rank-bar-fill", b[i:i + 1400])
+
+
     def test_a_escala_da_barra_segue_o_maior_GRUPO(self):
         """O detalhe e sempre menor que o pai; deixa-lo definir a escala
         encolheria todas as barras de uma vez."""
         bloco = self._bloco_tv()
-        self.assertIn("max(v for _n, v, _d, _l in ranque_despop if not _d)", bloco)
+        self.assertIn("max(v for _n, v, _d, _l, _p in ranque_despop if not _d)", bloco)
 
     def test_o_detalhe_aparece_recuado_e_marcado(self):
         """Quem bate o olho tem de ver na hora que aquilo esta DENTRO da linha
@@ -5276,7 +5315,14 @@ class TestePainelTV(unittest.TestCase):
         # st.rerun() disparado ANTES do seletor no cabecalho apagava o estado
         # do widget e a tela voltava a Acumulado sozinha.
         self.assertIn('st.session_state["_tv_modo"] = tipo_visao_tv', bloco)
-        self.assertIn('_modo_guardado = st.session_state.get("_tv_modo"', bloco)
+        # A copia SO e usada quando o estado do widget sumiu. Escrever a copia
+        # por cima a cada execucao apagava a escolha no instante seguinte ao
+        # clique -- ficou pior que o defeito original, nao dava nem para trocar.
+        self.assertIn('if "tv_sel_tipo_visao" not in st.session_state:', bloco)
+        i_seed = bloco.index('if "tv_sel_tipo_visao" not in st.session_state:')
+        self.assertIn('st.session_state.get("_tv_modo"', bloco[i_seed:i_seed + 400])
+        self.assertNotIn('        st.session_state["tv_sel_tipo_visao"] = _modo_guardado', bloco,
+                         "a copia voltou a ser escrita por cima da escolha")
         # E o atalho NAO pode chamar st.rerun(): era o que abortava o script
         # antes de o seletor existir.
         i = bloco.index('key=f"tv_atalho_')
