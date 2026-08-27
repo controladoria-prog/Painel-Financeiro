@@ -5272,7 +5272,23 @@ class TestePainelTV(unittest.TestCase):
         # duas chances de a tela ficar meio num modo e meio no outro.
         self.assertIn("_abrir_por_mes_tv = _abrir_por_mes_tv_kpi", bloco)
         # E o tipo tambem e semeado na sessao, como os meses.
-        self.assertIn('st.session_state["tv_sel_tipo_visao"] = "Acumulado"', bloco)
+        # O modo vive numa chave COMUM, que o Streamlit nao recolhe: qualquer
+        # st.rerun() disparado ANTES do seletor no cabecalho apagava o estado
+        # do widget e a tela voltava a Acumulado sozinha.
+        self.assertIn('st.session_state["_tv_modo"] = tipo_visao_tv', bloco)
+        self.assertIn('_modo_guardado = st.session_state.get("_tv_modo"', bloco)
+        # E o atalho NAO pode chamar st.rerun(): era o que abortava o script
+        # antes de o seletor existir.
+        i = bloco.index('key=f"tv_atalho_')
+        # Ignora COMENTARIO: o trecho tem um comentario longo explicando por
+        # que o rerun nao esta ali, e procurar no texto cru encontrava a
+        # propria explicacao. Ja aconteceu antes com o verificador de
+        # JavaScript, e e o mesmo engano.
+        codigo_atalho = "\n".join(
+            linha for linha in bloco[i:i + 900].split("\n")
+            if not linha.strip().startswith("#"))
+        self.assertNotIn("st.rerun()", codigo_atalho,
+                         "o atalho voltou a chamar rerun e derruba o modo")
 
     def test_as_duas_listas_abrem_por_mes_com_cabecalho(self):
         """Sem cabecalho a pessoa ve quatro numeros numa linha e nao sabe qual
@@ -5303,46 +5319,12 @@ class TestePainelTV(unittest.TestCase):
         for atalho in ('"Mês"', '"Tri"', '"YTD"', '"Ano"'):
             self.assertIn(atalho, bloco, f"sumiu o atalho {atalho}")
 
-    def test_a_matriz_do_mes_a_mes_e_completa(self):
-        """A primeira versao mostrava valor e barra e nada mais: era o
-        consolidado sem as informacoes que fazem o consolidado valer. Aqui cada
-        celula carrega o numero E o que ele significa."""
-        bloco = self._bloco_tv()
-        # Recorte SO da matriz executiva: a tabela de grupos, logo abaixo, usa
-        # as mesmas classes e os mesmos textos -- procurar no bloco inteiro
-        # encontrava lá o que devia estar aqui, e a trava passava mesmo com a
-        # matriz mutilada.
-        i = bloco.index("# ---- Matriz executiva do MÊS A MÊS")
-        matriz = bloco[i:bloco.index("# ---- Detalhamento de Despesas Operacionais", i)]
-        self.assertIn('class="tv-matriz"', matriz)
-        for rotulo in ("Receita Bruta", "Receita Líquida", "CMV",
-                       "Despesas Operacionais", "EBITDA orçado",
-                       "Desvio vs. orçado", "Margem EBITDA",
-                       "Custos + Despesas / Receita"):
-            self.assertIn(f'"{rotulo}"', matriz, f"a matriz ficou sem {rotulo}")
-        self.assertIn('<th class="tot">Período</th>', matriz,
-                      "sumiu a coluna de total do periodo")
-        self.assertIn('% rec.', matriz, "sumiu o % da receita nas celulas")
-
     def test_as_faiscas_dos_cartoes_sairam(self):
         """Elas nao ficaram boas e o espaco vale mais para o subtexto. A
         informacao mensal vive na matriz, que a mostra por extenso."""
         bloco = self._bloco_tv()
         self.assertNotIn("def _tv_faisca(", bloco)
         self.assertNotIn("tv-faisca", bloco)
-
-    def test_a_razao_da_matriz_e_recalculada_no_total(self):
-        """Media de percentual nao e o percentual da media. No total a conta e
-        refeita sobre os acumulados, nao e a media das colunas."""
-        bloco = self._bloco_tv()
-        i = bloco.index("def _linha_pct(")
-        corpo = bloco[i:bloco.index("_cab = ", i)]
-        # A assinatura receber os totais nao prova nada -- o corpo tem de USAR
-        # os dois na conta final, e nao a media das colunas.
-        self.assertIn("_fmt(total_num, total_den)", corpo,
-                      "o total do percentual deixou de ser recalculado")
-        self.assertNotIn("sum(serie_num) / max(len(serie_num)", corpo,
-                         "o total virou media das colunas")
 
     def test_o_cmv_nao_zera_no_mes_a_mes(self):
         """O CMV mora numa linha sintetica "4 - " em algumas planilhas e
@@ -5368,6 +5350,66 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn('textposition="top center"', bloco)
 
 
+    def test_os_graficos_param_no_mes_corrente(self):
+        """Desenhar de janeiro a dezembro com R$ 0M de setembro em diante
+        enchia meia tela de nada e ainda achatava a escala dos meses que
+        existem. Conforme o ano anda, eles crescem sozinhos."""
+        b = self._bloco_tv()
+        self.assertIn("m_map_ate_hoje = {n: c for i, (n, c) in enumerate(m_map_tv.items())", b)
+        self.assertIn("for m_nome, c in m_map_ate_hoje.items():", b)
+        self.assertEqual(b.count("for m_nome, c in m_map_ate_hoje.items():"), 2,
+                         "os DOIS graficos da esquerda tem de usar o recorte")
+        # E o recorte nao pode zerar a tela se o mes corrente faltar na base.
+        i = b.index("m_map_ate_hoje = ")
+        self.assertIn("if not m_map_ate_hoje:", b[i:i + 400])
+
+    def test_o_espaco_foi_redistribuido_para_a_direita(self):
+        """Com os graficos menores, a coluna da direita -- composicao e grupos,
+        que e onde estao os numeros que se le -- ganha o espaco."""
+        b = self._bloco_tv()
+        largura = re.search(r"cgtv1, cgtv2 = st\.columns\(\[([\d.]+), 1\]\)", b)
+        self.assertIsNotNone(largura, "sumiu a divisao de colunas")
+        self.assertLessEqual(float(largura.group(1)), 1.3,
+                             "a esquerda voltou a comer a largura da direita")
+
+    def test_o_mes_a_mes_e_cartao_e_nao_planilha(self):
+        """A tentativa anterior era uma tabela cheia de numeros pequenos. Numa
+        tela de parede isso nao se le de longe: virou planilha pendurada."""
+        b = self._bloco_tv()
+        self.assertIn('class="tv-mescards"', b)
+        self.assertIn('class="tv-mescard"', b)
+        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
+        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
+        # Cada cartao tem de trazer o que o consolidado trazia: valor, margem,
+        # variacao contra o orcado e a composicao em proporcao.
+        self.assertIn("vs. orçado", cartoes)
+        # As DUAS barras: a do cartao de cada mes e a do cartao do periodo.
+        # Contar so uma deixava mutilar a outra em silencio.
+        self.assertEqual(cartoes.count('class="comp"'), 2,
+                         "sumiu a barra de composicao de um dos cartoes")
+        self.assertIn("da receita", cartoes)
+        self.assertIn("<b>Período</b>", cartoes,
+                      "sumiu o cartao do periodo, que evita somar de cabeca")
+
+    def test_a_barra_do_cartao_e_proporcao_e_nao_valor(self):
+        """Proporcao se compara de relance entre cartoes; valor absoluto nao --
+        um mes que vendeu o dobro teria todas as barras maiores sem que a
+        composicao tenha mudado."""
+        b = self._bloco_tv()
+        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
+        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
+        self.assertIn("_v / _custo_total * 100", cartoes)
+
+    def test_os_grupos_viram_mapa_de_calor(self):
+        """Ler doze numeros e achar o maior e trabalho; ver a celula mais
+        escura nao e -- e num painel de parede ninguem compara digitos."""
+        b = self._bloco_tv()
+        self.assertIn('class="calor"', b)
+        self.assertIn("_teto_calor", b)
+        # Piso na intensidade: transparente demais some no fundo.
+        self.assertIn("0.06 + (_pct_num / _teto_calor)", b)
+
+
     def test_o_grafico_de_desvio_ocupa_a_lacuna(self):
         """A coluna da direita (rosca + as duas listas) e mais alta que a
         esquerda, e sobrava uma faixa morta embaixo do desvio ate o letreiro.
@@ -5377,7 +5419,7 @@ class TestePainelTV(unittest.TestCase):
         bloco = self._bloco_tv()
         i = bloco.index("fig_tv_desvio, height=")
         altura = int(re.search(r"height=(\d+)", bloco[i:i + 40]).group(1))
-        self.assertGreaterEqual(altura, 220, "voltou a sobrar lacuna embaixo")
+        self.assertGreaterEqual(altura, 180, "voltou a sobrar lacuna embaixo")
         self.assertLessEqual(altura, 300, "alto demais: empurra o letreiro para fora")
 
     def test_a_linha_de_transporte_esta_configurada(self):
