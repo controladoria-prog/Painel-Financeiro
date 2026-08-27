@@ -3678,11 +3678,24 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                baixo). A sombra na borda direita mostra que ali há uma coluna
                parada e que o resto se move. */
             .tv-matriz-fixa td.rot, .tv-matriz-fixa th.rot {{
-                position:sticky; left:0; z-index:2;
-                background:{COLORS["surface"]};
-                box-shadow:6px 0 8px -6px rgba(0,0,0,0.55);
+                position:sticky; left:0; z-index:20;
+                /* Cor CRAVADA e opaca, não a variável do tema: a célula que
+                   rola por baixo tem fundo âmbar semitransparente, e qualquer
+                   transparência aqui deixa o âmbar aparecer através. */
+                background-color:#242C3C;
+                /* O fundo tem de cobrir a borda também: sem isto sobra uma
+                   faixa de um pixel na direita por onde o âmbar vazava. */
+                background-clip:padding-box;
+                /* Separador de verdade, não só sombra: a sombra é desenhada
+                   FORA da célula e não impede nada de passar por baixo. */
+                border-right:1px solid {COLORS["border"]} !important;
+                box-shadow:8px 0 10px -6px rgba(0,0,0,0.65);
             }}
-            .tv-matriz-fixa th.rot {{ z-index:3; }}
+            .tv-matriz-fixa th.rot {{ z-index:21; }}
+            /* A célula de calor NÃO pode criar contexto de empilhamento nem
+               subir na pilha: com z-index próprio ela passava por cima da
+               coluna travada em vez de por baixo. */
+            .tv-matriz-fixa td.calor {{ position:relative; z-index:1; }}
 
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};

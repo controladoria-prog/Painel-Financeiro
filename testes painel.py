@@ -5684,12 +5684,27 @@ class TestePainelTV(unittest.TestCase):
         # no corpo da funcao nao encontrava a regra.
         self.assertIn(".tv-matriz-fixa td.rot, .tv-matriz-fixa th.rot {{", FONTE)
         i = FONTE.index(".tv-matriz-fixa td.rot")
-        regra = FONTE[i:i + 400]
+        # Janela LARGA: os comentarios que explicam cada linha ficam entre a
+        # ancora e as declaracoes, e uma janela curta parava no meio deles.
+        # Ja errei nisso tres vezes hoje -- comentario ocupa espaco no recorte.
+        regra = FONTE[i:i + 1400]
         self.assertIn("position:sticky", regra)
         self.assertIn("left:0", regra)
-        self.assertIn("z-index:2", regra)
-        self.assertIn('background:{COLORS["surface"]}', regra,
-                      "sem fundo opaco as celulas rolam por baixo da travada")
+        self.assertIn("z-index:20", regra)
+        # Cor CRAVADA e opaca, nao a variavel do tema: a celula que rola por
+        # baixo tem fundo ambar SEMITRANSPARENTE, e qualquer transparencia
+        # aqui deixa o ambar aparecer atraves -- foi o vazamento visto no
+        # print de 27/08/2026.
+        self.assertIn("background-color:#242C3C", regra,
+                      "sem fundo opaco cravado o ambar vaza pela coluna travada")
+        self.assertIn("background-clip:padding-box", regra,
+                      "sem isto sobra uma faixa de um pixel por onde o ambar passa")
+        # Separador de VERDADE: sombra e desenhada FORA da celula e nao impede
+        # nada de passar por baixo.
+        self.assertIn("border-right:1px solid", regra)
+        # E a celula de calor nao pode subir na pilha.
+        self.assertIn(".tv-matriz-fixa td.calor {{ position:relative; z-index:1; }}",
+                      FONTE, "a celula de calor pode voltar a passar por cima")
 
     def test_so_a_tabela_de_grupos_trava_a_coluna(self):
         """A tabela do detalhamento de despesas usa a MESMA classe tv-matriz e
