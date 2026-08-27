@@ -1403,8 +1403,11 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
           meta           -> SO nos meses de previsao (ver o teste da meta)
         A abertura e o unico saldo que conversa com os totais do mes sem contar
         o mesmo dinheiro duas vezes."""
+        # Recorte entre MARCOS, nao por janela de N caracteres: a janela
+        # quebrou quando a linha de liquidez entrou entre o calculo e o titulo.
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 7000):i]
+        ini = FONTE.rindex("_saldos_abertura_m = ", 0, i)
+        bloco = FONTE[ini:i]
         self.assertIn("pivot_m.loc[_saldos_abertura_m, coluna]", bloco,
                       "caixa e banco vem da ABERTURA")
         self.assertIn("pivot_m.loc[_entradas_do_mes_m, coluna]", bloco,
@@ -1414,6 +1417,38 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertNotIn("pivot_m_fechamento", bloco,
                          "o pivo de fechamento traz a dupla contagem de volta")
 
+    def test_a_reserva_tem_a_linha_de_liquidez_imediata(self):
+        """Disponivel / a pagar, mostrado como o que EXCEDE a divida: 30% quer
+        dizer R$ 1,30 disponivel para cada R$ 1,00 devido. Assim os 30% da meta
+        significam a mesma coisa nas duas linhas, e ninguem precisa lembrar que
+        numa delas 30 quer dizer 130."""
+        self.assertIn('LINHA_LIQUIDEZ = "Índice de liquidez imediata"', FONTE)
+        self.assertIn("((disp / abs(pagar) - 1) * 100)", FONTE,
+                      "o indice tem de descontar o 1,00 da divida")
+        # Mes sem nada a pagar NAO tem indice: dividir por zero daria folga
+        # infinita, e a tela mostraria isso como se fosse conquista.
+        i = FONTE.index("serie_liquidez = pd.Series(")
+        self.assertIn("if (abs(pagar) > 0 and disp > 0) else float(\"nan\")",
+                      FONTE[i:i + 500])
+        # E ela e cobrada contra a MESMA meta da linha de cima.
+        self.assertIn("v >= META_RESERVA_PADRAO", FONTE)
+        # Calcular e nao mostrar deixava a trava verde com a linha ausente da
+        # tela: a serie tem de entrar na tabela E no indice dela.
+        self.assertIn("serie_liquidez.map(_formata_pct_sobra)", FONTE,
+                      "a linha foi calculada mas nao entra na tabela")
+        self.assertIn("LINHA_PCT_SOBRA, LINHA_LIQUIDEZ]", FONTE,
+                      "a linha nao entra no indice da tabela")
+
+    def test_a_liquidez_nao_repete_a_conta_da_sobra(self):
+        """As duas chegam a 30% na meta, mas dividem por coisas diferentes: a
+        de cima pelo DISPONIVEL, a de baixo pela DIVIDA. Modelo da conta."""
+        disp, pagar = 130.0, 100.0
+        pct_sobra = (disp - pagar) / disp * 100          # 23,1%
+        liquidez = (disp / pagar - 1) * 100              # 30,0%
+        self.assertAlmostEqual(liquidez, 30.0, places=6)
+        self.assertNotAlmostEqual(pct_sobra, liquidez, places=1)
+
+
     def test_meta_entra_no_disponivel_so_na_previsao(self):
         """25/08/2026, EXCECAO UNICA a regra de que a meta nunca entra em
         total. Mes que ainda nao aconteceu tem so a cauda das parcelas ja
@@ -1421,8 +1456,11 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         esta quase completo -- a tabela comparava entrada incompleta com saida
         completa e chamava de rombo. Mes realizado e mes corrente seguem sem
         meta: la existe realizado de verdade, e a meta so inflaria."""
+        # Recorte entre MARCOS, nao por janela de N caracteres: a janela
+        # quebrou quando a linha de liquidez entrou entre o calculo e o titulo.
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 7000):i]
+        ini = FONTE.rindex("_saldos_abertura_m = ", 0, i)
+        bloco = FONTE[ini:i]
         self.assertIn("serie_meta_a_realizar", bloco)
         self.assertIn('_classificar_movimento_fin(m) == "meta"', bloco)
         # A condicao de previsao tem de estar na propria montagem da serie.
@@ -1648,8 +1686,11 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         nem na funcao do Streamlit que monta as celulas. Como nao da para
         consertar a camada que nao se sabe qual e, o ausente deixou de chegar
         la: a linha de % entra na tabela JA COMO TEXTO."""
+        # Recorte entre MARCOS, nao por janela de N caracteres: a janela
+        # quebrou quando a linha de liquidez entrou entre o calculo e o titulo.
         i = FONTE.index("Reserva de Caixa — sobra depois de pagar tudo")
-        bloco = FONTE[max(0, i - 7000):i]
+        ini = FONTE.rindex("_saldos_abertura_m = ", 0, i)
+        bloco = FONTE[ini:i]
         self.assertIn('if disp > 0 else float("nan")', bloco,
                       "sem disponivel a porcentagem tem de ficar vazia")
         self.assertNotIn("else (0.0 if sobra == 0 else -100.0)", bloco,
@@ -5502,6 +5543,12 @@ class TestePainelTV(unittest.TestCase):
         self.assertEqual(cartoes.count("def _cartao_mes("), 1)
         self.assertEqual(cartoes.count('class="tv-mescard"'), 1,
                          "o HTML do cartao voltou a ser escrito em dois lugares")
+        # O cartao do PERIODO existe e ocupa a largura INTEIRA da ultima
+        # fileira: sem ele a comparacao exigiria somar de cabeca, e sem a
+        # largura total sobrava uma faixa vazia embaixo dos meses.
+        self.assertIn('"Período"', cartoes)
+        self.assertIn("flex:1 1 100%;background:", cartoes,
+                      "o cartao do periodo perdeu a largura total")
 
     def test_a_barra_do_cartao_e_proporcao_do_custo(self):
         """Proporcao se compara de relance entre cartoes; valor absoluto nao --
@@ -5563,13 +5610,15 @@ class TestePainelTV(unittest.TestCase):
         # qual das duas e o real. A checagem e DENTRO do trace do orcado --
         # procurar no bloco todo achava a cor transparente noutro grafico.
         i_orc = trecho.index('name="Orçado"')
-        self.assertIn('color="rgba(0,0,0,0)"', trecho[i_orc:i_orc + 260],
-                      "o orcado virou barra cheia e disputa com o realizado")
+        # O orcado virou MARCA DE ALVO, nao mais barra vazada sobreposta: a
+        # caixa branca em volta da barra rosa nao parecia nem do mesmo painel.
+        self.assertIn('symbol="line-ew"', trecho[i_orc:i_orc + 300],
+                      "o orcado deixou de ser marca de alvo")
         # E o desvio vai escrito, nao como terceira barra.
         self.assertIn('mode="text"', trecho)
         self.assertIn("formata_m(d)", trecho)
         # Faixa negativa reservada: e ali que o texto do desvio e escrito.
-        self.assertIn("range=[-_teto_desvio * 0.34", trecho)
+        self.assertIn("range=[-_teto_desvio * 0.30", trecho)
 
     def test_o_peso_do_grupo_aparece_em_cada_mes(self):
         """O peso so existia na ultima coluna, para o periodo inteiro -- e
@@ -5577,10 +5626,10 @@ class TestePainelTV(unittest.TestCase):
         que e a pergunta que se faz olhando uma tabela mensal."""
         b = self._bloco_tv()
         self.assertIn("_despop_mes = [valor_da_linha_tv(", b)
-        self.assertIn('_pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}% do bloco"', b)
+        self.assertIn('_pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}%"', b)
         # E ele tem de CHEGAR na celula: calcular e nao usar deixava a trava
         # verde com a coluna mostrando so o % da receita.
-        self.assertIn('_pct_m = f"{_pct_bloco_m}<br>{_pct_rec_m}"', b,
+        self.assertIn('_pct_m = f"{_pct_bloco_m} · {_pct_rec_m}"', b,
                       "o peso do bloco foi calculado mas nao chega na celula")
         # A base e a despesa operacional DAQUELE mes, nao a do periodo: senao
         # janeiro sairia medido contra oito meses de despesa.

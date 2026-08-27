@@ -3121,7 +3121,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             .tv-matriz th.rot {{ text-align:left; }}
             .tv-matriz th.tot {{ color:{COLORS["text"]}; }}
             .tv-matriz td {{
-                padding:7px 8px; text-align:right; font-size:13.5px;
+                padding:6px 9px; text-align:right; font-size:13px;
                 font-family:{FONTE_MONO}; font-variant-numeric:tabular-nums;
                 color:{COLORS["text"]};
                 border-bottom:1px dashed {COLORS["border_soft"]};
@@ -3144,8 +3144,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 border-top:1px solid {COLORS["border"]};
             }}
             .tv-matriz .sec {{
-                display:block; font-size:10px; font-family:{FONT_STACK};
-                color:{COLORS["text_muted"]}; margin-top:1px; font-weight:500;
+                display:block; font-size:9.5px; font-family:{FONT_STACK};
+                color:{COLORS["text_muted"]}; margin-top:2px; font-weight:500;
+                white-space:nowrap; letter-spacing:-0.1px;
             }}
             .tv-matriz .ponto {{
                 display:inline-block; width:8px; height:8px; border-radius:2px;
@@ -3174,6 +3175,20 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 text-transform:uppercase; color:{COLORS["text"]};
             }}
             .tv-mescard .topo span {{ font-size:10.5px; color:{COLORS["text_muted"]}; }}
+            /* No cartão de largura total as parcelas ficam lado a lado, em
+               vez de empilhadas: com a largura inteira, empilhar quatro linhas
+               deixaria três quartos da faixa vazios. */
+            .tv-mescard[style*="flex:1 1 100%"] {{
+                display:flex; flex-wrap:wrap; align-items:center; gap:0 22px;
+            }}
+            .tv-mescard[style*="flex:1 1 100%"] .topo,
+            .tv-mescard[style*="flex:1 1 100%"] .comp {{ flex:1 1 100%; }}
+            .tv-mescard[style*="flex:1 1 100%"] .parc {{
+                flex:1 1 190px; border-bottom:none;
+            }}
+            .tv-mescard[style*="flex:1 1 100%"] .rod {{
+                flex:1 1 100%; border-top:1px solid {COLORS["border_soft"]};
+            }}
             .tv-mescard .parc {{
                 display:flex; align-items:baseline; gap:6px; font-size:11px;
                 color:{COLORS["text_muted"]}; padding:3px 0;
@@ -3461,43 +3476,53 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             desvio_m_tv.append(d)
             cores_desvio_tv.append(COLORS["positive"] if d >= 0 else COLORS["negative"])
         fig_tv_desvio = go.Figure()
-        # O ORÇADO fica atrás, em barra vazada: ele é a régua, não o assunto.
-        # Barra cheia nas duas faria a vista disputar qual das duas é o real.
-        fig_tv_desvio.add_trace(go.Bar(
-            name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
-            marker=dict(color="rgba(0,0,0,0)",
-                        line=dict(color=COLORS["muted_line"], width=1.5)),
-            hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
-        ))
+        # A barra é o REALIZADO; o orçado é um traço de alvo em cima dela.
+        #
+        # A versão anterior desenhava o orçado como uma segunda barra vazada
+        # sobreposta, e o resultado foi uma caixa branca flutuando em volta da
+        # barra rosa -- não parecia nem do mesmo painel. Barra com marca de
+        # alvo é o desenho clássico para "resultado contra meta": a barra
+        # cresce, a marca fica parada, e a distância entre as duas é o desvio,
+        # que a vista lê sem precisar de legenda.
         fig_tv_desvio.add_trace(go.Bar(
             name="Realizado", x=rot_m_tv, y=eb_real_m_tv,
-            marker=dict(color=cores_desvio_tv),
-            text=[formata_m(v) for v in eb_real_m_tv], textposition="outside",
-            textfont=dict(size=10, color=COLORS["text"]),
+            marker=dict(color=cores_desvio_tv, line=dict(width=0)),
+            width=0.52,
             hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
         ))
-        # O desvio vai ESCRITO embaixo de cada par, na cor do resultado. Uma
-        # terceira barra empilharia informação sobre informação; o texto diz o
-        # número exato sem disputar espaço com as barras.
+        fig_tv_desvio.add_trace(go.Scatter(
+            name="Orçado", x=rot_m_tv, y=eb_orc_m_tv, mode="markers",
+            marker=dict(symbol="line-ew", size=30,
+                        line=dict(color=COLORS["text"], width=2.5)),
+            hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
+        ))
+        # Realizado escrito DENTRO da barra e desvio embaixo do eixo: dois
+        # rótulos fora da barra brigavam por espaço e um cobria o outro.
+        fig_tv_desvio.add_trace(go.Scatter(
+            x=rot_m_tv, y=[v / 2 for v in eb_real_m_tv], mode="text",
+            text=[formata_m(v) for v in eb_real_m_tv],
+            textfont=dict(size=11, color="#FFFFFF"),
+            showlegend=False, hoverinfo="skip",
+        ))
         fig_tv_desvio.add_trace(go.Scatter(
             x=rot_m_tv, y=[0] * len(rot_m_tv), mode="text",
             text=[f"{'▲' if d >= 0 else '▼'} {formata_m(d)}" for d in desvio_m_tv],
             textposition="bottom center",
-            textfont=dict(size=10, color=COLORS["text_muted"]),
+            textfont=dict(size=10.5, color=COLORS["text_muted"]),
             showlegend=False, hoverinfo="skip",
         ))
         _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
         estilo_grafico(
             fig_tv_desvio, height=268,
-            margin=dict(l=20, r=20, t=18, b=30),
-            barmode="overlay", bargap=0.42,
+            margin=dict(l=20, r=20, t=26, b=30),
+            bargap=0.42,
             xaxis=dict(showgrid=False, fixedrange=True,
                        tickfont=dict(size=12, color=COLORS["text_muted"])),
             # Faixa negativa reservada de propósito: é ali que o texto do
             # desvio é escrito, e sem ela ele sairia por baixo do quadro.
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
                        zeroline=True, zerolinecolor=COLORS["border"], zerolinewidth=1,
-                       range=[-_teto_desvio * 0.34, _teto_desvio * 1.22]),
+                       range=[-_teto_desvio * 0.30, _teto_desvio * 1.16]),
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right",
                         x=1, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
@@ -3703,7 +3728,13 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 return (
                     '<div class="tv-mescard" style="--mes-cor:'
                     + (COLORS["primary"] if destaque else COLORS["border"]) + ";"
-                    + ("background:rgba(107,158,230,0.08);" if destaque else "")
+                    # O cartão do PERÍODO toma a largura inteira da última
+                    # fileira: ele é o consolidado, não mais um mês, e sobrava
+                    # uma faixa vazia embaixo dos meses. Com a largura toda, as
+                    # quatro parcelas ficam numa linha só e não repetem o
+                    # empilhamento dos cartões pequenos.
+                    + ("flex:1 1 100%;background:rgba(107,158,230,0.08);"
+                       if destaque else "")
                     + '">'
                     f'<div class="topo"><b>{rotulo}</b>'
                     f'<span>receita bruta {formata_m(rec_bru)}</span></div>'
@@ -3868,11 +3899,15 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                         else:
                             _base_bloco = (_despop_mes[_i_m]
                                            if _i_m < len(_despop_mes) else 0)
-                            _pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}% do bloco"
+                            _pct_bloco_m = (f"{_v_m / _base_bloco * 100:.0f}%"
                                             if _base_bloco else "—")
-                            _pct_rec_m = (f"{_pct_num:.1f}% rec.".replace(".", ",")
+                            _pct_rec_m = (f"{_pct_num:.1f}% rec".replace(".", ",")
                                           if _pct_num else "—")
-                            _pct_m = f"{_pct_bloco_m}<br>{_pct_rec_m}"
+                            # Os dois na MESMA linha: três linhas por célula
+                            # (valor + dois percentuais empilhados) deixavam a
+                            # tabela alta demais para varrer com o olho. A
+                            # legenda diz qual é qual.
+                            _pct_m = f"{_pct_bloco_m} · {_pct_rec_m}"
                         _cels += (
                             f'<td class="calor" style="background:rgba(214,161,85,{_alfa:.3f});">'
                             f'{formata_m(_v_m)}'
@@ -3943,10 +3978,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     "</tbody></table>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Nas linhas de grupo, o primeiro percentual é o peso nas "
-                    "despesas operacionais do próprio mês e o segundo é sobre a "
-                    "receita líquida do mês. Na linha recuada, o percentual é "
-                    "sobre o grupo acima.</div>"
+                    "Em cada célula: <b>peso nas despesas operacionais do mês</b> · "
+                    "<b>peso na receita líquida do mês</b>. Na linha recuada, o "
+                    "percentual é sobre o grupo acima.</div>"
                 )
             linhas_despop.append("</div>")
             _html_grupos_tv = "".join(linhas_despop)
@@ -7729,6 +7763,30 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 index=colunas_meses_m,
             )
 
+            # ÍNDICE DE LIQUIDEZ IMEDIATA, mostrado como EXCEDENTE.
+            #
+            # A conta é disponível ÷ a pagar. O resultado bruto seria 1,30 --
+            # "para cada R$ 1,00 de dívida há R$ 1,30" --, mas na tela ele
+            # aparece como 30%: é o quanto SOBRA além da dívida, que é a forma
+            # como a meta é falada. Assim os 30% da meta significam a mesma
+            # coisa nas duas linhas, e ninguém precisa lembrar que numa delas
+            # 30 quer dizer 130.
+            #
+            # NÃO é a mesma coisa que a % de sobra logo acima, embora as duas
+            # cheguem a 30% na meta: lá o denominador é o DISPONÍVEL (de tudo
+            # que passou pelo mês, quanto sobrou) e aqui é a DÍVIDA (para cada
+            # real devido, quanto há para pagar). Mês sem nada a pagar não tem
+            # índice -- dividir por zero daria folga infinita.
+            serie_liquidez = pd.Series(
+                [
+                    ((disp / abs(pagar) - 1) * 100)
+                    if (abs(pagar) > 0 and disp > 0) else float("nan")
+                    for disp, pagar in zip(serie_disponivel_total.values,
+                                           serie_a_pagar.values)
+                ],
+                index=colunas_meses_m,
+            )
+
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(
                 '<div class="section-title">🛡️ Reserva de Caixa — sobra depois de pagar tudo (meta: 30%)</div>',
@@ -7736,6 +7794,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
 
             LINHA_PCT_SOBRA = "% de sobra"
+            LINHA_LIQUIDEZ = "Índice de liquidez imediata"
             LINHA_HERANCA = "↳ sobra herdada do mês anterior"
             LINHA_META_RESERVA = "↳ meta ainda a realizar (previsão)"
             LINHAS_EM_REAIS = [
@@ -7761,9 +7820,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # numérica continua viva ao lado, para o gráfico e para a cor.
             df_reserva_m = pd.DataFrame(
                 [serie_disponivel_total, serie_heranca, serie_meta_a_realizar,
-                 serie_obrigacoes, serie_sobra, serie_pct_sobra.map(_formata_pct_sobra)],
+                 serie_obrigacoes, serie_sobra, serie_pct_sobra.map(_formata_pct_sobra),
+                 serie_liquidez.map(_formata_pct_sobra)],
                 index=["Disponível", LINHA_HERANCA, LINHA_META_RESERVA, "A pagar no mês",
-                       "Sobra depois de pagar tudo", LINHA_PCT_SOBRA],
+                       "Sobra depois de pagar tudo", LINHA_PCT_SOBRA, LINHA_LIQUIDEZ],
             )
 
             def _cor_pct_meta_fin(linha):
@@ -7781,6 +7841,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         + "; font-weight: 600;"
                         for v in serie_pct_sobra.reindex(linha.index)
                     ]
+                if linha.name == LINHA_LIQUIDEZ:
+                    return [
+                        "color: "
+                        + (COLORS["positive"] if (not pd.isna(v) and v >= META_RESERVA_PADRAO)
+                           else COLORS["negative"])
+                        + "; font-weight: 600;"
+                        for v in serie_liquidez.reindex(linha.index)
+                    ]
                 if linha.name in (LINHA_HERANCA, LINHA_META_RESERVA):
                     return [f"color: {COLORS['warning']};" for _ in linha]
                 return [cor_valor(v) for v in linha]
@@ -7796,7 +7864,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "**Disponível** = o saldo de caixa e banco com que o mês **começou** + tudo que se recebeu e "
                 "ainda há para receber **dentro do mês**. **A pagar** = o total de contas a pagar do mês. "
                 "**% de sobra** = (disponível − a pagar) ÷ disponível: de tudo que passou pelo mês, quanto "
-                "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais."
+                "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais. "
+                "**Índice de liquidez imediata** = disponível ÷ a pagar, escrito como o que **excede** a "
+                "dívida: 30% quer dizer R$ 1,30 disponível para cada R$ 1,00 devido. As duas linhas batem "
+                "a mesma meta de 30%, mas respondem coisas diferentes — a de cima divide pelo disponível, "
+                "a de baixo pela dívida."
             )
             st.caption(
                 "⚠️ **Mês que ainda não aconteceu tem duas parcelas que não são dinheiro do mês**, as duas em "
