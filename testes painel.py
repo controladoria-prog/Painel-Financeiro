@@ -5670,6 +5670,39 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn('_classe_rot = "rot detalhe" if eh_detalhe else "rot"', b)
 
 
+    def test_a_coluna_do_grupo_fica_travada_na_rolagem(self):
+        """Com 12 meses a tabela rola para o lado e o nome da linha saia da
+        vista junto: sobravam seis colunas de numeros sem dizer de que conta
+        eles eram.
+
+        Fundo OPACO e z-index sao obrigatorios e nao obvios: sem o fundo, as
+        celulas que rolam aparecem por baixo da travada; sem o z-index, e a
+        travada que passa por baixo."""
+        b = self._bloco_tv()
+        self.assertIn('class="tv-matriz tv-matriz-fixa"', b)
+        # O CSS vive no bloco de estilo, FORA da funcao do painel: procurar
+        # no corpo da funcao nao encontrava a regra.
+        self.assertIn(".tv-matriz-fixa td.rot, .tv-matriz-fixa th.rot {{", FONTE)
+        i = FONTE.index(".tv-matriz-fixa td.rot")
+        regra = FONTE[i:i + 400]
+        self.assertIn("position:sticky", regra)
+        self.assertIn("left:0", regra)
+        self.assertIn("z-index:2", regra)
+        self.assertIn('background:{COLORS["surface"]}', regra,
+                      "sem fundo opaco as celulas rolam por baixo da travada")
+
+    def test_so_a_tabela_de_grupos_trava_a_coluna(self):
+        """A tabela do detalhamento de despesas usa a MESMA classe tv-matriz e
+        nao deve travar nada -- por isso a trava mora numa classe propria."""
+        self.assertEqual(FONTE.count('class="tv-matriz tv-matriz-fixa"'), 1)
+        # A do detalhamento continua sem a classe.
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('class="tv-matriz"', corpo)
+        self.assertNotIn("tv-matriz-fixa", corpo,
+                         "a trava vazou para a tabela do detalhamento")
+
+
     def test_a_tabela_mensal_mostra_o_peso_do_grupo(self):
         """No mes a mes a linha do detalhe nao dizia quanto ela representa do
         grupo -- a informacao existia so no consolidado."""

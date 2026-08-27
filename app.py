@@ -3666,6 +3666,24 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                receita daquele mês. Ler doze números e achar o maior é
                trabalho; ver a célula mais escura não é. */
             .tv-matriz td.calor {{ border-radius:4px; }}
+
+            /* ---- Coluna do nome TRAVADA (só na tabela de grupos, mês a mês)
+               Com 12 meses a tabela rola para o lado, e o nome da linha saía
+               da vista junto: sobravam seis colunas de números sem dizer de
+               que conta eles eram.
+
+               Duas coisas são obrigatórias e não óbvias: FUNDO OPACO na célula
+               travada (sem ele as células que rolam aparecem por baixo dela) e
+               z-index acima do resto (sem ele a célula travada é que passa por
+               baixo). A sombra na borda direita mostra que ali há uma coluna
+               parada e que o resto se move. */
+            .tv-matriz-fixa td.rot, .tv-matriz-fixa th.rot {{
+                position:sticky; left:0; z-index:2;
+                background:{COLORS["surface"]};
+                box-shadow:6px 0 8px -6px rgba(0,0,0,0.55);
+            }}
+            .tv-matriz-fixa th.rot {{ z-index:3; }}
+
             .tv-ticker-wrap {{
                 overflow: hidden; white-space: nowrap; border-top: 1px solid {COLORS["border"]};
                 border-bottom: 1px solid {COLORS["border"]}; padding: 8px 0; margin-top: 4px; background: rgba(255,255,255,0.015);
@@ -4263,7 +4281,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                         # larga que a coluna, e sem isto ela escreve por cima do
                         # bloco vizinho em vez de rolar.
                         '<div style="overflow-x:auto;">'
-                        '<table class="tv-matriz" style="min-width:100%;">'
+                        # tv-matriz-fixa TRAVA a primeira coluna. A classe é
+                        # própria desta tabela: a do detalhamento de despesas
+                        # usa a mesma tv-matriz e não deve travar nada.
+                        '<table class="tv-matriz tv-matriz-fixa" style="min-width:100%;">'
                         f'<thead><tr><th class="rot">Grupo</th>{_cab_grp}'
                         # A coluna PESO saiu: com 12 meses eram 15 colunas, e a
                         # tabela transbordava POR CIMA da coluna vizinha -- os
