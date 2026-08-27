@@ -5219,31 +5219,22 @@ class TestePainelTV(unittest.TestCase):
         b = self._bloco_tv()
         self.assertIn("Total dos principais grupos", b)
         # E o detalhe NAO pode entrar nessa soma: ele ja esta dentro do pai.
-        self.assertIn("_soma_grupos = sum(v for _n, v, _d, _l, _p in ranque_despop if not _d)", b)
+        self.assertIn("_soma_grupos = sum(v for _n, v, _d, _l, _p, _lp in ranque_despop if not _d)", b)
 
     def test_os_grupos_mudam_de_coluna_no_mes_a_mes(self):
         """A tabela e larga; a coluna da esquerda fica vazia abaixo dos
         graficos enquanto a direita empilha barras, cartoes e tabela numa
         fileira so."""
         b = self._bloco_tv()
-        self.assertIn("with (cgtv1 if _abrir_por_mes_tv else cgtv2):", b)
+        # DOIS espacos reservados, criados sempre, um em cada coluna: so um
+        # recebe conteudo e o outro e esvaziado por ordem. Sem isso, ao trocar
+        # de modo o bloco mudava de coluna e o Streamlit deixava o desenho
+        # anterior preso na coluna antiga -- um fantasma que nao sai sozinho.
+        self.assertIn("_vaga_grupos_esq = cgtv1.empty()", b)
+        self.assertIn("_vaga_grupos_dir = cgtv2.empty()", b)
+        self.assertIn("_vaga_limpa.empty()", b,
+                      "sem limpar a outra vaga, o bloco aparece duas vezes")
         self.assertIn("_html_grupos_tv", b)
-
-    def test_a_legenda_dos_cartoes_aparece_uma_vez_so(self):
-        """Repetir CMV/Var./Op. em cada cartao colocava 27 rotulos iguais na
-        tela, e nenhum acrescentava informacao depois do primeiro."""
-        b = self._bloco_tv()
-        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
-        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
-        self.assertNotIn('class="leg"', cartoes, "a legenda voltou para dentro do cartao")
-        # A legenda do BLOCO tambem saiu: o grafico de barras logo acima ja tem
-        # a dele, e duas legendas iguais na mesma coluna e ruido. Cada cartao
-        # traz os percentuais no rodape, junto do numero a que se referem --
-        # que dispensa legenda de cor.
-        self.assertNotIn('font-size:10.5px;color:{COLORS["text_muted"]};margin-bottom:8px;',
-                         cartoes, "a legenda do bloco voltou")
-        self.assertIn("CMV {pct(cmv)}", cartoes,
-                      "o rodape do cartao tem de nomear os percentuais")
 
     def test_os_iframes_do_rodape_nao_rolam(self):
         """Conteudo alguns pixels mais alto que a altura pedida faz o navegador
@@ -5279,7 +5270,7 @@ class TestePainelTV(unittest.TestCase):
         """O detalhe e sempre menor que o pai; deixa-lo definir a escala
         encolheria todas as barras de uma vez."""
         bloco = self._bloco_tv()
-        self.assertIn("max(v for _n, v, _d, _l, _p in ranque_despop if not _d)", bloco)
+        self.assertIn("max(v for _n, v, _d, _l, _p, _lp in ranque_despop if not _d)", bloco)
 
     def test_o_detalhe_aparece_recuado_e_marcado(self):
         """Quem bate o olho tem de ver na hora que aquilo esta DENTRO da linha
@@ -5465,63 +5456,74 @@ class TestePainelTV(unittest.TestCase):
         self.assertLessEqual(float(largura.group(1)), 1.3,
                              "a esquerda voltou a comer a largura da direita")
 
-    def test_o_mes_a_mes_e_cartao_e_nao_planilha(self):
-        """A tentativa anterior era uma tabela cheia de numeros pequenos. Numa
-        tela de parede isso nao se le de longe: virou planilha pendurada."""
-        b = self._bloco_tv()
-        self.assertIn('class="tv-mescards"', b)
-        self.assertIn('class="tv-mescard"', b)
-        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
-        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
-        # Cada cartao tem de trazer o que o consolidado trazia: valor, margem,
-        # variacao contra o orcado e a composicao em proporcao.
-        self.assertIn("vs. orçado", cartoes)
-        # UMA barra so no codigo: o cartao do mes e o do periodo passaram a
-        # sair da MESMA funcao. Antes eram dois blocos de HTML escritos a mao,
-        # e eles ja tinham divergido uma vez.
-        self.assertEqual(cartoes.count('class="comp"'), 1,
-                         "sumiu a barra de composicao, ou o HTML voltou a ser duplicado")
-        self.assertIn("custos {pct(custo)}", cartoes,
-                      "sumiu o quanto os custos consomem da receita")
-        self.assertIn('"Período"', cartoes,
-                      "sumiu o cartao do periodo, que evita somar de cabeca")
-        # Receita BRUTA mes a mes: faltava, e e o primeiro numero que se olha.
-        self.assertIn("bruta {formata_m(rec_bru)}", cartoes)
-        self.assertIn("Receita líquida", cartoes)
-        self.assertIn("EBITDA</span>", cartoes, "a margem precisa de rotulo")
-
-    def test_a_barra_do_cartao_e_proporcao_e_nao_valor(self):
-        """Proporcao se compara de relance entre cartoes; valor absoluto nao --
-        um mes que vendeu o dobro teria todas as barras maiores sem que a
-        composicao tenha mudado."""
-        b = self._bloco_tv()
-        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
-        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
-        self.assertIn("(_v / custo * 100) if custo else 0", cartoes)
-
-    def test_a_cor_do_cartao_mora_so_na_variacao(self):
-        """Pintar o EBITDA de vermelho porque o desvio e negativo fazia um
-        resultado POSITIVO parecer prejuizo -- era o que dava a tela aquele ar
-        de erro. O valor fica neutro; quem carrega juizo e a variacao."""
+    def test_o_cartao_do_mes_e_so_custos_e_saidas(self):
+        """Sairam dali a receita liquida, o EBITDA e a variacao contra o
+        orcado: o bloco se chama "Composicao de Custos & Saidas", e resultado
+        nao e composicao de custo. Repetir o EBITDA disputava a atencao com o
+        cartao do topo, que ja o mostra."""
         b = self._bloco_tv()
         i = b.index("def _cartao_mes(")
-        corpo = b[i:b.index("_partes_mes = [", i)]
-        self.assertIn('class="v">{formata_m(eb)}', corpo)
-        self.assertNotIn('class="v" style="color:{cor', corpo,
-                         "o valor do EBITDA voltou a ser pintado pelo desvio")
-        self.assertIn('class="dev" style="color:{cor};"', corpo,
-                      "a variacao tem de ser a que carrega a cor")
+        corpo_bruto = b[i:b.index("_partes_mes = [", i)]
+        # So o CODIGO: a docstring explica por que o EBITDA saiu, e procurar no
+        # texto cru encontrava a propria explicacao. Terceira vez que caio
+        # nisso -- comentario nao e comportamento.
+        _dentro_doc = False
+        _linhas_codigo = []
+        for _l in corpo_bruto.split("\n"):
+            if _l.count('"""') == 1:
+                _dentro_doc = not _dentro_doc
+                continue
+            if _dentro_doc or _l.strip().startswith("#"):
+                continue
+            _linhas_codigo.append(_l)
+        corpo = "\n".join(_linhas_codigo)
+        self.assertNotIn("EBITDA", corpo, "o EBITDA voltou para o cartao de custos")
+        self.assertNotIn("vs. orçado", corpo, "a variacao voltou para o cartao")
+        self.assertNotIn("Receita líquida", corpo)
+        # Fica a receita bruta, que e a referencia dos percentuais.
+        self.assertIn("receita bruta {formata_m(rec_bru)}", corpo)
+        # E as QUATRO parcelas, cada uma com valor, % do custo e % da receita.
+        for parcela in ('"CMV"', '"Variáveis"', '"Operacionais"', '"Deprec./Amort."'):
+            self.assertIn(parcela, corpo, f"sumiu a parcela {parcela}")
+        # A CONTA, nao o nome da variavel: renomear nao e defeito, mas trocar
+        # a divisao e.
+        self.assertIn("(_v / total * 100) if total else 0", corpo,
+                      "sumiu o % que a parcela representa do custo")
+        self.assertIn("(_v / rec_liq * 100) if rec_liq else 0", corpo,
+                      "sumiu o % que a parcela representa da receita")
+        self.assertIn("Total de saídas", corpo)
 
-    def test_o_cartao_e_um_so_para_mes_e_periodo(self):
+    def test_o_cartao_e_um_so_para_mes_e_periodo_v2(self):
         """Antes o cartao do periodo era escrito a parte, com o HTML repetido:
-        mudar o desenho exigia mexer nos dois, e eles ja tinham divergido uma
-        vez."""
+        mudar o desenho exigia mexer nos dois, e eles ja tinham divergido."""
         b = self._bloco_tv()
         i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
         cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
         self.assertEqual(cartoes.count("def _cartao_mes("), 1)
         self.assertEqual(cartoes.count('class="tv-mescard"'), 1,
                          "o HTML do cartao voltou a ser escrito em dois lugares")
+
+    def test_a_barra_do_cartao_e_proporcao_do_custo(self):
+        """Proporcao se compara de relance entre cartoes; valor absoluto nao --
+        um mes que vendeu o dobro teria todas as barras maiores sem que a
+        composicao tenha mudado."""
+        b = self._bloco_tv()
+        i = b.index("def _cartao_mes(")
+        corpo = b[i:b.index("_partes_mes = [", i)]
+        # A largura da fatia sai da MESMA conta de proporcao. Cobrar so a
+        # existencia da expressao no bloco nao servia: ela aparece tambem na
+        # linha de parcela, e mutilar a barra passava batido.
+        i_barra = corpo.index("fatias += (")
+        self.assertIn("(_v / total * 100) if total else 0", corpo[i_barra:i_barra + 200],
+                      "a barra deixou de ser proporcao do custo")
+
+    def test_o_detalhe_mostra_o_pct_do_grupo_em_cada_mes(self):
+        """A pergunta na linha recuada e "quanto de Servicos de Terceiros foi
+        transporte em marco". O % da receita ja aparece nas linhas de grupo."""
+        b = self._bloco_tv()
+        self.assertIn("_linha_pai_grp", b, "a linha do pai precisa viajar junto")
+        self.assertIn('_pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"', b)
+
 
     def test_a_tabela_mensal_mostra_o_peso_do_grupo(self):
         """No mes a mes a linha do detalhe nao dizia quanto ela representa do

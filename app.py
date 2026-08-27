@@ -3174,6 +3174,32 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 text-transform:uppercase; color:{COLORS["text"]};
             }}
             .tv-mescard .topo span {{ font-size:10.5px; color:{COLORS["text_muted"]}; }}
+            .tv-mescard .parc {{
+                display:flex; align-items:baseline; gap:7px; font-size:11px;
+                color:{COLORS["text_muted"]}; padding:3px 0;
+                border-bottom:1px dashed {COLORS["border_soft"]};
+            }}
+            .tv-mescard .parc:last-of-type {{ border-bottom:none; }}
+            .tv-mescard .parc .pt {{
+                width:8px; height:8px; border-radius:2px; flex:0 0 8px;
+            }}
+            .tv-mescard .parc .nm {{ flex:1 1 auto; color:{COLORS["text"]}; }}
+            .tv-mescard .parc em {{
+                font-style:normal; font-family:{FONTE_MONO}; font-size:12px;
+                color:{COLORS["text"]}; font-variant-numeric:tabular-nums;
+            }}
+            /* Duas larguras fixas para as colunas de percentual: sem elas os
+               números dançam de linha para linha e o olho perde a coluna. */
+            .tv-mescard .parc .pc {{
+                width:34px; text-align:right; font-family:{FONTE_MONO};
+                font-variant-numeric:tabular-nums;
+            }}
+            .tv-mescard .parc .pr {{
+                width:62px; text-align:right; font-family:{FONTE_MONO};
+                font-variant-numeric:tabular-nums; font-size:10px;
+            }}
+            .tv-mescard .rod {{ padding-top:8px; margin-top:4px;
+                border-top:1px solid {COLORS["border_soft"]}; }}
             .tv-mescard .linha {{
                 display:flex; justify-content:space-between; align-items:baseline;
                 font-size:11px; color:{COLORS["text_muted"]}; margin-bottom:3px;
@@ -3368,6 +3394,16 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # que é onde estão os números que se lê -- ganha o espaço.
     _html_grupos_tv = ""  # preenchido lá embaixo; a coluna de destino muda
     cgtv1, cgtv2 = st.columns([1.15, 1])
+    # DOIS espaços reservados, criados SEMPRE, um em cada coluna. Só um deles
+    # recebe conteúdo; o outro é esvaziado de propósito.
+    #
+    # Sem isso o bloco "aparecia duas vezes": ao trocar de modo, ele mudava de
+    # coluna, e o Streamlit deixava o desenho anterior preso na coluna antiga
+    # -- um fantasma esmaecido que não some sozinho. Espaço reservado é
+    # estável entre execuções e pode ser limpo por ordem, que é o que faz o
+    # fantasma ir embora.
+    _vaga_grupos_esq = cgtv1.empty()
+    _vaga_grupos_dir = cgtv2.empty()
 
     with cgtv1:
         st.markdown('<div class="tv-section-title">📈 Evolução Mensal — Receita vs. EBITDA</div>', unsafe_allow_html=True)
@@ -3582,63 +3618,77 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # Receita BRUTA mês a mês: faltava, e é o primeiro número que se
             # olha. Sem ela o cartão começava pela líquida sem dizer que era.
             _rec_bru_s = _serie("1 - Receita Operacional Bruta")
-            _eb_s = _serie("11 - EBITDA")
-            _eb_o_s = _serie("11 - EBITDA", lista=list_df_orc_tv)
+
             _cmv_s = [valor_da_linha_tv(list_df_real_tv, "4 - ", [c]) for c in _cols_mes]
             _var_s = [valor_da_linha_tv(list_df_real_tv, "6 - Despesas Variáveis", [c])
                       for c in _cols_mes]
             _op_s = [valor_da_linha_tv(list_df_real_tv, "8 - Despesas Operacionais", [c])
                      for c in _cols_mes]
+            _dep_s = [valor_da_linha_tv(list_df_real_tv, "13 - Depreciação e Amortização", [c])
+                      for c in _cols_mes]
 
-            def _cartao_mes(rotulo, rec_bru, rec_liq, eb, ebo, cmv, var, op,
+            def _cartao_mes(rotulo, rec_bru, rec_liq, cmv, var, op, dep,
                             destaque=False):
-                """Um cartão. A COR mora só na variação contra o orçado.
+                """Um cartão = o destrinchamento de CUSTOS E SAÍDAS daquele mês.
 
-                Pintar o EBITDA de vermelho porque o desvio é negativo fazia um
-                resultado positivo parecer prejuízo -- era o que dava à tela
-                aquele ar de erro. O valor fica neutro; quem carrega juízo é a
-                linha do desvio e a barrinha da esquerda."""
-                margem = (eb / rec_liq * 100) if rec_liq else 0
-                desvio = eb - ebo
-                custo = cmv + var + op
-                cor = cor_variacao(desvio)
+                Saíram daqui a receita líquida, o EBITDA e a variação contra o
+                orçado: este bloco se chama "Composição de Custos & Saídas", e
+                resultado não é composição de custo. Repetir o EBITDA aqui
+                disputava a atenção com o cartão do topo, que já o mostra, e
+                deixava o cartão sem espaço para o que ele deveria detalhar.
+                Fica a receita bruta, que serve de referência para os
+                percentuais, e as quatro parcelas por extenso.
+                """
+                total = cmv + var + op + dep
                 fatias = ""
                 for _v, _c in ((cmv, COLORS["primary"]), (var, COLORS["muted_line"]),
-                               (op, COLORS["warning"])):
-                    fatias += (f'<i style="width:{(_v / custo * 100) if custo else 0:.1f}%;'
+                               (op, COLORS["warning"]), (dep, COLORS["accent"])):
+                    fatias += (f'<i style="width:{(_v / total * 100) if total else 0:.1f}%;'
                                f'background:{_c};"></i>')
-                pct = lambda v: (f"{v / rec_liq * 100:.0f}%" if rec_liq else "—")
+                # Cada parcela com o valor, o quanto ela é do CUSTO e o quanto
+                # é da RECEITA. São perguntas diferentes: a primeira diz do que
+                # o custo é feito, a segunda diz se ele cabe no faturamento.
+                linhas = ""
+                for _rot, _v, _c in (("CMV", cmv, COLORS["primary"]),
+                                     ("Variáveis", var, COLORS["muted_line"]),
+                                     ("Operacionais", op, COLORS["warning"]),
+                                     ("Deprec./Amort.", dep, COLORS["accent"])):
+                    _pct_custo = (_v / total * 100) if total else 0
+                    _pct_rec = (_v / rec_liq * 100) if rec_liq else 0
+                    linhas += (
+                        '<div class="parc">'
+                        f'<span class="pt" style="background:{_c};"></span>'
+                        f'<span class="nm">{_rot}</span>'
+                        f'<em>{formata_m(_v)}</em>'
+                        f'<span class="pc">{_pct_custo:.0f}%</span>'
+                        f'<span class="pr">{_pct_rec:.1f}% rec.</span></div>'
+                    )
+                _pct_total_rec = (total / rec_liq * 100) if rec_liq else 0
                 return (
-                    f'<div class="tv-mescard" style="--mes-cor:{cor};'
+                    '<div class="tv-mescard" style="--mes-cor:'
+                    + (COLORS["primary"] if destaque else COLORS["border"]) + ";"
                     + ("background:rgba(107,158,230,0.08);" if destaque else "")
                     + '">'
                     f'<div class="topo"><b>{rotulo}</b>'
-                    f'<span>bruta {formata_m(rec_bru)}</span></div>'
-                    f'<div class="linha"><span>Receita líquida</span>'
-                    f'<em>{formata_m(rec_liq)}</em></div>'
-                    '<div class="eb"><span><span class="r">EBITDA</span>'
-                    f'<span class="v">{formata_m(eb)}</span></span>'
-                    f'<span class="m" style="color:{cor};">{margem:.1f}%'.replace(".", ",", 0)
-                    + '</span></div>'
-                    f'<div class="dev" style="color:{cor};">'
-                    f'{"▲" if desvio >= 0 else "▼"} {formata_m(desvio)} vs. orçado '
-                    f'({formata_m(ebo)})</div>'
+                    f'<span>receita bruta {formata_m(rec_bru)}</span></div>'
                     f'<div class="comp">{fatias}</div>'
-                    f'<div class="rod"><span>CMV {pct(cmv)} · var. {pct(var)} · '
-                    f'op. {pct(op)}</span>'
-                    f'<span>custos {pct(custo)}</span></div></div>'
+                    f"{linhas}"
+                    '<div class="rod"><span>Total de saídas</span>'
+                    f'<span><em style="font-style:normal;font-family:{FONTE_MONO};'
+                    f'color:{COLORS["text"]};">{formata_m(total)}</em> · '
+                    f'{_pct_total_rec:.0f}% da receita</span></div></div>'
                 )
 
             _partes_mes = ['<div class="tv-mescards">']
             for _i, _m in enumerate(meses_ativos_tv):
                 _partes_mes.append(_cartao_mes(
-                    _m.capitalize(), _rec_bru_s[_i], _rec_liq_s[_i], _eb_s[_i],
-                    _eb_o_s[_i], _cmv_s[_i], _var_s[_i], _op_s[_i]))
+                    _m.capitalize(), _rec_bru_s[_i], _rec_liq_s[_i], _cmv_s[_i],
+                    _var_s[_i], _op_s[_i], _dep_s[_i]))
             # O cartão do PERÍODO fecha a fileira: é o consolidado dos meses
             # escolhidos, para a comparação não exigir somar de cabeça.
             _partes_mes.append(_cartao_mes(
-                "Período", sum(_rec_bru_s), _rec_liq_t, sum(_eb_s), sum(_eb_o_s),
-                sum(_cmv_s), sum(_var_s), sum(_op_s), destaque=True))
+                "Período", sum(_rec_bru_s), _rec_liq_t, sum(_cmv_s), sum(_var_s),
+                sum(_op_s), sum(_dep_s), destaque=True))
             _partes_mes.append("</div>")
             st.markdown("".join(_partes_mes), unsafe_allow_html=True)
 
@@ -3666,7 +3716,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # lista e empurrar um grupo de verdade para fora.
         ranque_despop = []
         for _num_grp, _nome_grp, _v_grp, _linha_grp in top_despop:
-            ranque_despop.append((_nome_grp, _v_grp, False, _linha_grp, _v_grp))
+            ranque_despop.append((_nome_grp, _v_grp, False, _linha_grp, _v_grp, _linha_grp))
             for _num_det, _nome_det in DETALHES_DO_RANQUE_TV.items():
                 # Comparação EXATA do pai, não startswith: "8.8.10" começa com
                 # "8." e se penduraria também no grupo "8" se ele aparecesse no
@@ -3682,7 +3732,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 if _v_det:
                     # O valor do PAI viaja junto: o detalhe se mede contra ele,
                     # nunca contra o total das despesas operacionais.
-                    ranque_despop.append((_nome_det, _v_det, True, _linha_det, _v_grp))
+                    ranque_despop.append((_nome_det, _v_det, True, _linha_det,
+                                          _v_grp, _linha_grp))
 
         if top_despop:
             # O título NÃO sai daqui: o bloco muda de coluna conforme o modo, e
@@ -3691,7 +3742,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # A barra segue o maior GRUPO, não o maior item da lista: o
             # detalhe é sempre menor que o pai, e deixá-lo definir a escala
             # encolheria todas as barras de uma vez.
-            max_despop = max(v for _n, v, _d, _l, _p in ranque_despop if not _d) or 1.0
+            max_despop = max(v for _n, v, _d, _l, _p, _lp in ranque_despop if not _d) or 1.0
             linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
             if _abrir_por_mes_tv:
                 _cab_grp = "".join(f"<th>{_m.capitalize()[:3]}</th>"
@@ -3706,7 +3757,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     # pendurar mais nada na mesma célula.
                     '<th class="tot">Peso</th></tr></thead><tbody>'
                 )
-            for nome_grp, v_grp, eh_detalhe, linha_grp, v_pai in ranque_despop:
+            for nome_grp, v_grp, eh_detalhe, linha_grp, v_pai, _linha_pai_grp in ranque_despop:
                 # O DETALHE se mede contra o PAI, não contra o total. Ele já
                 # está DENTRO de Serviços de Terceiros: mostrar "4% das
                 # despesas operacionais" ao lado dos outros convidava a somar a
@@ -3746,18 +3797,31 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                                if _i < len(_rec_liq_s) and _rec_liq_s[_i] else 0
                                for _i, _v in enumerate(_vals_m)]
                     _teto_calor = max(_pcts_m) or 1.0
+                    # Na linha de DETALHE o percentual de cada mês é contra o
+                    # PAI daquele mês, não contra a receita: a pergunta ali é
+                    # "quanto de Serviços de Terceiros foi transporte em
+                    # março", e o % da receita já aparece nas linhas de grupo.
+                    _pais_m = ([abs(get_valor_consolidado_multi(
+                        list_df_real_tv, _linha_pai_grp, [m_map_tv[_m]],
+                        exato_linha_sintetica=True)) for _m in meses_ativos_tv]
+                        if eh_detalhe and _linha_pai_grp else [])
                     _cels = ""
                     for _i_m, _v_m in enumerate(_vals_m):
                         _pct_num = _pcts_m[_i_m]
                         # Piso em 0,06 para a célula mais fraca ainda se
                         # distinguir do fundo: transparente demais some.
                         _alfa = 0.06 + (_pct_num / _teto_calor) * 0.22
-                        _pct_m = (f"{_pct_num:.1f}%".replace(".", ",")
-                                  if _pct_num else "—")
+                        if eh_detalhe:
+                            _base_pai = _pais_m[_i_m] if _i_m < len(_pais_m) else 0
+                            _pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"
+                                      if _base_pai else "—")
+                        else:
+                            _pct_m = (f"{_pct_num:.1f}% rec.".replace(".", ",")
+                                      if _pct_num else "—")
                         _cels += (
                             f'<td class="calor" style="background:rgba(214,161,85,{_alfa:.3f});">'
                             f'{formata_m(_v_m)}'
-                            f'<span class="sec">{_pct_m} rec.</span></td>')
+                            f'<span class="sec">{_pct_m}</span></td>')
                     _total_grp = sum(_vals_m)
                     _pct_tot = (f"{_total_grp / _rec_liq_t * 100:.1f}%".replace(".", ",")
                                 if _rec_liq_t else "—")
@@ -3801,7 +3865,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 )
             if not _abrir_por_mes_tv:
                 # O detalhe NAO entra na soma: ele ja esta dentro do pai.
-                _soma_grupos = sum(v for _n, v, _d, _l, _p in ranque_despop if not _d)
+                _soma_grupos = sum(v for _n, v, _d, _l, _p, _lp in ranque_despop if not _d)
                 _pct_soma = (_soma_grupos / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
                 _pct_soma_rec = (_soma_grupos / rec_liq_real * 100) if rec_liq_real else 0
                 linhas_despop.append(
@@ -3833,12 +3897,16 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # cartões e tabela numa fileira só. Aqui ela muda de lado: cada coluna
     # passa a ter mais ou menos a mesma altura, e a tabela ganha a largura de
     # que precisa para os doze meses caberem sem espremer.
+    _vaga_usada = _vaga_grupos_esq if _abrir_por_mes_tv else _vaga_grupos_dir
+    _vaga_limpa = _vaga_grupos_dir if _abrir_por_mes_tv else _vaga_grupos_esq
+    _vaga_limpa.empty()          # apaga o fantasma da coluna anterior
     if _html_grupos_tv:
-        with (cgtv1 if _abrir_por_mes_tv else cgtv2):
+        with _vaga_usada.container():
             st.markdown(
                 '<div class="tv-section-title">🏢 Despesas Operacionais — Principais Grupos</div>',
                 unsafe_allow_html=True)
             st.markdown(_html_grupos_tv, unsafe_allow_html=True)
+
 
     # ---------------- Ticker de destaques + controles de tela cheia (rodapé) ----------------
     meses_com_receita = {
