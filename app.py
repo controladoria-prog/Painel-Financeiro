@@ -2884,8 +2884,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         unsafe_allow_html=True,
     )
 
-    col_head_a, col_head_filtro_visao, col_head_filtro_mes, col_head_b = st.columns(
-        [3.5, 1.15, 0.8, 1.1], vertical_alignment="center"
+    col_head_a, col_head_filtro_visao, col_head_filtro_mes, col_head_tipo, col_head_b = st.columns(
+        [2.4, 1.15, 1.5, 1.0, 1.1], vertical_alignment="center"
     )
     with col_head_filtro_visao:
         aba_escolhida = st.selectbox(
@@ -2894,9 +2894,22 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             key="tv_sel_visao", label_visibility="collapsed",
         )
     with col_head_filtro_mes:
-        mes_escolhido_tv = st.selectbox(
-            "Mês", nomes_meses_tv, index=idx_mes_atual,
-            key="tv_sel_mes", label_visibility="collapsed",
+        # ANTES era um mês só, e a tela sempre mostrava o ACUMULADO até ele --
+        # não havia como ver um mês isolado nem um trimestre. Agora escolhem-se
+        # os meses; o padrão reproduz o comportamento antigo (janeiro até o mês
+        # corrente), para quem já usava não estranhar a tela.
+        meses_escolhidos_tv = st.multiselect(
+            "Meses", nomes_meses_tv,
+            default=nomes_meses_tv[: idx_mes_atual + 1],
+            key="tv_sel_meses", label_visibility="collapsed",
+            placeholder="Meses",
+        )
+    with col_head_tipo:
+        tipo_visao_tv = st.selectbox(
+            "Tipo", ["Acumulado", "Mês a mês"], index=0,
+            key="tv_sel_tipo_visao", label_visibility="collapsed",
+            help="Acumulado soma os meses escolhidos num número só. "
+                 "Mês a mês abre uma coluna para cada mês.",
         )
 
     abas_para_tv = [aba_escolhida]
@@ -2906,14 +2919,29 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     colunas_validas_tv = [m for m in meses_cols_tv if m in df_ref_tv.columns]
     m_map_tv = {n: c for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in colunas_validas_tv}
 
-    # Acumula (YTD) até o mês escolhido no seletor -- se aquele mês ainda
-    # não tiver dado na planilha, cai pro último mês que realmente existe.
-    idx_mes_escolhido = min(nomes_meses_tv.index(mes_escolhido_tv), len(m_map_tv) - 1) if m_map_tv else 0
-    cols_ytd = list(m_map_tv.values())[: idx_mes_escolhido + 1]
-    legenda_periodo_tv = (
-        f"Acumulado até {nomes_meses_tv[idx_mes_escolhido].capitalize()}/{list(m_map_tv.values())[idx_mes_escolhido].split('/')[-1]}"
-        if m_map_tv else "Sem dados"
-    )
+    # Os meses escolhidos, sempre em ORDEM DE CALENDÁRIO -- o multiselect
+    # devolve na ordem em que a pessoa clicou, e "março, janeiro" faria as
+    # colunas do mês a mês saírem fora de ordem na tela.
+    meses_ativos_tv = [n for n in nomes_meses_tv
+                       if n in set(meses_escolhidos_tv) and n in m_map_tv]
+    if not meses_ativos_tv:
+        # Nenhum mês escolhido zeraria a tela inteira sem dizer por quê. Cai
+        # no comportamento antigo e avisa embaixo do filtro.
+        meses_ativos_tv = [n for n in nomes_meses_tv[: idx_mes_atual + 1] if n in m_map_tv]
+    cols_ytd = [m_map_tv[n] for n in meses_ativos_tv]
+    _ano_tv = (cols_ytd[-1].split("/")[-1] if cols_ytd else "")
+    if not cols_ytd:
+        legenda_periodo_tv = "Sem dados"
+    elif len(meses_ativos_tv) == 1:
+        legenda_periodo_tv = f"{meses_ativos_tv[0].capitalize()}/{_ano_tv}"
+    elif meses_ativos_tv == [n for n in nomes_meses_tv[:len(meses_ativos_tv)] if n in m_map_tv]:
+        legenda_periodo_tv = f"Acumulado até {meses_ativos_tv[-1].capitalize()}/{_ano_tv}"
+    else:
+        legenda_periodo_tv = (f"{len(meses_ativos_tv)} meses · "
+                              f"{meses_ativos_tv[0].capitalize()} a "
+                              f"{meses_ativos_tv[-1].capitalize()}/{_ano_tv}")
+    if tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1:
+        legenda_periodo_tv += " · mês a mês"
 
     # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
     st.markdown(
@@ -3174,8 +3202,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             text=[formata_m(v) for v in desvio_m_tv], textposition="outside",
             textfont=dict(size=10, color=COLORS["text_muted"]),
         ))
+        # 250 e nao 160: a coluna da direita (rosca + as duas listas) e mais
+        # alta que a esquerda, e sobrava uma faixa morta embaixo deste grafico
+        # ate o letreiro. A altura foi medida no print de 26/08/2026 para
+        # ocupar a lacuna SEM empurrar o rodape -- o letreiro e os botoes de
+        # tela cheia tem de continuar visiveis sem rolagem, que e o ponto de
+        # um painel de parede.
         estilo_grafico(
-            fig_tv_desvio, height=160,
+            fig_tv_desvio, height=250,
             margin=dict(l=20, r=20, t=10, b=30),
             xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color=COLORS["text_muted"])),
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=True,
@@ -3187,36 +3221,102 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
 
     with cgtv2:
         st.markdown('<div class="tv-section-title">🥧 Composição de Custos & Saídas</div>', unsafe_allow_html=True)
-        fig_tv_donut = go.Figure(data=[go.Pie(
-            labels=["CMV", "Desp. Variáveis", "Desp. Operacionais", "Deprec./Amort."],
-            values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.66,
-            # Eram TRÊS cinzas de 4 fatias: a rosca virava um borrão e só o
-            # azul se distinguia. Agora um cinza só, e a Operacional fica
-            # âmbar de propósito -- é a mesma cor das barras da lista
-            # "Principais Grupos" logo abaixo, que detalha justamente ela.
-            marker=dict(colors=[COLORS["primary"], COLORS["muted_line"],
-                                COLORS["warning"], COLORS["accent"]],
-                        line=dict(color=COLORS["surface"], width=2)),
-            textinfo="percent", textfont=dict(size=11), showlegend=False,
-        )])
-        fig_tv_donut.add_annotation(
-            text=f"<b>{formata_m(total_saidas_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
-            showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
-        )
-        estilo_grafico(fig_tv_donut, height=200, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig_tv_donut, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
+        _cores_composicao_tv = [COLORS["primary"], COLORS["muted_line"],
+                                COLORS["warning"], COLORS["accent"]]
+        _rotulos_composicao_tv = ["CMV", "Desp. Variáveis", "Desp. Operacionais",
+                                  "Deprec./Amort."]
+        _linhas_composicao_tv = ["4 - ", "6 - Despesas Variáveis",
+                                 "8 - Despesas Operacionais",
+                                 "13 - Depreciação e Amortização"]
+        if tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1:
+            # A rosca compara PROPORÇÃO, não evolução -- e três roscas lado a
+            # lado não cabem numa tela de parede. Empilhada por mês responde a
+            # mesma pergunta ("de que é feito o custo") e ainda mostra o que a
+            # rosca nunca mostrou: se a composição está mudando ao longo do ano.
+            fig_tv_comp = go.Figure()
+            for _rot, _linha, _cor in zip(_rotulos_composicao_tv,
+                                          _linhas_composicao_tv, _cores_composicao_tv):
+                _valores_mes = [
+                    abs(get_valor_consolidado_multi(
+                        list_df_real_tv, _linha, [m_map_tv[_m]],
+                        exato_linha_sintetica=_linha.strip().endswith("-")))
+                    for _m in meses_ativos_tv
+                ]
+                fig_tv_comp.add_trace(go.Bar(
+                    name=_rot, x=[_m.capitalize() for _m in meses_ativos_tv],
+                    y=_valores_mes, marker_color=_cor,
+                ))
+            estilo_grafico(
+                fig_tv_comp, height=200, margin=dict(l=10, r=10, t=10, b=10),
+                barmode="stack", showlegend=True,
+                legend=dict(orientation="h", y=-0.18, font=dict(size=9)),
+                xaxis=dict(showgrid=False, fixedrange=True,
+                           tickfont=dict(size=10, color=COLORS["text_muted"])),
+                yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+            )
+            st.plotly_chart(fig_tv_comp, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
+        else:
+          fig_tv_donut = go.Figure(data=[go.Pie(
+              labels=["CMV", "Desp. Variáveis", "Desp. Operacionais", "Deprec./Amort."],
+              values=[cmv_tv, desp_var_tv, desp_op_tv_kpi, deprec_tv], hole=0.66,
+              # Eram TRÊS cinzas de 4 fatias: a rosca virava um borrão e só o
+              # azul se distinguia. Agora um cinza só, e a Operacional fica
+              # âmbar de propósito -- é a mesma cor das barras da lista
+              # "Principais Grupos" logo abaixo, que detalha justamente ela.
+              marker=dict(colors=[COLORS["primary"], COLORS["muted_line"],
+                                  COLORS["warning"], COLORS["accent"]],
+                          line=dict(color=COLORS["surface"], width=2)),
+              textinfo="percent", textfont=dict(size=11), showlegend=False,
+          )])
+          fig_tv_donut.add_annotation(
+              text=f"<b>{formata_m(total_saidas_tv)}</b><br><span style='font-size:10px;color:{COLORS['text_muted']}'>Total Saídas</span>",
+              showarrow=False, font=dict(color=COLORS["text"], size=13, family=FONT_STACK),
+          )
+          estilo_grafico(fig_tv_donut, height=200, margin=dict(l=10, r=10, t=10, b=10))
+          st.plotly_chart(fig_tv_donut, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
         # Detalhamento: cada categoria com % da receita líquida e desvio vs. orçado
         # (é o "mais detalhe de custos" pedido -- não só o donut).
         categorias_custo = [
-            ("CMV", cmv_tv, cmv_tv_o, COLORS["primary"]),
-            ("Despesas Variáveis", desp_var_tv, desp_var_tv_o, COLORS["muted_line"]),
+            ("CMV", cmv_tv, cmv_tv_o, COLORS["primary"], "4 - "),
+            ("Despesas Variáveis", desp_var_tv, desp_var_tv_o, COLORS["muted_line"],
+             "6 - Despesas Variáveis"),
             # A mesma cor da fatia. Divergir aqui faria o quadradinho da
             # linha apontar para outra fatia da rosca.
-            ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"]),
+            ("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"],
+             "8 - Despesas Operacionais"),
         ]
+        _abrir_por_mes_tv = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1
         linhas_custo = ['<div class="tv-panel" style="padding-top:8px;">']
-        for nome_cat, v_real, v_orc, cor_cat in categorias_custo:
+        if _abrir_por_mes_tv:
+            # Cabeçalho com os meses. Sem ele a pessoa vê quatro números numa
+            # linha e não sabe qual é de qual mês.
+            _cab = "".join(
+                f'<span style="display:inline-block;min-width:58px;text-align:right;">'
+                f'{_m.capitalize()[:3]}</span>' for _m in meses_ativos_tv)
+            linhas_custo.append(
+                f'<div class="tv-cost-row" style="color:{COLORS["text_muted"]};font-size:10px;">'
+                '<div class="tv-cost-dot" style="background:transparent;"></div>'
+                '<div class="tv-cost-nome"></div>'
+                f'<div style="margin-left:auto;">{_cab}</div></div>'
+            )
+        for nome_cat, v_real, v_orc, cor_cat, linha_dre_cat in categorias_custo:
+            if _abrir_por_mes_tv:
+                _valores = "".join(
+                    '<span style="display:inline-block;min-width:58px;text-align:right;'
+                    'font-variant-numeric:tabular-nums;">'
+                    + formata_m(abs(get_valor_consolidado_multi(
+                        list_df_real_tv, linha_dre_cat, [m_map_tv[_m]],
+                        exato_linha_sintetica=linha_dre_cat.strip().endswith("-"))))
+                    + "</span>"
+                    for _m in meses_ativos_tv)
+                linhas_custo.append(
+                    '<div class="tv-cost-row">'
+                    f'<div class="tv-cost-dot" style="background:{cor_cat};"></div>'
+                    f'<div class="tv-cost-nome">{nome_cat}</div>'
+                    f'<div style="margin-left:auto;">{_valores}</div></div>'
+                )
+                continue
             pct_da_receita = (v_real / rec_liq_real * 100) if rec_liq_real else 0
             desvio_cat = v_orc - v_real  # custo menor que orçado = positivo (bom)
             cor_desvio = cor_variacao(desvio_cat)
@@ -3231,7 +3331,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             )
         linhas_custo.append(
             f'<div style="text-align:right; font-size:10px; color:{COLORS["text_muted"]}; margin-top:4px;">'
-            f"Desvio = orçado − realizado (positivo é favorável)</div></div>"
+            + ("Valores de cada mês escolhido"
+               if _abrir_por_mes_tv
+               else "Desvio = orçado − realizado (positivo é favorável)")
+            + "</div></div>"
         )
         st.markdown("".join(linhas_custo), unsafe_allow_html=True)
 
@@ -3249,7 +3352,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 # O NÚMERO viaja junto: é por ele que se sabe qual linha de
                 # detalhe pendura embaixo de qual grupo.
                 detalhe_despop.append(
-                    (_numero_linha_dre(sub), _nome_sem_numero_dre(sub), v_sub))
+                    (_numero_linha_dre(sub), _nome_sem_numero_dre(sub), v_sub, sub))
         detalhe_despop.sort(key=lambda x: x[2], reverse=True)
         top_despop = detalhe_despop[:5]
 
@@ -3258,8 +3361,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # pai, e disputar posição faria o mesmo dinheiro aparecer duas vezes na
         # lista e empurrar um grupo de verdade para fora.
         ranque_despop = []
-        for _num_grp, _nome_grp, _v_grp in top_despop:
-            ranque_despop.append((_nome_grp, _v_grp, False))
+        for _num_grp, _nome_grp, _v_grp, _linha_grp in top_despop:
+            ranque_despop.append((_nome_grp, _v_grp, False, _linha_grp))
             for _num_det, _nome_det in DETALHES_DO_RANQUE_TV.items():
                 # Comparação EXATA do pai, não startswith: "8.8.10" começa com
                 # "8." e se penduraria também no grupo "8" se ele aparecesse no
@@ -3273,7 +3376,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 _v_det = abs(get_valor_consolidado_multi(
                     list_df_real_tv, _linha_det, cols_ytd, exato_linha_sintetica=True))
                 if _v_det:
-                    ranque_despop.append((_nome_det, _v_det, True))
+                    ranque_despop.append((_nome_det, _v_det, True, _linha_det))
 
         if top_despop:
             st.markdown(
@@ -3283,9 +3386,18 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             # A barra segue o maior GRUPO, não o maior item da lista: o
             # detalhe é sempre menor que o pai, e deixá-lo definir a escala
             # encolheria todas as barras de uma vez.
-            max_despop = max(v for _n, v, _d in ranque_despop if not _d) or 1.0
+            max_despop = max(v for _n, v, _d, _l in ranque_despop if not _d) or 1.0
             linhas_despop = ['<div class="tv-panel" style="padding-top:8px;">']
-            for nome_grp, v_grp, eh_detalhe in ranque_despop:
+            if _abrir_por_mes_tv:
+                _cab_grp = "".join(
+                    f'<span style="display:inline-block;min-width:58px;text-align:right;">'
+                    f'{_m.capitalize()[:3]}</span>' for _m in meses_ativos_tv)
+                linhas_despop.append(
+                    f'<div class="tv-rank-row" style="color:{COLORS["text_muted"]};font-size:10px;">'
+                    '<div class="tv-rank-name"></div>'
+                    f'<div style="margin-left:auto;">{_cab_grp}</div></div>'
+                )
+            for nome_grp, v_grp, eh_detalhe, linha_grp in ranque_despop:
                 pct_do_despop = (v_grp / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
                 # % que o grupo representa da Receita Líquida -- mesmo cálculo
                 # já usado no card "Resumo Gerencial" (tv-cost-pct) logo acima.
@@ -3298,6 +3410,25 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f' style="padding-left:18px;color:{COLORS["text_muted"]};'
                     'font-weight:500;"' if eh_detalhe else "")
                 _prefixo = "↳ " if eh_detalhe else ""
+                if _abrir_por_mes_tv:
+                    # A barra sai: ela compara os grupos ENTRE si no período, e
+                    # com uma coluna por mês não há um valor único para ela
+                    # representar. O espaço vira os valores mensais.
+                    _valores_grp = "".join(
+                        '<span style="display:inline-block;min-width:58px;text-align:right;'
+                        'font-variant-numeric:tabular-nums;">'
+                        + formata_m(abs(get_valor_consolidado_multi(
+                            list_df_real_tv, linha_grp, [m_map_tv[_m]],
+                            exato_linha_sintetica=True)))
+                        + "</span>"
+                        for _m in meses_ativos_tv)
+                    linhas_despop.append(
+                        '<div class="tv-rank-row">'
+                        f'<div class="tv-rank-name"{_estilo_nome} title="{nome_grp}">'
+                        f'{_prefixo}{nome_grp}</div>'
+                        f'<div style="margin-left:auto;">{_valores_grp}</div></div>'
+                    )
+                    continue
                 linhas_despop.append(
                     '<div class="tv-rank-row">'
                     f'<div class="tv-rank-name"{_estilo_nome} title="{nome_grp}">'

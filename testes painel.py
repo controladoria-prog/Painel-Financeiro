@@ -5171,7 +5171,9 @@ class TestePainelTV(unittest.TestCase):
         bloco = self._bloco_tv()
         i = bloco.index("categorias_custo = [")
         trecho = bloco[i:i + 700]
-        self.assertIn('("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"])',
+        # A tupla ganhou a linha da DRE no fim (o modo mes a mes precisa saber
+        # o que buscar), entao o teste olha o par nome/cor, nao a tupla inteira.
+        self.assertIn('("Despesas Operacionais", desp_op_tv_kpi, desp_op_tv_o, COLORS["warning"]',
                       trecho)
 
     def test_o_detalhe_nao_disputa_lugar_no_ranque(self):
@@ -5191,7 +5193,7 @@ class TestePainelTV(unittest.TestCase):
         """O detalhe e sempre menor que o pai; deixa-lo definir a escala
         encolheria todas as barras de uma vez."""
         bloco = self._bloco_tv()
-        self.assertIn("max(v for _n, v, _d in ranque_despop if not _d)", bloco)
+        self.assertIn("max(v for _n, v, _d, _l in ranque_despop if not _d)", bloco)
 
     def test_o_detalhe_aparece_recuado_e_marcado(self):
         """Quem bate o olho tem de ver na hora que aquilo esta DENTRO da linha
@@ -5199,6 +5201,92 @@ class TestePainelTV(unittest.TestCase):
         bloco = self._bloco_tv()
         self.assertIn('_prefixo = "↳ " if eh_detalhe else ""', bloco)
         self.assertIn("padding-left:18px", bloco)
+
+    def test_o_filtro_permite_escolher_meses_e_o_tipo_de_visao(self):
+        """Antes era um mes so, e a tela SEMPRE mostrava o acumulado ate ele --
+        nao havia como ver um mes isolado nem um trimestre."""
+        bloco = self._bloco_tv()
+        self.assertIn("meses_escolhidos_tv = st.multiselect(", bloco)
+        self.assertIn('["Acumulado", "Mês a mês"]', bloco)
+        # O padrao reproduz o comportamento antigo, para quem ja usava nao
+        # estranhar a tela.
+        self.assertIn("default=nomes_meses_tv[: idx_mes_atual + 1]", bloco)
+
+    def test_os_meses_saem_em_ordem_de_calendario(self):
+        """O multiselect devolve na ordem em que a pessoa CLICOU. Escolher
+        "marco, janeiro" faria as colunas do mes a mes sairem fora de ordem."""
+        bloco = self._bloco_tv()
+        # Tem de percorrer a lista OFICIAL de meses e filtrar pelos clicados --
+        # percorrer os clicados preserva a ordem do clique, que e o defeito.
+        self.assertIn("meses_ativos_tv = [n for n in nomes_meses_tv", bloco)
+        self.assertNotIn("for n in meses_escolhidos_tv if n in m_map_tv", bloco,
+                         "voltou a percorrer a ordem em que a pessoa clicou")
+        # Modelo do que o codigo faz.
+        nomes = ["janeiro", "fevereiro", "março", "abril"]
+        clicados = {"março", "janeiro"}
+        self.assertEqual([n for n in nomes if n in clicados], ["janeiro", "março"])
+
+    def test_nenhum_mes_escolhido_nao_zera_a_tela(self):
+        """Multiselect vazio zeraria o painel inteiro sem dizer por que."""
+        bloco = self._bloco_tv()
+        self.assertIn("if not meses_ativos_tv:", bloco)
+        i = bloco.index("if not meses_ativos_tv:")
+        self.assertIn("nomes_meses_tv[: idx_mes_atual + 1]", bloco[i:i + 400])
+
+    def test_a_legenda_diz_qual_recorte_esta_na_tela(self):
+        """Um mes so, acumulado ate X ou meses avulsos sao tres coisas
+        diferentes, e a tela de parede nao tem quem pergunte."""
+        bloco = self._bloco_tv()
+        self.assertIn('legenda_periodo_tv = f"{meses_ativos_tv[0].capitalize()}', bloco)
+        self.assertIn('f"Acumulado até {meses_ativos_tv[-1].capitalize()}', bloco)
+        self.assertIn('legenda_periodo_tv += " · mês a mês"', bloco)
+
+    def test_no_mes_a_mes_a_rosca_vira_barra_empilhada(self):
+        """Rosca compara PROPORCAO, nao evolucao -- e tres roscas lado a lado
+        nao cabem numa tela de parede."""
+        bloco = self._bloco_tv()
+        i = bloco.index("_cores_composicao_tv = [")
+        trecho = bloco[i:bloco.index("fig_tv_donut", i)]
+        self.assertIn('tipo_visao_tv == "Mês a mês"', trecho,
+                      "a rosca deixou de reagir ao tipo de visao")
+        self.assertIn('barmode="stack"', trecho)
+        self.assertIn("go.Bar(", trecho)
+
+    def test_o_mes_a_mes_so_liga_com_mais_de_um_mes(self):
+        """Com um mes so, abrir por mes daria uma coluna unica -- a mesma
+        tela do acumulado, so que pior."""
+        bloco = self._bloco_tv()
+        self.assertIn('_abrir_por_mes_tv = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1',
+                      bloco)
+
+    def test_as_duas_listas_abrem_por_mes_com_cabecalho(self):
+        """Sem cabecalho a pessoa ve quatro numeros numa linha e nao sabe qual
+        e de qual mes."""
+        bloco = self._bloco_tv()
+        # Contar ocorrencia exata e fragil -- muda quando eu acrescento um uso
+        # legitimo. O que importa e que as DUAS listas usem a mesma marca, e
+        # nao cada uma a sua regra.
+        self.assertGreaterEqual(bloco.count("_abrir_por_mes_tv"), 4)
+        i_custo = bloco.index("linhas_custo = [")
+        i_ranque = bloco.index("linhas_despop = [")
+        self.assertIn("_abrir_por_mes_tv", bloco[i_custo:i_ranque],
+                      "a lista de composicao nao respeita o tipo de visao")
+        self.assertIn("_abrir_por_mes_tv", bloco[i_ranque:i_ranque + 3000],
+                      "o ranque de grupos nao respeita o tipo de visao")
+        self.assertIn("_cab_grp", bloco)
+
+
+    def test_o_grafico_de_desvio_ocupa_a_lacuna(self):
+        """A coluna da direita (rosca + as duas listas) e mais alta que a
+        esquerda, e sobrava uma faixa morta embaixo do desvio ate o letreiro.
+        O teto existe para a altura nao crescer a ponto de empurrar o rodape:
+        letreiro e botao de tela cheia tem de continuar visiveis sem rolagem,
+        que e o ponto de um painel de parede."""
+        bloco = self._bloco_tv()
+        i = bloco.index("fig_tv_desvio, height=")
+        altura = int(re.search(r"height=(\d+)", bloco[i:i + 40]).group(1))
+        self.assertGreaterEqual(altura, 220, "voltou a sobrar lacuna embaixo")
+        self.assertLessEqual(altura, 300, "alto demais: empurra o letreiro para fora")
 
     def test_a_linha_de_transporte_esta_configurada(self):
         ns = carregar([], ["DETALHES_DO_RANQUE_TV"])
