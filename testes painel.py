@@ -5253,20 +5253,26 @@ class TestePainelTV(unittest.TestCase):
         bloco = self._bloco_tv()
         i = bloco.index("_cores_composicao_tv = [")
         trecho = bloco[i:bloco.index("fig_tv_donut", i)]
-        self.assertIn('tipo_visao_tv == "Mês a mês"', trecho,
+        self.assertIn("_abrir_por_mes_tv_kpi", trecho,
                       "a rosca deixou de reagir ao tipo de visao")
         self.assertIn('barmode="stack"', trecho)
         self.assertIn("go.Bar(", trecho)
 
-    def test_o_mes_a_mes_so_liga_com_mais_de_um_mes(self):
-        """Com um mes so, abrir por mes daria uma coluna unica -- a mesma
-        tela do acumulado, so que pior."""
+    def test_o_modo_e_so_o_que_a_pessoa_escolheu(self):
+        """A versao anterior tinha um "and len(meses_ativos_tv) > 1" grudado no
+        modo: enquanto se editava a lista de meses, a selecao passava por UM mes
+        e a tela voltava sozinha para consolidado -- com o seletor ainda escrito
+        "Mes a mes". Tela que troca de modo por conta propria faz quem esta
+        olhando duvidar do numero, que e o pior que um painel executivo causa."""
         bloco = self._bloco_tv()
-        self.assertIn('_abrir_por_mes_tv_kpi = tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv) > 1',
-                      bloco)
+        self.assertIn('_abrir_por_mes_tv_kpi = tipo_visao_tv == "Mês a mês"', bloco)
+        self.assertNotIn('tipo_visao_tv == "Mês a mês" and len(meses_ativos_tv)', bloco,
+                         "o modo voltou a depender da quantidade de meses")
         # UMA marca so, reusada: duas condicoes iguais em dois lugares seriam
         # duas chances de a tela ficar meio num modo e meio no outro.
         self.assertIn("_abrir_por_mes_tv = _abrir_por_mes_tv_kpi", bloco)
+        # E o tipo tambem e semeado na sessao, como os meses.
+        self.assertIn('st.session_state["tv_sel_tipo_visao"] = "Acumulado"', bloco)
 
     def test_as_duas_listas_abrem_por_mes_com_cabecalho(self):
         """Sem cabecalho a pessoa ve quatro numeros numa linha e nao sabe qual
@@ -5297,30 +5303,46 @@ class TestePainelTV(unittest.TestCase):
         for atalho in ('"Mês"', '"Tri"', '"YTD"', '"Ano"'):
             self.assertIn(atalho, bloco, f"sumiu o atalho {atalho}")
 
-    def test_os_cartoes_mostram_a_serie_no_mes_a_mes(self):
-        """Receita Bruta, Margem e Custos/Receita nao aparecem em grafico
-        nenhum da tela -- Receita Liquida e EBITDA tem o de Evolucao Mensal,
-        elas nao tinham nada. No mes a mes o cartao mostrava um acumulado que
-        nao respondia a pergunta que o modo faz."""
+    def test_a_matriz_do_mes_a_mes_e_completa(self):
+        """A primeira versao mostrava valor e barra e nada mais: era o
+        consolidado sem as informacoes que fazem o consolidado valer. Aqui cada
+        celula carrega o numero E o que ele significa."""
         bloco = self._bloco_tv()
-        self.assertIn("def _tv_faisca(", bloco)
-        for chave in ("bruta", "liquida", "ebitda", "margem", "custos"):
-            self.assertIn(f'serie=_serie_kpi_tv.get("{chave}")', bloco,
-                          f"o cartao de {chave} ficou sem serie")
+        # Recorte SO da matriz executiva: a tabela de grupos, logo abaixo, usa
+        # as mesmas classes e os mesmos textos -- procurar no bloco inteiro
+        # encontrava lá o que devia estar aqui, e a trava passava mesmo com a
+        # matriz mutilada.
+        i = bloco.index("# ---- Matriz executiva do MÊS A MÊS")
+        matriz = bloco[i:bloco.index("# ---- Detalhamento de Despesas Operacionais", i)]
+        self.assertIn('class="tv-matriz"', matriz)
+        for rotulo in ("Receita Bruta", "Receita Líquida", "CMV",
+                       "Despesas Operacionais", "EBITDA orçado",
+                       "Desvio vs. orçado", "Margem EBITDA",
+                       "Custos + Despesas / Receita"):
+            self.assertIn(f'"{rotulo}"', matriz, f"a matriz ficou sem {rotulo}")
+        self.assertIn('<th class="tot">Período</th>', matriz,
+                      "sumiu a coluna de total do periodo")
+        self.assertIn('% rec.', matriz, "sumiu o % da receita nas celulas")
 
-    def test_a_faisca_de_razao_e_calculada_mes_a_mes(self):
-        """Margem e custos/receita sao RAZOES. Media de percentual nao e o
-        percentual da media -- interpolar do acumulado daria numero errado."""
+    def test_as_faiscas_dos_cartoes_sairam(self):
+        """Elas nao ficaram boas e o espaco vale mais para o subtexto. A
+        informacao mensal vive na matriz, que a mostra por extenso."""
         bloco = self._bloco_tv()
-        self.assertIn("(e / r * 100) if r else 0", bloco)
-        self.assertIn("((r - e) / r * 100) if r else 0", bloco)
+        self.assertNotIn("def _tv_faisca(", bloco)
+        self.assertNotIn("tv-faisca", bloco)
 
-    def test_a_serie_dos_cartoes_so_e_buscada_quando_serve(self):
-        """Buscar 12 meses de cinco linhas da DRE a toa custaria render num
-        painel que se redesenha sozinho a cada 90 segundos."""
+    def test_a_razao_da_matriz_e_recalculada_no_total(self):
+        """Media de percentual nao e o percentual da media. No total a conta e
+        refeita sobre os acumulados, nao e a media das colunas."""
         bloco = self._bloco_tv()
-        i = bloco.index("_serie_kpi_tv = {}")
-        self.assertIn("if _abrir_por_mes_tv_kpi:", bloco[i:i + 200])
+        i = bloco.index("def _linha_pct(")
+        corpo = bloco[i:bloco.index("_cab = ", i)]
+        # A assinatura receber os totais nao prova nada -- o corpo tem de USAR
+        # os dois na conta final, e nao a media das colunas.
+        self.assertIn("_fmt(total_num, total_den)", corpo,
+                      "o total do percentual deixou de ser recalculado")
+        self.assertNotIn("sum(serie_num) / max(len(serie_num)", corpo,
+                         "o total virou media das colunas")
 
     def test_o_cmv_nao_zera_no_mes_a_mes(self):
         """O CMV mora numa linha sintetica "4 - " em algumas planilhas e
