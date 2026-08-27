@@ -5200,15 +5200,55 @@ class TestePainelTV(unittest.TestCase):
         # Recorte da LINHA do ranque: "% do grupo" tambem aparece noutro
         # ponto do painel, e procurar no bloco inteiro deixava mutilar este.
         i_rot = b.index('<div class="tv-rank-val">')
-        rotulo = b[i_rot:i_rot + 400]
-        self.assertIn("% do grupo", rotulo,
-                      "o rotulo tem de dizer contra o que e o %")
-        # E a CONDICAO, nao so o texto: desligar o ramo deixa a frase no
-        # codigo, inalcancavel, e a busca por texto continuava passando.
+        rotulo = b[i_rot:i_rot + 700]
+        # O rotulo distingue detalhe de grupo pela COR, nao mais pelo texto
+        # "do grupo" -- ele nao cabia na coluna e quebrava a fileira em duas
+        # linhas. O recuo e a seta ja dizem que a linha e um detalhe, e a
+        # legenda do bloco explica contra o que o percentual e medido.
         self.assertIn("if eh_detalhe else", rotulo,
                       "o rotulo deixou de distinguir detalhe de grupo")
+        self.assertIn("não entra na soma", b,
+                      "a legenda tem de dizer que o detalhe nao soma")
         # A barra tambem: contra o pai, senao ela some ao lado dos grupos.
         self.assertIn("v_grp / (v_pai if eh_detalhe else max_despop)", b)
+
+    def test_a_lista_tem_o_total_dos_principais_grupos(self):
+        """O cartao de cima traz o total das despesas operacionais INTEIRAS,
+        que inclui grupos que nem aparecem na lista. Sem um total dos cinco,
+        nao da para saber quanto eles representam do bloco."""
+        b = self._bloco_tv()
+        self.assertIn("Total dos principais grupos", b)
+        # E o detalhe NAO pode entrar nessa soma: ele ja esta dentro do pai.
+        self.assertIn("_soma_grupos = sum(v for _n, v, _d, _l, _p in ranque_despop if not _d)", b)
+
+    def test_os_grupos_mudam_de_coluna_no_mes_a_mes(self):
+        """A tabela e larga; a coluna da esquerda fica vazia abaixo dos
+        graficos enquanto a direita empilha barras, cartoes e tabela numa
+        fileira so."""
+        b = self._bloco_tv()
+        self.assertIn("with (cgtv1 if _abrir_por_mes_tv else cgtv2):", b)
+        self.assertIn("_html_grupos_tv", b)
+
+    def test_a_legenda_dos_cartoes_aparece_uma_vez_so(self):
+        """Repetir CMV/Var./Op. em cada cartao colocava 27 rotulos iguais na
+        tela, e nenhum acrescentava informacao depois do primeiro."""
+        b = self._bloco_tv()
+        i = b.index("# ---- Cartões de mês (visão MÊS A MÊS)")
+        cartoes = b[i:b.index("# ---- Detalhamento de Despesas Operacionais", i)]
+        self.assertNotIn('class="leg"', cartoes, "a legenda voltou para dentro do cartao")
+        self.assertIn('("CMV", COLORS["primary"])', cartoes)
+
+    def test_os_iframes_do_rodape_nao_rolam(self):
+        """Conteudo alguns pixels mais alto que a altura pedida faz o navegador
+        desenhar uma barra de rolagem ao lado do relogio e do botao de tela
+        cheia. Aumentar a altura nao basta: a barra volta em qualquer tela com
+        fonte ou escala diferente."""
+        b = self._bloco_tv()
+        # As chaves sao DUPLAS no codigo: o trecho vive dentro de uma
+        # f-string, e no arquivo aparece {{ }} para render como { }.
+        self.assertEqual(b.count("html,body{{margin:0;padding:0;overflow:hidden;}}"), 2,
+                         "os DOIS iframes precisam travar a rolagem")
+
 
     def test_a_depreciacao_aparece_na_lista_de_composicao(self):
         """A rosca mostrava quatro fatias e a lista explicava tres: a fatia de

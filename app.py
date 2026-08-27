@@ -3268,8 +3268,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # consegue executar JavaScript de fato) e atualiza a cada segundo.
         html_embutido(
             f"""
+            <!-- overflow:hidden e margem zerada no proprio documento do
+                 iframe: sem isso o conteudo fica alguns pixels mais alto que
+                 a altura pedida e o navegador desenha uma barra de rolagem ao
+                 lado do relogio. Nao adianta so aumentar a altura -- a barra
+                 volta em qualquer tela com fonte ou escala diferente. -->
+            <style>html,body{{margin:0;padding:0;overflow:hidden;}}</style>
             <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
-                        color:{COLORS['text_muted']}; padding-top:2px;">
+                        color:{COLORS['text_muted']}; padding-top:2px; overflow:hidden;">
                 <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:24px; font-weight:800; letter-spacing:2px;">--:--:--</div>
                 <div id="tvDateLive" style="font-size:11px;"></div>
             </div>
@@ -3289,7 +3295,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             setInterval(_tvAtualizarRelogio, 1000);
             </script>
             """,
-            altura=54,
+            altura=62,
         )
 
     def _tv_kpi(cor_var, label, valor, sub, accent, icone=""):
@@ -3358,6 +3364,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # 1.15 e não 1.6: com os gráficos parando no mês corrente, a coluna da
     # esquerda precisa de menos largura, e a da direita -- composição e grupos,
     # que é onde estão os números que se lê -- ganha o espaço.
+    _html_grupos_tv = ""  # preenchido lá embaixo; a coluna de destino muda
     cgtv1, cgtv2 = st.columns([1.15, 1])
 
     with cgtv1:
@@ -3381,7 +3388,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             line=dict(color=COLORS["positive"], width=2.5, dash="dot"), marker=dict(size=5, color=COLORS["positive"]),
         ))
         estilo_grafico(
-            fig_tv_line, height=330,
+            fig_tv_line, height=392,
             margin=dict(l=20, r=20, t=20, b=50),
             xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=13, color=COLORS["text_muted"])),
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
@@ -3413,7 +3420,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # tela cheia tem de continuar visiveis sem rolagem, que e o ponto de
         # um painel de parede.
         estilo_grafico(
-            fig_tv_desvio, height=210,
+            fig_tv_desvio, height=268,
             margin=dict(l=20, r=20, t=10, b=30),
             xaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color=COLORS["text_muted"])),
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=True,
@@ -3578,7 +3585,23 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             _op_s = [valor_da_linha_tv(list_df_real_tv, "8 - Despesas Operacionais", [c])
                      for c in _cols_mes]
 
-            _partes_mes = ['<div class="tv-mescards">']
+            # UMA legenda para o bloco inteiro. Repetir CMV/Var./Op. em cada
+            # cartão colocava 27 rótulos iguais na tela -- era a maior fonte da
+            # poluição, e nenhum deles acrescentava informação depois do
+            # primeiro.
+            _partes_mes = [
+                '<div style="display:flex;gap:16px;justify-content:flex-end;'
+                f'font-size:10.5px;color:{COLORS["text_muted"]};margin-bottom:8px;">'
+                + "".join(
+                    f'<span><u style="text-decoration:none;display:inline-block;'
+                    f'width:8px;height:8px;border-radius:2px;background:{_c};'
+                    f'margin-right:5px;vertical-align:middle;"></u>{_r}</span>'
+                    for _r, _c in (("CMV", COLORS["primary"]),
+                                   ("Variáveis", COLORS["muted_line"]),
+                                   ("Operacionais", COLORS["warning"])))
+                + "</div>",
+                '<div class="tv-mescards">',
+            ]
             for _i, _m in enumerate(meses_ativos_tv):
                 _rec = _rec_liq_s[_i]
                 _eb, _ebo = _eb_s[_i], _eb_o_s[_i]
@@ -3607,12 +3630,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'{"▲" if _desvio >= 0 else "▼"} {formata_m(_desvio)} vs. orçado '
                     f'({formata_m(_ebo)})</div>'
                     f'<div class="comp">{_fatias}</div>'
-                    f'<div class="leg">'
-                    f'<span><u style="background:{COLORS["primary"]}"></u>CMV {_pct(_cmv)}</span>'
-                    f'<span><u style="background:{COLORS["muted_line"]}"></u>Var. {_pct(_var)}</span>'
-                    f'<span><u style="background:{COLORS["warning"]}"></u>Op. {_pct(_op)}</span>'
-                    "</div>"
-                    f'<div class="rod"><span>Custos + desp.</span>'
+                    f'<div class="rod"><span>{_pct(_cmv)} · {_pct(_var)} · {_pct(_op)}</span>'
                     f'<span style="color:{cor_variacao(-(_custo_total / _rec * 100) if _rec else 0)};">'
                     f'{_pct(_custo_total)} da receita</span></div>'
                     "</div>"
@@ -3642,12 +3660,8 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 f'{"▲" if _dev_t >= 0 else "▼"} {formata_m(_dev_t)} vs. orçado '
                 f'({formata_m(_ebo_t)})</div>'
                 f'<div class="comp">{_fat_t}</div>'
-                f'<div class="leg">'
-                f'<span><u style="background:{COLORS["primary"]}"></u>CMV {_pct_t(sum(_cmv_s))}</span>'
-                f'<span><u style="background:{COLORS["muted_line"]}"></u>Var. {_pct_t(sum(_var_s))}</span>'
-                f'<span><u style="background:{COLORS["warning"]}"></u>Op. {_pct_t(sum(_op_s))}</span>'
-                "</div>"
-                f'<div class="rod"><span>Custos + desp.</span>'
+                f'<div class="rod"><span>{_pct_t(sum(_cmv_s))} · {_pct_t(sum(_var_s))} · '
+                f'{_pct_t(sum(_op_s))}</span>'
                 f'<span>{_pct_t(_custo_t)} da receita</span></div></div>'
             )
             _partes_mes.append("</div>")
@@ -3782,10 +3796,35 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     f'<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" style="width:{pct_barra:.0f}%;"></div></div>'
                     f'<div class="tv-rank-pct-rec">{pct_da_receita:.1f}% rec.</div>'
                     '<div class="tv-rank-val">'
-                    + (f"{formata_m(v_grp)} · {pct_do_despop:.0f}% do grupo"
+                    # "20% do grupo" nao cabia na coluna e quebrava em duas
+                    # linhas, desalinhando a fileira inteira. Fica so o numero,
+                    # em tom de apoio, e a legenda do bloco diz contra o que ele
+                    # e medido -- o recuo e a seta ja avisam que a linha e um
+                    # detalhe do grupo de cima.
+                    + (f'{formata_m(v_grp)} · <span style="color:{COLORS["text_muted"]};">'
+                       f"{pct_do_despop:.0f}%</span>"
                        if eh_detalhe else
                        f"{formata_m(v_grp)} · {pct_do_despop:.0f}%")
                     + "</div></div>"
+                )
+            if not _abrir_por_mes_tv:
+                # O detalhe NAO entra na soma: ele ja esta dentro do pai.
+                _soma_grupos = sum(v for _n, v, _d, _l, _p in ranque_despop if not _d)
+                _pct_soma = (_soma_grupos / desp_op_tv_kpi * 100) if desp_op_tv_kpi else 0
+                _pct_soma_rec = (_soma_grupos / rec_liq_real * 100) if rec_liq_real else 0
+                linhas_despop.append(
+                    '<div class="tv-rank-row" style="border-top:1px solid '
+                    f'{COLORS["border"]};margin-top:6px;padding-top:9px;font-weight:700;">'
+                    '<div class="tv-rank-name">Total dos principais grupos</div>'
+                    '<div class="tv-rank-bar-bg" style="visibility:hidden;"></div>'
+                    f'<div class="tv-rank-pct-rec">{_pct_soma_rec:.1f}% rec.</div>'
+                    f'<div class="tv-rank-val">{formata_m(_soma_grupos)} · '
+                    f"{_pct_soma:.0f}%</div></div>"
+                    f'<div style="text-align:right;font-size:10px;'
+                    f'color:{COLORS["text_muted"]};margin-top:4px;">'
+                    f"Os cinco maiores somam {_pct_soma:.0f}% das despesas operacionais "
+                    f"({formata_m(desp_op_tv_kpi)}). A linha recuada é um detalhe de dentro "
+                    "do grupo acima e não entra na soma.</div>"
                 )
             if _abrir_por_mes_tv:
                 linhas_despop.append(
@@ -3795,7 +3834,19 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     "Percentual sobre a receita líquida do próprio mês</div>"
                 )
             linhas_despop.append("</div>")
-            st.markdown("".join(linhas_despop), unsafe_allow_html=True)
+            _html_grupos_tv = "".join(linhas_despop)
+
+    # No MÊS A MÊS a tabela de grupos é larga e a coluna da esquerda fica
+    # vazia abaixo dos dois gráficos, enquanto a direita empilha barras,
+    # cartões e tabela numa fileira só. Aqui ela muda de lado: cada coluna
+    # passa a ter mais ou menos a mesma altura, e a tabela ganha a largura de
+    # que precisa para os doze meses caberem sem espremer.
+    if _html_grupos_tv:
+        with (cgtv1 if _abrir_por_mes_tv else cgtv2):
+            st.markdown(
+                '<div class="tv-section-title">🏢 Despesas Operacionais — Principais Grupos</div>',
+                unsafe_allow_html=True)
+            st.markdown(_html_grupos_tv, unsafe_allow_html=True)
 
     # ---------------- Ticker de destaques + controles de tela cheia (rodapé) ----------------
     meses_com_receita = {
@@ -3841,8 +3892,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
     # o F11, que é sempre a forma mais confiável.
     html_embutido(
         f"""
+        <style>html,body{{margin:0;padding:0;overflow:hidden;}}</style>
         <div id="tvFsWrap" style="display:flex; align-items:center; justify-content:center; gap:12px;
-                    font-family:{FONT_STACK}; padding-top:6px;">
+                    font-family:{FONT_STACK}; padding-top:6px; overflow:hidden;">
             <button id="tvFsBtn" style="background:{COLORS['primary']}; color:#fff; border:none;
                     border-radius:20px; padding:6px 18px; font-size:12.5px; font-weight:700; cursor:pointer;">
                 ⛶ Tela Cheia
@@ -3895,7 +3947,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         setInterval(_tvAtualizarUI, 1500);
         </script>
         """,
-        altura=44,
+        altura=52,
     )
 
     st.markdown(
