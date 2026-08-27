@@ -5748,6 +5748,106 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn('_num_det.rsplit(".", 1)[0] != _num_grp', FONTE)
 
 
+
+class TesteMemoriaDoPainel(unittest.TestCase):
+    """Travas de memoria (27/08/2026).
+
+    O app chegou a 1039 MB em producao e os caches foram esvaziados sozinhos
+    para ele nao cair. O servidor derruba o processo quando a memoria estoura,
+    e o que aparece na tela e um erro generico, sem causa -- por isso cada
+    decisao daqui vira trava: elas sao invisiveis e voltam sozinhas na
+    proxima vez que alguem "melhorar" um carregamento."""
+
+    def test_as_colunas_repetitivas_do_diario_sao_categoria(self):
+        """Medido numa DIARIO com a forma da real: o Historico sozinho ocupava
+        12,9 MB como texto e cai para menos de 1 MB como categoria, porque o
+        mesmo texto se repete em centenas de lancamentos. O conjunto economiza
+        cerca de 64% da tabela."""
+        i = FONTE.index("def carregar_diario(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        for coluna in ('"Plano de Contas", "Centro de Custos", "Linha DRE"',):
+            self.assertIn(coluna, corpo)
+        self.assertIn('df[_coluna_repetitiva].astype(str).str.strip().astype("category")', corpo)
+        self.assertIn('df[col_extra] = df[col_extra].astype("category")', corpo,
+                      "as colunas extras voltaram a ser texto puro")
+        self.assertIn('mes_formatado.astype("category")', corpo,
+                      "a coluna Mes voltou a ser texto")
+
+    def test_numero_fica_como_texto_de_proposito(self):
+        """Categoria com uma categoria POR LINHA gasta mais que o texto puro:
+        guarda o dicionario inteiro e ainda um indice para cada linha."""
+        i = FONTE.index("def carregar_diario(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('if col_extra != "Número":', corpo)
+
+    def test_categoria_nao_quebra_o_que_o_app_faz_com_a_coluna(self):
+        """Modelo: comparacao, isin e groupby precisam continuar iguais. O
+        groupby com observed=False geraria todas as combinacoes possiveis de
+        categorias, mesmo as que nao existem -- explosao combinatoria."""
+        df = pd.DataFrame({
+            "Mês": pd.Categorical(["01/2026"] * 3 + ["02/2026"] * 2),
+            "Centro de Custos": pd.Categorical(["A", "A", "B", "B", "A"]),
+            "Valor Bruto": [1.0, 2, 3, 4, 5],
+        })
+        self.assertEqual(df.loc[df["Mês"] == "01/2026", "Valor Bruto"].sum(), 6.0)
+        self.assertEqual(df[df["Mês"].isin(["01/2026"])]["Valor Bruto"].sum(), 6.0)
+        # Filtra para sobrarem categorias sem uso -- e nelas que a diferenca
+        # aparece. O padrao do pandas para `observed` MUDOU entre 2.x e 3.x,
+        # entao o app passa o argumento EXPLICITO: sem ele o resultado depende
+        # da versao instalada no servidor.
+        so_um = df[df["Centro de Custos"] == "A"]
+        com = so_um.groupby(["Centro de Custos", "Mês"], observed=True)["Valor Bruto"].sum()
+        sem = so_um.groupby(["Centro de Custos", "Mês"], observed=False)["Valor Bruto"].sum()
+        self.assertLess(len(com), len(sem),
+                        "observed=True e o que evita a explosao combinatoria")
+
+    def test_o_groupby_do_diario_usa_observed(self):
+        """Sem observed=True, agrupar tres colunas de categoria geraria o
+        produto cartesiano das categorias -- centenas de milhares de linhas
+        vazias so para serem descartadas depois."""
+        # Varre com find em cadeia, e nao com um laco sobre CADA caractere do
+        # arquivo: o `for i in range(len(FONTE))` fazia 900 mil iteracoes e
+        # sozinho triplicou o tempo da suite inteira.
+        pos, faltando = 0, []
+        while True:
+            pos = FONTE.find(".groupby(", pos)
+            if pos < 0:
+                break
+            trecho = FONTE[pos:pos + 300]
+            if (("Plano de Contas" in trecho or "Centro de Custos" in trecho)
+                    and "observed=True" not in trecho):
+                faltando.append(trecho.split("\n")[0][:90])
+            pos += 9
+        self.assertEqual(faltando, [], "groupby de categoria sem observed=True")
+
+    def test_os_caches_grandes_guardam_uma_entrada_so(self):
+        """Cada entrada guarda as 21 abas ou a base inteira do fluxo. A segunda
+        so serviria se a pessoa trocasse de visao e voltasse dentro do prazo do
+        cache, e custava o dobro da memoria o tempo todo."""
+        for funcao in ("carregar_dados_abas", "carregar_dados_por_loja",
+                       "carregar_diario", "preparar_fluxo_caixa"):
+            i = FONTE.index(f"def {funcao}(")
+            # SO o decorador imediatamente acima: uma janela de 700 caracteres
+            # alcancava o decorador de OUTRA funcao e passava mesmo com este
+            # errado. O recorte vai do ultimo "@st.cache" ate a definicao.
+            ini = FONTE.rindex("@st.cache", 0, i)
+            decorador = FONTE[ini:i]
+            self.assertIn("max_entries=1", decorador,
+                          f"{funcao} voltou a guardar mais de uma entrada")
+
+    def test_a_base_do_fluxo_nao_e_copiada_inteira(self):
+        """Era uma copia da base inteira -- centenas de milhares de linhas --
+        que a primeira filtragem logo abaixo ja substituia por um recorte novo.
+        A copia so existia para ser jogada fora, e enquanto isso dobrava a
+        memoria do fluxo."""
+        self.assertNotIn("df_d_completo = df_fin.copy()", FONTE)
+        self.assertIn("df_d_completo = df_fin\n", FONTE)
+        # E a copia passou a ser feita DEPOIS da filtragem, so no recorte.
+        i = FONTE.index("df_d_completo = df_fin\n")
+        self.assertIn('!= "aplicacao"].copy()', FONTE[i:i + 1400],
+                      "sem a copia no recorte, criar DiaOrd tocaria a base original")
+
+
 # ============================================================================
 # 6. FORMATACAO
 # ============================================================================

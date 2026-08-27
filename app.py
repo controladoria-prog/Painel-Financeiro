@@ -2069,7 +2069,12 @@ def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
 # teto, trocar de visão algumas vezes empilha cópias até o servidor
 # derrubar o app -- e o cache existe para poupar leitura, não para
 # guardar tudo que já foi aberto.
-@st.cache_data(ttl=60, max_entries=2)
+# max_entries=1 e nao 2 (27/08/2026): cada entrada guarda as 21 abas de
+# Orçado e Realizado. A segunda entrada só serviria se a pessoa trocasse de
+# visão e voltasse dentro de 60 segundos, e custava o dobro da memória o tempo
+# todo. O servidor derruba o app quando a memória estoura, e derrubar é pior
+# que reler.
+@st.cache_data(ttl=60, max_entries=1)
 def carregar_dados_abas(path_o, path_r, lista_abas):
     """Carrega Orçado e Realizado de cada aba/loja. Cada lado é lido de forma
     INDEPENDENTE: se a loja não existir no Orçado (ex.: loja nova, ainda sem
@@ -2094,7 +2099,7 @@ def carregar_dados_abas(path_o, path_r, lista_abas):
     return dfs_o, dfs_r
 
 
-@st.cache_data(ttl=60, max_entries=2)
+@st.cache_data(ttl=60, max_entries=1)
 def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     """Carrega os dados de Orçado/Realizado de cada loja SEPARADAMENTE (uma aba
     por loja), para permitir a divisão por loja no relatório Excel — independente
@@ -2133,7 +2138,7 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
     mapa = {}
     if df_tabela_contas.empty or "Linha DRE" not in df_tabela_contas.columns or "Natureza Financeira" not in df_tabela_contas.columns:
         return mapa
-    for linha_dre, grupo in df_tabela_contas.groupby("Linha DRE"):
+    for linha_dre, grupo in df_tabela_contas.groupby("Linha DRE", observed=True):
         planos = grupo["Natureza Financeira"].dropna().astype(str).str.strip().unique().tolist()
         mapa[str(linha_dre).strip()] = planos
     return mapa
@@ -2202,7 +2207,8 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
 # ---------------------------------------------------------------------------
 # 4.2 DIÁRIO — lançamentos detalhados, fonte principal da aba "Plano de Contas"
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300, max_entries=2)
+# O DIÁRIO é a maior tabela do painel: uma entrada só.
+@st.cache_data(ttl=300, max_entries=1)
 def carregar_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
     com Valor Bruto, Competência (data do lançamento), Plano de Contas,
@@ -2276,8 +2282,19 @@ def carregar_diario(path_r):
         df[_coluna_repetitiva] = (
             df[_coluna_repetitiva].astype(str).str.strip().astype("category")
         )
+    # CATEGORIA também nas colunas extras. Medido em 27/08/2026 numa DIÁRIO
+    # com a forma da real: o Histórico sozinho ocupava 12,9 MB como texto e
+    # cai para menos de 1 MB como categoria, porque o mesmo histórico se
+    # repete em centenas de lançamentos. Cliente/Fornecedor idem. O conjunto
+    # das três economiza cerca de 64% da tabela.
+    #
+    # "Número" fica como texto de propósito: é quase único por linha, e
+    # categoria com uma categoria por linha gasta MAIS que o texto puro --
+    # guarda o dicionário inteiro e ainda um índice para cada linha.
     for col_extra in colunas_extras:
         df[col_extra] = df[col_extra].fillna("").astype(str).str.strip()
+        if col_extra != "Número":
+            df[col_extra] = df[col_extra].astype("category")
 
     # Competência normalmente vem como data (dd/mm/aaaa) -> convertemos para "mm/aaaa"
     # para casar com as colunas de mês (ex.: "01/2026") usadas no resto do painel.
@@ -2289,7 +2306,9 @@ def carregar_diario(path_r):
         # (cobre o caso de a Competência já vir como "mm/aaaa" digitada).
         mes_formatado = mes_formatado.copy()
         mes_formatado[mask_sem_data] = df.loc[mask_sem_data, "Competência"].astype(str).str.strip()
-    df["Mês"] = mes_formatado
+    # São no máximo doze valores distintos repetidos em centenas de milhares
+    # de linhas: como texto puro a coluna sozinha passava de 4 MB.
+    df["Mês"] = mes_formatado.astype("category")
 
     # IMPORTANTE: filtra só por Plano de Contas preenchido -- NÃO exige Linha
     # DRE preenchida, porque planos de contas "fora da DRE" (ex.: Mercadorias
@@ -2790,7 +2809,14 @@ def montar_composicao_diario(df_diario, loja, conta, mapa_meses):
         return {}
 
     composicao = {}
-    for plano, grupo in df_filtrado.groupby("Plano de Contas"):
+    # observed=True EXPLÍCITO: "Plano de Contas" é categoria, e o padrão do
+    # pandas para isso MUDOU entre versões -- no 2.x o laço rodava para TODAS
+    # as categorias, inclusive as que o filtro já tinha removido, gerando uma
+    # linha de zeros para cada plano ausente. No 3.x o padrão virou o certo.
+    # Deixar implícito é deixar o resultado depender da versão que estiver no
+    # servidor, que é o pior tipo de dependência: ela não aparece em teste
+    # nenhum e muda sozinha numa atualização.
+    for plano, grupo in df_filtrado.groupby("Plano de Contas", observed=True):
         composicao[plano] = [grupo.loc[grupo["Mês"] == m_col, "Valor Bruto"].sum() for m_col in mapa_meses.values()]
     return composicao
 
@@ -6676,7 +6702,9 @@ def _chave_numero_fin(serie):
 TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"]
 
 
-@st.cache_resource(ttl=300, max_entries=2, show_spinner="Preparando os dados do fluxo de caixa...")
+# max_entries=1: a base do fluxo tem centenas de milhares de linhas, e duas
+# delas na memória ao mesmo tempo é o que mais aproxima o app do limite.
+@st.cache_resource(ttl=300, max_entries=1, show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -8127,13 +8155,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # Primeiro os filtros de canal/modalidade sobre a base TODA: é
             # dela que sai o saldo inicial de cada dia, que precisa vir
             # acumulado desde o começo do ano. Só depois vem o recorte de datas.
-            df_d_completo = df_fin.copy()
+            # SEM .copy() aqui: era uma cópia da base inteira -- centenas de
+            # milhares de linhas -- que a primeira filtragem logo abaixo já
+            # substituía por um recorte novo. O pandas não altera o original
+            # numa filtragem por máscara, então a cópia só existia para ser
+            # jogada fora, e enquanto isso dobrava a memória do fluxo.
+            df_d_completo = df_fin
             if canal_sel_d != "Todos":
                 df_d_completo = df_d_completo[df_d_completo[COL_FIN_CANAL] == canal_sel_d]
             if modal_sel_d != "Todas":
                 df_d_completo = df_d_completo[df_d_completo[COL_FIN_MODALIDADE] == modal_sel_d]
             # Aplicações ficam fora, igual ao resto do painel
-            df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "aplicacao"]
+            # Esta filtragem SEMPRE roda e sempre devolve um objeto novo, então
+            # a coluna "DiaOrd" criada logo abaixo nunca toca a base original --
+            # que é o motivo pelo qual a cópia acima pôde sair.
+            df_d_completo = df_d_completo[df_d_completo["Tipo Movimento"] != "aplicacao"].copy()
             # A META também sai daqui: ela não é dinheiro, é alvo. Se ficasse,
             # entraria no saldo inicial de cada dia e no TOTAL GERAL, e o
             # caixa apareceria com um dinheiro que ainda nem existe. Ela volta
@@ -13705,7 +13741,8 @@ def _painel_dept_adm(ctx):
 
         linhas_planos, total_planos = [], 0.0
         if not bloco.empty:
-            somas = bloco.groupby("Plano de Contas")["Valor Bruto"].agg(["sum", "count"])
+            somas = bloco.groupby(
+                "Plano de Contas", observed=True)["Valor Bruto"].agg(["sum", "count"])
             somas = somas[somas["sum"] != 0].sort_values("sum", key=abs, ascending=False)
             total_planos = float(somas["sum"].sum())
             # Sem coluna de percentual aqui: o bloco mistura entrada e saída
