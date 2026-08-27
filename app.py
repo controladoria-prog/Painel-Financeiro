@@ -3135,6 +3135,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 font-weight:600; white-space:nowrap; max-width:150px;
                 overflow:hidden; text-overflow:ellipsis;
             }}
+            /* A linha de DETALHE tem fonte menor só no nome: ela já entra
+               recuada, então perde largura logo de saída, e é o único nome que
+               não cabia inteiro. Menor aqui é melhor que reticências -- a
+               conta chama "Serviços de Transporte", não "Serviços de Trans…". */
+            .tv-matriz td.rot.detalhe {{ font-size:10.5px; font-weight:500; }}
             .tv-matriz td.tot {{
                 background:rgba(255,255,255,0.035); font-weight:700;
                 border-left:1px solid {COLORS["border"]};
@@ -3497,12 +3502,16 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         ]
         fig_tv_desvio.add_trace(go.Bar(
             name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
-            marker=dict(color="rgba(163,174,191,0.14)",
+            # Barra SÓ DE CONTORNO, sem preenchimento: o orçado é a meta, não
+            # um resultado. O cinza preenchido de antes competia com o
+            # realizado -- pareciam duas medições do mesmo tipo. Vazada, ela lê
+            # como régua, que é o papel dela, e ecoa o tracejado da linha de
+            # meta usada no resto do painel.
+            marker=dict(color="rgba(0,0,0,0)",
                         line=dict(color=COLORS["muted_line"], width=1.5)),
-            # Rótulo SÓ no realizado: com os dois escritos, os números das duas
-            # barras ficavam encostados e um cobria o outro em todo mês em que
-            # elas chegam perto. O orçado continua no hover e na altura da
-            # barra, que é o que a comparação usa.
+            text=[formata_m(v) for v in eb_orc_m_tv], textposition="outside",
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+            cliponaxis=False,
             hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
         ))
         fig_tv_desvio.add_trace(go.Bar(
@@ -3518,13 +3527,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         # mês para mês; as barras são o par que o explica.
         fig_tv_desvio.add_trace(go.Scatter(
             name="Desvio", x=rot_m_tv, y=desvio_m_tv, yaxis="y2",
-            mode="lines+markers+text",
+            # SEM rótulo: com o orçado e o realizado escritos em cima das
+            # barras, a diferença se lê sozinha, e o terceiro número só
+            # disputava espaço com os outros dois. O valor exato continua no
+            # hover.
+            mode="lines+markers",
             line=dict(color=COLORS["warning"], width=2.4),
             marker=dict(size=8, color=cores_desvio_tv,
                         line=dict(color=COLORS["surface"], width=1.5)),
-            text=[formata_m(v) for v in desvio_m_tv], textposition="bottom center",
-            textfont=dict(size=10, color=COLORS["warning"]),
-            cliponaxis=False,
             hovertemplate="Desvio: %{y:,.0f}<extra></extra>",
         ))
         _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
@@ -3953,10 +3963,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                     _cels += (f'<td class="tot">{formata_m(_total_grp)}'
                               f'<span class="sec">{_pct_tot}</span></td>')
 
-                    _cor_rot = (f' style="padding-left:18px;color:{COLORS["text_muted"]};'
-                                'font-weight:500;"' if eh_detalhe else "")
+                    _classe_rot = "rot detalhe" if eh_detalhe else "rot"
+                    _cor_rot = (f' style="padding-left:14px;color:{COLORS["text_muted"]};"'
+                                if eh_detalhe else "")
                     linhas_despop.append(
-                        f'<tr><td class="rot"{_cor_rot} title="{nome_grp}">'
+                        f'<tr><td class="{_classe_rot}"{_cor_rot} title="{nome_grp}">'
                         f'{_prefixo}{nome_grp}</td>{_cels}</tr>')
                     continue
                 linhas_despop.append(
@@ -7956,17 +7967,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ]
                 fig_es.add_trace(go.Scatter(
                     name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
-                    mode="lines+markers+text", line=dict(color=COLORS["warning"], width=2.5),
+                    mode="lines+markers", line=dict(color=COLORS["warning"], width=2.5),
                     marker=dict(size=10, color=cores_pontos_sobra,
                                 line=dict(color=COLORS["bg"], width=2)),
-                    text=["" if pd.isna(v) else f"{v:.0f}%" for v in pct_sobra_grafico],
-                    # Rótulo à ESQUERDA do ponto, e não em cima: com dois
-                    # traçados no mesmo eixo, "top center" punha o número da
-                    # sobra em cima do ponto da liquidez em todo mês em que as
-                    # duas se cruzam.
-                    textposition="middle left",
-                    textfont=dict(size=10.5, color=COLORS["warning"]),
-                    cliponaxis=False,
+                    # Sem `text=` aqui: os rótulos das duas linhas viraram
+                    # ANOTAÇÕES com fundo, montadas depois. Texto de trace não
+                    # aceita cor de fundo, e sem fundo o número sumia sempre
+                    # que a linha passava por cima de uma barra.
                     hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
                 ))
                 # ÍNDICE DE LIQUIDEZ IMEDIATA, no mesmo eixo da direita.
@@ -7983,14 +7990,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ]
                 fig_es.add_trace(go.Scatter(
                     name="Liquidez imediata", x=rotulos_x_m, y=liquidez_grafico, yaxis="y2",
-                    mode="lines+markers+text", line=dict(color=COLORS["accent"], width=2.2,
+                    mode="lines+markers", line=dict(color=COLORS["accent"], width=2.2,
                                                     dash="dot"),
                     marker=dict(size=8, color=cores_pontos_liq,
                                 line=dict(color=COLORS["bg"], width=2)),
-                    text=["" if pd.isna(v) else f"{v:.0f}%" for v in liquidez_grafico],
-                    textposition="middle right",
-                    textfont=dict(size=10.5, color=COLORS["accent"]),
-                    cliponaxis=False,
+
                     hovertemplate="Liquidez: %{y:.1f}% acima da dívida<extra></extra>",
                 ))
                 fig_es.add_trace(go.Scatter(
@@ -7999,7 +8003,34 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     hoverinfo="skip",
                 ))
 
+                # RÓTULOS COMO ANOTAÇÕES, com fundo e afastamento.
+                #
+                # Duas decisões aqui. A primeira: fundo na cor do quadro, para
+                # o número continuar legível quando a linha cruza uma barra --
+                # foi o que escondia o "60%" de agosto atrás da barra rosa.
+                # A segunda: a sobra escreve EMBAIXO do ponto e a liquidez em
+                # CIMA, sempre. Assim as duas nunca se cobrem nos meses em que
+                # os traçados se cruzam, que é o caso de metade do ano.
+                anotacoes_pct = []
+                for _x, _v in zip(rotulos_x_m, pct_sobra_grafico):
+                    if pd.isna(_v):
+                        continue
+                    anotacoes_pct.append(dict(
+                        x=_x, y=_v, yref="y2", text=f"{_v:.0f}%", showarrow=False,
+                        yshift=-15, font=dict(size=10.5, color=COLORS["warning"]),
+                        bgcolor="rgba(19,24,38,0.88)", borderpad=2,
+                    ))
+                for _x, _v in zip(rotulos_x_m, liquidez_grafico):
+                    if pd.isna(_v):
+                        continue
+                    anotacoes_pct.append(dict(
+                        x=_x, y=_v, yref="y2", text=f"{_v:.0f}%", showarrow=False,
+                        yshift=15, font=dict(size=10.5, color=COLORS["accent"]),
+                        bgcolor="rgba(19,24,38,0.88)", borderpad=2,
+                    ))
+
                 teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1
+
                 # FAIXA DO EIXO DA DIREITA com trava (25/08/2026): um único mês
                 # fora da curva achatava o gráfico inteiro -- com novembro em
                 # -1643% de reserva, todos os outros meses viravam uma linha
@@ -8018,6 +8049,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ]
                 estilo_grafico(
                     fig_es, height=470, barmode="group", bargap=0.3, bargroupgap=0.08,
+                    annotations=anotacoes_pct,
                     xaxis=dict(gridcolor="rgba(0,0,0,0)", fixedrange=True, tickangle=-25,
                                automargin=True, tickfont=dict(size=10)),
                     yaxis=dict(

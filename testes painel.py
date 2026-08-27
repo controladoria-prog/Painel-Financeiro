@@ -1470,15 +1470,22 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         """Com dois tracados no mesmo eixo, "top center" punha o numero da
         sobra em cima do ponto da liquidez em todo mes em que as duas se
         cruzam."""
-        # Ancora COMPLETA: "% de sobra" aparece antes disso no texto de
-        # legenda, e o recorte caia no lugar errado.
-        i = FONTE.index('name="% de sobra", x=rotulos_x_m')
-        self.assertIn('textposition="middle left"', FONTE[i:i + 1100])
-        j = FONTE.index('name="Liquidez imediata", x=rotulos_x_m')
-        self.assertIn('textposition="middle right"', FONTE[j:j + 1100])
-        # E os dois com cliponaxis desligado, senao o rotulo da ponta some.
-        self.assertIn("cliponaxis=False", FONTE[i:i + 1100])
-        self.assertIn("cliponaxis=False", FONTE[j:j + 1100])
+        # Os rotulos viraram ANOTACOES com fundo: texto de trace nao aceita
+        # cor de fundo, e sem fundo o numero sumia sempre que a linha passava
+        # por cima de uma barra -- foi o que escondeu o "60%" de agosto.
+        self.assertIn("anotacoes_pct = []", FONTE)
+        # AS DUAS anotacoes precisam do fundo: cobrar so uma deixava a outra
+        # ser mutilada em silencio.
+        self.assertEqual(FONTE.count('bgcolor="rgba(19,24,38,0.88)"'), 2,
+                         "algum rotulo perdeu o fundo e volta a sumir atras da barra")
+        self.assertIn("annotations=anotacoes_pct", FONTE,
+                      "as anotacoes foram montadas mas nao entram no grafico")
+        # Sobra EMBAIXO do ponto, liquidez em CIMA: assim as duas nunca se
+        # cobrem nos meses em que os tracados se cruzam.
+        i = FONTE.index("for _x, _v in zip(rotulos_x_m, pct_sobra_grafico):")
+        self.assertIn("yshift=-15", FONTE[i:i + 500])
+        j = FONTE.index("for _x, _v in zip(rotulos_x_m, liquidez_grafico):")
+        self.assertIn("yshift=15", FONTE[j:j + 500])
 
 
     def test_a_liquidez_nao_repete_a_conta_da_sobra(self):
@@ -1796,10 +1803,13 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("range=faixa_pct,", FONTE)
         self.assertNotIn("range=[0, max(60, teto_pct * 1.4)]", FONTE,
                          "a faixa sem trava voltou")
-        # E o ausente nao pode quebrar a cor nem o rotulo dos pontos.
+        # E o ausente nao pode quebrar a cor nem o rotulo dos pontos. O
+        # rotulo virou ANOTACAO, entao o mes sem resposta e pulado no laco em
+        # vez de virar texto vazio.
         self.assertIn("COLORS[\"negative\"] if (pd.isna(v) or v < 30)", FONTE)
-        self.assertIn('text=["" if pd.isna(v) else f"{v:.0f}%" for v in pct_sobra_grafico]',
-                      FONTE)
+        i = FONTE.index("for _x, _v in zip(rotulos_x_m, pct_sobra_grafico):")
+        self.assertIn("if pd.isna(_v):", FONTE[i:i + 200],
+                      "mes sem resposta voltaria a escrever um rotulo vazio")
 
     def test_disponivel_nunca_fica_negativo(self):
         """Mes que fecha no vermelho nao entrega caixa negativo ao seguinte:
@@ -5614,6 +5624,16 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn('_pct_m = (f"{_v_m / _base_pai * 100:.0f}% do grupo"', b)
 
 
+    def test_o_nome_do_detalhe_tem_fonte_propria(self):
+        """A linha de detalhe ja entra recuada, entao perde largura logo de
+        saida, e era o unico nome que nao cabia inteiro. Menor e melhor que
+        reticencias: a conta chama "Servicos de Transporte", nao
+        "Servicos de Trans..."."""
+        b = self._bloco_tv()
+        self.assertIn(".tv-matriz td.rot.detalhe {{ font-size:10.5px", b)
+        self.assertIn('_classe_rot = "rot detalhe" if eh_detalhe else "rot"', b)
+
+
     def test_a_tabela_mensal_mostra_o_peso_do_grupo(self):
         """No mes a mes a linha do detalhe nao dizia quanto ela representa do
         grupo -- a informacao existia so no consolidado."""
@@ -5670,6 +5690,22 @@ class TestePainelTV(unittest.TestCase):
         # preciso conferir o desvio para saber se o mes foi bom.
         self.assertIn("_preenche_real = [", trecho)
         self.assertIn("line=dict(color=cores_desvio_tv, width=1.6)", trecho)
+        # O ORCADO e barra so de CONTORNO: o cinza preenchido competia com o
+        # realizado, e os dois pareciam duas medicoes do mesmo tipo. Vazada,
+        # ela le como regua.
+        i_orc2 = trecho.index('name="Orçado"')
+        # Janela larga: o comentario que explica a escolha fica entre a
+        # ancora e o codigo, e uma janela curta parava antes dele.
+        self.assertIn('color="rgba(0,0,0,0)"', trecho[i_orc2:i_orc2 + 800],
+                      "o orcado voltou a ser barra preenchida")
+        # E ele MOSTRA o valor: e por ele que se compara.
+        self.assertIn("text=[formata_m(v) for v in eb_orc_m_tv]", trecho)
+        # O desvio perde o rotulo: com os dois valores escritos, a diferenca
+        # se le sozinha e o terceiro numero so disputava espaco.
+        i_dev = trecho.index('name="Desvio"')
+        self.assertNotIn("text=[formata_m(v) for v in desvio_m_tv]",
+                         trecho[i_dev:i_dev + 500],
+                         "o rotulo do desvio voltou e disputa espaco")
         self.assertIn('name="Desvio"', trecho, "o desvio deixou de ser uma linha")
         self.assertIn('yaxis="y2"', trecho)
         # Legenda EMBAIXO, como no grafico da Reserva de Caixa.
