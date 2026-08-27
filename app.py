@@ -3502,15 +3502,13 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
         ]
         fig_tv_desvio.add_trace(go.Bar(
             name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
-            # Barra SÓ DE CONTORNO, sem preenchimento: o orçado é a meta, não
-            # um resultado. O cinza preenchido de antes competia com o
-            # realizado -- pareciam duas medições do mesmo tipo. Vazada, ela lê
-            # como régua, que é o papel dela, e ecoa o tracejado da linha de
-            # meta usada no resto do painel.
-            marker=dict(color="rgba(0,0,0,0)",
-                        line=dict(color=COLORS["muted_line"], width=1.5)),
+            # Azul da casa, no mesmo tratamento das barras do Fluxo de Caixa:
+            # preenchimento fraco e contorno firme. O cinza de antes não era
+            # cor da paleta, e por isso a barra parecia de outro painel.
+            marker=dict(color="rgba(107,158,230,0.16)",
+                        line=dict(color=COLORS["primary"], width=1.6)),
             text=[formata_m(v) for v in eb_orc_m_tv], textposition="outside",
-            textfont=dict(size=10, color=COLORS["text_muted"]),
+            textfont=dict(size=10, color=COLORS["primary"]),
             cliponaxis=False,
             hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
         ))
@@ -3523,22 +3521,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             cliponaxis=False,
             hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
         ))
-        # O DESVIO é a linha, no eixo da direita -- é ele que se acompanha de
-        # mês para mês; as barras são o par que o explica.
-        fig_tv_desvio.add_trace(go.Scatter(
-            name="Desvio", x=rot_m_tv, y=desvio_m_tv, yaxis="y2",
-            # SEM rótulo: com o orçado e o realizado escritos em cima das
-            # barras, a diferença se lê sozinha, e o terceiro número só
-            # disputava espaço com os outros dois. O valor exato continua no
-            # hover.
-            mode="lines+markers",
-            line=dict(color=COLORS["warning"], width=2.4),
-            marker=dict(size=8, color=cores_desvio_tv,
-                        line=dict(color=COLORS["surface"], width=1.5)),
-            hovertemplate="Desvio: %{y:,.0f}<extra></extra>",
-        ))
+        # A linha do DESVIO saiu (27/08/2026): com o orçado e o realizado
+        # escritos em cima das barras, a diferença já se lê pela distância
+        # entre elas, e a linha só cruzava o desenho por cima das duas.
         _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
-        _faixa_desvio = max([abs(v) for v in desvio_m_tv] or [1])
         estilo_grafico(
             fig_tv_desvio, height=268,
             margin=dict(l=20, r=20, t=24, b=54),
@@ -3548,12 +3534,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
                        zeroline=True, zerolinecolor=COLORS["border"], zerolinewidth=1,
                        range=[0, _teto_desvio * 1.26]),
-            # Eixo da direita com folga generosa: a linha do desvio precisa
-            # caber EMBAIXO das barras, e o rótulo dela embaixo da linha, sem
-            # nada disso cruzar por cima do que já está desenhado.
-            yaxis2=dict(overlaying="y", side="right", showgrid=False,
-                        showticklabels=False, fixedrange=True, zeroline=False,
-                        range=[-_faixa_desvio * 2.2, _faixa_desvio * 6.2]),
+
             showlegend=True,
             legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center",
                         x=0.5, font=dict(size=10.5), bgcolor="rgba(0,0,0,0)"),
@@ -8018,7 +7999,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     anotacoes_pct.append(dict(
                         x=_x, y=_v, yref="y2", text=f"{_v:.0f}%", showarrow=False,
                         yshift=-15, font=dict(size=10.5, color=COLORS["warning"]),
-                        bgcolor="rgba(19,24,38,0.88)", borderpad=2,
+                        bgcolor="rgba(36,44,60,0.82)", borderpad=3,
                     ))
                 for _x, _v in zip(rotulos_x_m, liquidez_grafico):
                     if pd.isna(_v):
@@ -8026,7 +8007,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     anotacoes_pct.append(dict(
                         x=_x, y=_v, yref="y2", text=f"{_v:.0f}%", showarrow=False,
                         yshift=15, font=dict(size=10.5, color=COLORS["accent"]),
-                        bgcolor="rgba(19,24,38,0.88)", borderpad=2,
+                        bgcolor="rgba(36,44,60,0.82)", borderpad=3,
                     ))
 
                 teto_barras = max(valores_entrada + valores_saida) if (valores_entrada + valores_saida) else 1

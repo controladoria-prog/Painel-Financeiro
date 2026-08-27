@@ -1476,7 +1476,7 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("anotacoes_pct = []", FONTE)
         # AS DUAS anotacoes precisam do fundo: cobrar so uma deixava a outra
         # ser mutilada em silencio.
-        self.assertEqual(FONTE.count('bgcolor="rgba(19,24,38,0.88)"'), 2,
+        self.assertEqual(FONTE.count('bgcolor="rgba(36,44,60,0.82)"'), 2,
                          "algum rotulo perdeu o fundo e volta a sumir atras da barra")
         self.assertIn("annotations=anotacoes_pct", FONTE,
                       "as anotacoes foram montadas mas nao entram no grafico")
@@ -5664,50 +5664,33 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn("0.06 + (_pct_num / _teto_calor)", b)
 
 
-    def test_o_grafico_de_desvio_mostra_os_tres_numeros(self):
+    def test_o_grafico_compara_realizado_e_orcado(self):
         """Antes mostrava SO o desvio: uma barra vermelha de R$ -0,8M sem dizer
         se era 0,8 sobre 1,5 (metade da meta perdida) ou 0,8 sobre 20 (um
-        arranhao). Realizado, orcado e a diferenca sao a leitura que se faz
-        numa reuniao."""
+        arranhao). Com as duas barras lado a lado e os dois valores escritos, a
+        diferenca se le pela distancia entre elas -- e por isso a LINHA de
+        desvio saiu: ela so cruzava o desenho por cima das duas."""
         b = self._bloco_tv()
         i = b.index("eb_real_m_tv, eb_orc_m_tv, desvio_m_tv")
         trecho = b[i:b.index("st.plotly_chart(fig_tv_desvio", i)]
         self.assertIn('name="Orçado"', trecho)
         self.assertIn('name="Realizado"', trecho)
-        # O orcado fica VAZADO: barra cheia nas duas faria a vista disputar
-        # qual das duas e o real. A checagem e DENTRO do trace do orcado --
-        # procurar no bloco todo achava a cor transparente noutro grafico.
-        i_orc = trecho.index('name="Orçado"')
-        # MESMO desenho do grafico "Entradas x Saidas" do Fluxo: barras
-        # vazadas com contorno, linha no eixo da direita e legenda embaixo. As
-        # duas tentativas anteriores falharam por inventar um desenho que nao
-        # existia em nenhum outro lugar do painel.
         self.assertIn('barmode="group"', trecho, "as barras voltaram a se sobrepor")
-        self.assertIn('line=dict(color=COLORS["muted_line"], width=1.5)', trecho,
-                      "o orcado deixou de ser barra vazada com contorno")
+        self.assertNotIn('name="Desvio"', trecho, "a linha de desvio voltou")
+        self.assertNotIn("yaxis2=", trecho,
+                         "sem a linha de desvio nao ha o que por no eixo da direita")
+        # O ORCADO usa o AZUL da paleta: o cinza de antes nao era cor da casa,
+        # e a barra parecia de outro painel.
+        i_orc = trecho.index('name="Orçado"')
+        self.assertIn('line=dict(color=COLORS["primary"], width=1.6)',
+                      trecho[i_orc:i_orc + 800],
+                      "o orcado deixou de usar o azul da paleta")
+        self.assertIn("text=[formata_m(v) for v in eb_orc_m_tv]", trecho,
+                      "o orcado precisa mostrar o valor: e por ele que se compara")
         # O REALIZADO sai verde ou vermelho conforme bate a meta -- mesma
-        # convencao dos cartoes de KPI e da tabela de reserva. Sem isso e
-        # preciso conferir o desvio para saber se o mes foi bom.
+        # convencao dos cartoes de KPI e da tabela de reserva.
         self.assertIn("_preenche_real = [", trecho)
         self.assertIn("line=dict(color=cores_desvio_tv, width=1.6)", trecho)
-        # O ORCADO e barra so de CONTORNO: o cinza preenchido competia com o
-        # realizado, e os dois pareciam duas medicoes do mesmo tipo. Vazada,
-        # ela le como regua.
-        i_orc2 = trecho.index('name="Orçado"')
-        # Janela larga: o comentario que explica a escolha fica entre a
-        # ancora e o codigo, e uma janela curta parava antes dele.
-        self.assertIn('color="rgba(0,0,0,0)"', trecho[i_orc2:i_orc2 + 800],
-                      "o orcado voltou a ser barra preenchida")
-        # E ele MOSTRA o valor: e por ele que se compara.
-        self.assertIn("text=[formata_m(v) for v in eb_orc_m_tv]", trecho)
-        # O desvio perde o rotulo: com os dois valores escritos, a diferenca
-        # se le sozinha e o terceiro numero so disputava espaco.
-        i_dev = trecho.index('name="Desvio"')
-        self.assertNotIn("text=[formata_m(v) for v in desvio_m_tv]",
-                         trecho[i_dev:i_dev + 500],
-                         "o rotulo do desvio voltou e disputa espaco")
-        self.assertIn('name="Desvio"', trecho, "o desvio deixou de ser uma linha")
-        self.assertIn('yaxis="y2"', trecho)
         # Legenda EMBAIXO, como no grafico da Reserva de Caixa.
         self.assertIn('yanchor="top", y=-0.16', trecho)
 
