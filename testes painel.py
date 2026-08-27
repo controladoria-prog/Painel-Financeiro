@@ -5706,16 +5706,23 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn(".tv-matriz-fixa td.calor {{ position:relative; z-index:1; }}",
                       FONTE, "a celula de calor pode voltar a passar por cima")
 
-    def test_so_a_tabela_de_grupos_trava_a_coluna(self):
-        """A tabela do detalhamento de despesas usa a MESMA classe tv-matriz e
-        nao deve travar nada -- por isso a trava mora numa classe propria."""
-        self.assertEqual(FONTE.count('class="tv-matriz tv-matriz-fixa"'), 1)
-        # A do detalhamento continua sem a classe.
-        i = FONTE.index("def _corpo_despesas_tv(")
-        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn('class="tv-matriz"', corpo)
-        self.assertNotIn("tv-matriz-fixa", corpo,
-                         "a trava vazou para a tabela do detalhamento")
+    def test_a_trava_da_coluna_e_uma_escolha_por_tabela(self):
+        """A trava mora numa CLASSE propria, e nao na tv-matriz: assim cada
+        tabela decide se quer a primeira coluna parada. Duas querem -- a de
+        grupos por mes e a de aluguel por loja, que tambem rola para o lado --
+        e qualquer outra que nasca depois comeca sem a trava, que e o padrao
+        certo para tabela estreita."""
+        # A classe existe e e aplicada de propósito, tabela a tabela.
+        self.assertIn(".tv-matriz-fixa td.rot", FONTE)
+        aplicacoes = FONTE.count('class="tv-matriz tv-matriz-fixa"')
+        self.assertEqual(aplicacoes, 2,
+                         "tabelas com a coluna travada: grupos por mes e aluguel por loja")
+        # A trava NAO pode estar na regra geral: se .tv-matriz td.rot virasse
+        # sticky, toda tabela nova nasceria com a coluna parada, inclusive as
+        # estreitas que nem rolam -- e ali a coluna travada so atrapalha.
+        i = FONTE.index(".tv-matriz td.rot, .tv-matriz th.rot {{")
+        self.assertNotIn("position:sticky", FONTE[i:i + 400],
+                         "a trava vazou para a regra geral da tv-matriz")
 
 
     def test_a_tabela_mensal_mostra_o_peso_do_grupo(self):
@@ -6074,6 +6081,69 @@ class TesteTelaDaRamificacao(unittest.TestCase):
 
     def test_o_foco_vem_da_url(self):
         self.assertIn('foco=str(st.query_params.get("foco") or "geral")', FONTE)
+
+    def test_o_voltar_fica_no_topo(self):
+        """No rodape, quem rolava ate o fim da tela precisava subir tudo de
+        novo para sair dela."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("voltar ao painel executivo", corpo)
+        # UMA vez no arquivo inteiro. Um replace meu casou em DOIS lugares e
+        # injetou o link no meio do painel geral, onde nao faz sentido nenhum:
+        # "voltar ao painel executivo" estando JA no painel executivo.
+        self.assertEqual(FONTE.count("voltar ao painel executivo"), 1,
+                         "o link de voltar apareceu fora da ramificacao")
+        # ANTES de qualquer bloco de conteudo.
+        self.assertLess(corpo.index("voltar ao painel executivo"),
+                        corpo.index("render_kpi_row("),
+                        "o voltar desceu de novo para o rodape")
+
+    def test_a_tela_de_despesas_foi_enxugada(self):
+        """Dois blocos saíram: o mapa de calor de subgrupo por mes e a lista de
+        contas que saltaram contra a propria media. Cada um fazia uma busca por
+        conta POR MES, com dezenas de contas -- eram os mais caros da tela, e a
+        mesma conversa se faz olhando a coluna de desvio da arvore."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertNotIn("ofensores_por_salto(", corpo,
+                         "a lista de saltos voltou e com ela o custo dela")
+        self.assertNotIn("Subgrupo por mês", corpo)
+
+    def test_o_aluguel_e_medido_contra_o_faturamento_da_propria_loja(self):
+        """Aluguel caro em reais pode ser barato para quem vende muito, e
+        barato em reais pode sufocar quem vende pouco. So o percentual sobre o
+        proprio faturamento compara lojas de tamanhos diferentes."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("Aluguel sobre o faturamento", corpo)
+        self.assertIn('"pct": (aluguel / receita * 100) if receita else None', corpo,
+                      "loja sem receita nao pode virar divisao por zero")
+        # A regua e a media DA REDE, nao uma meta de fora.
+        self.assertIn("media_rede", corpo)
+        self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
+        # As linhas de aluguel sao DESCOBERTAS pelo nome, nao cravadas: o
+        # aluguel pode estar quebrado em mais de uma linha da DRE.
+        self.assertIn('"aluguel" in _normalizar_coluna_fin(str(l))', corpo)
+
+    def test_o_aluguel_tem_a_visao_mes_a_mes(self):
+        i = FONTE.index("Aluguel sobre o faturamento")
+        trecho = FONTE[i:FONTE.index("\ndef ", i)]
+        self.assertIn("if por_mes and len(meses_ativos) > 1:", trecho)
+        # Mes sem receita fica com um traco: dividir por zero daria um
+        # percentual que nao existe, e numero inventado em tela de parede vira
+        # decisao.
+        self.assertIn("if not rec_m:", trecho)
+
+    def test_a_loja_sem_percentual_vai_para_o_fim(self):
+        """Modelo da ordenacao: quem esta sufocando o resultado aparece
+        primeiro, e a loja sem receita nao pode ocupar o topo com um traco."""
+        registros = [{"loja": "sem receita", "pct": None},
+                     {"loja": "aperta", "pct": 9.0},
+                     {"loja": "folgada", "pct": 2.0}]
+        registros.sort(key=lambda r: (r["pct"] is None, -(r["pct"] or 0)))
+        self.assertEqual([r["loja"] for r in registros],
+                         ["aperta", "folgada", "sem receita"])
+
 
     def test_a_ramificacao_cobre_os_dois_grupos(self):
         self.assertIn('("6", "6 - Despesas Variáveis")', FONTE)
