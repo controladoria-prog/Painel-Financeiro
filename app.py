@@ -3475,57 +3475,60 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
             eb_orc_m_tv.append(eb_orc_m)
             desvio_m_tv.append(d)
             cores_desvio_tv.append(COLORS["positive"] if d >= 0 else COLORS["negative"])
+        # MESMO desenho do gráfico "Entradas x Saídas" do Fluxo de Caixa:
+        # barras vazadas com contorno colorido, linha por cima no eixo da
+        # direita e legenda embaixo. Já é a linguagem visual da casa, e as
+        # duas tentativas anteriores (barra vazada sobreposta, depois marca de
+        # alvo) falharam justamente por inventar um desenho que não existia em
+        # nenhum outro lugar do painel.
         fig_tv_desvio = go.Figure()
-        # A barra é o REALIZADO; o orçado é um traço de alvo em cima dela.
-        #
-        # A versão anterior desenhava o orçado como uma segunda barra vazada
-        # sobreposta, e o resultado foi uma caixa branca flutuando em volta da
-        # barra rosa -- não parecia nem do mesmo painel. Barra com marca de
-        # alvo é o desenho clássico para "resultado contra meta": a barra
-        # cresce, a marca fica parada, e a distância entre as duas é o desvio,
-        # que a vista lê sem precisar de legenda.
         fig_tv_desvio.add_trace(go.Bar(
-            name="Realizado", x=rot_m_tv, y=eb_real_m_tv,
-            marker=dict(color=cores_desvio_tv, line=dict(width=0)),
-            width=0.52,
-            hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
-        ))
-        fig_tv_desvio.add_trace(go.Scatter(
-            name="Orçado", x=rot_m_tv, y=eb_orc_m_tv, mode="markers",
-            marker=dict(symbol="line-ew", size=30,
-                        line=dict(color=COLORS["text"], width=2.5)),
+            name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
+            marker=dict(color="rgba(163,174,191,0.16)",
+                        line=dict(color=COLORS["muted_line"], width=1.6)),
+            text=[formata_m(v) for v in eb_orc_m_tv], textposition="outside",
+            textfont=dict(size=10, color=COLORS["text_muted"]),
             hovertemplate="Orçado: %{y:,.0f}<extra></extra>",
         ))
-        # Realizado escrito DENTRO da barra e desvio embaixo do eixo: dois
-        # rótulos fora da barra brigavam por espaço e um cobria o outro.
-        fig_tv_desvio.add_trace(go.Scatter(
-            x=rot_m_tv, y=[v / 2 for v in eb_real_m_tv], mode="text",
-            text=[formata_m(v) for v in eb_real_m_tv],
-            textfont=dict(size=11, color="#FFFFFF"),
-            showlegend=False, hoverinfo="skip",
+        fig_tv_desvio.add_trace(go.Bar(
+            name="Realizado", x=rot_m_tv, y=eb_real_m_tv,
+            marker=dict(color="rgba(107,158,230,0.18)",
+                        line=dict(color=COLORS["primary"], width=1.6)),
+            text=[formata_m(v) for v in eb_real_m_tv], textposition="outside",
+            textfont=dict(size=10, color=COLORS["text"]),
+            hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
         ))
+        # O DESVIO é a linha, no eixo da direita -- é ele que se acompanha de
+        # mês para mês; as barras são o par que o explica.
         fig_tv_desvio.add_trace(go.Scatter(
-            x=rot_m_tv, y=[0] * len(rot_m_tv), mode="text",
-            text=[f"{'▲' if d >= 0 else '▼'} {formata_m(d)}" for d in desvio_m_tv],
-            textposition="bottom center",
-            textfont=dict(size=10.5, color=COLORS["text_muted"]),
-            showlegend=False, hoverinfo="skip",
+            name="Desvio", x=rot_m_tv, y=desvio_m_tv, yaxis="y2",
+            mode="lines+markers+text",
+            line=dict(color=COLORS["warning"], width=2.4),
+            marker=dict(size=8, color=cores_desvio_tv,
+                        line=dict(color=COLORS["surface"], width=1.5)),
+            text=[formata_m(v) for v in desvio_m_tv], textposition="bottom center",
+            textfont=dict(size=10, color=COLORS["text_muted"]),
+            hovertemplate="Desvio: %{y:,.0f}<extra></extra>",
         ))
         _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
+        _faixa_desvio = max([abs(v) for v in desvio_m_tv] or [1])
         estilo_grafico(
             fig_tv_desvio, height=268,
-            margin=dict(l=20, r=20, t=26, b=30),
-            bargap=0.42,
+            margin=dict(l=20, r=20, t=24, b=54),
+            barmode="group", bargap=0.34, bargroupgap=0.08,
             xaxis=dict(showgrid=False, fixedrange=True,
                        tickfont=dict(size=12, color=COLORS["text_muted"])),
-            # Faixa negativa reservada de propósito: é ali que o texto do
-            # desvio é escrito, e sem ela ele sairia por baixo do quadro.
             yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
                        zeroline=True, zerolinecolor=COLORS["border"], zerolinewidth=1,
-                       range=[-_teto_desvio * 0.30, _teto_desvio * 1.16]),
+                       range=[0, _teto_desvio * 1.20]),
+            # Eixo da direita com folga generosa: a linha do desvio precisa
+            # caber embaixo das barras sem cruzar por cima delas.
+            yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                        showticklabels=False, fixedrange=True, zeroline=False,
+                        range=[-_faixa_desvio * 1.6, _faixa_desvio * 7.0]),
             showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right",
-                        x=1, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+            legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center",
+                        x=0.5, font=dict(size=10.5), bgcolor="rgba(0,0,0,0)"),
         )
         st.plotly_chart(fig_tv_desvio, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
@@ -3821,14 +3824,18 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 _cab_grp = "".join(f"<th>{_m.capitalize()[:3]}</th>"
                                    for _m in meses_ativos_tv)
                 linhas_despop.append(
-                    '<table class="tv-matriz">'
+                    # Rolagem PRÓPRIA: com 12 meses escolhidos a tabela é mais
+                    # larga que a coluna, e sem isto ela escreve por cima do
+                    # bloco vizinho em vez de rolar.
+                    '<div style="overflow-x:auto;">'
+                    '<table class="tv-matriz" style="min-width:100%;">'
                     f'<thead><tr><th class="rot">Grupo</th>{_cab_grp}'
-                    '<th class="tot">Período</th>'
-                    # Coluna própria para o peso dentro do bloco: no
-                    # consolidado ele fica ao lado do valor, mas aqui a linha
-                    # já tem uma coluna por mês e não sobra espaço para
-                    # pendurar mais nada na mesma célula.
-                    '<th class="tot">Peso</th></tr></thead><tbody>'
+                    # A coluna PESO saiu: com 12 meses eram 15 colunas, e a
+                    # tabela transbordava POR CIMA da coluna vizinha -- os
+                    # números dela apareciam escritos em cima dos cartões de
+                    # composição. Cada mês já traz o peso na própria célula, e
+                    # a coluna Período traz o do período.
+                    '<th class="tot">Período</th></tr></thead><tbody>'
                 )
             for nome_grp, v_grp, eh_detalhe, linha_grp, v_pai, _linha_pai_grp in ranque_despop:
                 # O DETALHE se mede contra o PAI, não contra o total. Ele já
@@ -3914,23 +3921,20 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                             f'<span class="sec">{_pct_m}</span></td>')
 
                     _total_grp = sum(_vals_m)
-                    _pct_tot = (f"{_total_grp / _rec_liq_t * 100:.1f}%".replace(".", ",")
+                    _pct_tot = (f"{_total_grp / _rec_liq_t * 100:.1f}% rec".replace(".", ",")
                                 if _rec_liq_t else "—")
-                    _cels += (f'<td class="tot">{formata_m(_total_grp)}'
-                              f'<span class="sec">{_pct_tot} rec.</span></td>')
-                    # O DETALHE mede-se contra o PAI; o grupo, contra o total
-                    # das despesas operacionais. São perguntas diferentes, e
-                    # misturar as duas na mesma coluna faria a soma da coluna
-                    # passar de 100%.
+                    # O peso do período mora aqui agora, junto do valor, na
+                    # mesma forma das células de mês.
                     if eh_detalhe:
-                        _peso = (_total_grp / v_pai * 100) if v_pai else 0
-                        _rot_peso = "do grupo"
+                        _peso_t = ((_total_grp / v_pai * 100) if v_pai else 0)
+                        _pct_tot = f"{_peso_t:.0f}% do grupo"
                     else:
-                        _peso = ((_total_grp / desp_op_tv_kpi * 100)
-                                 if desp_op_tv_kpi else 0)
-                        _rot_peso = "do bloco"
-                    _cels += (f'<td class="tot">{_peso:.0f}%'
-                              f'<span class="sec">{_rot_peso}</span></td>')
+                        _peso_t = ((_total_grp / desp_op_tv_kpi * 100)
+                                   if desp_op_tv_kpi else 0)
+                        _pct_tot = f"{_peso_t:.0f}% · {_pct_tot}"
+                    _cels += (f'<td class="tot">{formata_m(_total_grp)}'
+                              f'<span class="sec">{_pct_tot}</span></td>')
+
                     _cor_rot = (f' style="padding-left:18px;color:{COLORS["text_muted"]};'
                                 'font-weight:500;"' if eh_detalhe else "")
                     linhas_despop.append(
@@ -3975,7 +3979,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis):
                 )
             if _abrir_por_mes_tv:
                 linhas_despop.append(
-                    "</tbody></table>"
+                    "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
                     "Em cada célula: <b>peso nas despesas operacionais do mês</b> · "
@@ -7942,6 +7946,26 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     textposition="top center", textfont=dict(size=10, color=COLORS["text"]),
                     hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
                 ))
+                # ÍNDICE DE LIQUIDEZ IMEDIATA, no mesmo eixo da direita.
+                # Tracejado de propósito, e não linha cheia: ele divide pela
+                # DÍVIDA enquanto a laranja divide pelo disponível. Com dois
+                # traços iguais no mesmo eixo, quem olha de longe somaria as
+                # duas leituras numa só -- e elas respondem coisas diferentes,
+                # ainda que batam a mesma meta de 30%.
+                liquidez_grafico = [float(serie_liquidez[c]) for c in rotulos_x_m]
+                cores_pontos_liq = [
+                    COLORS["negative"] if (pd.isna(v) or v < META_RESERVA_PADRAO)
+                    else COLORS["positive"]
+                    for v in liquidez_grafico
+                ]
+                fig_es.add_trace(go.Scatter(
+                    name="Liquidez imediata", x=rotulos_x_m, y=liquidez_grafico, yaxis="y2",
+                    mode="lines+markers", line=dict(color=COLORS["accent"], width=2.2,
+                                                    dash="dot"),
+                    marker=dict(size=8, color=cores_pontos_liq,
+                                line=dict(color=COLORS["bg"], width=2)),
+                    hovertemplate="Liquidez: %{y:.1f}% acima da dívida<extra></extra>",
+                ))
                 fig_es.add_trace(go.Scatter(
                     name="Meta 30%", x=rotulos_x_m, y=[30] * len(rotulos_x_m), yaxis="y2",
                     mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
@@ -7957,7 +7981,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # abre mais que LIMITE_EIXO_PCT_SOBRA para cada lado; o mês que
                 # estourar sai fora do desenho, mas o número dele continua
                 # escrito ao lado do ponto e no hover.
-                pct_com_resposta = [v for v in pct_sobra_grafico if not pd.isna(v)]
+                pct_com_resposta = [v for v in (pct_sobra_grafico + liquidez_grafico)
+                                    if not pd.isna(v)]
                 piso_pct = min(pct_com_resposta) if pct_com_resposta else 0
                 teto_pct = max(pct_com_resposta) if pct_com_resposta else 60
                 faixa_pct = [

@@ -1439,6 +1439,24 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("LINHA_PCT_SOBRA, LINHA_LIQUIDEZ]", FONTE,
                       "a linha nao entra no indice da tabela")
 
+    def test_a_liquidez_entra_no_grafico_da_reserva(self):
+        """A linha existia so na tabela. No grafico ela e tracejada de
+        proposito: divide pela DIVIDA enquanto a laranja divide pelo
+        disponivel, e dois tracos iguais no mesmo eixo fariam quem olha de
+        longe somar as duas leituras numa so."""
+        self.assertIn('name="Liquidez imediata"', FONTE)
+        self.assertIn("liquidez_grafico = [float(serie_liquidez[c]) for c in rotulos_x_m]",
+                      FONTE)
+        i = FONTE.index('name="Liquidez imediata"')
+        self.assertIn('dash="dot"', FONTE[i:i + 400],
+                      "a linha de liquidez ficou igual a de sobra")
+        # E a faixa do eixo tem de considerar as DUAS linhas, senao a de
+        # liquidez sai do desenho nos meses em que ela e mais alta.
+        self.assertIn("pct_sobra_grafico + liquidez_grafico", FONTE)
+        # Cobrada contra a MESMA meta.
+        self.assertIn("v < META_RESERVA_PADRAO", FONTE)
+
+
     def test_a_liquidez_nao_repete_a_conta_da_sobra(self):
         """As duas chegam a 30% na meta, mas dividem por coisas diferentes: a
         de cima pelo DISPONIVEL, a de baixo pela DIVIDA. Modelo da conta."""
@@ -1748,7 +1766,7 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
             self.assertLessEqual(faixa[1], limite)
             self.assertEqual(piso >= faixa[0], esperado_dentro)
         # Mes sem resposta nao pode entrar na conta da faixa.
-        self.assertIn("pct_com_resposta = [v for v in pct_sobra_grafico if not pd.isna(v)]",
+        self.assertIn("pct_com_resposta = [v for v in (pct_sobra_grafico + liquidez_grafico)",
                       FONTE)
         self.assertIn("LIMITE_EIXO_PCT_SOBRA = 150", FONTE)
         self.assertIn("range=faixa_pct,", FONTE)
@@ -5576,9 +5594,15 @@ class TestePainelTV(unittest.TestCase):
         """No mes a mes a linha do detalhe nao dizia quanto ela representa do
         grupo -- a informacao existia so no consolidado."""
         b = self._bloco_tv()
-        self.assertIn('<th class="tot">Peso</th>', b)
-        self.assertIn('_rot_peso = "do grupo"', b)
-        self.assertIn('_rot_peso = "do bloco"', b)
+        # A coluna PESO saiu: com 12 meses eram 15 colunas e a tabela
+        # transbordava POR CIMA da coluna vizinha. O peso mora nas celulas.
+        self.assertNotIn('<th class="tot">Peso</th>', b,
+                         "a coluna Peso voltou e a tabela transborda de novo")
+        self.assertIn('_pct_tot = f"{_peso_t:.0f}% do grupo"', b)
+        self.assertIn('_pct_tot = f"{_peso_t:.0f}% · {_pct_tot}"', b)
+        # E a tabela ganha rolagem propria, para nunca escrever por cima do
+        # bloco vizinho.
+        self.assertIn("'<div style=\"overflow-x:auto;\">'", b)
 
     def test_o_titulo_dos_grupos_aparece_uma_vez_so(self):
         """O bloco muda de coluna conforme o modo, e o titulo viaja junto. O
@@ -5610,15 +5634,17 @@ class TestePainelTV(unittest.TestCase):
         # qual das duas e o real. A checagem e DENTRO do trace do orcado --
         # procurar no bloco todo achava a cor transparente noutro grafico.
         i_orc = trecho.index('name="Orçado"')
-        # O orcado virou MARCA DE ALVO, nao mais barra vazada sobreposta: a
-        # caixa branca em volta da barra rosa nao parecia nem do mesmo painel.
-        self.assertIn('symbol="line-ew"', trecho[i_orc:i_orc + 300],
-                      "o orcado deixou de ser marca de alvo")
-        # E o desvio vai escrito, nao como terceira barra.
-        self.assertIn('mode="text"', trecho)
-        self.assertIn("formata_m(d)", trecho)
-        # Faixa negativa reservada: e ali que o texto do desvio e escrito.
-        self.assertIn("range=[-_teto_desvio * 0.30", trecho)
+        # MESMO desenho do grafico "Entradas x Saidas" do Fluxo: barras
+        # vazadas com contorno, linha no eixo da direita e legenda embaixo. As
+        # duas tentativas anteriores falharam por inventar um desenho que nao
+        # existia em nenhum outro lugar do painel.
+        self.assertIn('barmode="group"', trecho, "as barras voltaram a se sobrepor")
+        self.assertIn("line=dict(color=COLORS[\"muted_line\"], width=1.6)", trecho,
+                      "o orcado deixou de ser barra vazada com contorno")
+        self.assertIn('name="Desvio"', trecho, "o desvio deixou de ser uma linha")
+        self.assertIn('yaxis="y2"', trecho)
+        # Legenda EMBAIXO, como no grafico da Reserva de Caixa.
+        self.assertIn('yanchor="top", y=-0.16', trecho)
 
     def test_o_peso_do_grupo_aparece_em_cada_mes(self):
         """O peso so existia na ultima coluna, para o periodo inteiro -- e
