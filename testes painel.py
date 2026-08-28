@@ -6598,8 +6598,8 @@ class TesteDreAberturaMensal(unittest.TestCase):
         # formatacao, mais abaixo.
         i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:")
         trecho = FONTE[i:FONTE.index("df_dre_final = pd.DataFrame(dados_dre)", i)]
-        self.assertIn('registro[f"{_mes_rot} · real"]', trecho)
-        self.assertIn('registro[f"{_mes_rot} · orç"]', trecho)
+        self.assertIn('registro[f"{_mes_rot} · real"] = formata_brl(', trecho)
+        self.assertIn('registro[f"{_mes_rot} · orç"] = formata_brl(', trecho)
         self.assertNotIn("av_real_pct", trecho)
         self.assertNotIn("ah_pct", trecho)
 
@@ -6636,15 +6636,72 @@ class TesteDreAberturaMensal(unittest.TestCase):
                       FONTE[i:i + 900],
                       "o rotulo deixou de destacar o mes em maiusculas")
 
-    def test_as_colunas_do_mes_sao_estreitas(self):
+    def test_as_colunas_do_mes_se_ajustam_ao_valor(self):
         """Com "medium" cabiam tres meses e meio na tela, e a abertura mensal
         existe justamente para comparar meses lado a lado."""
-        # AS DUAS colunas do par: cobrar so uma deixava a outra ser alargada
-        # em silencio, porque as duas linhas cabem na mesma janela.
+        # width=None: a coluna se ajusta ao maior valor dela. Com "small" os
+        # valores em reais eram cortados no meio ("R$ 7.938.247," sem o
+        # resto), e numero cortado numa DRE nao serve para nada.
         i = FONTE.index("column_config_dre[f\"{_mes_rot} · real\"]")
         trecho = FONTE[i:i + 400]
-        self.assertEqual(trecho.count('width="small"'), 2,
-                         "alguma coluna do par voltou a ser larga")
+        self.assertEqual(trecho.count("width=None"), 2,
+                         "alguma coluna do par voltou a ter largura fixa")
+        self.assertNotIn('width="small"', trecho)
+
+
+    def test_a_linha_de_cabecalho_traz_o_nome_do_mes(self):
+        """Uma linha a mais no comeco da tabela, com "JANEIRO" sobre o par
+        real/orc. O cabecalho de dois niveis de verdade continua impossivel --
+        o Arrow achata o MultiIndex --, mas uma linha comum atravessa qualquer
+        transporte: ela e DADO, nao estrutura."""
+        self.assertIn('_cabecalho_meses = {"Conta / Linha DRE": ""}', FONTE)
+        self.assertIn("dados_dre.append(_cabecalho_meses)", FONTE)
+        # O nome do mes so na coluna "real"; na "orc" fica vazio, e o par le
+        # como um bloco so.
+        i = FONTE.index("_cabecalho_meses = {")
+        trecho = FONTE[i:i + 700]
+        self.assertIn('_cabecalho_meses[f"{_mes_rot} · real"] = _mes_rot', trecho)
+        self.assertIn('_cabecalho_meses[f"{_mes_rot} · orç"] = ""', trecho)
+        # E o cabecalho NATIVO vira so "real"/"orc".
+        self.assertIn('st.column_config.TextColumn(\n                "real"', FONTE)
+
+    def test_a_linha_de_cabecalho_nao_dispara_expansao(self):
+        """Ela tem a coluna da conta VAZIA, e clicar nela nao pode alternar
+        grupo nenhum."""
+        ns = carregar(["eh_grupo_sintetico", "_numero_linha_dre"])
+        self.assertFalse(ns["eh_grupo_sintetico"](""))
+        self.assertTrue(ns["eh_grupo_sintetico"]("1 - Receita Operacional Bruta"))
+
+    def test_a_cor_da_tabela_mensal_vem_do_sinal_no_texto(self):
+        """A tabela mensal e toda de TEXTO -- e o preco de ter a linha de
+        cabecalho. A cor tem de sair do sinal lido do proprio texto."""
+        ns = carregar(["_estilo_linha_dre_mensal"], ["COLORS"])
+        estilo, cores = ns["_estilo_linha_dre_mensal"], ns["COLORS"]
+        df = pd.DataFrame([
+            {"Conta / Linha DRE": "", "JAN · real": "JANEIRO", "JAN · orç": ""},
+            {"Conta / Linha DRE": "1 - Receita", "JAN · real": "R$ 7.938.247,30",
+             "JAN · orç": "R$ 9.060.697,53"},
+            {"Conta / Linha DRE": "2 - Deduções", "JAN · real": "R$ -439.874,11",
+             "JAN · orç": "R$ -629.136,88"},
+        ])
+        cabecalho = estilo(df.iloc[0])
+        self.assertTrue(all("font-weight: 700" in e for e in cabecalho),
+                        "a linha de cabecalho perdeu a aparencia de cabecalho")
+        positiva = estilo(df.iloc[1])
+        self.assertIn(cores["positive"], positiva[1])
+        negativa = estilo(df.iloc[2])
+        self.assertIn(cores["negative"], negativa[1])
+        # A coluna da CONTA nunca e colorida: ela nao e valor. Testa com um
+        # nome que COMECA com "R$" -- se a regra fosse so "nao comeca com R$",
+        # uma conta chamada assim seria pintada de verde.
+        self.assertEqual(positiva[0], "")
+        # A linha 0 e SEMPRE o cabecalho, entao a armadilha vai na linha 1.
+        df_armadilha = pd.DataFrame([
+            {"Conta / Linha DRE": "", "JAN · real": "JAN", "JAN · orç": ""},
+            {"Conta / Linha DRE": "R$ - Contas a Receber",
+             "JAN · real": "R$ 1,00", "JAN · orç": "R$ 1,00"}])
+        self.assertEqual(estilo(df_armadilha.iloc[1])[0], "",
+                         "conta cujo nome comeca com R$ foi colorida como valor")
 
 
     def test_os_meses_saem_do_mesmo_lugar_dos_kpis(self):
@@ -6656,15 +6713,19 @@ class TesteDreAberturaMensal(unittest.TestCase):
         i = FONTE.index("_meses_abertura_dre = [(nome, col)")
         self.assertIn("if col in set(cols_kpi)", FONTE[i:i + 200])
 
-    def test_a_tabela_mensal_usa_a_formatacao_da_casa(self):
-        """Mesmas regras -- reais e cor por sinal --, so que sobre as colunas
-        de cada mes. O que muda sao as colunas; o tratamento continua igual."""
-        i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:", FONTE.index("ALTURA_17_LINHAS"))
-        trecho = FONTE[i:i + 1200]
-        self.assertIn("formato_dre = {c: formata_brl for c in cols_num_dre}", trecho)
-        self.assertIn("cols_num_dre = [c for c in df_dre_final.columns", trecho)
-        # E o .map(cor_valor) continua sendo aplicado sobre cols_num_dre.
-        self.assertIn(".map(cor_valor, subset=cols_num_dre)", FONTE)
+    def test_a_tabela_mensal_ja_chega_formatada(self):
+        """Sem formatador do Styler: as colunas chegam como TEXTO pronto, para
+        a linha de cabecalho poder conviver com os valores na mesma coluna.
+        Num DataFrame de numeros essa linha obrigaria a misturar texto e float,
+        e o formatador quebraria na string."""
+        i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:",
+                        FONTE.index("ALTURA_17_LINHAS"))
+        trecho = FONTE[i:i + 900]
+        self.assertIn("formato_dre = {}", trecho)
+        # E o estilo passa a ser POR LINHA, nao por celula.
+        self.assertIn("df_dre_final.style.apply(_estilo_linha_dre_mensal, axis=1)", FONTE)
+        # O modo acumulado continua com o formatador e o cor_valor de sempre.
+        self.assertIn(".map(\n                 cor_valor, subset=cols_num_dre)", FONTE)
 
     def test_a_chave_da_tabela_muda_com_o_modo(self):
         """Sem isso o Streamlit reaproveita a selecao de linhas feita no outro

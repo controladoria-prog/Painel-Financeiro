@@ -412,6 +412,38 @@ def _processar_clique_expansao(df_tabela, evento, grupos_alternados, col_nome_li
     return mudou
 
 
+def _estilo_linha_dre_mensal(linha):
+    """Estilo de uma linha da tabela mensal, que é toda de TEXTO.
+
+    A primeira linha é o cabeçalho dos meses e ganha aparência de cabeçalho.
+    As demais são coloridas pelo SINAL lido do texto -- "R$ -1.234,00" começa
+    com traço depois do "R$ ". Ler o sinal do texto é feio, mas é o preço de
+    ter a linha de cabeçalho: num DataFrame de números ela não caberia.
+    """
+    if linha.name == 0:
+        return [
+            f"color: {COLORS['text_muted']}; font-weight: 700; "
+            "letter-spacing: 0.8px; background-color: rgba(255,255,255,0.04);"
+        ] * len(linha)
+    estilos = []
+    for i, valor in enumerate(linha):
+        texto = str(valor)
+        # A coluna 0 é o nome da conta: nunca colorida, porque não é valor.
+        # A checagem por índice é redundante hoje (nome de conta não começa
+        # com "R$"), mas é a que expressa a REGRA -- a outra é só um acaso do
+        # formato, e acaso não é garantia.
+        if i == 0:
+            estilos.append("")
+            continue
+        if not texto.startswith("R$"):
+            estilos.append("")
+            continue
+        negativo = texto.replace("R$", "").strip().startswith("-")
+        cor = COLORS["negative"] if negativo else COLORS["positive"]
+        estilos.append(f"color: {cor}; font-weight: 500;")
+    return estilos
+
+
 def cor_valor(val):
     if pd.isna(val):
         return ""
@@ -15773,10 +15805,30 @@ with tab2:
         # com doze meses seriam 48 colunas, e a tabela viraria uma parede de
         # números onde não se acha nada. Quem quer AV/AH desliga a abertura e
         # lê o acumulado, que é onde esses dois percentuais fazem sentido.
+        # As colunas viram TEXTO já formatado, e não número.
+        #
+        # É o que permite a LINHA DE CABEÇALHO com o nome do mês: uma linha a
+        # mais no começo da tabela, com "JANEIRO" sobre o par real/orç. Num
+        # DataFrame de números essa linha obrigaria a misturar texto e float
+        # na mesma coluna, e o formatador quebraria na string.
+        #
+        # O cabeçalho de dois níveis de verdade continua impossível (o Arrow
+        # achata o MultiIndex), mas uma linha comum atravessa qualquer
+        # transporte -- ela é dado, não estrutura.
         dados_dre = []
+        _cabecalho_meses = {"Conta / Linha DRE": ""}
+        for _nome_mes, _col_mes in _meses_abertura_dre:
+            _mes_rot = str(_nome_mes).split("/")[0].upper()
+            # O nome do mês só na coluna "real"; na "orç" fica vazio, e o par
+            # lê como um bloco só.
+            _cabecalho_meses[f"{_mes_rot} · real"] = _mes_rot
+            _cabecalho_meses[f"{_mes_rot} · orç"] = ""
+        dados_dre.append(_cabecalho_meses)
+
         for linha in linhas_dre:
             registro = {"Conta / Linha DRE": linha}
             for _nome_mes, _col_mes in _meses_abertura_dre:
+
                 # O par do mês fica junto pelo RÓTULO, com o mês em
                 # maiúsculas e a medida em minúsculas. Um cabeçalho de dois
                 # níveis de verdade (mês em cima, medidas embaixo) NÃO é
@@ -15784,10 +15836,10 @@ with tab2:
                 # achata o MultiIndex de colunas numa string só, e o
                 # agrupamento se perde no caminho.
                 _mes_rot = str(_nome_mes).split("/")[0].upper()
-                registro[f"{_mes_rot} · real"] = get_valor_consolidado_multi(
-                    list_df_real, linha, [_col_mes])
-                registro[f"{_mes_rot} · orç"] = get_valor_consolidado_multi(
-                    list_df_orc, linha, [_col_mes])
+                registro[f"{_mes_rot} · real"] = formata_brl(
+                    get_valor_consolidado_multi(list_df_real, linha, [_col_mes]))
+                registro[f"{_mes_rot} · orç"] = formata_brl(
+                    get_valor_consolidado_multi(list_df_orc, linha, [_col_mes]))
             dados_dre.append(registro)
         df_dre_final = pd.DataFrame(dados_dre)
     else:
@@ -15919,17 +15971,23 @@ with tab2:
         # As mesmas regras da tabela de sempre -- formato em reais e cor por
         # sinal --, só que aplicadas às colunas de cada mês. O que muda são as
         # colunas; o tratamento delas continua o mesmo.
+        # Sem formatador: as colunas já chegam como texto pronto, para a
+        # linha de cabeçalho poder conviver com os valores na mesma coluna.
         cols_num_dre = [c for c in df_dre_final.columns if c != "Conta / Linha DRE"]
-        formato_dre = {c: formata_brl for c in cols_num_dre}
+        formato_dre = {}
         for _nome_mes, _col_mes in _meses_abertura_dre:
             _mes_rot = str(_nome_mes).split("/")[0].upper()
-            # Largura SMALL: com "medium" cabiam três meses e meio na tela, e
-            # a abertura mensal existe justamente para comparar meses lado a
-            # lado. Em small cabem seis pares antes de precisar rolar.
+            # width=None: a coluna se ajusta ao maior valor dela. Com "small"
+            # os valores em reais eram cortados no meio ("R$ 7.938.247," sem
+            # o resto), e número cortado numa DRE não serve para nada.
+            #
+            # O rótulo do cabeçalho nativo é só "real"/"orç" -- o nome do mês
+            # vem na primeira LINHA da tabela, que é o que dá o efeito de
+            # cabeçalho em dois níveis.
             column_config_dre[f"{_mes_rot} · real"] = st.column_config.TextColumn(
-                f"{_mes_rot} · real", width="small")
+                "real", width=None)
             column_config_dre[f"{_mes_rot} · orç"] = st.column_config.TextColumn(
-                f"{_mes_rot} · orç", width="small")
+                "orç", width=None)
     else:
         cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
         formato_dre = {
@@ -15964,7 +16022,10 @@ with tab2:
             f"{'mensal' if abrir_dre_por_mes else 'acumulado'}"
         )
         evento_dre = st.dataframe(
-            df_dre_final.style.format(formato_dre).map(cor_valor, subset=cols_num_dre),
+            (df_dre_final.style.apply(_estilo_linha_dre_mensal, axis=1)
+             if abrir_dre_por_mes and _meses_abertura_dre
+             else df_dre_final.style.format(formato_dre).map(
+                 cor_valor, subset=cols_num_dre)),
             column_config=column_config_dre,
             width="stretch",
             height=ALTURA_17_LINHAS,
