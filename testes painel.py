@@ -6197,6 +6197,49 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertNotIn("margin:-4px", corpo[j:j + 400])
 
 
+    def test_a_curva_de_concentracao_da_substancia_ao_cartao(self):
+        """O cartao diz "8 contas respondem por 80%", e aqui se ve o FORMATO
+        dessa curva. Curva que sobe rapido e deita significa poucas contas
+        mandando -- negociar essas resolve. Curva reta significa gasto
+        espalhado, e ai nao ha bala de prata."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('name="Acumulado"', corpo)
+        self.assertIn('name="80% do gasto"', corpo, "sumiu o tracejado dos 80%")
+        # O acumulado e sobre o TOTAL, nao sobre os 14 do grafico: com o total
+        # dos 14 a curva sempre fecharia em 100% e nao diria nada.
+        self.assertIn("(_acum / total_real * 100) if total_real else 0", corpo)
+
+    def test_a_tabela_do_aluguel_ocupa_metade_da_tela(self):
+        """Sao quatro colunas curtas, e esticadas na tela inteira os numeros
+        ficavam a meio metro uns dos outros -- comparar faturamento com
+        aluguel exigia varrer a tela com o olho."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("_col_tab, _col_lado = (st.columns([1, 1])", corpo)
+        self.assertIn("with _col_tab:", corpo)
+        self.assertIn("with _col_lado:", corpo)
+        # No MES A MES nao ha colunas: a tabela mensal tem uma coluna por mes
+        # e precisa da largura inteira.
+        self.assertIn("contextlib.nullcontext()", corpo)
+
+    def test_o_valor_da_celula_mensal_diz_o_que_e(self):
+        """"14,04% / R$ 13 mil" nao dizia se o valor era o faturamento ou o
+        aluguel. Numa tela de parede, numero sem rotulo vira adivinhacao."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("alug. {formata_valor_curto(alu_m)}", corpo)
+        self.assertIn("o <b>valor do aluguel</b> pago no", corpo)
+
+    def test_a_evolucao_mostra_os_valores(self):
+        """Sem eles, comparar meses exigia somar as duas parcelas de cabeca em
+        cada barra."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("_tot_mes = [v + o for v, o in zip(var_mes, op_mes)]", corpo)
+        self.assertIn('textposition="inside", insidetextanchor="middle"', corpo)
+
+
     def test_a_tabela_de_estouros_nao_tem_barra(self):
         """A coluna do estouro ja ordena a leitura, e a barra repetia essa
         ordem gastando 26% da largura. No lugar dela entrou o PERCENTUAL do
@@ -6255,7 +6298,14 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertEqual(corpo.count("st.plotly_chart("), 3,
                          "evolucao + para onde vai + orcado x realizado")
-        self.assertIn("Orçado × realizado por subgrupo", corpo)
+        # O "orçado x realizado" saiu: ele repetia os mesmos oito nomes e
+        # valores do "Para onde o dinheiro vai" -- duas vezes a mesma leitura
+        # ocupando duas metades da tela. O orcado virou TRACO no primeiro, e o
+        # espaco livre virou a curva de concentracao, que responde outra coisa.
+        self.assertNotIn("Orçado × realizado por subgrupo", corpo)
+        self.assertIn("Concentração do gasto", corpo)
+        self.assertIn('symbol="line-ns"', corpo,
+                      "o orcado deixou de ser traco no grafico do gasto")
         self.assertIn("Evolução e peso na receita", corpo)
         self.assertIn("Para onde o dinheiro vai", corpo)
         # E a CONCENTRACAO: quantas contas explicam 80% do gasto. E a pergunta

@@ -3211,8 +3211,21 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             fig.add_trace(go.Bar(
                 name=nome, x=rot_mes, y=serie,
                 marker=dict(color=cor, line=dict(color=COLORS["surface"], width=1)),
+                text=[formata_valor_curto(v) for v in serie],
+                textposition="inside", insidetextanchor="middle",
+                textfont=dict(size=9.5, color="#1B2230"),
                 hovertemplate=f"{nome}: %{{y:,.0f}}<extra></extra>",
             ))
+        # O TOTAL escrito em cima da pilha: sem ele, comparar meses exigia
+        # somar as duas parcelas de cabeça em cada barra.
+        _tot_mes = [v + o for v, o in zip(var_mes, op_mes)]
+        fig.add_trace(go.Scatter(
+            x=rot_mes, y=_tot_mes, mode="text",
+            text=[formata_valor_curto(v) for v in _tot_mes],
+            textposition="top center",
+            textfont=dict(size=10.5, color=COLORS["text"]),
+            showlegend=False, hoverinfo="skip", cliponaxis=False,
+        ))
         # A linha do % vai no eixo da direita: é ela que diz se o gasto está
         # crescendo mais rápido que a receita. Só o valor absoluto subindo não
         # significa nada num mês que vendeu mais.
@@ -3227,7 +3240,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             barmode="stack", bargap=0.4,
             xaxis=dict(showgrid=False, fixedrange=True,
                        tickfont=dict(size=11, color=COLORS["text_muted"])),
-            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
+                       range=[0, (max(_tot_mes) if _tot_mes else 1) * 1.20]),
             yaxis2=dict(overlaying="y", side="right", showgrid=False, fixedrange=True,
                         ticksuffix="%", tickfont=dict(size=10, color=COLORS["primary"]),
                         range=[0, (max(pct_mes) if pct_mes else 1) * 1.6]),
@@ -3238,23 +3252,43 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         st.plotly_chart(fig, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
     with graf_dir:
-        st.markdown('<div class="tv-section-title">🏆 Para onde o dinheiro vai</div>',
+        st.markdown('<div class="tv-section-title">🏆 Para onde o dinheiro vai '
+                    f'<span style="font-size:11px;color:{COLORS["text_muted"]};'
+                    'font-weight:500;margin-left:8px;">barra = gasto · traço = '
+                    "orçado</span></div>",
                     unsafe_allow_html=True)
         topo = subgrupos[:8]
-        fig2 = go.Figure(go.Bar(
+        # A BARRA é o gasto e o TRAÇO é o orçado, no mesmo desenho. Antes havia
+        # um segundo gráfico só para comparar orçado com realizado, e ele
+        # repetia estes mesmos oito nomes e estes mesmos valores -- duas vezes
+        # a mesma leitura ocupando duas metades da tela.
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
             x=[s["valor"] for s in reversed(topo)],
             y=[s["nome"][:26] for s in reversed(topo)],
-            orientation="h",
-            marker=dict(color=[s["cor"] for s in reversed(topo)],
-                        line=dict(color=COLORS["surface"], width=1)),
-            text=[formata_m(s["valor"]) for s in reversed(topo)],
+            orientation="h", name="Gasto",
+            marker=dict(
+                color=[("rgba(224,133,133,0.30)" if s["valor"] > s["orcado"]
+                        else "rgba(87,190,146,0.26)") for s in reversed(topo)],
+                line=dict(color=[(COLORS["negative"] if s["valor"] > s["orcado"]
+                                  else COLORS["positive"])
+                                 for s in reversed(topo)], width=1.4)),
+            text=[formata_valor_curto(s["valor"]) for s in reversed(topo)],
             textposition="outside", cliponaxis=False,
             textfont=dict(size=10, color=COLORS["text_muted"]),
-            hovertemplate="%{y}: %{x:,.0f}<extra></extra>",
+            hovertemplate="Gasto: %{x:,.0f}<extra></extra>",
+        ))
+        fig2.add_trace(go.Scatter(
+            x=[s["orcado"] for s in reversed(topo)],
+            y=[s["nome"][:26] for s in reversed(topo)],
+            mode="markers", name="Orçado",
+            marker=dict(symbol="line-ns", size=22,
+                        line=dict(color=COLORS["primary"], width=2.4)),
+            hovertemplate="Orçado: %{x:,.0f}<extra></extra>",
         ))
         estilo_grafico(
-            fig2, height=262, margin=dict(l=8, r=44, t=18, b=16),
-            bargap=0.28, showlegend=False,
+            fig2, height=262, margin=dict(l=8, r=56, t=18, b=34),
+            bargap=0.3, showlegend=False,
             xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
             yaxis=dict(showgrid=False, fixedrange=True, automargin=True,
                        tickfont=dict(size=10.5, color=COLORS["text"])),
@@ -3308,43 +3342,53 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             st.markdown("".join(linhas_e), unsafe_allow_html=True)
 
     with col_cmp:
-        # GRÁFICO NOVO: orçado contra realizado, subgrupo a subgrupo. A tabela
-        # ao lado mostra só quem estourou; aqui aparece o quadro inteiro --
-        # inclusive quem ficou ABAIXO do orçado, que é onde há folga para
-        # absorver os estouros do outro lado.
-        st.markdown('<div class="tv-section-title">⚖️ Orçado × realizado por subgrupo</div>',
+        # CURVA DE CONCENTRAÇÃO, no lugar do "orçado × realizado" -- aquele
+        # gráfico repetia os mesmos oito nomes do "Para onde o dinheiro vai",
+        # que agora já traz o orçado como traço.
+        #
+        # Esta responde outra coisa: o cartão diz "8 contas respondem por 80%",
+        # e aqui se vê o formato dessa curva. Curva que sobe rápido e deita
+        # significa poucas contas mandando -- negociar essas resolve. Curva
+        # reta significa gasto espalhado, e aí não há bala de prata.
+        st.markdown('<div class="tv-section-title">🎯 Concentração do gasto</div>',
                     unsafe_allow_html=True)
-        _cmp = sorted(subgrupos, key=lambda g: g["valor"], reverse=True)[:7]
+        _conc = sorted(subgrupos, key=lambda g: g["valor"], reverse=True)[:14]
+        _acum, _curva = 0.0, []
+        for g in _conc:
+            _acum += g["valor"]
+            _curva.append((_acum / total_real * 100) if total_real else 0)
         fig3 = go.Figure()
         fig3.add_trace(go.Bar(
-            name="Orçado", y=[g["nome"][:24] for g in reversed(_cmp)],
-            x=[g["orcado"] for g in reversed(_cmp)], orientation="h",
-            marker=dict(color="rgba(107,158,230,0.16)",
-                        line=dict(color=COLORS["primary"], width=1.4)),
-            hovertemplate="Orçado: %{x:,.0f}<extra></extra>",
+            name="Gasto no subgrupo",
+            x=[g["nome"][:16] for g in _conc], y=[g["valor"] for g in _conc],
+            marker=dict(color=[g["cor"] for g in _conc],
+                        line=dict(color=COLORS["surface"], width=1)),
+            hovertemplate="%{x}: %{y:,.0f}<extra></extra>",
         ))
-        fig3.add_trace(go.Bar(
-            name="Realizado", y=[g["nome"][:24] for g in reversed(_cmp)],
-            x=[g["valor"] for g in reversed(_cmp)], orientation="h",
-            marker=dict(
-                color=[("rgba(224,133,133,0.28)" if g["valor"] > g["orcado"]
-                        else "rgba(87,190,146,0.28)") for g in reversed(_cmp)],
-                line=dict(color=[(COLORS["negative"] if g["valor"] > g["orcado"]
-                                  else COLORS["positive"]) for g in reversed(_cmp)],
-                          width=1.4)),
-            text=[formata_valor_curto(g["valor"]) for g in reversed(_cmp)],
-            textposition="outside", cliponaxis=False,
-            textfont=dict(size=9.5, color=COLORS["text_muted"]),
-            hovertemplate="Realizado: %{x:,.0f}<extra></extra>",
+        fig3.add_trace(go.Scatter(
+            name="Acumulado", x=[g["nome"][:16] for g in _conc], y=_curva,
+            yaxis="y2", mode="lines+markers",
+            line=dict(color=COLORS["primary"], width=2.4),
+            marker=dict(size=6, line=dict(color=COLORS["surface"], width=1)),
+            hovertemplate="Acumulado: %{y:.0f}%<extra></extra>",
+        ))
+        fig3.add_trace(go.Scatter(
+            name="80% do gasto", x=[g["nome"][:16] for g in _conc],
+            y=[80] * len(_conc), yaxis="y2", mode="lines",
+            line=dict(color=COLORS["muted_line"], width=1.4, dash="dash"),
+            hoverinfo="skip",
         ))
         estilo_grafico(
-            fig3, height=262, margin=dict(l=8, r=52, t=18, b=42),
-            barmode="group", bargap=0.24, bargroupgap=0.06,
-            xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
-            yaxis=dict(showgrid=False, fixedrange=True, automargin=True,
-                       tickfont=dict(size=10, color=COLORS["text"])),
+            fig3, height=262, margin=dict(l=8, r=8, t=18, b=76),
+            bargap=0.34,
+            xaxis=dict(showgrid=False, fixedrange=True, tickangle=-38,
+                       tickfont=dict(size=9, color=COLORS["text_muted"])),
+            yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+            yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                        fixedrange=True, ticksuffix="%", range=[0, 108],
+                        tickfont=dict(size=10, color=COLORS["primary"])),
             showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.06, xanchor="center",
+            legend=dict(orientation="h", yanchor="top", y=-0.42, xanchor="center",
                         x=0.5, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         )
         st.plotly_chart(fig3, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
@@ -3470,6 +3514,12 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             # acumulada logo acima repetia a mesma informação em outro
             # formato, dobrando a altura do bloco.
             _abrir_aluguel_por_mes = bool(por_mes and len(meses_ativos) > 1 and registros)
+            # METADE da largura: são quatro colunas curtas, e esticadas na
+            # tela inteira os números ficavam a meio metro uns dos outros --
+            # comparar faturamento com aluguel exigia varrer a tela com o olho.
+            _col_tab, _col_lado = (st.columns([1, 1]) if not _abrir_aluguel_por_mes
+                                   else (contextlib.nullcontext(),
+                                         contextlib.nullcontext()))
             if registros and not _abrir_aluguel_por_mes:
                 # A intensidade do fundo na coluna do % substitui a barra: ela
                 # ocupa espaço que já é da célula, em vez de uma coluna a mais,
@@ -3509,7 +3559,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     "Quanto mais forte o fundo, mais faturamento a loja compromete."
                     "</div></div>"
                 )
-                st.markdown("".join(partes), unsafe_allow_html=True)
+                with _col_tab:
+                    st.markdown("".join(partes), unsafe_allow_html=True)
 
             if sem_faturamento or sem_aluguel:
                 def _chips(itens, cor, valor_de):
@@ -3545,7 +3596,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     'margin-top:3px;">Fora do percentual: sem faturamento não há '
                     "o que dividir, e sem aluguel o índice é sempre zero."
                     "</div></div>")
-                st.markdown("".join(_partes_exc), unsafe_allow_html=True)
+                with _col_lado:
+                    st.markdown("".join(_partes_exc), unsafe_allow_html=True)
 
             if _abrir_aluguel_por_mes:
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
@@ -3576,7 +3628,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                             # formata_m mostra tudo abaixo de R$ 100 mil como
                             # "R$ 0,0M" -- a coluna inteira aparecia zerada
                             # enquanto o percentual ao lado estava certo.
-                            + f'<span class="sec">{formata_valor_curto(alu_m)}</span></td>')
+                            + f'<span class="sec">alug. {formata_valor_curto(alu_m)}'
+                            "</span></td>")
                     tabela.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
                         f'{celulas}<td class="tot">'
@@ -3585,8 +3638,10 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Percentual do aluguel sobre a receita bruta do próprio mês; "
-                    "embaixo, o valor pago.</div></div>")
+                    "Em cada célula: <b>percentual</b> do aluguel sobre a receita "
+                    "bruta daquele mês e, embaixo, o <b>valor do aluguel</b> pago no "
+                    "mês. O faturamento não aparece aqui — ele está na tabela do "
+                    "período.</div></div>")
                 st.markdown("".join(tabela), unsafe_allow_html=True)
 
 
