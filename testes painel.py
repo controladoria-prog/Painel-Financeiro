@@ -5715,8 +5715,17 @@ class TestePainelTV(unittest.TestCase):
         # A classe existe e e aplicada de propósito, tabela a tabela.
         self.assertIn(".tv-matriz-fixa td.rot", FONTE)
         aplicacoes = FONTE.count('class="tv-matriz tv-matriz-fixa"')
-        self.assertEqual(aplicacoes, 3,
+        # Conta as APLICACOES em <table>, nao as ocorrencias da palavra: o
+        # CSS tambem cita a classe, e contar tudo junto faz o teste quebrar a
+        # cada linha de estilo nova -- que e falha por formatacao, nao por
+        # defeito. Ja escorreguei nisso agora mesmo.
+        tabelas_travadas = FONTE.count('<table class="tv-matriz tv-matriz-fixa')
+        self.assertEqual(tabelas_travadas, 3,
                          "grupos por mes + aluguel acumulado + aluguel mes a mes")
+        self.assertEqual(aplicacoes, 2,
+                         "as duas que usam so as duas classes")
+        self.assertIn('class="tv-matriz tv-matriz-fixa tv-aluguel"', FONTE,
+                      "a tabela do aluguel acumulado perdeu a coluna travada")
         # A trava NAO pode estar na regra geral: se .tv-matriz td.rot virasse
         # sticky, toda tabela nova nasceria com a coluna parada, inclusive as
         # estreitas que nem rolam -- e ali a coluna travada so atrapalha.
@@ -6145,8 +6154,16 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertIn("Aluguel sobre o faturamento", corpo)
-        self.assertIn('"pct": (aluguel / receita * 100) if receita else None', corpo,
-                      "loja sem receita nao pode virar divisao por zero")
+        # FATURAMENTO = RECEITA OPERACIONAL BRUTA. Com a liquida o percentual
+        # saia maior do que o do contrato, e no escritorio -- que tem receita
+        # liquida residual de poucos milhares -- o indice explodia para 1242%.
+        self.assertIn('CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"', corpo)
+        self.assertIn('"pct": aluguel / faturamento * 100,', corpo)
+        # Unidade SEM faturamento vai para um bloco proprio, e nao para o fim
+        # da tabela: o escritorio paga aluguel de verdade, e enfia-lo numa
+        # tabela de percentuais sugere um indice que nao existe.
+        self.assertIn("sem_faturamento.append(", corpo)
+        self.assertIn("Unidades sem faturamento", corpo)
         # A regua e a media DA REDE, nao uma meta de fora.
         self.assertIn("media_rede", corpo)
         self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
@@ -6169,11 +6186,11 @@ class TesteTelaDaRamificacao(unittest.TestCase):
     def test_o_aluguel_tem_a_visao_mes_a_mes(self):
         i = FONTE.index("Aluguel sobre o faturamento")
         trecho = FONTE[i:FONTE.index("\ndef ", i)]
-        self.assertIn("if por_mes and len(meses_ativos) > 1:", trecho)
+        self.assertIn("if por_mes and len(meses_ativos) > 1 and registros:", trecho)
         # Mes sem receita fica com um traco: dividir por zero daria um
         # percentual que nao existe, e numero inventado em tela de parede vira
         # decisao.
-        self.assertIn("if not rec_m:", trecho)
+        self.assertIn("if not fat_m:", trecho)
 
     def test_a_loja_sem_percentual_vai_para_o_fim(self):
         """Modelo da ordenacao: quem esta sufocando o resultado aparece

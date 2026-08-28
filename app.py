@@ -3238,69 +3238,137 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 [df_loja], chave, colunas, exato_linha_sintetica=True))
                 for chave in chaves)
 
-        registros = []
+        # FATURAMENTO = RECEITA OPERACIONAL BRUTA, e não a líquida.
+        #
+        # Aluguel de shopping se negocia sobre o faturamento bruto, que é o
+        # número do contrato. Com a líquida, o percentual saía maior do que o
+        # que está escrito no aluguel e não batia com nada -- e no escritório,
+        # que tem uma receita líquida residual de poucos milhares, o índice
+        # explodia para 1242%.
+        CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"
+        registros, sem_faturamento = [], []
         for loja in lojas:
             _df_o, df_r = dados_loja.get(loja, (pd.DataFrame(), pd.DataFrame()))
-            receita = _da_loja(df_r, ["3 - Receita Operacional Liquida"], cols_periodo)
+            faturamento = _da_loja(df_r, [CHAVE_FATURAMENTO], cols_periodo)
             aluguel = _da_loja(df_r, chaves_aluguel, cols_periodo)
-            if not receita and not aluguel:
+            if not faturamento and not aluguel:
+                continue
+            if not faturamento:
+                # Unidade sem faturamento vai para um bloco PRÓPRIO, e não
+                # para o fim da lista com um traço: o escritório paga aluguel
+                # de verdade, e enfiá-lo numa tabela de percentuais sugere um
+                # índice que não existe. Ali embaixo ele aparece pelo que é --
+                # custo fixo sem receita para diluir.
+                sem_faturamento.append({"loja": loja, "aluguel": aluguel, "df": df_r})
                 continue
             registros.append({
-                "loja": loja, "df": df_r, "receita": receita, "aluguel": aluguel,
-                "pct": (aluguel / receita * 100) if receita else None,
+                "loja": loja, "df": df_r, "faturamento": faturamento,
+                "aluguel": aluguel, "pct": aluguel / faturamento * 100,
             })
-        # Da MAIOR fatia para a menor: quem compromete mais faturamento com
-        # aluguel aparece primeiro. Loja sem receita vai para o fim -- ela não
-        # tem percentual, e no topo com um traço esconderia as que apertam.
-        registros.sort(key=lambda r: (r["pct"] is None, -(r["pct"] or 0)))
+        registros.sort(key=lambda r: -r["pct"])
 
-        if not registros:
+        if not registros and not sem_faturamento:
             st.markdown(
                 '<div class="tv-panel" style="padding:14px;">'
-                f'<span style="color:{COLORS["text_muted"]};">Sem aluguel nem receita '
-                "nas lojas desta visão.</span></div>", unsafe_allow_html=True)
+                f'<span style="color:{COLORS["text_muted"]};">Sem aluguel nem '
+                "faturamento nas lojas desta visão.</span></div>",
+                unsafe_allow_html=True)
         else:
-            soma_rec = sum(r["receita"] for r in registros)
+            soma_fat = sum(r["faturamento"] for r in registros)
             soma_alu = sum(r["aluguel"] for r in registros)
-            media_rede = (soma_alu / soma_rec * 100) if soma_rec else 0.0
-            partes = ['<div style="overflow-x:auto;">',
-                      '<table class="tv-matriz tv-matriz-fixa" style="min-width:100%;">',
-                      '<thead><tr><th class="rot">Loja</th>'
-                      '<th>Faturamento</th><th>Aluguel</th>'
-                      '<th class="tot">% do faturamento</th></tr></thead><tbody>']
-            for reg in registros:
-                if reg["pct"] is None:
-                    texto, cor = "—", COLORS["text_muted"]
-                else:
-                    texto = f"{reg['pct']:.2f}%".replace(".", ",")
-                    # Acima da média da rede fica em vermelho: é a loja que
-                    # compromete proporcionalmente mais do que as outras.
+            soma_sem = sum(r["aluguel"] for r in sem_faturamento)
+            media_rede = (soma_alu / soma_fat * 100) if soma_fat else 0.0
+            acima = [r for r in registros if r["pct"] > media_rede]
+
+            st.markdown(
+                render_kpi_row([
+                    dict(label="ALUGUEL NO PERÍODO", value=formata_m(soma_alu + soma_sem),
+                         value_color=COLORS["text"],
+                         subtext=(f"{formata_m(soma_sem)} em unidades sem faturamento"
+                                  if soma_sem else "todas as unidades faturam"),
+                         icon="🏬"),
+                    dict(label="MÉDIA DA REDE",
+                         value=f"{media_rede:.2f}%".replace(".", ","),
+                         value_color=COLORS["primary"],
+                         subtext="aluguel ÷ receita operacional bruta", icon="📊"),
+                    dict(label="ACIMA DA MÉDIA", value=f"{len(acima)} de {len(registros)}",
+                         value_color=(COLORS["negative"] if acima else COLORS["positive"]),
+                         subtext="lojas que comprometem mais que a rede", icon="⚠️"),
+                    dict(label="MAIS COMPROMETIDA",
+                         value=(f"{registros[0]['pct']:.2f}%".replace(".", ",")
+                                if registros else "—"),
+                         value_color=(COLORS["negative"] if registros else COLORS["text"]),
+                         subtext=(registros[0]["loja"] if registros else "—"),
+                         icon="🔺"),
+                ]),
+                unsafe_allow_html=True,
+            )
+
+            if registros:
+                # A intensidade do fundo na coluna do % substitui a barra: ela
+                # ocupa espaço que já é da célula, em vez de uma coluna a mais,
+                # e a loja mais comprometida se acha de relance.
+                teto = max(r["pct"] for r in registros) or 1.0
+                partes = ['<div style="overflow-x:auto;">',
+                          '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
+                          'style="min-width:100%;">',
+                          '<thead><tr><th class="rot">Loja</th>'
+                          '<th>Faturamento</th><th>Aluguel</th>'
+                          '<th class="tot">% do faturamento</th></tr></thead><tbody>']
+                for reg in registros:
                     cor = (COLORS["negative"] if reg["pct"] > media_rede
                            else COLORS["positive"])
+                    alfa = 0.08 + (reg["pct"] / teto) * 0.20
+                    tom = ("224,133,133" if reg["pct"] > media_rede else "87,190,146")
+                    partes.append(
+                        f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
+                        f'<td>{formata_brl(reg["faturamento"])}</td>'
+                        f'<td>{formata_brl(reg["aluguel"])}</td>'
+                        f'<td class="tot" style="color:{cor};'
+                        f'background:rgba({tom},{alfa:.3f});">'
+                        + f"{reg['pct']:.2f}%".replace(".", ",") + "</td></tr>"
+                    )
                 partes.append(
-                    f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
-                    f'<td>{formata_brl(reg["receita"])}</td>'
-                    f'<td>{formata_brl(reg["aluguel"])}</td>'
-                    f'<td class="tot" style="color:{cor};">{texto}</td></tr>'
+                    '<tr class="rede"><td class="rot">Rede</td>'
+                    f'<td>{formata_brl(soma_fat)}</td>'
+                    f'<td>{formata_brl(soma_alu)}</td>'
+                    f'<td class="tot">{f"{media_rede:.2f}%".replace(".", ",")}</td></tr>'
                 )
-            partes.append(
-                '<tr style="font-weight:700;">'
-                '<td class="rot">Rede</td>'
-                f'<td>{formata_brl(soma_rec)}</td>'
-                f'<td>{formata_brl(soma_alu)}</td>'
-                f'<td class="tot">{f"{media_rede:.2f}%".replace(".", ",")}</td></tr>'
-            )
-            partes.append(
-                "</tbody></table></div>"
-                f'<div style="text-align:right;font-size:10px;'
-                f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                "Aluguel ÷ receita líquida da própria loja. Vermelho = compromete "
-                f"mais que a média da rede ({f'{media_rede:.2f}%'.replace('.', ',')})."
-                "</div>"
-            )
-            st.markdown("".join(partes), unsafe_allow_html=True)
+                partes.append(
+                    "</tbody></table></div>"
+                    f'<div style="text-align:right;font-size:10px;'
+                    f'color:{COLORS["text_muted"]};margin-top:6px;">'
+                    "Aluguel ÷ <b>receita operacional bruta</b> da própria loja — é "
+                    "sobre o bruto que o aluguel se negocia. Quanto mais forte o "
+                    "fundo, mais faturamento a loja compromete."
+                    "</div>"
+                )
+                st.markdown("".join(partes), unsafe_allow_html=True)
 
-            if por_mes and len(meses_ativos) > 1:
+            if sem_faturamento:
+                sem_faturamento.sort(key=lambda r: -r["aluguel"])
+                chips = "".join(
+                    '<span style="display:inline-block;padding:6px 12px;'
+                    f'border:1px solid {COLORS["border"]};border-radius:8px;'
+                    f'margin:0 8px 8px 0;font-size:12px;">'
+                    f'{r["loja"]}<b style="margin-left:10px;'
+                    f'font-family:{FONTE_MONO};color:{COLORS["warning"]};">'
+                    f'{formata_brl(r["aluguel"])}</b></span>'
+                    for r in sem_faturamento)
+                st.markdown(
+                    f'<div class="tv-panel" style="padding:12px 14px;">'
+                    f'<div style="font-size:10.5px;letter-spacing:1px;'
+                    f'text-transform:uppercase;color:{COLORS["text_muted"]};'
+                    'margin-bottom:9px;">Unidades sem faturamento</div>'
+                    f"{chips}"
+                    f'<div style="font-size:10px;color:{COLORS["text_muted"]};'
+                    'margin-top:2px;">Não entram no percentual porque não há '
+                    "faturamento para dividir — o aluguel delas é custo fixo "
+                    "que a rede inteira absorve.</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+            if por_mes and len(meses_ativos) > 1 and registros:
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
                 tabela = ['<div style="overflow-x:auto;">',
                           '<table class="tv-matriz tv-matriz-fixa" style="min-width:100%;">',
@@ -3309,32 +3377,30 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 for reg in registros:
                     celulas = ""
                     for coluna in cols_mes:
-                        rec_m = _da_loja(reg["df"], ["3 - Receita Operacional Liquida"],
-                                         [coluna])
+                        fat_m = _da_loja(reg["df"], [CHAVE_FATURAMENTO], [coluna])
                         alu_m = _da_loja(reg["df"], chaves_aluguel, [coluna])
-                        if not rec_m:
-                            # Mês sem receita fica com traço: dividir por zero
-                            # daria um percentual que não existe, e número
+                        if not fat_m:
+                            # Mês sem faturamento fica com traço: dividir por
+                            # zero daria um percentual que não existe, e número
                             # inventado em tela de parede vira decisão.
                             celulas += f'<td style="color:{COLORS["text_muted"]};">—</td>'
                             continue
-                        pct_m = alu_m / rec_m * 100
+                        pct_m = alu_m / fat_m * 100
                         cor_m = (COLORS["negative"] if pct_m > media_rede
                                  else COLORS["positive"])
                         celulas += (
                             f'<td style="color:{cor_m};">'
                             + f"{pct_m:.2f}%".replace(".", ",")
                             + f'<span class="sec">{formata_m(alu_m)}</span></td>')
-                    texto_t = ("—" if reg["pct"] is None
-                               else f"{reg['pct']:.2f}%".replace(".", ","))
                     tabela.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
-                        f'{celulas}<td class="tot">{texto_t}</td></tr>')
+                        f'{celulas}<td class="tot">'
+                        + f"{reg['pct']:.2f}%".replace(".", ",") + "</td></tr>")
                 tabela.append(
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Percentual do aluguel sobre a receita líquida do próprio mês; "
+                    "Percentual do aluguel sobre a receita bruta do próprio mês; "
                     "embaixo, o valor pago.</div>")
                 st.markdown("".join(tabela), unsafe_allow_html=True)
 
@@ -3791,6 +3857,28 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                 box-shadow:8px 0 10px -6px rgba(0,0,0,0.65);
             }}
             .tv-matriz-fixa th.rot {{ z-index:21; }}
+
+            /* ---- Tabela do aluguel ----
+               Colunas de dinheiro em largura fixa e alinhadas à direita: sem
+               isso o navegador distribui o espaço sobrando entre elas e os
+               números ficam boiando no meio de faixas enormes, que foi o que
+               deixou a tabela com cara de rascunho. */
+            .tv-aluguel td:not(.rot), .tv-aluguel th:not(.rot) {{
+                width:170px; text-align:right; white-space:nowrap;
+            }}
+            .tv-aluguel td.rot, .tv-aluguel th.rot {{ width:auto; }}
+            .tv-aluguel tbody tr:hover td {{ background:rgba(255,255,255,0.03); }}
+            .tv-aluguel tbody tr:hover td.rot {{ background:#2A3346; }}
+            .tv-aluguel td.tot {{
+                font-weight:700; border-left:1px solid {COLORS["border"]};
+            }}
+            /* A linha da rede é o fecho da tabela, não mais uma loja. */
+            .tv-aluguel tr.rede td {{
+                font-weight:700; border-top:2px solid {COLORS["border"]};
+                border-bottom:none; background:rgba(255,255,255,0.04);
+            }}
+            .tv-aluguel tr.rede td.rot {{ background:#2A3346; }}
+
             /* A célula de calor NÃO pode criar contexto de empilhamento nem
                subir na pilha: com z-index próprio ela passava por cima da
                coluna travada em vez de por baixo. */
