@@ -6372,6 +6372,54 @@ class TesteOrdemDeDefinicao(unittest.TestCase):
         self.assertEqual(faltando, [], "\n".join(faltando))
 
 
+
+class TesteAtualizacaoDosDados(unittest.TestCase):
+    """Quando o painel rele as planilhas, e por quanto tempo a sessao vive."""
+
+    def test_nenhum_cache_de_planilha_expira_sozinho(self):
+        """Cada cache tinha prazo proprio -- 60, 300 ou 900 segundos -- e as
+        planilhas eram relidas em horarios diferentes, sem ninguem pedir. Duas
+        telas abertas lado a lado podiam mostrar numeros diferentes da mesma
+        conta so porque um cache tinha vencido e o outro nao."""
+        prazos = re.findall(r"@st\.cache_\w+\([^)]*ttl=(\d+)", FONTE)
+        self.assertEqual(prazos, [],
+                         f"cache com prazo proprio voltou: {prazos}")
+        # E todos continuam sendo caches -- tirar o prazo nao pode virar
+        # tirar o cache, senao cada tela releria a planilha do zero.
+        self.assertGreaterEqual(FONTE.count("ttl=None"), 9)
+
+    def test_existe_botao_de_atualizar_nos_dois_paineis(self):
+        """Sem prazo, o botao e o UNICO jeito de o painel ver dado novo. Se
+        ele sumir de um dos paineis, quem usa aquele fica preso no dado do
+        ultimo clique de outra pessoa."""
+        self.assertGreaterEqual(FONTE.count('"🔄 Atualizar Dados"'), 2)
+        # E ele tem de limpar os DOIS tipos de cache: metade limpa deixaria a
+        # tela misturando dado novo com dado velho.
+        i = FONTE.index('if st.sidebar.button("🔄 Atualizar Dados", width="stretch", key="fin_btn_atualizar")')
+        trecho = FONTE[i:i + 400]
+        self.assertIn("st.cache_data.clear()", trecho)
+        self.assertIn("st.cache_resource.clear()", trecho)
+
+    def test_a_sessao_vive_duas_horas_de_inatividade(self):
+        """A contagem e de INATIVIDADE, mas quem monta um orcamento ou confere
+        um fechamento passa muito tempo lendo a tela sem clicar em nada, e caia
+        no login no meio do trabalho."""
+        ns = carregar([], ["MINUTOS_INATIVIDADE"])
+        self.assertEqual(ns["MINUTOS_INATIVIDADE"], 120)
+
+    def test_o_redesenho_do_tv_renova_a_sessao(self):
+        """Com ttl=None ele nao rele planilha nenhuma -- redesenha o mesmo
+        dado. Ele existe para RENOVAR O BILHETE: sem ele, a TV da parede
+        cairia no login depois de duas horas parada, e alguem teria de ir ate
+        la entrar de novo."""
+        self.assertIn("time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)", FONTE)
+        ns = carregar([], ["SEGUNDOS_ENTRE_ATUALIZACOES_TV", "MINUTOS_INATIVIDADE"])
+        self.assertLess(ns["SEGUNDOS_ENTRE_ATUALIZACOES_TV"],
+                        ns["MINUTOS_INATIVIDADE"] * 60,
+                        "o redesenho tem de acontecer ANTES de a sessao expirar, "
+                        "senao a TV cai no login sozinha")
+
+
 # ============================================================================
 # 6. FORMATACAO
 # ============================================================================

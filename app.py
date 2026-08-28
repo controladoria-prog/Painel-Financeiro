@@ -1010,7 +1010,11 @@ def html_embutido(codigo, altura=0, largura=None, redimensionavel=False):
 #
 # A assinatura usa uma chave que só o servidor conhece, então o bilhete não
 # pode ser forjado nem ter a validade esticada por quem recebeu o link.
-MINUTOS_INATIVIDADE = 10
+# 120 minutos (2 horas), e não 10: a contagem é de INATIVIDADE, mas quem
+# monta um orçamento ou confere um fechamento passa muito tempo lendo a tela
+# sem clicar em nada, e caía no login no meio do trabalho. Duas horas cobrem
+# uma manhã inteira de análise sem deixar a sessão viva de um dia para o outro.
+MINUTOS_INATIVIDADE = 120
 CHAVE_SESSAO_URL = "sid"
 
 
@@ -1659,7 +1663,18 @@ def checar_login():
 # ============================================================================
 # ttl: sem ele, as planilhas baixadas ficavam em memória até o app
 # reiniciar -- dava para passar o dia vendo dado de ontem sem perceber.
-@st.cache_resource(ttl=900)
+# ttl=None em TODA leitura de planilha: o dado NÃO se atualiza sozinho.
+#
+# Antes cada cache tinha prazo próprio -- 60, 300 ou 900 segundos -- e as
+# planilhas eram relidas em horários diferentes, sem ninguém pedir. Duas telas
+# abertas lado a lado podiam mostrar números diferentes da mesma conta só
+# porque um cache tinha vencido e o outro não.
+#
+# Agora a releitura acontece num momento só: quando alguém clica em
+# "🔄 Atualizar Dados", que limpa todos os caches de uma vez. O preço é que o
+# painel mostra o dado do último clique -- inclusive na TV da parede, onde
+# ninguém clica. Quem atualizar a planilha precisa clicar para o painel ver.
+@st.cache_resource(ttl=None)
 def obter_caminhos_excel():
     url_orc = "https://docs.google.com/spreadsheets/d/1x68Eg_6LlSKeFJEGmfhyBfcGgheSrVsl/export?format=xlsx"
     url_real = "https://docs.google.com/spreadsheets/d/12I0vGpYU_KNhGxAHOMHWAQu3Xkz_EsUZ/export?format=xlsx"
@@ -1857,7 +1872,7 @@ def obter_url_csv_fluxo():
     return fontes_csv_fluxo()[0][1]
 
 
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=None)
 def obter_dados_fluxo_caixa():
     """Carrega a aba "Fluxo de Caixa 2026" do Painel Financeiro.
 
@@ -2074,7 +2089,7 @@ def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
 # visão e voltasse dentro de 60 segundos, e custava o dobro da memória o tempo
 # todo. O servidor derruba o app quando a memória estoura, e derrubar é pior
 # que reler.
-@st.cache_data(ttl=60, max_entries=1)
+@st.cache_data(ttl=None, max_entries=1)
 def carregar_dados_abas(path_o, path_r, lista_abas):
     """Carrega Orçado e Realizado de cada aba/loja. Cada lado é lido de forma
     INDEPENDENTE: se a loja não existir no Orçado (ex.: loja nova, ainda sem
@@ -2099,7 +2114,7 @@ def carregar_dados_abas(path_o, path_r, lista_abas):
     return dfs_o, dfs_r
 
 
-@st.cache_data(ttl=60, max_entries=1)
+@st.cache_data(ttl=None, max_entries=1)
 def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     """Carrega os dados de Orçado/Realizado de cada loja SEPARADAMENTE (uma aba
     por loja), para permitir a divisão por loja no relatório Excel — independente
@@ -2121,7 +2136,7 @@ def carregar_dados_por_loja(path_o, path_r, lista_lojas):
 # ---------------------------------------------------------------------------
 # 4.1 PLANO DE CONTAS — fonte auxiliar para a aba "Plano de Contas" do relatório
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300, max_entries=2)
+@st.cache_data(ttl=None, max_entries=2)
 def carregar_tabela_contas(path_r):
     """Lê a aba Tabela_Contas da planilha Realizado 2026: relação entre
     Natureza Financeira (plano de contas) e Linha DRE."""
@@ -2152,7 +2167,7 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
 # "23157" ou outro código) -- sem esse DE_PARA, o filtro por loja no DIÁRIO
 # nunca encontra nada, e por isso os lançamentos apareciam sempre vazios.
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300, max_entries=2)
+@st.cache_data(ttl=None, max_entries=2)
 def carregar_tabela_lojas(path_r):
     """Lê a aba Tabela_Lojas da planilha Realizado 2026: relação (DE_PARA)
     entre o nome da Loja e o Centro de Custos correspondente."""
@@ -2208,7 +2223,7 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
 # 4.2 DIÁRIO — lançamentos detalhados, fonte principal da aba "Plano de Contas"
 # ---------------------------------------------------------------------------
 # O DIÁRIO é a maior tabela do painel: uma entrada só.
-@st.cache_data(ttl=300, max_entries=1)
+@st.cache_data(ttl=None, max_entries=1)
 def carregar_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
     com Valor Bruto, Competência (data do lançamento), Plano de Contas,
@@ -4898,6 +4913,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     # Streamlit aborta o script e roda de novo. Ou seja, a espera longa não
     # trava a tela para quem estiver usando -- ela só evita o redesenho
     # automático de quem deixou a TV ligada na parede.
+    #
+    # Este redesenho NÃO relê planilha: com ttl=None nos caches, ele redesenha
+    # o mesmo dado. Ele existe por outro motivo -- RENOVA O BILHETE DE SESSÃO.
+    # Sem ele, a TV da parede cairia no login depois de duas horas parada, e
+    # alguém teria de ir até lá entrar de novo.
     time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)
     st.rerun()
 
@@ -7447,7 +7467,7 @@ TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"
 
 # max_entries=1: a base do fluxo tem centenas de milhares de linhas, e duas
 # delas na memória ao mesmo tempo é o que mais aproxima o app do limite.
-@st.cache_resource(ttl=300, max_entries=1, show_spinner="Preparando os dados do fluxo de caixa...")
+@st.cache_resource(ttl=None, max_entries=1, show_spinner="Preparando os dados do fluxo de caixa...")
 def preparar_fluxo_caixa(base_data):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
@@ -13109,7 +13129,7 @@ def anos_da_planilha(df):
     return sorted({int(a) for a in df[COL_FECH_ANO]}, reverse=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False, max_entries=2)
+@st.cache_data(ttl=None, show_spinner=False, max_entries=2)
 def carregar_planilha_fechamento(url):
     """Lê a planilha de fechamento. Devolve (tabela, erro) -- e o erro é TEXTO
     para a tela, nunca uma exceção engolida: em 20/08 um erro guardado numa
