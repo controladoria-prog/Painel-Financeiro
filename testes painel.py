@@ -5715,8 +5715,8 @@ class TestePainelTV(unittest.TestCase):
         # A classe existe e e aplicada de propósito, tabela a tabela.
         self.assertIn(".tv-matriz-fixa td.rot", FONTE)
         aplicacoes = FONTE.count('class="tv-matriz tv-matriz-fixa"')
-        self.assertEqual(aplicacoes, 2,
-                         "tabelas com a coluna travada: grupos por mes e aluguel por loja")
+        self.assertEqual(aplicacoes, 3,
+                         "grupos por mes + aluguel acumulado + aluguel mes a mes")
         # A trava NAO pode estar na regra geral: se .tv-matriz td.rot virasse
         # sticky, toda tabela nova nasceria com a coluna parada, inclusive as
         # estreitas que nem rolam -- e ali a coluna travada so atrapalha.
@@ -6098,6 +6098,35 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                         corpo.index("render_kpi_row("),
                         "o voltar desceu de novo para o rodape")
 
+    def test_a_tela_nao_lista_a_dre_inteira(self):
+        """A versao anterior abria cada subgrupo E cada sublinha dos dois
+        grupos, e o resultado era a mesma tabela que ja existe no relatorio em
+        Excel, so que numa tela de parede. A arvore para no NIVEL 2."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("_subgrupos_nivel2(", corpo)
+        self.assertNotIn("_filhos_diretos_do_conjunto(", corpo,
+                         "a tela voltou a descer para as sublinhas da DRE")
+        self.assertNotIn("arvore_de_despesas(", corpo)
+
+    def test_a_tela_e_de_kpi_e_grafico(self):
+        """O pedido foi "voltado para kpis, graficos e informacoes", nao uma
+        listagem. Dois graficos: evolucao com o peso na receita e para onde o
+        dinheiro vai."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertEqual(corpo.count("st.plotly_chart("), 2)
+        self.assertIn("Evolução e peso na receita", corpo)
+        self.assertIn("Para onde o dinheiro vai", corpo)
+        # E a CONCENTRACAO: quantas contas explicam 80% do gasto. E a pergunta
+        # que decide onde vale mexer -- se tres contas fazem 80%, negociar as
+        # outras vinte nao muda o resultado.
+        self.assertIn("CONCENTRAÇÃO", corpo)
+        self.assertIn("total_real * 0.8", corpo)
+        # A linha do % no eixo da direita: so o valor absoluto subindo nao diz
+        # nada num mes que vendeu mais.
+        self.assertIn('name="% da receita"', corpo)
+
     def test_a_tela_de_despesas_foi_enxugada(self):
         """Dois blocos saíram: o mapa de calor de subgrupo por mes e a lista de
         contas que saltaram contra a propria media. Cada um fazia uma busca por
@@ -6121,12 +6150,21 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         # A regua e a media DA REDE, nao uma meta de fora.
         self.assertIn("media_rede", corpo)
         self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
-        # As linhas de aluguel sao DESCOBERTAS pelo nome, nao cravadas: o
-        # aluguel pode estar quebrado em mais de uma linha da DRE.
-        # _normalizar_texto e NAO _normalizar_coluna_fin: o segundo so nasce
-        # DEPOIS da linha em que o painel de TV roda, e o app caia com
-        # NameError. Ver TesteOrdemDeDefinicao.
-        self.assertIn('"ALUGUEL" in _normalizar_texto(str(l))', corpo)
+        # A linha e achada pelo NUMERO, nao pelo nome: "8.4.1" nao muda
+        # quando alguem renomeia a conta na planilha, e a busca por texto ja
+        # falhou neste painel uma vez.
+        self.assertIn('_linha_por_numero_tv(linhas_dre, "8.4.1")', corpo)
+        self.assertIn('_linha_por_numero_tv(linhas_dre, "8.4.2")', corpo)
+        # O complementar e OPCIONAL e desligado por padrao: quem soma os dois
+        # sem perceber compara aluguel com aluguel + complementar entre lojas.
+        self.assertIn('key="tv_alug_compl"', corpo)
+        self.assertIn("value=False, key=\"tv_alug_compl\"", corpo)
+        # A tabela mostra os TRES numeros pedidos.
+        self.assertIn("<th>Faturamento</th><th>Aluguel</th>", corpo)
+        self.assertIn('<th class="tot">% do faturamento</th>', corpo)
+        # SEM barra: ao lado de tres numeros ela nao acrescentava leitura.
+        i_tab = corpo.index("<th>Faturamento</th>")
+        self.assertNotIn("tv-rank-bar-fill", corpo[i_tab:i_tab + 2500])
 
     def test_o_aluguel_tem_a_visao_mes_a_mes(self):
         i = FONTE.index("Aluguel sobre o faturamento")
