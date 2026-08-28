@@ -3145,8 +3145,53 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         unsafe_allow_html=True,
     )
 
+    # ---- Indicadores secundários -------------------------------------------
+    # Numa FAIXA FINA, e não numa segunda fileira de cartões: são números de
+    # apoio, e dar a eles o mesmo tamanho dos quatro de cima faria o olho
+    # tratar tudo como igualmente importante. Aqui eles densificam a tela sem
+    # ocupar altura -- que era a queixa.
+    _mes_com_dado = [i for i, c in enumerate(cols_mes)
+                     if _real("6 - Despesas Variáveis", [c])
+                     or _real("8 - Despesas Operacionais", [c])]
+    _serie_total_mes = [
+        _real("6 - Despesas Variáveis", [cols_mes[i]])
+        + _real("8 - Despesas Operacionais", [cols_mes[i]])
+        for i in _mes_com_dado
+    ]
+    _media_mes = (sum(_serie_total_mes) / len(_serie_total_mes)) if _serie_total_mes else 0
+    # Variação do último mês fechado contra o anterior. Precisa de DOIS meses:
+    # com um só não há contra o que comparar, e mostrar "+100%" seria invenção.
+    _var_mes = None
+    if len(_serie_total_mes) >= 2 and _serie_total_mes[-2]:
+        _var_mes = _serie_total_mes[-1] / _serie_total_mes[-2] - 1
+    _soma_estouros = sum(e["desvio"] for e in estouros)
+    _pct_var = (var_real / total_real * 100) if total_real else 0
+
+    def _ind(rotulo, valor, cor=None):
+        return (f'<span>{rotulo} <b style="font-family:{FONTE_MONO};'
+                f'color:{cor or COLORS["text"]};">{valor}</b></span>')
+
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;gap:6px 26px;font-size:12px;'
+        f'color:{COLORS["text_muted"]};margin:-4px 0 10px 0;">'
+        + _ind("Variáveis", f"{_pct_var:.0f}%".replace(".", ","), COLORS["muted_line"])
+        + _ind("Operacionais", f"{100 - _pct_var:.0f}%".replace(".", ","),
+               COLORS["warning"])
+        + _ind("Média por mês", formata_m(_media_mes))
+        + _ind("Último mês vs. anterior",
+               ("—" if _var_mes is None
+                else f"{_var_mes * 100:+.1f}%".replace(".", ",")),
+               (COLORS["text"] if _var_mes is None
+                else cor_variacao(-_var_mes)))
+        + _ind(f"Contas acima do orçado ({len(estouros)})",
+               formata_m(_soma_estouros),
+               COLORS["negative"] if estouros else COLORS["positive"])
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
     # ---- Gráficos ----------------------------------------------------------
-    st.markdown("<br>", unsafe_allow_html=True)
+
     graf_esq, graf_dir = st.columns([1.15, 1])
     with graf_esq:
         st.markdown('<div class="tv-section-title">📉 Evolução e peso na receita</div>',
@@ -3222,27 +3267,34 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
             "orçado no período.</span></div>", unsafe_allow_html=True)
     else:
-        # COM BARRA, como as outras listas do painel: sem ela as colunas se
-        # espalhavam pela largura toda e ficava um vão enorme no meio de cada
-        # linha -- era o que fazia a lista não parecer do mesmo painel.
+        # TABELA, e não lista de barras: cada linha da lista ocupava 60px e o
+        # último número quebrava em duas ("R$ 1,6M · +R$ 1,1M" não cabia na
+        # coluna), o que dobrava a altura de novo. Em tabela, os cinco itens
+        # ocupam a altura de dois da versão anterior, e os números ficam em
+        # colunas alinhadas -- que é como se compara orçado com gasto.
         teto_e = estouros[0]["desvio"] or 1.0
-        linhas_e = ['<div class="tv-panel" style="padding:8px 14px;">']
+        linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
+                    '<table class="tv-matriz tv-estouros" style="width:100%;">',
+                    '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
+                    '<th>Gasto</th><th class="tot">Estouro</th>'
+                    '<th style="width:26%;"></th></tr></thead><tbody>']
         for item in estouros[:5]:
             linhas_e.append(
-                '<div class="tv-rank-row">'
-                f'<div class="tv-rank-name" title="{item["conta"]}">{item["conta"]}'
-                f'<span style="color:{COLORS["text_muted"]};font-size:10px;'
-                f'margin-left:8px;">{item["grupo"]}</span></div>'
-                '<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" '
+                f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
+                f'<span class="sec">{item["grupo"]}</span></td>'
+                f'<td>{formata_m(item["orcado"])}</td>'
+                f'<td>{formata_m(item["realizado"])}</td>'
+                f'<td class="tot" style="color:{COLORS["negative"]};">'
+                f'+{formata_m(item["desvio"])}</td>'
+                '<td><div class="tv-rank-bar-bg" style="margin:0;">'
+                '<div class="tv-rank-bar-fill" '
                 f'style="width:{item["desvio"] / teto_e * 100:.0f}%;'
-                f'background:{COLORS["negative"]};"></div></div>'
-                f'<div class="tv-rank-pct-rec">{formata_m(item["orcado"])} orç.</div>'
-                f'<div class="tv-rank-val" style="color:{COLORS["negative"]};">'
-                f'{formata_m(item["realizado"])} · +{formata_m(item["desvio"])}</div></div>'
+                f'background:{COLORS["negative"]};"></div></div></td></tr>'
             )
         linhas_e.append(
+            "</tbody></table>"
             f'<div style="text-align:right;font-size:10px;'
-            f'color:{COLORS["text_muted"]};margin-top:6px;">'
+            f'color:{COLORS["text_muted"]};margin-top:4px;">'
             "Ordenado em reais, não em percentual.</div></div>"
         )
         st.markdown("".join(linhas_e), unsafe_allow_html=True)
@@ -3355,7 +3407,12 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 unsafe_allow_html=True,
             )
 
-            if registros:
+            # Uma visão OU a outra, nunca as duas: quem pediu mês a mês já
+            # tem o total na coluna "Período" da tabela mensal, e a tabela
+            # acumulada logo acima repetia a mesma informação em outro
+            # formato, dobrando a altura do bloco.
+            _abrir_aluguel_por_mes = bool(por_mes and len(meses_ativos) > 1 and registros)
+            if registros and not _abrir_aluguel_por_mes:
                 # A intensidade do fundo na coluna do % substitui a barra: ela
                 # ocupa espaço que já é da célula, em vez de uma coluna a mais,
                 # e a loja mais comprometida se acha de relance.
@@ -3419,7 +3476,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     unsafe_allow_html=True,
                 )
 
-            if por_mes and len(meses_ativos) > 1 and registros:
+            if _abrir_aluguel_por_mes:
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
                 tabela = ['<div class="tv-panel" style="padding:10px 12px;">',
                           '<div style="overflow-x:auto;">',
@@ -3919,6 +3976,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                linha a tabela tomava a tela inteira. A largura das colunas de
                dinheiro cai para 140px -- o suficiente para "R$ 14.736.756,90"
                sem sobra. */
+            /* Compacta como a do aluguel, e com a coluna da conta larga: o
+               nome da despesa é longo e o grupo vai embaixo dele. */
+            .tv-estouros td, .tv-estouros th {{ padding:3px 8px !important; }}
+            .tv-estouros td {{ font-size:12px !important; }}
+            .tv-estouros td:not(.rot), .tv-estouros th:not(.rot) {{
+                width:110px; text-align:right; white-space:nowrap;
+            }}
+            .tv-estouros td.rot, .tv-estouros th.rot {{ max-width:none; width:34%; }}
             .tv-aluguel td, .tv-aluguel th {{ padding:3px 8px !important; }}
             .tv-aluguel td {{ font-size:11.5px !important; }}
             .tv-aluguel td.rot {{ font-size:11.5px !important; }}

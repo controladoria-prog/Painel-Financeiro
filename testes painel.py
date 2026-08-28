@@ -6283,10 +6283,52 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         i_tab = corpo.index("<th>Faturamento</th>")
         self.assertNotIn("tv-rank-bar-fill", corpo[i_tab:i_tab + 2500])
 
+    def test_a_tela_tem_indicadores_de_apoio_numa_faixa_fina(self):
+        """Numa faixa, e nao numa segunda fileira de cartoes: sao numeros de
+        apoio, e dar a eles o mesmo tamanho dos quatro de cima faria o olho
+        tratar tudo como igualmente importante. Eles densificam a tela sem
+        ocupar altura -- que era a queixa."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertEqual(corpo.count("render_kpi_row("), 1,
+                         "os indicadores viraram uma segunda fileira de cartoes")
+        for rotulo in ('_ind("Variáveis"', '_ind("Operacionais"',
+                       '_ind("Média por mês"', '"Último mês vs. anterior"'):
+            self.assertIn(rotulo, corpo, f"sumiu o indicador {rotulo}")
+        self.assertIn("Contas acima do orçado", corpo)
+
+    def test_a_variacao_mensal_precisa_de_dois_meses(self):
+        """Com um mes so nao ha contra o que comparar, e mostrar "+100%" seria
+        invencao. E o mes anterior zerado tambem barra: divisao por zero."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("if len(_serie_total_mes) >= 2 and _serie_total_mes[-2]:", corpo)
+        self.assertIn("_var_mes = None", corpo)
+
+    def test_os_estouros_ficam_numa_tabela_compacta(self):
+        """Cada linha da lista de barras ocupava 60px e o ultimo numero
+        quebrava em duas -- "R$ 1,6M · +R$ 1,1M" nao cabia na coluna, o que
+        dobrava a altura de novo."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('class="tv-matriz tv-estouros"', corpo)
+        # Orcado e gasto em COLUNAS proprias: e assim que se compara os dois.
+        self.assertIn("<th>Orçado</th>", corpo)
+        self.assertIn("<th>Gasto</th>", corpo)
+        self.assertIn('<th class="tot">Estouro</th>', corpo)
+
+
     def test_o_aluguel_tem_a_visao_mes_a_mes(self):
         i = FONTE.index("Aluguel sobre o faturamento")
         trecho = FONTE[i:FONTE.index("\ndef ", i)]
-        self.assertIn("if por_mes and len(meses_ativos) > 1 and registros:", trecho)
+        # UMA visao OU a outra, nunca as duas: quem pediu mes a mes ja tem o
+        # total na coluna "Periodo" da tabela mensal, e a acumulada logo acima
+        # repetia a mesma informacao dobrando a altura do bloco.
+        self.assertIn("_abrir_aluguel_por_mes = bool(por_mes and len(meses_ativos) > 1",
+                      trecho)
+        self.assertIn("if registros and not _abrir_aluguel_por_mes:", trecho,
+                      "a tabela acumulada voltou a aparecer junto com a mensal")
+        self.assertIn("if _abrir_aluguel_por_mes:", trecho)
         # Mes sem receita fica com um traco: dividir por zero daria um
         # percentual que nao existe, e numero inventado em tela de parede vira
         # decisao.
