@@ -3321,7 +3321,19 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             # um gráfico do Plotly com marcadores. O traço do orçado sobre a
             # barra ficava ambíguo quando os dois valores eram próximos.
             maior_sub = max((s["valor"] for s in topo), default=0) or 1.0
-            partes = ['<div class="tv-panel" style="padding:8px 14px;">']
+            # CABEÇALHO na lista: eram quatro números por linha sem nada
+            # dizendo o que cada um era, e a legenda no rodapé só explicava o
+            # último. Com os rótulos em cima, a linha se lê sem legenda.
+            partes = ['<div class="tv-panel" style="padding:8px 14px;">',
+                      '<div class="tv-rank-row" style="border-bottom:1px solid '
+                      f'{COLORS["border"]};padding-bottom:6px;margin-bottom:4px;'
+                      f'font-size:9.5px;letter-spacing:0.9px;text-transform:uppercase;'
+                      f'color:{COLORS["text_muted"]};">'
+                      '<div class="tv-rank-name">Subgrupo</div>'
+                      '<div class="tv-rank-bar-bg" style="visibility:hidden;"></div>'
+                      '<div class="tv-rank-pct-rec">% da receita</div>'
+                      '<div class="tv-rank-pct-sai">desvio</div>'
+                      '<div class="tv-rank-val">gasto</div></div>']
             for s in topo:
                 desvio = s["orcado"] - s["valor"]
                 partes.append(
@@ -3343,8 +3355,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             partes.append(
                 f'<div style="text-align:right;font-size:10px;'
                 f'color:{COLORS["text_muted"]};margin-top:5px;">'
-                "Último número: desvio contra o orçado (positivo = gastou menos)."
-                "</div></div>")
+                "Desvio = orçado − gasto: positivo (verde) é o que sobrou do "
+                "previsto.</div></div>")
             st.markdown("".join(partes), unsafe_allow_html=True)
 
     # =====================================================================
@@ -3500,7 +3512,23 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             # Duas colunas ESTREITAS: a tabela do aluguel tem quatro colunas
             # curtas e o bloco de exceções tem duas etiquetas. Nenhum dos dois
             # precisa de meia tela, e esticados eles só afastavam os números.
+            # ESPAÇOS RESERVADOS fixos, criados SEMPRE nas mesmas colunas, e
+            # limpos por ordem quando não recebem conteúdo.
+            #
+            # Antes o conteúdo mudava de lugar conforme o modo -- a tabela
+            # acumulada sumia no mês a mês e as exceções trocavam de coluna --
+            # e o Streamlit deixava preso o desenho da execução anterior. Era
+            # o mesmo fantasma que já apareceu na tabela de grupos do painel
+            # principal, e a solução é a mesma.
             _col_tab, _col_lado, _sobra = st.columns([1, 0.62, 0.5])
+            _vaga_tabela = _col_tab.empty()
+            _vaga_exc_lado = _col_lado.empty()
+            _vaga_mensal = st.empty()
+            _vaga_exc_larga = st.empty()
+            if abrir_por_mes:
+                _vaga_tabela.empty()   # some a tabela acumulada, sem deixar rastro
+            else:
+                _vaga_mensal.empty()
             if registros and not abrir_por_mes:
                 teto = max(r["pct"] for r in registros) or 1.0
                 partes = ['<div class="tv-panel" style="padding:8px 12px;">',
@@ -3532,8 +3560,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     f'color:{COLORS["text_muted"]};margin-top:5px;">'
                     "Aluguel ÷ receita operacional bruta da própria loja."
                     "</div></div>")
-                with _col_tab:
-                    st.markdown("".join(partes), unsafe_allow_html=True)
+                _vaga_tabela.markdown("".join(partes), unsafe_allow_html=True)
 
             if sem_faturamento or sem_aluguel:
                 def _chips(itens, cor, valor_de):
@@ -3567,8 +3594,16 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     f'<div style="font-size:9.5px;color:{COLORS["text_muted"]};'
                     'margin-top:2px;">Fora do percentual: sem faturamento não há '
                     "o que dividir; sem aluguel o índice é zero.</div></div>")
-                with (_col_lado if not abrir_por_mes else contextlib.nullcontext()):
-                    st.markdown("".join(_partes_exc), unsafe_allow_html=True)
+                # No acumulado as exceções ficam ao lado da tabela; no mês a
+                # mês a tabela é larga e elas vão para cima dela, em faixa
+                # própria. A vaga não usada é esvaziada.
+                _html_exc = "".join(_partes_exc)
+                if abrir_por_mes:
+                    _vaga_exc_larga.markdown(_html_exc, unsafe_allow_html=True)
+                    _vaga_exc_lado.empty()
+                else:
+                    _vaga_exc_lado.markdown(_html_exc, unsafe_allow_html=True)
+                    _vaga_exc_larga.empty()
 
             if abrir_por_mes and registros:
                 # Faturamento e aluguel do PERÍODO em colunas próprias, e só o
@@ -3580,9 +3615,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                           '<div style="overflow-x:auto;">',
                           '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
                           'style="min-width:100%;">',
-                          '<thead><tr><th class="rot">Loja</th>'
-                          '<th>Faturamento</th><th>Aluguel</th>'
-                          f'{cab}<th class="tot">Período</th></tr></thead><tbody>']
+                          f'<thead><tr><th class="rot">Loja</th>{cab}'
+                          '<th class="tot">Período</th></tr></thead><tbody>']
                 for reg in registros:
                     celulas = ""
                     for coluna in cols_mes:
@@ -3594,22 +3628,31 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                         pct_m = alu_m / fat_m * 100
                         cor_m = (COLORS["negative"] if pct_m > media_rede
                                  else COLORS["positive"])
-                        celulas += (f'<td style="color:{cor_m};">'
-                                    + f"{pct_m:.2f}%".replace(".", ",") + "</td>")
+                        # Os TRÊS números do mês: o percentual em destaque e,
+                        # embaixo, faturamento e aluguel que o produziram. Sem
+                        # eles a tabela mostrava o índice sem a conta, e não
+                        # dava para saber se subiu porque o aluguel aumentou ou
+                        # porque a loja vendeu menos -- que são problemas
+                        # diferentes.
+                        celulas += (
+                            f'<td style="color:{cor_m};">'
+                            + f"{pct_m:.2f}%".replace(".", ",")
+                            + f'<span class="sec">{formata_valor_curto(fat_m)} · '
+                            f'{formata_valor_curto(alu_m)}</span></td>')
                     tabela.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
-                        f'<td>{formata_valor_curto(reg["faturamento"])}</td>'
-                        f'<td>{formata_valor_curto(reg["aluguel"])}</td>'
                         f'{celulas}<td class="tot">'
-                        + f"{reg['pct']:.2f}%".replace(".", ",") + "</td></tr>")
+                        + f"{reg['pct']:.2f}%".replace(".", ",")
+                        + f'<span class="sec">{formata_valor_curto(reg["faturamento"])} · '
+                        f'{formata_valor_curto(reg["aluguel"])}</span></td></tr>')
                 tabela.append(
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:5px;">'
-                    "Faturamento e aluguel são do período; as colunas de mês trazem "
-                    "o percentual do aluguel sobre a receita bruta daquele mês."
+                    "Em cada célula: <b>percentual</b> do aluguel sobre a receita "
+                    "bruta do mês e, embaixo, <b>faturamento · aluguel</b> daquele mês."
                     "</div></div>")
-                st.markdown("".join(tabela), unsafe_allow_html=True)
+                _vaga_mensal.markdown("".join(tabela), unsafe_allow_html=True)
 
 
 def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):

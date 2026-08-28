@@ -6295,7 +6295,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         j = corpo.index('maior_sub = max((s["valor"] for s in topo)')
-        trecho = corpo[j:j + 1400]
+        trecho = corpo[j:j + 2600]
         self.assertIn('class="tv-rank-pct-sai" style="color:{cor_variacao(desvio)};"',
                       trecho)
         self.assertIn('<div class="tv-rank-val">{formata_valor_curto(s["valor"])}',
@@ -6308,6 +6308,52 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertEqual(corpo.count("carregar_dados_por_loja("), 1)
         self.assertEqual(corpo.count("def _da_loja("), 1)
+
+
+    def test_o_ranque_tem_cabecalho(self):
+        """Eram quatro numeros por linha sem nada dizendo o que cada um era, e
+        a legenda do rodape so explicava o ultimo."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index('maior_sub = max((s["valor"] for s in topo)')
+        trecho = corpo[j:j + 1200]
+        for rotulo in ("Subgrupo", "% da receita", "desvio", "gasto"):
+            self.assertIn(f">{rotulo}</div>", trecho, f"sumiu o rotulo {rotulo}")
+
+    def test_o_aluguel_mensal_traz_os_tres_numeros(self):
+        """Sem faturamento e aluguel, a tabela mostrava o indice sem a conta:
+        nao dava para saber se subiu porque o aluguel aumentou ou porque a loja
+        vendeu menos -- que sao problemas diferentes."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index("alu_m = _da_loja(reg[\"df\"], chaves_aluguel, [coluna])")
+        trecho = corpo[j:j + 1600]
+        self.assertIn("formata_valor_curto(fat_m)", trecho)
+        self.assertIn("formata_valor_curto(alu_m)", trecho)
+        self.assertIn('{pct_m:.2f}%', trecho)
+
+    def test_o_aluguel_usa_espacos_reservados_contra_o_fantasma(self):
+        """O conteudo mudava de lugar conforme o modo -- a tabela acumulada
+        sumia no mes a mes e as excecoes trocavam de coluna -- e o Streamlit
+        deixava preso o desenho da execucao anterior. Mesmo fantasma da tabela
+        de grupos do painel principal, mesma solucao."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
+                     "_vaga_exc_larga"):
+            self.assertIn(f"{vaga} = ", corpo, f"sumiu a vaga {vaga}")
+        # E cada uma tem de ser LIMPA quando nao e usada: criar a vaga sem
+        # esvaziar nao resolve nada.
+        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
+                     "_vaga_exc_larga"):
+            self.assertIn(f"{vaga}.empty()", corpo,
+                          f"a vaga {vaga} nunca e esvaziada")
+        # E o conteudo tem de SAIR pela vaga, nao por um st.markdown solto:
+        # markdown solto desenha fora do espaco reservado e o fantasma volta.
+        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
+                     "_vaga_exc_larga"):
+            self.assertIn(f"{vaga}.markdown(", corpo,
+                          f"a vaga {vaga} existe mas nada e desenhado nela")
 
 
     def test_a_tela_nao_lista_a_dre_inteira(self):
