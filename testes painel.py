@@ -6147,16 +6147,27 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         novo para sair dela."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn("voltar ao painel executivo", corpo)
-        # UMA vez no arquivo inteiro. Um replace meu casou em DOIS lugares e
-        # injetou o link no meio do painel geral, onde nao faz sentido nenhum:
-        # "voltar ao painel executivo" estando JA no painel executivo.
-        self.assertEqual(FONTE.count("voltar ao painel executivo"), 1,
-                         "o link de voltar apareceu fora da ramificacao")
+        self.assertIn('class="tv-btn-voltar"', corpo)
+        # UMA vez no arquivo inteiro. Um replace meu ja casou em DOIS lugares e
+        # injetou o link no meio do painel geral, onde nao faz sentido nenhum.
+        self.assertEqual(FONTE.count('class="tv-btn-voltar"'), 1,
+                         "o botao de voltar apareceu fora da ramificacao")
         # ANTES de qualquer bloco de conteudo.
-        self.assertLess(corpo.index("voltar ao painel executivo"),
+        self.assertLess(corpo.index('class="tv-btn-voltar"'),
                         corpo.index("render_kpi_row("),
                         "o voltar desceu de novo para o rodape")
+        # E e um BOTAO: pilula com borda, nao texto sublinhado.
+        i = FONTE.index(".tv-btn-voltar {{")
+        estilo = FONTE[i:i + 600]
+        self.assertIn("border-radius:999px", estilo)
+        self.assertIn("border:1px solid", estilo)
+        # DUAS regras de hover: a do botao (cor e borda) e a da seta, que anda
+        # para a esquerda. Cobrar so uma deixava a outra ser removida em
+        # silencio, e o movimento e o que diz para onde ele leva.
+        self.assertEqual(FONTE.count(".tv-btn-voltar:hover"), 2,
+                         "o botao perdeu uma das reacoes ao mouse")
+        self.assertIn(".tv-btn-voltar:hover .seta {{ transform:translateX(-3px); }}",
+                      FONTE)
 
     def test_as_tabelas_da_tela_ficam_dentro_do_cartao(self):
         """Soltas no fundo elas nao pareciam do mesmo painel: no painel
@@ -6308,6 +6319,21 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertEqual(corpo.count("carregar_dados_por_loja("), 1)
         self.assertEqual(corpo.count("def _da_loja("), 1)
+
+
+    def test_o_nome_do_subgrupo_cabe_inteiro_no_ranque(self):
+        """Os subgrupos tem nomes como "Taxa de Emissao de Boleto / Boleto
+        Garantido", e com a barra pesando 1.1 contra 1 do nome sobrava menos da
+        metade da largura para o texto -- ele saia cortado. A barra e
+        acessoria: ela ordena a leitura, o nome e que precisa ser lido."""
+        self.assertIn(".tv-rank-largo .tv-rank-name {{ flex:2.4; }}", FONTE)
+        self.assertIn(".tv-rank-largo .tv-rank-bar-bg {{ flex:0.55; }}", FONTE)
+        # E a variante e APLICADA no bloco de despesas.
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('class="tv-panel tv-rank-largo"', corpo)
+        # Sem vazar para as listas do painel principal, que tem nomes curtos.
+        self.assertEqual(FONTE.count('class="tv-panel tv-rank-largo"'), 1)
 
 
     def test_o_ranque_tem_cabecalho(self):

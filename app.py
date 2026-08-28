@@ -3094,10 +3094,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
     dois modos é um bloco que ignora o filtro.
     """
     st.markdown(
-        '<a href="?modo=tv" target="_self" '
-        f'style="color:{COLORS["primary"]};font-size:12.5px;text-decoration:none;'
-        'display:inline-block;margin-bottom:10px;">'
-        "‹ voltar ao painel executivo</a>",
+        '<a href="?modo=tv" target="_self" class="tv-btn-voltar">'
+        '<span class="seta">‹</span> Painel executivo</a>',
         unsafe_allow_html=True,
     )
     col_nome = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
@@ -3324,7 +3322,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             # CABEÇALHO na lista: eram quatro números por linha sem nada
             # dizendo o que cada um era, e a legenda no rodapé só explicava o
             # último. Com os rótulos em cima, a linha se lê sem legenda.
-            partes = ['<div class="tv-panel" style="padding:8px 14px;">',
+            partes = ['<div class="tv-panel tv-rank-largo" style="padding:8px 14px;">',
                       '<div class="tv-rank-row" style="border-bottom:1px solid '
                       f'{COLORS["border"]};padding-bottom:6px;margin-bottom:4px;'
                       f'font-size:9.5px;letter-spacing:0.9px;text-transform:uppercase;'
@@ -3905,6 +3903,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             .tv-rank-name {{ flex:1; font-size:14.5px; color:{COLORS["text"]}; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
             .tv-rank-bar-bg {{ flex:1.1; background:{COLORS["border"]}; border-radius:4px; height:7px; overflow:hidden; }}
             .tv-rank-bar-fill {{ height:100%; border-radius:4px; background: linear-gradient(90deg, {COLORS["secondary"]}, {COLORS["warning"]}); }}
+            /* Variante do ranque para nomes LONGOS. Na tela de despesas os
+               subgrupos têm nomes como "Taxa de Emissão de Boleto / Boleto
+               Garantido", e com a barra pesando 1.1 contra 1 do nome sobrava
+               menos da metade da largura para o texto -- ele saía cortado.
+               Aqui a barra é acessória: ela ordena a leitura, o nome é que
+               precisa ser lido inteiro. */
+            .tv-rank-largo .tv-rank-name {{ flex:2.4; }}
+            .tv-rank-largo .tv-rank-bar-bg {{ flex:0.55; }}
             .tv-rank-pct-rec {{ flex:0.6; font-size:12.5px; color:{COLORS["text_muted"]}; text-align:right; white-space:nowrap; }}
             /* Peso nas SAÍDAS (operacionais + variáveis). Cor de destaque para
                não se confundir com o % da receita, que fica logo ao lado e tem
@@ -3978,6 +3984,27 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             /* O título vira link: muda de cor ao passar o mouse, para quem
                estiver no computador perceber que dá para clicar. Na parede
                ninguém clica, e por isso ele continua parecendo um título. */
+            /* Botão de voltar: pílula com borda, e não texto sublinhado. A
+               seta anda para a esquerda ao passar o mouse -- o movimento diz
+               para onde ele leva sem precisar de mais palavras. */
+            .tv-btn-voltar {{
+                display:inline-flex; align-items:center; gap:8px;
+                padding:7px 16px 7px 13px; margin-bottom:12px;
+                border:1px solid {COLORS["border"]}; border-radius:999px;
+                background:{COLORS["surface"]}; color:{COLORS["text_muted"]};
+                font-size:12.5px; font-weight:600; letter-spacing:0.3px;
+                text-decoration:none; cursor:pointer;
+                transition:border-color 0.18s, color 0.18s, background 0.18s;
+            }}
+            .tv-btn-voltar .seta {{
+                font-size:17px; line-height:1; transition:transform 0.18s;
+                color:{COLORS["primary"]};
+            }}
+            .tv-btn-voltar:hover {{
+                border-color:{COLORS["primary"]}; color:{COLORS["text"]};
+                background:{COLORS["surface_alt"]};
+            }}
+            .tv-btn-voltar:hover .seta {{ transform:translateX(-3px); }}
             .tv-link {{ cursor:pointer; transition:color 0.15s; }}
             .tv-link:hover {{ color:{COLORS["primary"]} !important; }}
             .tv-mescards {{ display:flex; flex-wrap:wrap; gap:9px; }}
