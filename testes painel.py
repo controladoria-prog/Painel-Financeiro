@@ -6173,16 +6173,45 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                           "tabela solta no fundo, fora do cartao")
             pos += 12
 
-    def test_a_lista_de_estouros_tem_barra_como_as_outras(self):
-        """Sem ela as colunas se espalhavam pela largura toda e ficava um vao
-        enorme no meio de cada linha -- era o que fazia a lista nao parecer do
-        mesmo painel."""
+    def test_o_valor_mensal_do_aluguel_nao_usa_formata_m(self):
+        """O aluguel de uma loja num mes e de dezenas de milhares, e formata_m
+        mostra tudo abaixo de R$ 100 mil como "R$ 0,0M" -- a coluna inteira
+        aparecia zerada enquanto o percentual ao lado estava certo."""
+        ns = carregar(["formata_m", "formata_valor_curto"])
+        # Modelo: e o formatador mesmo que zera, nao os dados.
+        self.assertEqual(ns["formata_m"](8000.0), "R$ 0,0M")
+        self.assertEqual(ns["formata_valor_curto"](8000.0), "R$ 8 mil")
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        j = corpo.index("teto_e = estouros[0]")
-        trecho = corpo[j:j + 1200]
-        self.assertIn("tv-rank-bar-fill", trecho)
-        self.assertIn('item["desvio"] / teto_e * 100', trecho)
+        j = corpo.index("alu_m = _da_loja(")
+        self.assertIn("formata_valor_curto(alu_m)", corpo[j:j + 1400],
+                      "o valor mensal do aluguel voltou a zerar")
+
+    def test_a_faixa_de_indicadores_nao_encosta_nos_cartoes(self):
+        """Com margem negativa ela subia por cima da borda de baixo dos
+        cartoes e o texto encostava neles."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index('gap:6px 26px;font-size:12px;')
+        self.assertIn("margin:10px 0 12px 0;", corpo[j:j + 400])
+        self.assertNotIn("margin:-4px", corpo[j:j + 400])
+
+
+    def test_a_tabela_de_estouros_nao_tem_barra(self):
+        """A coluna do estouro ja ordena a leitura, e a barra repetia essa
+        ordem gastando 26% da largura. No lugar dela entrou o PERCENTUAL do
+        estouro, que a coluna em reais nao conta -- R$ 0,1M sobre R$ 0,0M e
+        outra conversa que sobre R$ 1,1M."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index("teto_e = estouros[0]") if "teto_e" in corpo else None
+        self.assertIsNone(j, "a barra dos estouros voltou")
+        k = corpo.index('class="tv-matriz tv-estouros"')
+        trecho = corpo[k:k + 2200]
+        self.assertNotIn("tv-rank-bar-fill", trecho)
+        self.assertIn('item["desvio"] / item["orcado"] * 100', trecho)
+        # Conta sem orcamento nao pode virar divisao por zero.
+        self.assertIn('if item["orcado"] else None', trecho)
 
     def test_o_bloco_do_aluguel_nao_repete_a_faixa_de_kpi(self):
         """A tela ja abre com uma faixa de quatro cartoes. Repetir o mesmo
@@ -6224,7 +6253,9 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         dinheiro vai."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertEqual(corpo.count("st.plotly_chart("), 2)
+        self.assertEqual(corpo.count("st.plotly_chart("), 3,
+                         "evolucao + para onde vai + orcado x realizado")
+        self.assertIn("Orçado × realizado por subgrupo", corpo)
         self.assertIn("Evolução e peso na receita", corpo)
         self.assertIn("Para onde o dinheiro vai", corpo)
         # E a CONCENTRACAO: quantas contas explicam 80% do gasto. E a pergunta
@@ -6263,7 +6294,15 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         # da tabela: o escritorio paga aluguel de verdade, e enfia-lo numa
         # tabela de percentuais sugere um indice que nao existe.
         self.assertIn("sem_faturamento.append(", corpo)
-        self.assertIn("Unidades sem faturamento", corpo)
+        # Loja que nao paga aluguel tambem sai da lista: uma linha inteira com
+        # R$ 0,00 e 0,00% ocupa o mesmo espaco das outras e nao diz nada.
+        # A CONDICAO, e nao so o append: desligar o ramo deixa a chamada no
+        # codigo, inalcancavel, e a busca por texto continuava passando.
+        self.assertIn("            if not aluguel:", corpo)
+        i_ramo = corpo.index("            if not aluguel:")
+        self.assertIn("sem_aluguel.append(", corpo[i_ramo:i_ramo + 700])
+        self.assertIn("Pagam aluguel e não faturam", corpo)
+        self.assertIn("Faturam e não pagam aluguel", corpo)
         # A regua e a media DA REDE, nao uma meta de fora.
         self.assertIn("media_rede", corpo)
         self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)

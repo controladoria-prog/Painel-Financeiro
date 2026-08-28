@@ -3173,7 +3173,10 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
 
     st.markdown(
         f'<div style="display:flex;flex-wrap:wrap;gap:6px 26px;font-size:12px;'
-        f'color:{COLORS["text_muted"]};margin:-4px 0 10px 0;">'
+        # margin-top POSITIVA: com -4px a faixa subia por cima da borda de
+        # baixo dos cartões e o texto encostava neles.
+        f'color:{COLORS["text_muted"]};margin:10px 0 12px 0;'
+        f'padding-top:10px;border-top:1px solid {COLORS["border_soft"]};">'
         + _ind("Variáveis", f"{_pct_var:.0f}%".replace(".", ","), COLORS["muted_line"])
         + _ind("Operacionais", f"{100 - _pct_var:.0f}%".replace(".", ","),
                COLORS["warning"])
@@ -3258,46 +3261,93 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         )
         st.plotly_chart(fig2, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
-    # ---- Estouros ----------------------------------------------------------
-    st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
-                unsafe_allow_html=True)
-    if not estouros:
-        st.markdown(
-            '<div class="tv-panel" style="padding:14px;">'
-            f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
-            "orçado no período.</span></div>", unsafe_allow_html=True)
-    else:
-        # TABELA, e não lista de barras: cada linha da lista ocupava 60px e o
-        # último número quebrava em duas ("R$ 1,6M · +R$ 1,1M" não cabia na
-        # coluna), o que dobrava a altura de novo. Em tabela, os cinco itens
-        # ocupam a altura de dois da versão anterior, e os números ficam em
-        # colunas alinhadas -- que é como se compara orçado com gasto.
-        teto_e = estouros[0]["desvio"] or 1.0
-        linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
-                    '<table class="tv-matriz tv-estouros" style="width:100%;">',
-                    '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
-                    '<th>Gasto</th><th class="tot">Estouro</th>'
-                    '<th style="width:26%;"></th></tr></thead><tbody>']
-        for item in estouros[:5]:
+    # ---- Estouros + orçado x realizado -------------------------------------
+    # Lado a lado: a tabela ocupava a largura inteira para mostrar cinco linhas
+    # de quatro números, e sobrava meia tela. Sem a barra -- a coluna do
+    # estouro já ordena a leitura, e a barra repetia essa ordem gastando 26%
+    # da largura.
+    col_est, col_cmp = st.columns([1, 1])
+    with col_est:
+        st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
+                    unsafe_allow_html=True)
+        if not estouros:
+            st.markdown(
+                '<div class="tv-panel" style="padding:14px;">'
+                f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
+                "orçado no período.</span></div>", unsafe_allow_html=True)
+        else:
+            linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
+                        '<table class="tv-matriz tv-estouros" style="width:100%;">',
+                        '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
+                        '<th>Gasto</th><th class="tot">Estouro</th>'
+                        '<th class="tot">%</th></tr></thead><tbody>']
+            for item in estouros[:5]:
+                # O percentual do estouro entra no lugar da barra: ele diz
+                # QUANTO a conta passou, que a coluna em reais não conta --
+                # R$ 0,1M sobre R$ 0,0M é outra conversa que sobre R$ 1,1M.
+                _pct_est = ((item["desvio"] / item["orcado"] * 100)
+                            if item["orcado"] else None)
+                linhas_e.append(
+                    f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
+                    f'<span class="sec">{item["grupo"]}</span></td>'
+                    f'<td>{formata_valor_curto(item["orcado"])}</td>'
+                    f'<td>{formata_valor_curto(item["realizado"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["negative"]};">'
+                    f'+{formata_valor_curto(item["desvio"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["negative"]};">'
+                    + ("s/ orç." if _pct_est is None
+                       else f"+{_pct_est:.0f}%") + "</td></tr>"
+                )
             linhas_e.append(
-                f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
-                f'<span class="sec">{item["grupo"]}</span></td>'
-                f'<td>{formata_m(item["orcado"])}</td>'
-                f'<td>{formata_m(item["realizado"])}</td>'
-                f'<td class="tot" style="color:{COLORS["negative"]};">'
-                f'+{formata_m(item["desvio"])}</td>'
-                '<td><div class="tv-rank-bar-bg" style="margin:0;">'
-                '<div class="tv-rank-bar-fill" '
-                f'style="width:{item["desvio"] / teto_e * 100:.0f}%;'
-                f'background:{COLORS["negative"]};"></div></div></td></tr>'
+                "</tbody></table>"
+                f'<div style="text-align:right;font-size:10px;'
+                f'color:{COLORS["text_muted"]};margin-top:4px;">'
+                "Ordenado em reais. <b>s/ orç.</b> = conta sem previsão no orçamento."
+                "</div></div>"
             )
-        linhas_e.append(
-            "</tbody></table>"
-            f'<div style="text-align:right;font-size:10px;'
-            f'color:{COLORS["text_muted"]};margin-top:4px;">'
-            "Ordenado em reais, não em percentual.</div></div>"
+            st.markdown("".join(linhas_e), unsafe_allow_html=True)
+
+    with col_cmp:
+        # GRÁFICO NOVO: orçado contra realizado, subgrupo a subgrupo. A tabela
+        # ao lado mostra só quem estourou; aqui aparece o quadro inteiro --
+        # inclusive quem ficou ABAIXO do orçado, que é onde há folga para
+        # absorver os estouros do outro lado.
+        st.markdown('<div class="tv-section-title">⚖️ Orçado × realizado por subgrupo</div>',
+                    unsafe_allow_html=True)
+        _cmp = sorted(subgrupos, key=lambda g: g["valor"], reverse=True)[:7]
+        fig3 = go.Figure()
+        fig3.add_trace(go.Bar(
+            name="Orçado", y=[g["nome"][:24] for g in reversed(_cmp)],
+            x=[g["orcado"] for g in reversed(_cmp)], orientation="h",
+            marker=dict(color="rgba(107,158,230,0.16)",
+                        line=dict(color=COLORS["primary"], width=1.4)),
+            hovertemplate="Orçado: %{x:,.0f}<extra></extra>",
+        ))
+        fig3.add_trace(go.Bar(
+            name="Realizado", y=[g["nome"][:24] for g in reversed(_cmp)],
+            x=[g["valor"] for g in reversed(_cmp)], orientation="h",
+            marker=dict(
+                color=[("rgba(224,133,133,0.28)" if g["valor"] > g["orcado"]
+                        else "rgba(87,190,146,0.28)") for g in reversed(_cmp)],
+                line=dict(color=[(COLORS["negative"] if g["valor"] > g["orcado"]
+                                  else COLORS["positive"]) for g in reversed(_cmp)],
+                          width=1.4)),
+            text=[formata_valor_curto(g["valor"]) for g in reversed(_cmp)],
+            textposition="outside", cliponaxis=False,
+            textfont=dict(size=9.5, color=COLORS["text_muted"]),
+            hovertemplate="Realizado: %{x:,.0f}<extra></extra>",
+        ))
+        estilo_grafico(
+            fig3, height=262, margin=dict(l=8, r=52, t=18, b=42),
+            barmode="group", bargap=0.24, bargroupgap=0.06,
+            xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
+            yaxis=dict(showgrid=False, fixedrange=True, automargin=True,
+                       tickfont=dict(size=10, color=COLORS["text"])),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.06, xanchor="center",
+                        x=0.5, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         )
-        st.markdown("".join(linhas_e), unsafe_allow_html=True)
+        st.plotly_chart(fig3, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
     # ---- Aluguel sobre o faturamento, loja a loja --------------------------
     st.markdown("<br>", unsafe_allow_html=True)
@@ -3350,12 +3400,20 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         # que tem uma receita líquida residual de poucos milhares, o índice
         # explodia para 1242%.
         CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"
-        registros, sem_faturamento = [], []
+        registros, sem_faturamento, sem_aluguel = [], [], []
         for loja in lojas:
             _df_o, df_r = dados_loja.get(loja, (pd.DataFrame(), pd.DataFrame()))
             faturamento = _da_loja(df_r, [CHAVE_FATURAMENTO], cols_periodo)
             aluguel = _da_loja(df_r, chaves_aluguel, cols_periodo)
             if not faturamento and not aluguel:
+                continue
+            if not aluguel:
+                # Loja que não paga aluguel sai da lista: uma linha inteira com
+                # R$ 0,00 e 0,00% ocupa o mesmo espaço das outras e não diz
+                # nada -- ela vai para o bloco de exceções, junto das unidades
+                # sem faturamento, onde o que importa é ser NOMEADA, não
+                # comparada.
+                sem_aluguel.append({"loja": loja, "faturamento": faturamento})
                 continue
             if not faturamento:
                 # Unidade sem faturamento vai para um bloco PRÓPRIO, e não
@@ -3453,28 +3511,41 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 )
                 st.markdown("".join(partes), unsafe_allow_html=True)
 
-            if sem_faturamento:
-                sem_faturamento.sort(key=lambda r: -r["aluguel"])
-                chips = "".join(
-                    '<span style="display:inline-block;padding:6px 12px;'
-                    f'border:1px solid {COLORS["border"]};border-radius:8px;'
-                    f'margin:0 8px 8px 0;font-size:12px;">'
-                    f'{r["loja"]}<b style="margin-left:10px;'
-                    f'font-family:{FONTE_MONO};color:{COLORS["warning"]};">'
-                    f'{formata_brl(r["aluguel"])}</b></span>'
-                    for r in sem_faturamento)
-                st.markdown(
-                    f'<div class="tv-panel" style="padding:12px 14px;">'
-                    f'<div style="font-size:10.5px;letter-spacing:1px;'
-                    f'text-transform:uppercase;color:{COLORS["text_muted"]};'
-                    'margin-bottom:9px;">Unidades sem faturamento</div>'
-                    f"{chips}"
+            if sem_faturamento or sem_aluguel:
+                def _chips(itens, cor, valor_de):
+                    return "".join(
+                        '<span style="display:inline-block;padding:5px 11px;'
+                        f'border:1px solid {COLORS["border"]};border-radius:8px;'
+                        'margin:0 7px 7px 0;font-size:11.5px;">'
+                        f'{i["loja"]}<b style="margin-left:9px;'
+                        f'font-family:{FONTE_MONO};color:{cor};">'
+                        f'{valor_de(i)}</b></span>'
+                        for i in itens)
+
+                _partes_exc = ['<div class="tv-panel" style="padding:10px 14px;">']
+                if sem_faturamento:
+                    sem_faturamento.sort(key=lambda r: -r["aluguel"])
+                    _partes_exc.append(
+                        f'<div style="font-size:10px;letter-spacing:1px;'
+                        f'text-transform:uppercase;color:{COLORS["text_muted"]};'
+                        'margin-bottom:7px;">Pagam aluguel e não faturam</div>'
+                        + _chips(sem_faturamento, COLORS["warning"],
+                                 lambda i: formata_brl(i["aluguel"])))
+                if sem_aluguel:
+                    sem_aluguel.sort(key=lambda r: -r["faturamento"])
+                    _partes_exc.append(
+                        f'<div style="font-size:10px;letter-spacing:1px;'
+                        f'text-transform:uppercase;color:{COLORS["text_muted"]};'
+                        'margin:8px 0 7px 0;">Faturam e não pagam aluguel</div>'
+                        + _chips(sem_aluguel, COLORS["positive"],
+                                 lambda i: formata_valor_curto(i["faturamento"])
+                                 + " fat."))
+                _partes_exc.append(
                     f'<div style="font-size:10px;color:{COLORS["text_muted"]};'
-                    'margin-top:2px;">Não entram no percentual porque não há '
-                    "faturamento para dividir — o aluguel delas é custo fixo "
-                    "que a rede inteira absorve.</div></div>",
-                    unsafe_allow_html=True,
-                )
+                    'margin-top:3px;">Fora do percentual: sem faturamento não há '
+                    "o que dividir, e sem aluguel o índice é sempre zero."
+                    "</div></div>")
+                st.markdown("".join(_partes_exc), unsafe_allow_html=True)
 
             if _abrir_aluguel_por_mes:
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
@@ -3500,7 +3571,12 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                         celulas += (
                             f'<td style="color:{cor_m};">'
                             + f"{pct_m:.2f}%".replace(".", ",")
-                            + f'<span class="sec">{formata_m(alu_m)}</span></td>')
+                            # formata_valor_curto e NAO formata_m: o aluguel
+                            # de uma loja num mes é de dezenas de milhares, e
+                            # formata_m mostra tudo abaixo de R$ 100 mil como
+                            # "R$ 0,0M" -- a coluna inteira aparecia zerada
+                            # enquanto o percentual ao lado estava certo.
+                            + f'<span class="sec">{formata_valor_curto(alu_m)}</span></td>')
                     tabela.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
                         f'{celulas}<td class="tot">'
