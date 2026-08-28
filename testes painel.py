@@ -6388,6 +6388,34 @@ class TesteAtualizacaoDosDados(unittest.TestCase):
         # tirar o cache, senao cada tela releria a planilha do zero.
         self.assertGreaterEqual(FONTE.count("ttl=None"), 9)
 
+    def test_nenhum_texto_promete_recarga_automatica(self):
+        """Os dados so recarregam no botao, entao a tela nao pode prometer
+        outra coisa. Esta trava nao procura "5 minutos": ela procura o PADRAO
+        -- qualquer texto dizendo que algo recarrega, atualiza ou busca "a
+        cada" um intervalo. Sem isso, cada texto novo com a mesma promessa
+        precisaria ser lembrado a mao, e ja escaparam quatro."""
+        promessas = []
+        # Dois padroes: "recarrega A CADA X" e "sem ESPERAR os X" -- o segundo
+        # promete a mesma coisa pelo avesso, e escapou da primeira versao
+        # desta trava.
+        achados = re.findall(
+            r"[^\n]{0,120}(?:recarreg|atualiza|busca)[^\n]{0,80}a cada[^\n]{0,40}",
+            FONTE, re.IGNORECASE)
+        achados += re.findall(r"[^\n]{0,120}sem esperar[^\n]{0,60}", FONTE, re.IGNORECASE)
+        for trecho in achados:
+            # O painel de TV se REDESENHA de hora em hora -- isso e verdade e
+            # pode continuar escrito. O que nao pode e prometer DADO novo.
+            if "atualiza sozinho a cada {ROTULO" in trecho:
+                continue
+            if "Atualiza automaticamente a cada {ROTULO" in trecho:
+                continue
+            if trecho.lstrip().startswith("#"):
+                continue
+            promessas.append(trecho.strip()[:100])
+        self.assertEqual(promessas, [],
+                         "texto promete recarga automatica: " + " | ".join(promessas))
+
+
     def test_existe_botao_de_atualizar_nos_dois_paineis(self):
         """Sem prazo, o botao e o UNICO jeito de o painel ver dado novo. Se
         ele sumir de um dos paineis, quem usa aquele fica preso no dado do

@@ -10702,8 +10702,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
     st.markdown(
         html_compacto(
             '<div class="footer-note">'
-            'Controladoria B&A · Painel Financeiro · Dados recarregados a cada 5 minutos — '
-            'use <b>Atualizar Dados</b> para buscar agora'
+            'Controladoria B&A · Painel Financeiro · Os dados ficam guardados até '
+            'alguém clicar em <b>Atualizar Dados</b>'
             '</div>'
         ),
         unsafe_allow_html=True,
@@ -17823,7 +17823,7 @@ if tab_fech is not None:
                 with _col_atualizar:
                     st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
                     if st.button("🔄 Atualizar", width="stretch", key="btn_fech_atualizar",
-                                 help="Busca a planilha agora, sem esperar os 5 minutos"):
+                                 help="Relê a planilha do fechamento agora."):
                         carregar_planilha_fechamento.clear()
                         st.rerun()
 
@@ -17912,8 +17912,9 @@ if tab_fech is not None:
                             )
 
                 st.caption(
-                    "A marcação é feita **na planilha**, não aqui — o painel só lê e mostra, e "
-                    "recarrega a cada 5 minutos. **N/A** sai da conta: processo que não se aplica "
+                    "A marcação é feita **na planilha**, não aqui — o painel só lê e mostra. "
+                    "Depois de marcar lá, clique em **🔄 Atualizar** acima para o painel ver. "
+                    "**N/A** sai da conta: processo que não se aplica "
                     "ao mês não é trabalho feito nem pendência, então não entra nem no numerador "
                     "nem no denominador do percentual."
                 )
@@ -18659,7 +18660,7 @@ if eh_admin and not departamento_ativo:
 st.markdown(
     html_compacto(f"""
     <div class="footer-note">
-        Controladoria B&A · Painel Financeiro · Dados recarregados a cada 5 minutos — use <b>Atualizar</b> para buscar agora
+        Controladoria B&A · Painel Financeiro · Os dados ficam guardados até alguém clicar em <b>Atualizar Dados</b>
     </div>
     """),
     unsafe_allow_html=True,
