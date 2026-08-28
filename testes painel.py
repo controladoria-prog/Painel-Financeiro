@@ -6692,6 +6692,82 @@ class TesteDreAberturaMensal(unittest.TestCase):
                          "uma coluna por mes ate o filtro")
 
 
+
+class TesteAcessoRestrito(unittest.TestCase):
+    """Quem ve o que (28/08/2026).
+
+    Duas restricoes independentes: QUAL PAINEL a pessoa acessa
+    (EMAILS_FINANCEIRO_PERMITIDOS, que e opt-in) e QUAL DEPARTAMENTO ela pode
+    olhar dentro da Controladoria (EMAILS_TRAVADOS_NO_DEPARTAMENTO)."""
+
+    def test_o_financeiro_e_opt_in(self):
+        """Lista de PERMITIDOS, e nao de bloqueados: usuario novo entra sem
+        acesso ao Financeiro por padrao. Se fosse lista de bloqueados, cada
+        cadastro novo abriria o fluxo de caixa da empresa para alguem ate
+        alguem lembrar de fecha-lo."""
+        ns = carregar([], ["EMAILS_FINANCEIRO_PERMITIDOS"])
+        permitidos = ns["EMAILS_FINANCEIRO_PERMITIDOS"]
+        self.assertIsInstance(permitidos, set)
+        self.assertNotIn("analista02.marketing@grupobeea.com.br", permitidos)
+        # E a checagem e por PERTENCIMENTO a lista, nas duas portas: o hub e
+        # o proprio painel (para quem digitar a URL direto).
+        self.assertIn("_email_hub in EMAILS_FINANCEIRO_PERMITIDOS", FONTE)
+        self.assertIn("email_atual_financeiro not in EMAILS_FINANCEIRO_PERMITIDOS", FONTE)
+
+    def test_o_usuario_de_mkt_esta_travado_no_departamento(self):
+        ns = carregar([], ["EMAILS_TRAVADOS_NO_DEPARTAMENTO"])
+        travados = ns["EMAILS_TRAVADOS_NO_DEPARTAMENTO"]
+        self.assertEqual(travados.get("analista02.marketing@grupobeea.com.br"),
+                         "📣 Relatório de Custos - MKT")
+
+    def test_travado_ve_uma_opcao_so_no_seletor(self):
+        """Nao basta abrir no departamento certo: sem isto o seletor continua
+        oferecendo "Controladoria" (empresa inteira) e todos os outros
+        departamentos, e a trava nao trava nada."""
+        self.assertIn("opcoes_departamento = [_departamento_travado]", FONTE)
+        self.assertIn("disabled=bool(_departamento_travado)", FONTE)
+        # Modelo da regra, com a estrutura real do app.
+        modelos = {"📣 Relatório de Custos - MKT": {}, "👥 Relatório de Custos - RH": {}}
+        travados = {"analista02.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT"}
+        for email, esperado in (
+                ("analista02.marketing@grupobeea.com.br", ["📣 Relatório de Custos - MKT"]),
+                ("controladoria@grupobeea.com.br",
+                 ["Controladoria", "📣 Relatório de Custos - MKT",
+                  "👥 Relatório de Custos - RH"])):
+            travado = travados.get(email)
+            opcoes = ([travado] if travado and travado in modelos
+                      else ["Controladoria"] + list(modelos.keys()))
+            self.assertEqual(opcoes, esperado, f"opcoes erradas para {email}")
+
+    def test_o_travado_tambem_entra_no_mapa_de_padrao(self):
+        """Para o padrao continuar coerente caso a trava seja removida um dia."""
+        ns = carregar([], ["MAPA_EMAIL_DEPARTAMENTO", "EMAILS_TRAVADOS_NO_DEPARTAMENTO"])
+        for email, dep in ns["EMAILS_TRAVADOS_NO_DEPARTAMENTO"].items():
+            self.assertEqual(ns["MAPA_EMAIL_DEPARTAMENTO"].get(email), dep)
+
+    def test_nenhuma_senha_no_codigo(self):
+        """As credenciais vivem no secrets do Streamlit, nunca no arquivo --
+        ele vai para o GitHub."""
+        # Procura o VALOR literal, nao a palavra: `senha = str(senha or "")`
+        # e codigo legitimo, e `senha = "<a senha, no Secrets>"` e um espaco
+        # reservado. O que nao pode e um literal que PARECE senha -- texto sem
+        # espaco, com letra e numero, entre aspas, num campo de senha.
+        suspeitas = []
+        for linha in FONTE.split("\n"):
+            crua = linha.strip()
+            if crua.startswith("#") or "st.secrets" in crua:
+                continue
+            for achado in re.findall(r'senha\s*=\s*"([^"]{4,})"', crua):
+                if achado.startswith("<") or achado in ("...", ""):
+                    continue          # espaco reservado, nao credencial
+                if "{" in achado or " " in achado:
+                    continue          # f-string ou frase, nao senha
+                if re.search(r"[A-Za-z]", achado) and re.search(r"\d", achado):
+                    suspeitas.append(crua[:60])
+        self.assertEqual(suspeitas, [],
+                         f"credencial literal no codigo: {suspeitas}")
+
+
 # ============================================================================
 # 6. FORMATACAO
 # ============================================================================

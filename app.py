@@ -890,11 +890,14 @@ CHAVE_LOCALSTORAGE_LOGIN = "beea_login_v1"
 
 def obter_usuarios_cadastrados():
     """Le a lista de usuarios dos Secrets, aceitando tres formas de configuracao
-    (todas podem coexistir e sao somadas):
+    (todas podem coexistir e sao somadas). Os exemplos abaixo usam
+    ESPAÇO RESERVADO no lugar da senha de propósito: este arquivo vai para o
+    GitHub, e senha de exemplo copiada de um cadastro real vira senha vazada.
+    Havia duas aqui até 28/08/2026:
 
     1) Usuario "de topo" (campos soltos no inicio do arquivo de Secrets):
         email = "controladoria@grupobeea.com.br"
-        senha = "Richards23*"
+        senha = "<a senha, no Secrets>"
         papel = "admin"
 
     2) Lista de tabelas:
@@ -907,7 +910,7 @@ def obter_usuarios_cadastrados():
        'papel' quanto 'perfil':
         [usuarios.coordenador_financeiro]
         email = "coordenador.financeiro@grupobeea.com.br"
-        senha = "Montoia6037"
+        senha = "<a senha, no Secrets>"
         perfil = "visualizacao"
 
     A chave do dicionario retornado e sempre o e-mail em minusculas. Se
@@ -10950,6 +10953,21 @@ if eh_admin:
 # Cada e-mail abre o painel já no departamento correspondente ao seu acesso
 # (mas a pessoa ainda pode trocar manualmente pelo seletor, se quiser ver
 # outra visão). Quem não está no mapa abre na Controladoria, como sempre.
+# E-mails TRAVADOS num departamento: além de abrir nele, não conseguem
+# trocar para outro. O mapa abaixo (MAPA_EMAIL_DEPARTAMENTO) só define o
+# departamento PADRÃO -- quem está lá abre no seu, mas pode olhar os outros.
+#
+# Esta lista é para quem não deve ver nem o resto: o seletor da barra lateral
+# passa a ter uma opção só, e nem a opção "Controladoria" (que mostra a
+# empresa inteira) fica disponível.
+#
+# Travar aqui e não no perfil porque perfil é sobre O QUE se pode fazer
+# (visualizar, editar), e isto é sobre O QUE se pode ver. São eixos
+# diferentes, e misturá-los criaria um perfil novo a cada combinação.
+EMAILS_TRAVADOS_NO_DEPARTAMENTO = {
+    "analista02.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT",
+}
+
 MAPA_EMAIL_DEPARTAMENTO = {
     "coordenador.compras@grupobeea.com.br": "🛒 Relatório de Custos - Compras",
     "coordenador.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT",
@@ -10959,6 +10977,9 @@ MAPA_EMAIL_DEPARTAMENTO = {
     "coordenador.financeiro@grupobeea.com.br": "🏦 Relatório de Custos - ADM/Financeiro",
     "coordenador.loja@grupobeea.com.br": "🏬 Relatório de Custos - Coordenação de Loja",
     "coordenador.vd@grupobeea.com.br": "🚗 Relatório de Custos - Coordenação de VD",
+    # Quem está travado também entra aqui, para o padrão continuar coerente
+    # caso a trava seja removida um dia.
+    **EMAILS_TRAVADOS_NO_DEPARTAMENTO,
 }
 
 departamento_ativo = None
@@ -10966,8 +10987,14 @@ linhas_departamento_ativo = []
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🏢 Visão por Departamento**")
 st.sidebar.caption("Filtra o painel inteiro (visão, tabelas e relatório) para o departamento escolhido.")
-opcoes_departamento = ["Controladoria"] + list(MODELOS_RELATORIO.keys())
-departamento_padrao_usuario = MAPA_EMAIL_DEPARTAMENTO.get(usuario_atual["email"].strip().lower())
+_email_atual_dep = usuario_atual["email"].strip().lower()
+_departamento_travado = EMAILS_TRAVADOS_NO_DEPARTAMENTO.get(_email_atual_dep)
+if _departamento_travado and _departamento_travado in MODELOS_RELATORIO:
+    # Uma opção só: sem "Controladoria" e sem os outros departamentos.
+    opcoes_departamento = [_departamento_travado]
+else:
+    opcoes_departamento = ["Controladoria"] + list(MODELOS_RELATORIO.keys())
+departamento_padrao_usuario = MAPA_EMAIL_DEPARTAMENTO.get(_email_atual_dep)
 indice_departamento_padrao = (
     opcoes_departamento.index(departamento_padrao_usuario)
     if departamento_padrao_usuario in opcoes_departamento
@@ -10977,7 +11004,10 @@ departamento_sel = st.sidebar.selectbox(
     "Ver painel como:", opcoes_departamento, key="departamento_sel",
     index=indice_departamento_padrao,
     format_func=_nome_departamento_curto,
+    disabled=bool(_departamento_travado),
 )
+if _departamento_travado:
+    st.sidebar.caption("Seu acesso é restrito a este departamento.")
 if departamento_sel != "Controladoria":
     departamento_ativo = departamento_sel
     linhas_departamento_ativo = MODELOS_RELATORIO[departamento_sel]["linhas_dre"]
