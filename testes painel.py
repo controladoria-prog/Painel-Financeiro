@@ -5331,6 +5331,26 @@ class TestePainelTV(unittest.TestCase):
                       "sem limpar a outra vaga, o bloco aparece duas vezes")
         self.assertIn("_html_grupos_tv", b)
 
+    def test_o_painel_se_redesenha_de_hora_em_hora(self):
+        """Uma hora, e nao 90 segundos: os numeros vem do fechamento contabil,
+        que muda uma vez por dia. Redesenhar a cada minuto e meio relia as
+        planilhas inteiras dezenas de vezes por hora para mostrar exatamente o
+        mesmo numero -- era a maior fonte de leitura de disco do painel."""
+        ns = carregar([], ["SEGUNDOS_ENTRE_ATUALIZACOES_TV"])
+        self.assertEqual(ns["SEGUNDOS_ENTRE_ATUALIZACOES_TV"], 3600)
+        # O numero mora numa CONSTANTE, nao cravado no time.sleep: assim vale
+        # para a tela geral e para a ramificacao de despesas, que passam pelo
+        # mesmo rodape, e muda num lugar so.
+        self.assertIn("time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)", FONTE)
+        self.assertNotIn("time.sleep(90)", FONTE)
+        # E o texto do rodape tem de dizer a mesma coisa que o codigo faz --
+        # painel que promete 90 segundos e atualiza de hora em hora e pior
+        # que painel sem promessa nenhuma.
+        i = FONTE.index("Painel para exibição (somente leitura)")
+        self.assertIn("a cada hora", FONTE[i:i + 220])
+        self.assertNotIn("90 segundos", FONTE[i:i + 220])
+
+
     def test_os_iframes_do_rodape_nao_rolam(self):
         """Conteudo alguns pixels mais alto que a altura pedida faz o navegador
         desenhar uma barra de rolagem ao lado do relogio e do botao de tela

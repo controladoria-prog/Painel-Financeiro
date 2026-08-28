@@ -2888,6 +2888,16 @@ def valor_da_linha_tv(lista_df, chave_linha, colunas):
 # A tela principal mostra os cinco maiores grupos e para por aí. Aqui a mesma
 # despesa é aberta até onde a base permite: grupo (6 e 8) -> subgrupo de nível
 # 2 -> sublinhas -> plano de contas, este último vindo do DIÁRIO.
+# De quanto em quanto tempo o painel de TV se redesenha sozinho. Uma hora, e
+# não 90 segundos: os números vêm do fechamento contábil, que muda uma vez por
+# dia -- redesenhar a cada minuto e meio relia as planilhas inteiras dezenas de
+# vezes por hora para mostrar exatamente o mesmo número, e era a maior fonte
+# de leitura de disco do painel.
+#
+# Vale para a tela geral E para a ramificação de despesas: as duas passam pelo
+# mesmo rodapé.
+SEGUNDOS_ENTRE_ATUALIZACOES_TV = 3600
+
 GRUPOS_DESPESA_TV = (
     ("6", "6 - Despesas Variáveis"),
     ("8", "8 - Despesas Operacionais"),
@@ -4852,7 +4862,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     st.markdown(
         html_compacto(f"""
         <div style="text-align:center;margin-top:2px;color:{COLORS['text_muted']};font-size:11px;">
-            Painel para exibição (somente leitura) · Atualiza automaticamente a cada 90 segundos (acompanha os filtros do painel principal) ·
+            Painel para exibição (somente leitura) · Atualiza automaticamente a cada hora (acompanha os filtros do painel principal) ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
         """),
@@ -4863,7 +4873,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     # cheia e evita cair de novo na tela de login a cada ciclo, como
     # acontecia com o <meta refresh> -- esse rerun acontece dentro da mesma
     # sessão/aba, sem navegação de página).
-    time.sleep(90)
+    # O sono é interrompido assim que a pessoa mexe em qualquer filtro: o
+    # Streamlit aborta o script e roda de novo. Ou seja, a espera longa não
+    # trava a tela para quem estiver usando -- ela só evita o redesenho
+    # automático de quem deixou a TV ligada na parede.
+    time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)
     st.rerun()
 
 
