@@ -15816,14 +15816,15 @@ with tab2:
         # achata o MultiIndex), mas uma linha comum atravessa qualquer
         # transporte -- ela é dado, não estrutura.
         dados_dre = []
-        _cabecalho_meses = {"Conta / Linha DRE": ""}
+        # A primeira linha é a SEGUNDA faixa de cabeçalho: "Realizado" e
+        # "Orçado". O nome do mês fica na faixa de cima, no cabeçalho nativo
+        # da tabela -- é a ordem que se lê, mês primeiro e medida depois.
+        _cabecalho_medidas = {"Conta / Linha DRE": ""}
         for _nome_mes, _col_mes in _meses_abertura_dre:
             _mes_rot = str(_nome_mes).split("/")[0].upper()
-            # O nome do mês só na coluna "real"; na "orç" fica vazio, e o par
-            # lê como um bloco só.
-            _cabecalho_meses[f"{_mes_rot} · real"] = _mes_rot
-            _cabecalho_meses[f"{_mes_rot} · orç"] = ""
-        dados_dre.append(_cabecalho_meses)
+            _cabecalho_medidas[f"{_mes_rot} · real"] = "Realizado"
+            _cabecalho_medidas[f"{_mes_rot} · orç"] = "Orçado"
+        dados_dre.append(_cabecalho_medidas)
 
         for linha in linhas_dre:
             registro = {"Conta / Linha DRE": linha}
@@ -15966,7 +15967,21 @@ with tab2:
             pinned=bool(abrir_dre_por_mes)),
     }
 
-    ALTURA_17_LINHAS = 633
+    # A altura sai de uma CONTA, não de um número solto: 38px de cabeçalho
+    # mais 35px por linha. Assim, quando a tabela ganha uma linha (a faixa de
+    # "Realizado/Orçado" do modo mensal), a altura acompanha sozinha e
+    # continuam cabendo 17 linhas de DRE abaixo dos cabeçalhos.
+    #
+    # Com o número fixo em 633, a linha extra comia uma linha de dado: ficavam
+    # 16 contas visíveis no modo mensal e 17 no acumulado.
+    ALTURA_CABECALHO_TABELA_PX = 38
+    ALTURA_LINHA_TABELA_PX = 35
+    LINHAS_VISIVEIS_DRE = 17
+    _linhas_extras_dre = 1 if (abrir_dre_por_mes and _meses_abertura_dre) else 0
+    ALTURA_17_LINHAS = (
+        ALTURA_CABECALHO_TABELA_PX
+        + (LINHAS_VISIVEIS_DRE + _linhas_extras_dre) * ALTURA_LINHA_TABELA_PX
+    )
     if abrir_dre_por_mes and _meses_abertura_dre:
         # As mesmas regras da tabela de sempre -- formato em reais e cor por
         # sinal --, só que aplicadas às colunas de cada mês. O que muda são as
@@ -15981,13 +15996,19 @@ with tab2:
             # os valores em reais eram cortados no meio ("R$ 7.938.247," sem
             # o resto), e número cortado numa DRE não serve para nada.
             #
-            # O rótulo do cabeçalho nativo é só "real"/"orç" -- o nome do mês
-            # vem na primeira LINHA da tabela, que é o que dá o efeito de
-            # cabeçalho em dois níveis.
+            # CÉLULA JUNTADA, na medida do possível: o nome do mês vai no
+            # cabeçalho da coluna do realizado e o da coluna do orçado fica em
+            # BRANCO. Como as duas ficam lado a lado, o mês lê como se
+            # estivesse centrado sobre o par. O Streamlit não tem célula
+            # mesclada de verdade -- isto é o mais perto que dá.
+            #
+            # O espaço usado é o NÃO SEPARÁVEL (\u00a0): com string vazia o
+            # Streamlit cai de volta no nome interno da coluna e apareceria
+            # "JANEIRO · orç" ali.
             column_config_dre[f"{_mes_rot} · real"] = st.column_config.TextColumn(
-                "real", width=None)
+                _mes_rot, width=None)
             column_config_dre[f"{_mes_rot} · orç"] = st.column_config.TextColumn(
-                "orç", width=None)
+                "\u00a0", width=None)
     else:
         cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
         formato_dre = {
@@ -16249,6 +16270,9 @@ with tab3:
     colunas_numericas = list(m_map.keys()) + ["Total Acumulado"]
     format_dict_hist = {col: formata_brl for col in colunas_numericas}
 
+    # A altura sai de uma CONTA, não de um número solto: 38px de cabeçalho
+    # Valor fixo aqui: esta tabela não tem a faixa extra de cabeçalho do
+    # modo mensal -- ela é da aba Histórico Mensal, que não tem esse modo.
     ALTURA_17_LINHAS = 633
 
     if df_hist.empty:

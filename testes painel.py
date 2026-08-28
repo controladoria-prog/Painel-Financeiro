@@ -6649,21 +6649,52 @@ class TesteDreAberturaMensal(unittest.TestCase):
         self.assertNotIn('width="small"', trecho)
 
 
-    def test_a_linha_de_cabecalho_traz_o_nome_do_mes(self):
-        """Uma linha a mais no comeco da tabela, com "JANEIRO" sobre o par
-        real/orc. O cabecalho de dois niveis de verdade continua impossivel --
-        o Arrow achata o MultiIndex --, mas uma linha comum atravessa qualquer
-        transporte: ela e DADO, nao estrutura."""
-        self.assertIn('_cabecalho_meses = {"Conta / Linha DRE": ""}', FONTE)
-        self.assertIn("dados_dre.append(_cabecalho_meses)", FONTE)
-        # O nome do mes so na coluna "real"; na "orc" fica vazio, e o par le
-        # como um bloco so.
-        i = FONTE.index("_cabecalho_meses = {")
-        trecho = FONTE[i:i + 700]
-        self.assertIn('_cabecalho_meses[f"{_mes_rot} · real"] = _mes_rot', trecho)
-        self.assertIn('_cabecalho_meses[f"{_mes_rot} · orç"] = ""', trecho)
-        # E o cabecalho NATIVO vira so "real"/"orc".
-        self.assertIn('st.column_config.TextColumn(\n                "real"', FONTE)
+    def test_o_cabecalho_tem_duas_faixas_mes_em_cima(self):
+        """Mes na faixa DE CIMA e Realizado/Orcado na de baixo -- e a ordem
+        que se le: mes primeiro, medida depois. A primeira versao estava
+        invertida."""
+        # Faixa de cima: o cabecalho NATIVO recebe o nome do mes.
+        i = FONTE.index('column_config_dre[f"{_mes_rot} · real"]')
+        trecho = FONTE[i:i + 400]
+        self.assertIn("_mes_rot, width=None", trecho,
+                      "o mes saiu do cabecalho de cima")
+        # CELULA JUNTADA na medida do possivel: o cabecalho da coluna do
+        # orcado fica em BRANCO, e o mes le como se estivesse centrado sobre
+        # o par. Espaco NAO SEPARAVEL porque com string vazia o Streamlit cai
+        # de volta no nome interno da coluna.
+        self.assertIn('"\\u00a0", width=None', trecho)
+        # Faixa de baixo: a primeira LINHA da tabela.
+        self.assertIn('_cabecalho_medidas[f"{_mes_rot} · real"] = "Realizado"', FONTE)
+        self.assertIn('_cabecalho_medidas[f"{_mes_rot} · orç"] = "Orçado"', FONTE)
+        self.assertIn("dados_dre.append(_cabecalho_medidas)", FONTE)
+        # Por EXTENSO, nao abreviado.
+        self.assertNotIn('= "real"', FONTE)
+        self.assertNotIn('= "orç"', FONTE)
+
+    def test_cabem_17_linhas_de_dre_abaixo_dos_cabecalhos(self):
+        """A altura sai de uma CONTA, nao de um numero solto. Com 633 fixo, a
+        linha extra do modo mensal comia uma linha de dado: ficavam 16 contas
+        visiveis no mensal e 17 no acumulado."""
+        # UMA vez so: um replace meu casou nas DUAS abas que tinham a mesma
+        # constante, e a aba Historico Mensal -- que nao tem modo mensal --
+        # passou a ganhar uma linha de altura a toa. Terceira vez hoje que uma
+        # substituicao de texto atinge mais lugares do que eu esperava.
+        self.assertEqual(FONTE.count("ALTURA_CABECALHO_TABELA_PX = 38"), 1,
+                         "a conta de altura vazou para outra aba")
+        self.assertIn("ALTURA_LINHA_TABELA_PX = 35", FONTE)
+        self.assertIn("LINHAS_VISIVEIS_DRE = 17", FONTE)
+        self.assertIn("_linhas_extras_dre = 1 if (abrir_dre_por_mes and _meses_abertura_dre) else 0",
+                      FONTE)
+        # As constantes tem de ser USADAS: declarar e depois cravar 633 de
+        # novo deixaria tudo verde com o defeito de volta.
+        self.assertIn("+ (LINHAS_VISIVEIS_DRE + _linhas_extras_dre) * ALTURA_LINHA_TABELA_PX",
+                      FONTE, "a altura voltou a ser um numero cravado")
+        self.assertNotIn("ALTURA_17_LINHAS = 633\n    cols_num_dre", FONTE)
+        # Modelo da conta: o acumulado nao pode mudar, e o mensal ganha
+        # exatamente UMA linha.
+        cab, lin, n = 38, 35, 17
+        self.assertEqual(cab + (n + 0) * lin, 633, "a altura do acumulado mudou")
+        self.assertEqual(cab + (n + 1) * lin, 668)
 
     def test_a_linha_de_cabecalho_nao_dispara_expansao(self):
         """Ela tem a coluna da conta VAZIA, e clicar nela nao pode alternar
