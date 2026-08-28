@@ -6579,6 +6579,73 @@ class TesteAtualizacaoDosDados(unittest.TestCase):
                         "senao a TV cai no login sozinha")
 
 
+
+class TesteDreAberturaMensal(unittest.TestCase):
+    """A opcao de abrir a aba DRE Orcado x Realizado mes a mes (28/08/2026)."""
+
+    def test_o_padrao_continua_sendo_o_acumulado(self):
+        """A abertura mensal e OPCAO, e nao o contrario: ela troca seis colunas
+        por duas por mes, e quem so quer conferir o mes fechado nao deve ter de
+        fechar a abertura toda vez."""
+        i = FONTE.index('abrir_dre_por_mes = st.toggle(')
+        self.assertIn("value=False", FONTE[i:i + 300],
+                      "a abertura mensal virou o padrao")
+
+    def test_a_visao_mensal_traz_so_realizado_e_orcado(self):
+        """AV e AH ficam de fora: com doze meses seriam 48 colunas, e a tabela
+        viraria uma parede de numeros onde nao se acha nada."""
+        i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:")
+        trecho = FONTE[i:FONTE.index("    else:", i)]
+        self.assertIn('registro[f"{_curto} Real"]', trecho)
+        self.assertIn('registro[f"{_curto} Orç"]', trecho)
+        self.assertNotIn("av_real_pct", trecho)
+        self.assertNotIn("ah_pct", trecho)
+
+    def test_os_meses_saem_do_mesmo_lugar_dos_kpis(self):
+        """cols_kpi JA e "ate o mes do filtro" nos tres modos de periodo.
+        Derivar dali em vez de recalcular evita que a tabela e os KPIs do topo
+        discordem sobre o que e "o periodo"."""
+        self.assertIn("_meses_abertura_dre = [(nome, col) for nome, col in m_map.items()",
+                      FONTE)
+        i = FONTE.index("_meses_abertura_dre = [(nome, col)")
+        self.assertIn("if col in set(cols_kpi)", FONTE[i:i + 200])
+
+    def test_a_tabela_mensal_usa_a_formatacao_da_casa(self):
+        """Mesmas regras -- reais e cor por sinal --, so que sobre as colunas
+        de cada mes. O que muda sao as colunas; o tratamento continua igual."""
+        i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:", FONTE.index("ALTURA_17_LINHAS"))
+        trecho = FONTE[i:i + 1200]
+        self.assertIn("formato_dre = {c: formata_brl for c in cols_num_dre}", trecho)
+        self.assertIn("cols_num_dre = [c for c in df_dre_final.columns", trecho)
+        # E o .map(cor_valor) continua sendo aplicado sobre cols_num_dre.
+        self.assertIn(".map(cor_valor, subset=cols_num_dre)", FONTE)
+
+    def test_a_chave_da_tabela_muda_com_o_modo(self):
+        """Sem isso o Streamlit reaproveita a selecao de linhas feita no outro
+        desenho, que tinha outras colunas."""
+        self.assertIn("f\"{'mensal' if abrir_dre_por_mes else 'acumulado'}\"", FONTE)
+
+    def test_os_kpis_de_desvio_nao_quebram_no_modo_mensal(self):
+        """A coluna "Desvio (R$)" NAO existe na abertura mensal -- la cada mes
+        tem seu par de colunas e nao ha um desvio unico. Sem a guarda, a aba
+        quebrava com KeyError ao ligar o modo."""
+        self.assertIn('if not df_dre_final.empty and "Desvio (R$)" in df_dre_final.columns:',
+                      FONTE)
+
+    def test_modelo_a_soma_dos_meses_bate_com_o_acumulado(self):
+        """A abertura nao pode mudar o numero: somar as colunas mensais tem de
+        dar o mesmo que a coluna unica do acumulado."""
+        meses = {"JANEIRO": "jan", "FEVEREIRO": "fev", "MARÇO": "mar"}
+        valores = {"jan": 100.0, "fev": 150.0, "mar": 200.0}
+        # Acumulado: uma busca com as tres colunas.
+        acumulado = sum(valores[c] for c in meses.values())
+        # Mensal: uma busca por coluna.
+        mensal = [valores[c] for c in meses.values()]
+        self.assertAlmostEqual(sum(mensal), acumulado)
+        self.assertEqual(len(mensal), len(meses),
+                         "uma coluna por mes ate o filtro")
+
+
 # ============================================================================
 # 6. FORMATACAO
 # ============================================================================

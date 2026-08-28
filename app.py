@@ -15663,7 +15663,18 @@ with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    c1, _ = st.columns([2, 1])
+    c1, c_abertura = st.columns([2, 1])
+    with c_abertura:
+        # PADRÃO no acumulado, como sempre foi. A abertura mensal é opção, e
+        # não o contrário: ela troca seis colunas por duas por mês, e quem só
+        # quer conferir o mês fechado não deve ter de fechá-la toda vez.
+        abrir_dre_por_mes = st.toggle(
+            "Abrir mês a mês",
+            value=False, key="dre_abrir_mensal",
+            help="Uma coluna de Realizado e outra de Orçado para cada mês até "
+                 "o do filtro. Sem AV e AH: com doze meses seriam 48 colunas, "
+                 "e a tabela viraria uma parede de números.",
+        )
     with c1:
         tipo_visao_dre = st.radio(
             "Filtro de Nível de Visão:",
@@ -15720,32 +15731,59 @@ with tab2:
     rec_liquida_real = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", cols_graficos)
     rec_liquida_orc = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", cols_graficos)
 
-    dados_dre = []
-    for linha in linhas_dre:
-        v_real = get_valor_consolidado_multi(list_df_real, linha, cols_graficos)
-        v_orc = get_valor_consolidado_multi(list_df_orc, linha, cols_graficos)
-        desvio_rs = v_real - v_orc
+    # Os meses da abertura vêm de cols_kpi, que JÁ é "até o mês do filtro" nos
+    # três modos de período -- mês selecionado, múltiplos meses e ano completo.
+    # Derivar daqui em vez de recalcular evita que a tabela e os KPIs do topo
+    # discordem sobre o que é "o período".
+    _meses_abertura_dre = [(nome, col) for nome, col in m_map.items()
+                           if col in set(cols_kpi)]
 
-        av_real_pct = (v_real / rec_liquida_real * 100) if rec_liquida_real != 0 else 0.0
-        av_orc_pct = (v_orc / rec_liquida_orc * 100) if rec_liquida_orc != 0 else 0.0
-        ah_pct = (desvio_rs / abs(v_orc) * 100) if v_orc != 0 else 0.0
+    if abrir_dre_por_mes and _meses_abertura_dre:
+        # Só Realizado e Orçado por mês. AV e AH ficam de fora de propósito:
+        # com doze meses seriam 48 colunas, e a tabela viraria uma parede de
+        # números onde não se acha nada. Quem quer AV/AH desliga a abertura e
+        # lê o acumulado, que é onde esses dois percentuais fazem sentido.
+        dados_dre = []
+        for linha in linhas_dre:
+            registro = {"Conta / Linha DRE": linha}
+            for _nome_mes, _col_mes in _meses_abertura_dre:
+                _curto = str(_nome_mes)[:3].capitalize()
+                registro[f"{_curto} Real"] = get_valor_consolidado_multi(
+                    list_df_real, linha, [_col_mes])
+                registro[f"{_curto} Orç"] = get_valor_consolidado_multi(
+                    list_df_orc, linha, [_col_mes])
+            dados_dre.append(registro)
+        df_dre_final = pd.DataFrame(dados_dre)
+    else:
+        dados_dre = []
+        for linha in linhas_dre:
+            v_real = get_valor_consolidado_multi(list_df_real, linha, cols_graficos)
+            v_orc = get_valor_consolidado_multi(list_df_orc, linha, cols_graficos)
+            desvio_rs = v_real - v_orc
 
-        dados_dre.append(
-            {
-                "Conta / Linha DRE": linha,
-                "Realizado (R$)": v_real,
-                "AV Real (%)": av_real_pct,
-                "Orçado (R$)": v_orc,
-                "AV Orçado (%)": av_orc_pct,
-                "Desvio (R$)": desvio_rs,
-                "AH (%)": ah_pct,
-            }
-        )
+            av_real_pct = (v_real / rec_liquida_real * 100) if rec_liquida_real != 0 else 0.0
+            av_orc_pct = (v_orc / rec_liquida_orc * 100) if rec_liquida_orc != 0 else 0.0
+            ah_pct = (desvio_rs / abs(v_orc) * 100) if v_orc != 0 else 0.0
 
-    df_dre_final = pd.DataFrame(dados_dre)
+            dados_dre.append(
+                {
+                    "Conta / Linha DRE": linha,
+                    "Realizado (R$)": v_real,
+                    "AV Real (%)": av_real_pct,
+                    "Orçado (R$)": v_orc,
+                    "AV Orçado (%)": av_orc_pct,
+                    "Desvio (R$)": desvio_rs,
+                    "AH (%)": ah_pct,
+                }
+            )
+
+        df_dre_final = pd.DataFrame(dados_dre)
 
     # ---- KPIs contextuais de desvio ----
-    if not df_dre_final.empty:
+    # Os KPIs de desvio dependem da coluna "Desvio (R$)", que NÃO existe na
+    # abertura mensal -- lá cada mês tem seu par de colunas e não há um desvio
+    # único. Sem esta guarda a aba quebrava com KeyError ao ligar o modo.
+    if not df_dre_final.empty and "Desvio (R$)" in df_dre_final.columns:
         n_favoravel = int((df_dre_final["Desvio (R$)"] > 0).sum())
         n_desfavoravel = int((df_dre_final["Desvio (R$)"] < 0).sum())
         idx_maior_desvio = df_dre_final["Desvio (R$)"].abs().idxmax()
@@ -15835,7 +15873,30 @@ with tab2:
     }
 
     ALTURA_17_LINHAS = 633
-    cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
+    if abrir_dre_por_mes and _meses_abertura_dre:
+        # As mesmas regras da tabela de sempre -- formato em reais e cor por
+        # sinal --, só que aplicadas às colunas de cada mês. O que muda são as
+        # colunas; o tratamento delas continua o mesmo.
+        cols_num_dre = [c for c in df_dre_final.columns if c != "Conta / Linha DRE"]
+        formato_dre = {c: formata_brl for c in cols_num_dre}
+        for _nome_mes, _col_mes in _meses_abertura_dre:
+            _curto = str(_nome_mes)[:3].capitalize()
+            # Largura média nas duas: com "small" o valor em reais é cortado,
+            # e com "large" cabem quatro meses na tela.
+            column_config_dre[f"{_curto} Real"] = st.column_config.TextColumn(
+                f"{_curto} Real", width="medium")
+            column_config_dre[f"{_curto} Orç"] = st.column_config.TextColumn(
+                f"{_curto} Orç", width="medium")
+    else:
+        cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
+        formato_dre = {
+            "Realizado (R$)": formata_brl,
+            "AV Real (%)": "{:.1f}%",
+            "Orçado (R$)": formata_brl,
+            "AV Orçado (%)": "{:.1f}%",
+            "Desvio (R$)": formata_brl,
+            "AH (%)": "{:.1f}%",
+        }
 
     if df_dre_final.empty:
         # Nenhuma linha sobrou pra mostrar (ex.: a visão Sintética só mostra
@@ -15854,19 +15915,13 @@ with tab2:
         key_tabela_dre = (
             f"tabela_dre__{tipo_visao_dre}__{len(linhas_dre)}__"
             f"{','.join(sorted(st.session_state['grupos_dre_expandidos']))}__"
-            f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}"
+            f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}__"
+            # O MODO entra na chave: sem isso o Streamlit reaproveita a seleção
+            # de linhas feita no outro desenho, que tinha outras colunas.
+            f"{'mensal' if abrir_dre_por_mes else 'acumulado'}"
         )
         evento_dre = st.dataframe(
-            df_dre_final.style.format(
-                {
-                    "Realizado (R$)": formata_brl,
-                    "AV Real (%)": "{:.1f}%",
-                    "Orçado (R$)": formata_brl,
-                    "AV Orçado (%)": "{:.1f}%",
-                    "Desvio (R$)": formata_brl,
-                    "AH (%)": "{:.1f}%",
-                }
-            ).map(cor_valor, subset=cols_num_dre),
+            df_dre_final.style.format(formato_dre).map(cor_valor, subset=cols_num_dre),
             column_config=column_config_dre,
             width="stretch",
             height=ALTURA_17_LINHAS,
