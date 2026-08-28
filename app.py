@@ -15747,10 +15747,16 @@ with tab2:
         for linha in linhas_dre:
             registro = {"Conta / Linha DRE": linha}
             for _nome_mes, _col_mes in _meses_abertura_dre:
-                _curto = str(_nome_mes)[:3].capitalize()
-                registro[f"{_curto} Real"] = get_valor_consolidado_multi(
+                # O par do mês fica junto pelo RÓTULO, com o mês em
+                # maiúsculas e a medida em minúsculas. Um cabeçalho de dois
+                # níveis de verdade (mês em cima, medidas embaixo) NÃO é
+                # possível aqui: o Streamlit envia a tabela por Arrow, que
+                # achata o MultiIndex de colunas numa string só, e o
+                # agrupamento se perde no caminho.
+                _mes_rot = str(_nome_mes).split("/")[0].upper()
+                registro[f"{_mes_rot} · real"] = get_valor_consolidado_multi(
                     list_df_real, linha, [_col_mes])
-                registro[f"{_curto} Orç"] = get_valor_consolidado_multi(
+                registro[f"{_mes_rot} · orç"] = get_valor_consolidado_multi(
                     list_df_orc, linha, [_col_mes])
             dados_dre.append(registro)
         df_dre_final = pd.DataFrame(dados_dre)
@@ -15869,7 +15875,13 @@ with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
 
     column_config_dre = {
-        "Conta / Linha DRE": st.column_config.TextColumn("Conta / Linha DRE", width="large"),
+        # pinned no mês a mês: a tabela rola para o lado e sem isto o nome da
+        # linha sai da vista junto -- sobram colunas de números sem dizer de
+        # que conta são. No acumulado não é preciso: as seis colunas cabem na
+        # tela e fixar só roubaria largura.
+        "Conta / Linha DRE": st.column_config.TextColumn(
+            "Conta / Linha DRE", width="large",
+            pinned=bool(abrir_dre_por_mes)),
     }
 
     ALTURA_17_LINHAS = 633
@@ -15880,13 +15892,14 @@ with tab2:
         cols_num_dre = [c for c in df_dre_final.columns if c != "Conta / Linha DRE"]
         formato_dre = {c: formata_brl for c in cols_num_dre}
         for _nome_mes, _col_mes in _meses_abertura_dre:
-            _curto = str(_nome_mes)[:3].capitalize()
-            # Largura média nas duas: com "small" o valor em reais é cortado,
-            # e com "large" cabem quatro meses na tela.
-            column_config_dre[f"{_curto} Real"] = st.column_config.TextColumn(
-                f"{_curto} Real", width="medium")
-            column_config_dre[f"{_curto} Orç"] = st.column_config.TextColumn(
-                f"{_curto} Orç", width="medium")
+            _mes_rot = str(_nome_mes).split("/")[0].upper()
+            # Largura SMALL: com "medium" cabiam três meses e meio na tela, e
+            # a abertura mensal existe justamente para comparar meses lado a
+            # lado. Em small cabem seis pares antes de precisar rolar.
+            column_config_dre[f"{_mes_rot} · real"] = st.column_config.TextColumn(
+                f"{_mes_rot} · real", width="small")
+            column_config_dre[f"{_mes_rot} · orç"] = st.column_config.TextColumn(
+                f"{_mes_rot} · orç", width="small")
     else:
         cols_num_dre = ["Realizado (R$)", "AV Real (%)", "Orçado (R$)", "AV Orçado (%)", "Desvio (R$)", "AH (%)"]
         formato_dre = {

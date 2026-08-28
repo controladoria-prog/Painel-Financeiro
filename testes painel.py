@@ -6594,12 +6594,58 @@ class TesteDreAberturaMensal(unittest.TestCase):
     def test_a_visao_mensal_traz_so_realizado_e_orcado(self):
         """AV e AH ficam de fora: com doze meses seriam 48 colunas, e a tabela
         viraria uma parede de numeros onde nao se acha nada."""
+        # A PRIMEIRA ocorrencia e a da montagem dos dados; a segunda e a da
+        # formatacao, mais abaixo.
         i = FONTE.index("if abrir_dre_por_mes and _meses_abertura_dre:")
-        trecho = FONTE[i:FONTE.index("    else:", i)]
-        self.assertIn('registro[f"{_curto} Real"]', trecho)
-        self.assertIn('registro[f"{_curto} Orç"]', trecho)
+        trecho = FONTE[i:FONTE.index("df_dre_final = pd.DataFrame(dados_dre)", i)]
+        self.assertIn('registro[f"{_mes_rot} · real"]', trecho)
+        self.assertIn('registro[f"{_mes_rot} · orç"]', trecho)
         self.assertNotIn("av_real_pct", trecho)
         self.assertNotIn("ah_pct", trecho)
+
+    def test_a_coluna_da_conta_fica_fixa_no_mes_a_mes(self):
+        """A tabela rola para o lado e sem isto o nome da linha sai da vista
+        junto -- sobram colunas de numeros sem dizer de que conta sao. No
+        acumulado nao e preciso: as seis colunas cabem na tela, e fixar so
+        roubaria largura."""
+        # Ancora em column_config_dre: a mesma linha de TextColumn aparece
+        # noutra tabela do arquivo, e o recorte caia la.
+        i = FONTE.index("column_config_dre = {")
+        self.assertIn("pinned=bool(abrir_dre_por_mes)", FONTE[i:i + 800])
+
+    def test_o_par_do_mes_fica_junto_pelo_rotulo(self):
+        """Um cabecalho de dois niveis de verdade -- mes em cima, medidas
+        embaixo -- NAO e possivel: o Streamlit envia a tabela por Arrow, que
+        achata o MultiIndex de colunas numa string so. Este teste prova a
+        limitacao, para ninguem tentar de novo achando que foi esquecimento."""
+        import pandas as _pd
+        import pyarrow as _pa
+        df = _pd.DataFrame(
+            [[1.0, 2.0]],
+            columns=_pd.MultiIndex.from_tuples([("Janeiro", "Real"), ("Janeiro", "Orç")]))
+        nomes = _pa.Table.from_pandas(df).column_names
+        self.assertNotIn("Real", nomes,
+                         "se o Arrow passar a preservar o MultiIndex, da para "
+                         "fazer o cabecalho de dois niveis de verdade")
+        # A aproximacao: mes em MAIUSCULAS e a medida em minusculas.
+        self.assertIn('f"{_mes_rot} · real"', FONTE)
+        # DENTRO da montagem: a mesma linha existe na config das colunas, e
+        # procurar no arquivo todo deixava mutilar a da montagem em silencio.
+        i = FONTE.index("registro = {\"Conta / Linha DRE\": linha}")
+        self.assertIn('_mes_rot = str(_nome_mes).split("/")[0].upper()',
+                      FONTE[i:i + 900],
+                      "o rotulo deixou de destacar o mes em maiusculas")
+
+    def test_as_colunas_do_mes_sao_estreitas(self):
+        """Com "medium" cabiam tres meses e meio na tela, e a abertura mensal
+        existe justamente para comparar meses lado a lado."""
+        # AS DUAS colunas do par: cobrar so uma deixava a outra ser alargada
+        # em silencio, porque as duas linhas cabem na mesma janela.
+        i = FONTE.index("column_config_dre[f\"{_mes_rot} · real\"]")
+        trecho = FONTE[i:i + 400]
+        self.assertEqual(trecho.count('width="small"'), 2,
+                         "alguma coluna do par voltou a ser larga")
+
 
     def test_os_meses_saem_do_mesmo_lugar_dos_kpis(self):
         """cols_kpi JA e "ate o mes do filtro" nos tres modos de periodo.
