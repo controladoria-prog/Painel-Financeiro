@@ -1476,7 +1476,9 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertIn("anotacoes_pct = []", FONTE)
         # AS DUAS anotacoes precisam do fundo: cobrar so uma deixava a outra
         # ser mutilada em silencio.
-        self.assertEqual(FONTE.count('bgcolor="rgba(36,44,60,0.82)"'), 2,
+        # Tres blocos usam a etiqueta com fundo: sobra, liquidez e o
+        # atingimento do grafico de desvio.
+        self.assertEqual(FONTE.count('bgcolor="rgba(36,44,60,0.82)"'), 3,
                          "algum rotulo perdeu o fundo e volta a sumir atras da barra")
         self.assertIn("annotations=anotacoes_pct", FONTE,
                       "as anotacoes foram montadas mas nao entram no grafico")
@@ -5781,8 +5783,16 @@ class TestePainelTV(unittest.TestCase):
         self.assertIn('name="Realizado"', trecho)
         self.assertIn('barmode="group"', trecho, "as barras voltaram a se sobrepor")
         self.assertNotIn('name="Desvio"', trecho, "a linha de desvio voltou")
-        self.assertNotIn("yaxis2=", trecho,
-                         "sem a linha de desvio nao ha o que por no eixo da direita")
+        # ATINGIMENTO no eixo da direita: duas barras lado a lado dizem QUE
+        # faltou, mas nao dizem se faltou pouco ou se o mes entregou metade da
+        # meta. Um desvio de R$ 0,5M vale conversa em janeiro (67% da meta) e
+        # quase nenhuma em maio (79%).
+        self.assertIn('name="Atingimento"', trecho)
+        self.assertIn("(r / o * 100) if o else 0.0", trecho)
+        self.assertIn('name="Meta 100%"', trecho, "sumiu o tracejado dos 100%")
+        # O percentual em ETIQUETA com fundo: sem fundo ele some quando a
+        # linha passa por cima de uma barra, que e o caso de quase todo mes.
+        self.assertIn('bgcolor="rgba(36,44,60,0.82)"', trecho)
         # O ORCADO usa o AZUL da paleta: o cinza de antes nao era cor da casa,
         # e a barra parecia de outro painel.
         i_orc = trecho.index('name="Orçado"')
@@ -5795,8 +5805,11 @@ class TestePainelTV(unittest.TestCase):
         # convencao dos cartoes de KPI e da tabela de reserva.
         self.assertIn("_preenche_real = [", trecho)
         self.assertIn("line=dict(color=cores_desvio_tv, width=1.6)", trecho)
-        # Legenda EMBAIXO, como no grafico da Reserva de Caixa.
-        self.assertIn('yanchor="top", y=-0.16', trecho)
+        # Legenda EMBAIXO, como no grafico da Reserva de Caixa. Cobra a
+        # ANCORA e o sinal, nao o numero exato: ele muda quando a altura do
+        # grafico muda, e isso e ajuste, nao defeito.
+        self.assertIn('yanchor="top", y=-0.', trecho,
+                      "a legenda saiu de baixo do grafico")
 
     def test_o_peso_do_grupo_aparece_em_cada_mes(self):
         """O peso so existia na ultima coluna, para o periodo inteiro -- e
@@ -5832,8 +5845,8 @@ class TestePainelTV(unittest.TestCase):
         bloco = self._bloco_tv()
         i = bloco.index("fig_tv_desvio, height=")
         altura = int(re.search(r"height=(\d+)", bloco[i:i + 40]).group(1))
-        self.assertGreaterEqual(altura, 180, "voltou a sobrar lacuna embaixo")
-        self.assertLessEqual(altura, 300, "alto demais: empurra o letreiro para fora")
+        self.assertGreaterEqual(altura, 340, "voltou a sobrar vao embaixo do grafico")
+        self.assertLessEqual(altura, 420, "alto demais: empurra o letreiro para fora")
 
     def test_a_linha_de_transporte_esta_configurada(self):
         ns = carregar([], ["DETALHES_DO_RANQUE_TV"])

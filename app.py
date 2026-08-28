@@ -4135,19 +4135,17 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             # alvo) falharam justamente por inventar um desenho que não existia em
             # nenhum outro lugar do painel.
             fig_tv_desvio = go.Figure()
-            # CORES DA CASA: o orçado é a régua e fica em cinza; o realizado sai
-            # VERDE quando bate a meta e VERMELHO quando não bate -- é a mesma
-            # convenção dos cartões de KPI e da tabela de reserva, e evita que
-            # alguém tenha de conferir o desvio para saber se o mês foi bom.
+            # CORES DA CASA: o orçado é a régua e fica em azul vazado; o
+            # realizado sai VERDE quando bate a meta e VERMELHO quando não
+            # bate -- mesma convenção dos cartões de KPI e da tabela de
+            # reserva, e evita ter de conferir o desvio para saber se o mês
+            # foi bom.
             _preenche_real = [
-                ("rgba(126,200,148,0.20)" if d >= 0 else "rgba(224,133,133,0.20)")
+                ("rgba(87,190,146,0.22)" if d >= 0 else "rgba(224,133,133,0.22)")
                 for d in desvio_m_tv
             ]
             fig_tv_desvio.add_trace(go.Bar(
                 name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
-                # Azul da casa, no mesmo tratamento das barras do Fluxo de Caixa:
-                # preenchimento fraco e contorno firme. O cinza de antes não era
-                # cor da paleta, e por isso a barra parecia de outro painel.
                 marker=dict(color="rgba(107,158,230,0.16)",
                             line=dict(color=COLORS["primary"], width=1.6)),
                 text=[formata_m(v) for v in eb_orc_m_tv], textposition="outside",
@@ -4164,23 +4162,61 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                 cliponaxis=False,
                 hovertemplate="Realizado: %{y:,.0f}<extra></extra>",
             ))
-            # A linha do DESVIO saiu (27/08/2026): com o orçado e o realizado
-            # escritos em cima das barras, a diferença já se lê pela distância
-            # entre elas, e a linha só cruzava o desenho por cima das duas.
+            # ATINGIMENTO: realizado ÷ orçado, no eixo da direita, com o
+            # tracejado dos 100%. É a leitura que faltava -- duas barras lado a
+            # lado dizem QUE faltou, mas não dizem se faltou pouco ou se o mês
+            # entregou metade da meta. Um desvio de R$ 0,5M vale uma conversa
+            # em janeiro (67% da meta) e quase nenhuma em maio (79%).
+            atingimento_tv = [
+                (r / o * 100) if o else 0.0
+                for r, o in zip(eb_real_m_tv, eb_orc_m_tv)
+            ]
+            fig_tv_desvio.add_trace(go.Scatter(
+                name="Atingimento", x=rot_m_tv, y=atingimento_tv, yaxis="y2",
+                mode="lines+markers", line=dict(color=COLORS["warning"], width=2.2),
+                marker=dict(size=8, color=cores_desvio_tv,
+                            line=dict(color=COLORS["surface"], width=1.5)),
+                hovertemplate="Atingimento: %{y:.0f}% da meta<extra></extra>",
+            ))
+            fig_tv_desvio.add_trace(go.Scatter(
+                name="Meta 100%", x=rot_m_tv, y=[100] * len(rot_m_tv), yaxis="y2",
+                mode="lines", line=dict(color=COLORS["muted_line"], width=1.4,
+                                        dash="dash"),
+                hoverinfo="skip",
+            ))
+            # O percentual vai em ETIQUETA com fundo, e não como texto do
+            # traçado: sem fundo ele some quando a linha passa por cima de uma
+            # barra, que é o que acontece em quase todo mês.
+            _anot_desvio = [
+                dict(x=_x, y=_v, yref="y2", text=f"{_v:.0f}%", showarrow=False,
+                     yshift=14, font=dict(size=10, color=COLORS["warning"]),
+                     bgcolor="rgba(36,44,60,0.82)", borderpad=3)
+                for _x, _v in zip(rot_m_tv, atingimento_tv)
+            ]
             _teto_desvio = max([abs(v) for v in eb_real_m_tv + eb_orc_m_tv] or [1])
+            _teto_ating = max(atingimento_tv + [100]) or 100
             estilo_grafico(
-                fig_tv_desvio, height=268,
+                fig_tv_desvio, height=372,
                 margin=dict(l=20, r=20, t=24, b=54),
                 barmode="group", bargap=0.34, bargroupgap=0.08,
+                annotations=_anot_desvio,
                 xaxis=dict(showgrid=False, fixedrange=True,
                            tickfont=dict(size=12, color=COLORS["text_muted"])),
                 yaxis=dict(showgrid=False, showticklabels=False, fixedrange=True,
-                           zeroline=True, zerolinecolor=COLORS["border"], zerolinewidth=1,
-                           range=[0, _teto_desvio * 1.26]),
-
+                           zeroline=True, zerolinecolor=COLORS["border"],
+                           zerolinewidth=1, range=[0, _teto_desvio * 1.22]),
+                # A faixa da direita começa BEM abaixo de zero para a linha do
+                # atingimento correr na metade de baixo do quadro, sem cruzar
+                # por cima dos rótulos das barras.
+                yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                            showticklabels=True, ticksuffix="%", fixedrange=True,
+                            zeroline=False,
+                            tickfont=dict(size=10, color=COLORS["warning"]),
+                            range=[-_teto_ating * 1.15, _teto_ating * 1.55]),
                 showlegend=True,
-                legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center",
-                            x=0.5, font=dict(size=10.5), bgcolor="rgba(0,0,0,0)"),
+                legend=dict(orientation="h", yanchor="top", y=-0.14,
+                            xanchor="center", x=0.5, font=dict(size=10.5),
+                            bgcolor="rgba(0,0,0,0)"),
             )
             st.plotly_chart(fig_tv_desvio, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
 
