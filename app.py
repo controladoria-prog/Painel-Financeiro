@@ -3284,7 +3284,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             hovertemplate="%{y:.1f}% da receita<extra></extra>",
         ))
         estilo_grafico(
-            fig, height=272, margin=dict(l=8, r=8, t=22, b=44),
+            fig, height=352, margin=dict(l=8, r=8, t=22, b=44),
             barmode="stack", bargap=0.4,
             xaxis=dict(showgrid=False, fixedrange=True,
                        tickfont=dict(size=11, color=COLORS["text_muted"])),
@@ -3332,9 +3332,14 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     f'background:{s["cor"]};"></div></div>'
                     f'<div class="tv-rank-pct-rec">'
                     f'{(s["valor"] / rec_liq * 100) if rec_liq else 0:.1f}% rec.</div>'
-                    f'<div class="tv-rank-val">{formata_valor_curto(s["valor"])} · '
-                    f'<span style="color:{cor_variacao(desvio)};">'
-                    f"{formata_valor_curto(desvio)}</span></div></div>")
+                    # Valor e desvio em COLUNAS separadas: no mesmo campo eles
+                    # quebravam em duas linhas ("R$ 8,1M · R$ 177 mil" não
+                    # cabia), e cada item do ranque ficava com o dobro da
+                    # altura -- oito itens assim esticavam a coluna inteira.
+                    f'<div class="tv-rank-pct-sai" style="color:{cor_variacao(desvio)};">'
+                    f'{formata_valor_curto(desvio)}</div>'
+                    f'<div class="tv-rank-val">{formata_valor_curto(s["valor"])}'
+                    "</div></div>")
             partes.append(
                 f'<div style="text-align:right;font-size:10px;'
                 f'color:{COLORS["text_muted"]};margin-top:5px;">'
@@ -3343,60 +3348,67 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             st.markdown("".join(partes), unsafe_allow_html=True)
 
     # =====================================================================
-    # Estouros  |  Peso das saídas em cada loja
+    # Estouros contra o orçado
     # =====================================================================
-    col_est, col_loja = st.columns([1.1, 1])
-    with col_est:
-        st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
-                    unsafe_allow_html=True)
-        if not estouros:
-            st.markdown(
-                '<div class="tv-panel" style="padding:14px;">'
-                f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
-                "orçado no período.</span></div>", unsafe_allow_html=True)
-        elif abrir_por_mes:
-            # O ESTOURO DE CADA MÊS, e não o do período repetido: é o que diz
-            # se a conta estourou uma vez ou todo mês -- e essas duas coisas
-            # pedem conversas diferentes.
-            st.markdown(
-                _tabela_por_mes(
-                    "Conta",
-                    [{"nome": e["conta"],
-                      "valores": [_real(e["linha"], [c]) - _orc(e["linha"], [c])
-                                  for c in cols_mes]}
-                     for e in estouros[:6]],
-                    "Estouro de cada mês: gasto − orçado. Fundo mais forte = "
-                    "mês em que a conta mais passou."),
+    # ---- Estouros, na largura inteira -----------------------------------
+    # O bloco "Peso das saídas em cada loja" saiu daqui (28/08/2026). Duas
+    # razões: ele dividia as saídas pela receita LÍQUIDA de cada unidade, e no
+    # escritório -- que tem receita residual de poucos milhares -- o índice
+    # dava 55.134%, um número que não significa nada; e mesmo corrigido, ele
+    # respondia a mesma pergunta do aluguel por loja logo abaixo, só que com
+    # outro numerador.
+    #
+    # Sem ele, os estouros ocupam a largura toda em vez de deixar meia tela
+    # vazia. Melhor um bloco inteiro do que dois pela metade.
+    st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
                 unsafe_allow_html=True)
-        else:
-            linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
-                        '<table class="tv-matriz tv-estouros" style="width:100%;">',
-                        '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
-                        '<th>Gasto</th><th class="tot">Estouro</th>'
-                        '<th class="tot">%</th></tr></thead><tbody>']
-            for item in estouros[:6]:
-                _pct_est = ((item["desvio"] / item["orcado"] * 100)
-                            if item["orcado"] else None)
-                linhas_e.append(
-                    f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
-                    f'<span class="sec">{item["grupo"]}</span></td>'
-                    f'<td>{formata_valor_curto(item["orcado"])}</td>'
-                    f'<td>{formata_valor_curto(item["realizado"])}</td>'
-                    f'<td class="tot" style="color:{COLORS["negative"]};">'
-                    f'+{formata_valor_curto(item["desvio"])}</td>'
-                    f'<td class="tot" style="color:{COLORS["negative"]};">'
-                    + ("s/ orç." if _pct_est is None else f"+{_pct_est:.0f}%")
-                    + "</td></tr>")
+    if not estouros:
+        st.markdown(
+            '<div class="tv-panel" style="padding:14px;">'
+            f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
+            "orçado no período.</span></div>", unsafe_allow_html=True)
+    elif abrir_por_mes:
+        # O ESTOURO DE CADA MÊS, e não o do período repetido: é o que diz se a
+        # conta estourou uma vez ou todo mês -- e essas duas coisas pedem
+        # conversas diferentes.
+        st.markdown(
+            _tabela_por_mes(
+                "Conta",
+                [{"nome": e["conta"],
+                  "valores": [_real(e["linha"], [c]) - _orc(e["linha"], [c])
+                              for c in cols_mes]}
+                 for e in estouros[:8]],
+                "Estouro de cada mês: gasto − orçado. Fundo mais forte = mês em "
+                "que a conta mais passou."),
+            unsafe_allow_html=True)
+    else:
+        linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
+                    '<table class="tv-matriz tv-estouros" style="width:100%;">',
+                    '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
+                    '<th>Gasto</th><th class="tot">Estouro</th>'
+                    '<th class="tot">%</th></tr></thead><tbody>']
+        for item in estouros[:8]:
+            _pct_est = ((item["desvio"] / item["orcado"] * 100)
+                        if item["orcado"] else None)
             linhas_e.append(
-                "</tbody></table>"
-                f'<div style="text-align:right;font-size:10px;'
-                f'color:{COLORS["text_muted"]};margin-top:4px;">'
-                "Ordenado em reais. <b>s/ orç.</b> = conta sem previsão no orçamento."
-                "</div></div>")
-            st.markdown("".join(linhas_e), unsafe_allow_html=True)
+                f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
+                f'<span class="sec">{item["grupo"]}</span></td>'
+                f'<td>{formata_valor_curto(item["orcado"])}</td>'
+                f'<td>{formata_valor_curto(item["realizado"])}</td>'
+                f'<td class="tot" style="color:{COLORS["negative"]};">'
+                f'+{formata_valor_curto(item["desvio"])}</td>'
+                f'<td class="tot" style="color:{COLORS["negative"]};">'
+                + ("s/ orç." if _pct_est is None else f"+{_pct_est:.0f}%")
+                + "</td></tr>")
+        linhas_e.append(
+            "</tbody></table>"
+            f'<div style="text-align:right;font-size:10px;'
+            f'color:{COLORS["text_muted"]};margin-top:4px;">'
+            "Ordenado em reais. <b>s/ orç.</b> = conta sem previsão no orçamento."
+            "</div></div>")
+        st.markdown("".join(linhas_e), unsafe_allow_html=True)
 
-    # As lojas são carregadas uma vez e servem a dois blocos: o peso das
-    # saídas e o aluguel.
+    # As lojas são carregadas uma vez, para o bloco do aluguel.
     _lojas = _lojas_individuais_das_abas(abas_visao or [])
     _dados_loja = (carregar_dados_por_loja(path_orc, path_real, _lojas)
                    if (_lojas and path_real) else {})
@@ -3407,57 +3419,6 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         return sum(abs(get_valor_consolidado_multi(
             [df_loja], chave, colunas, exato_linha_sintetica=True))
             for chave in chaves)
-
-    with col_loja:
-        # NO LUGAR DA CURVA DE CONCENTRAÇÃO, que só redesenhava o cartão
-        # "8 contas respondem por 80%" logo acima.
-        #
-        # Esta responde uma pergunta que nenhum outro bloco responde: gastar
-        # R$ 2M é muito ou pouco depende do tamanho da loja, e só o peso sobre
-        # a receita de cada uma compara unidades de portes diferentes.
-        st.markdown('<div class="tv-section-title">🏪 Peso das saídas em cada loja</div>',
-                    unsafe_allow_html=True)
-        _por_loja = []
-        for loja in _lojas:
-            _df_o, df_r = _dados_loja.get(loja, (pd.DataFrame(), pd.DataFrame()))
-            rec_l = _da_loja(df_r, ["3 - Receita Operacional Liquida"], cols_periodo)
-            sai_l = _da_loja(df_r, ["6 - Despesas Variáveis",
-                                    "8 - Despesas Operacionais"], cols_periodo)
-            if not rec_l or not sai_l:
-                continue
-            _por_loja.append({"loja": loja, "receita": rec_l, "saidas": sai_l,
-                              "pct": sai_l / rec_l * 100})
-        _por_loja.sort(key=lambda r: -r["pct"])
-        if not _por_loja:
-            st.markdown(
-                '<div class="tv-panel" style="padding:14px;">'
-                f'<span style="color:{COLORS["text_muted"]};">Escolha uma visão que '
-                "contenha lojas para abrir as saídas por unidade.</span></div>",
-                unsafe_allow_html=True)
-        else:
-            _media_loja = (sum(r["saidas"] for r in _por_loja)
-                           / sum(r["receita"] for r in _por_loja) * 100)
-            _teto_loja = _por_loja[0]["pct"] or 1.0
-            partes = ['<div class="tv-panel" style="padding:8px 14px;">']
-            for reg in _por_loja[:8]:
-                cor = (COLORS["negative"] if reg["pct"] > _media_loja
-                       else COLORS["positive"])
-                partes.append(
-                    '<div class="tv-rank-row">'
-                    f'<div class="tv-rank-name" title="{reg["loja"]}">{reg["loja"]}</div>'
-                    '<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" '
-                    f'style="width:{reg["pct"] / _teto_loja * 100:.0f}%;'
-                    f'background:{cor};"></div></div>'
-                    f'<div class="tv-rank-pct-rec">{formata_valor_curto(reg["saidas"])}</div>'
-                    f'<div class="tv-rank-val" style="color:{cor};">'
-                    + f"{reg['pct']:.1f}%".replace(".", ",") + "</div></div>")
-            partes.append(
-                f'<div style="text-align:right;font-size:10px;'
-                f'color:{COLORS["text_muted"]};margin-top:5px;">'
-                "Saídas operacionais + variáveis ÷ receita líquida da própria loja. "
-                f"Média da rede: {f'{_media_loja:.1f}%'.replace('.', ',')}."
-                "</div></div>")
-            st.markdown("".join(partes), unsafe_allow_html=True)
 
     # =====================================================================
     # Aluguel sobre o faturamento, por loja

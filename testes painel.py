@@ -6257,15 +6257,49 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                       corpo)
         self.assertIn('marker=dict(color=fundo, line=dict(color=cor, width=1.5))', corpo)
 
-    def test_o_peso_por_loja_compara_contra_a_media_da_rede(self):
-        """Gastar R$ 2M e muito ou pouco depende do tamanho da loja: so o peso
-        sobre a receita de cada uma compara unidades de portes diferentes."""
+    def test_o_peso_das_saidas_por_loja_saiu(self):
+        """Duas razoes. Ele dividia as saidas pela receita LIQUIDA de cada
+        unidade, e no escritorio -- que tem receita residual de poucos
+        milhares -- o indice dava 55.134%, um numero que nao significa nada.
+        E mesmo corrigido, respondia a mesma pergunta do aluguel por loja logo
+        abaixo, so que com outro numerador."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn('"pct": sai_l / rec_l * 100', corpo)
-        self.assertIn("if not rec_l or not sai_l:", corpo,
-                      "loja sem receita viraria divisao por zero")
-        self.assertIn('COLORS["negative"] if reg["pct"] > _media_loja', corpo)
+        # So o CODIGO: o comentario que explica por que o bloco saiu cita o
+        # nome dele, e procurar no texto cru encontrava a propria explicacao.
+        codigo = "\n".join(l for l in corpo.split("\n")
+                           if not l.strip().startswith("#"))
+        self.assertNotIn("Peso das saídas em cada loja", codigo)
+        self.assertNotIn("_media_loja", codigo)
+        # E os estouros passam a ocupar a largura toda, em vez de deixar meia
+        # tela vazia: melhor um bloco inteiro do que dois pela metade.
+        self.assertNotIn("col_est, col_loja = st.columns(", codigo)
+
+    def test_a_evolucao_acompanha_a_altura_do_ranque(self):
+        """O ranque ao lado tem oito itens; com o grafico baixo, sobrava meia
+        coluna vazia embaixo dele. Faixa de altura, nao numero exato: ajuste
+        fino de pixel nao e defeito."""
+        # Ancora no GRAFICO DA EVOLUCAO, e nao no primeiro "fig, height=" do
+        # arquivo -- esse cai na assinatura de estilo_grafico, cujo padrao e
+        # 400 e passaria por qualquer faixa.
+        i = FONTE.index('name="% da receita", x=rot_mes')
+        j = FONTE.index("estilo_grafico(", i)
+        altura = int(re.search(r"height=(\d+)", FONTE[j:j + 120]).group(1))
+        self.assertGreaterEqual(altura, 320, "voltou a sobrar vao ao lado do ranque")
+        self.assertLessEqual(altura, 420, "alto demais: empurra o resto da tela")
+
+    def test_o_ranque_separa_valor_e_desvio_em_colunas(self):
+        """No mesmo campo eles quebravam em duas linhas -- "R$ 8,1M · R$ 177
+        mil" nao cabia -- e cada item ficava com o dobro da altura. Oito itens
+        assim esticavam a coluna inteira."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index('maior_sub = max((s["valor"] for s in topo)')
+        trecho = corpo[j:j + 1400]
+        self.assertIn('class="tv-rank-pct-sai" style="color:{cor_variacao(desvio)};"',
+                      trecho)
+        self.assertIn('<div class="tv-rank-val">{formata_valor_curto(s["valor"])}',
+                      trecho)
 
     def test_as_lojas_sao_carregadas_uma_vez_para_os_dois_blocos(self):
         """O peso das saidas e o aluguel usam as mesmas lojas. Carregar duas
