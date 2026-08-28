@@ -2898,6 +2898,27 @@ def valor_da_linha_tv(lista_df, chave_linha, colunas):
 # mesmo rodapé.
 SEGUNDOS_ENTRE_ATUALIZACOES_TV = 3600
 
+
+def _rotulo_intervalo(segundos):
+    """"1 hora", "30 minutos", "90 segundos" -- em português, a partir do
+    número.
+
+    Existe para o texto da tela SAIR da constante, e não ser digitado ao lado
+    dela. O painel já anunciou 90 segundos por um bom tempo depois de passar a
+    atualizar de hora em hora, porque o número estava escrito à mão em dois
+    lugares e só um foi trocado. Com o rótulo derivado, isso não se repete."""
+    segundos = int(segundos or 0)
+    if segundos % 3600 == 0 and segundos >= 3600:
+        horas = segundos // 3600
+        return "1 hora" if horas == 1 else f"{horas} horas"
+    if segundos % 60 == 0 and segundos >= 60:
+        minutos = segundos // 60
+        return "1 minuto" if minutos == 1 else f"{minutos} minutos"
+    return f"{segundos} segundos"
+
+
+ROTULO_INTERVALO_TV = _rotulo_intervalo(SEGUNDOS_ENTRE_ATUALIZACOES_TV)
+
 GRUPOS_DESPESA_TV = (
     ("6", "6 - Despesas Variáveis"),
     ("8", "8 - Despesas Operacionais"),
@@ -3958,7 +3979,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <div>
                         <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{legenda_periodo_tv} · atualiza sozinho a cada 90s</div>
+                        <div class="sub">{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}</div>
                     </div>
                 </div>
             </div>
@@ -4862,7 +4883,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     st.markdown(
         html_compacto(f"""
         <div style="text-align:center;margin-top:2px;color:{COLORS['text_muted']};font-size:11px;">
-            Painel para exibição (somente leitura) · Atualiza automaticamente a cada hora (acompanha os filtros do painel principal) ·
+            Painel para exibição (somente leitura) · Filtros próprios no topo · Atualiza automaticamente a cada {ROTULO_INTERVALO_TV} ·
             <a href="?" style="color:{COLORS['text_muted']};">Sair do modo TV</a>
         </div>
         """),

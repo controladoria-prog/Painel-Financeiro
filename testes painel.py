@@ -5343,12 +5343,29 @@ class TestePainelTV(unittest.TestCase):
         # mesmo rodape, e muda num lugar so.
         self.assertIn("time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)", FONTE)
         self.assertNotIn("time.sleep(90)", FONTE)
-        # E o texto do rodape tem de dizer a mesma coisa que o codigo faz --
-        # painel que promete 90 segundos e atualiza de hora em hora e pior
-        # que painel sem promessa nenhuma.
+        # O texto da tela SAI da constante, nao e digitado ao lado dela: o
+        # painel anunciou 90 segundos por um bom tempo depois de passar a
+        # atualizar de hora em hora, porque o numero estava escrito a mao em
+        # DOIS lugares e so um foi trocado.
+        self.assertNotIn("atualiza sozinho a cada 90s", FONTE)
+        self.assertEqual(FONTE.count("{ROTULO_INTERVALO_TV}"), 2,
+                         "cabecalho e rodape tem de sair da mesma constante")
+        # E o rodape nao promete mais seguir os filtros do painel principal:
+        # o TV tem os proprios desde que ganhou visao, meses e tipo de visao.
         i = FONTE.index("Painel para exibição (somente leitura)")
-        self.assertIn("a cada hora", FONTE[i:i + 220])
-        self.assertNotIn("90 segundos", FONTE[i:i + 220])
+        self.assertNotIn("filtros do painel principal", FONTE[i:i + 260])
+        self.assertIn("Filtros próprios no topo", FONTE[i:i + 260])
+
+    def test_o_rotulo_do_intervalo_sai_do_numero(self):
+        """Se alguem trocar o intervalo, o texto acompanha sozinho."""
+        ns = carregar(["_rotulo_intervalo"])
+        rotulo = ns["_rotulo_intervalo"]
+        self.assertEqual(rotulo(3600), "1 hora")
+        self.assertEqual(rotulo(7200), "2 horas")
+        self.assertEqual(rotulo(300), "5 minutos")
+        self.assertEqual(rotulo(60), "1 minuto")
+        self.assertEqual(rotulo(90), "90 segundos")
+        self.assertEqual(rotulo(45), "45 segundos")
 
 
     def test_os_iframes_do_rodape_nao_rolam(self):
