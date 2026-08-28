@@ -3129,7 +3129,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             hovertemplate="%{y:.1f}% da receita<extra></extra>",
         ))
         estilo_grafico(
-            fig, height=300, margin=dict(l=10, r=10, t=24, b=48),
+            fig, height=262, margin=dict(l=8, r=8, t=18, b=44),
             barmode="stack", bargap=0.4,
             xaxis=dict(showgrid=False, fixedrange=True,
                        tickfont=dict(size=11, color=COLORS["text_muted"])),
@@ -3154,11 +3154,12 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             marker=dict(color=[s["cor"] for s in reversed(topo)],
                         line=dict(color=COLORS["surface"], width=1)),
             text=[formata_m(s["valor"]) for s in reversed(topo)],
-            textposition="auto", textfont=dict(size=10, color=COLORS["text"]),
+            textposition="outside", cliponaxis=False,
+            textfont=dict(size=10, color=COLORS["text_muted"]),
             hovertemplate="%{y}: %{x:,.0f}<extra></extra>",
         ))
         estilo_grafico(
-            fig2, height=300, margin=dict(l=10, r=14, t=24, b=20),
+            fig2, height=262, margin=dict(l=8, r=44, t=18, b=16),
             bargap=0.28, showlegend=False,
             xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
             yaxis=dict(showgrid=False, fixedrange=True, automargin=True,
@@ -3175,23 +3176,28 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
             "orçado no período.</span></div>", unsafe_allow_html=True)
     else:
-        linhas_e = ['<div class="tv-panel" style="padding-top:8px;">']
-        for item in estouros[:6]:
+        # COM BARRA, como as outras listas do painel: sem ela as colunas se
+        # espalhavam pela largura toda e ficava um vão enorme no meio de cada
+        # linha -- era o que fazia a lista não parecer do mesmo painel.
+        teto_e = estouros[0]["desvio"] or 1.0
+        linhas_e = ['<div class="tv-panel" style="padding:8px 14px;">']
+        for item in estouros[:5]:
             linhas_e.append(
                 '<div class="tv-rank-row">'
                 f'<div class="tv-rank-name" title="{item["conta"]}">{item["conta"]}'
-                f'<span style="color:{COLORS["text_muted"]};font-size:10.5px;'
+                f'<span style="color:{COLORS["text_muted"]};font-size:10px;'
                 f'margin-left:8px;">{item["grupo"]}</span></div>'
-                f'<div class="tv-rank-pct-rec">orçado {formata_m(item["orcado"])}</div>'
-                f'<div class="tv-rank-pct-sai">gasto {formata_m(item["realizado"])}</div>'
+                '<div class="tv-rank-bar-bg"><div class="tv-rank-bar-fill" '
+                f'style="width:{item["desvio"] / teto_e * 100:.0f}%;'
+                f'background:{COLORS["negative"]};"></div></div>'
+                f'<div class="tv-rank-pct-rec">{formata_m(item["orcado"])} orç.</div>'
                 f'<div class="tv-rank-val" style="color:{COLORS["negative"]};">'
-                f'+{formata_m(item["desvio"])}</div></div>'
+                f'{formata_m(item["realizado"])} · +{formata_m(item["desvio"])}</div></div>'
             )
         linhas_e.append(
             f'<div style="text-align:right;font-size:10px;'
             f'color:{COLORS["text_muted"]};margin-top:6px;">'
-            "Ordenado em REAIS, não em percentual: uma conta pequena que dobrou "
-            "aparece como 100% e não muda o mês.</div></div>"
+            "Ordenado em reais, não em percentual.</div></div>"
         )
         st.markdown("".join(linhas_e), unsafe_allow_html=True)
 
@@ -3280,27 +3286,26 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             media_rede = (soma_alu / soma_fat * 100) if soma_fat else 0.0
             acima = [r for r in registros if r["pct"] > media_rede]
 
+            # RESUMO EM UMA LINHA, e não outra faixa de quatro cartões: a
+            # tela já abre com uma, e repetir o mesmo formato no meio dela faz
+            # o olho tratar os dois blocos como se tivessem a mesma
+            # importância. Aqui é um subtítulo com números, não um segundo
+            # painel.
             st.markdown(
-                render_kpi_row([
-                    dict(label="ALUGUEL NO PERÍODO", value=formata_m(soma_alu + soma_sem),
-                         value_color=COLORS["text"],
-                         subtext=(f"{formata_m(soma_sem)} em unidades sem faturamento"
-                                  if soma_sem else "todas as unidades faturam"),
-                         icon="🏬"),
-                    dict(label="MÉDIA DA REDE",
-                         value=f"{media_rede:.2f}%".replace(".", ","),
-                         value_color=COLORS["primary"],
-                         subtext="aluguel ÷ receita operacional bruta", icon="📊"),
-                    dict(label="ACIMA DA MÉDIA", value=f"{len(acima)} de {len(registros)}",
-                         value_color=(COLORS["negative"] if acima else COLORS["positive"]),
-                         subtext="lojas que comprometem mais que a rede", icon="⚠️"),
-                    dict(label="MAIS COMPROMETIDA",
-                         value=(f"{registros[0]['pct']:.2f}%".replace(".", ",")
-                                if registros else "—"),
-                         value_color=(COLORS["negative"] if registros else COLORS["text"]),
-                         subtext=(registros[0]["loja"] if registros else "—"),
-                         icon="🔺"),
-                ]),
+                f'<div style="display:flex;flex-wrap:wrap;gap:6px 22px;'
+                f'font-size:12px;color:{COLORS["text_muted"]};margin:-2px 0 8px 0;">'
+                f'<span>Aluguel no período <b style="color:{COLORS["text"]};'
+                f'font-family:{FONTE_MONO};">{formata_m(soma_alu + soma_sem)}</b></span>'
+                f'<span>Média da rede <b style="color:{COLORS["primary"]};'
+                f'font-family:{FONTE_MONO};">'
+                + f"{media_rede:.2f}%".replace(".", ",") + "</b></span>"
+                f'<span>Acima da média <b style="color:'
+                f'{COLORS["negative"] if acima else COLORS["positive"]};">'
+                f'{len(acima)} de {len(registros)}</b></span>'
+                + (f'<span>Mais comprometida <b style="color:{COLORS["negative"]};">'
+                   + f"{registros[0]['pct']:.2f}%".replace(".", ",")
+                   + f' · {registros[0]["loja"]}</b></span>' if registros else "")
+                + "</div>",
                 unsafe_allow_html=True,
             )
 
@@ -3309,7 +3314,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 # ocupa espaço que já é da célula, em vez de uma coluna a mais,
                 # e a loja mais comprometida se acha de relance.
                 teto = max(r["pct"] for r in registros) or 1.0
-                partes = ['<div style="overflow-x:auto;">',
+                partes = ['<div class="tv-panel" style="padding:10px 12px;">',
+                          '<div style="overflow-x:auto;">',
                           '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
                           'style="min-width:100%;">',
                           '<thead><tr><th class="rot">Loja</th>'
@@ -3338,10 +3344,9 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
-                    "Aluguel ÷ <b>receita operacional bruta</b> da própria loja — é "
-                    "sobre o bruto que o aluguel se negocia. Quanto mais forte o "
-                    "fundo, mais faturamento a loja compromete."
-                    "</div>"
+                    "Aluguel ÷ <b>receita operacional bruta</b> da própria loja. "
+                    "Quanto mais forte o fundo, mais faturamento a loja compromete."
+                    "</div></div>"
                 )
                 st.markdown("".join(partes), unsafe_allow_html=True)
 
@@ -3370,7 +3375,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
 
             if por_mes and len(meses_ativos) > 1 and registros:
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
-                tabela = ['<div style="overflow-x:auto;">',
+                tabela = ['<div class="tv-panel" style="padding:10px 12px;">',
+                          '<div style="overflow-x:auto;">',
                           '<table class="tv-matriz tv-matriz-fixa" style="min-width:100%;">',
                           f'<thead><tr><th class="rot">Loja</th>{cab}'
                           '<th class="tot">Período</th></tr></thead><tbody>']
@@ -3401,7 +3407,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:6px;">'
                     "Percentual do aluguel sobre a receita bruta do próprio mês; "
-                    "embaixo, o valor pago.</div>")
+                    "embaixo, o valor pago.</div></div>")
                 st.markdown("".join(tabela), unsafe_allow_html=True)
 
 
@@ -3863,10 +3869,20 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                isso o navegador distribui o espaço sobrando entre elas e os
                números ficam boiando no meio de faixas enormes, que foi o que
                deixou a tabela com cara de rascunho. */
+            /* Compacta de propósito: são vinte lojas, e a 37px de altura por
+               linha a tabela tomava a tela inteira. A largura das colunas de
+               dinheiro cai para 140px -- o suficiente para "R$ 14.736.756,90"
+               sem sobra. */
+            .tv-aluguel td, .tv-aluguel th {{ padding:3px 8px !important; }}
+            .tv-aluguel td {{ font-size:11.5px !important; }}
+            .tv-aluguel td.rot {{ font-size:11.5px !important; }}
             .tv-aluguel td:not(.rot), .tv-aluguel th:not(.rot) {{
-                width:170px; text-align:right; white-space:nowrap;
+                width:140px; text-align:right; white-space:nowrap;
             }}
-            .tv-aluguel td.rot, .tv-aluguel th.rot {{ width:auto; }}
+            /* O nome da loja não precisa de mil pixels: travado, ele deixa as
+               colunas de número perto umas das outras, que é como se compara. */
+            .tv-aluguel td.rot, .tv-aluguel th.rot {{ max-width:210px; }}
+
             .tv-aluguel tbody tr:hover td {{ background:rgba(255,255,255,0.03); }}
             .tv-aluguel tbody tr:hover td.rot {{ background:#2A3346; }}
             .tv-aluguel td.tot {{

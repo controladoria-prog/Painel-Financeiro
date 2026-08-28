@@ -6107,6 +6107,56 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                         corpo.index("render_kpi_row("),
                         "o voltar desceu de novo para o rodape")
 
+    def test_as_tabelas_da_tela_ficam_dentro_do_cartao(self):
+        """Soltas no fundo elas nao pareciam do mesmo painel: no painel
+        principal TODA tabela mora dentro de um .tv-panel, com borda e cantos
+        arredondados. Era a maior quebra de identidade da tela."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        # Cada <table> tem de vir precedida da abertura do cartao.
+        for pos in range(len(corpo)):
+            pos = corpo.find("<table class=", pos)
+            if pos < 0:
+                break
+            antes = corpo[max(0, pos - 400):pos]
+            self.assertIn('class="tv-panel"', antes,
+                          "tabela solta no fundo, fora do cartao")
+            pos += 12
+
+    def test_a_lista_de_estouros_tem_barra_como_as_outras(self):
+        """Sem ela as colunas se espalhavam pela largura toda e ficava um vao
+        enorme no meio de cada linha -- era o que fazia a lista nao parecer do
+        mesmo painel."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        j = corpo.index("teto_e = estouros[0]")
+        trecho = corpo[j:j + 1200]
+        self.assertIn("tv-rank-bar-fill", trecho)
+        self.assertIn('item["desvio"] / teto_e * 100', trecho)
+
+    def test_o_bloco_do_aluguel_nao_repete_a_faixa_de_kpi(self):
+        """A tela ja abre com uma faixa de quatro cartoes. Repetir o mesmo
+        formato no meio dela faz o olho tratar os dois blocos como se tivessem
+        a mesma importancia -- aqui e subtitulo com numeros, nao segundo
+        painel."""
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertEqual(corpo.count("render_kpi_row("), 1,
+                         "voltou uma segunda faixa de KPI no meio da tela")
+        self.assertIn("Aluguel no período <b", corpo)
+
+    def test_a_tabela_do_aluguel_e_compacta(self):
+        """Sao vinte lojas: a 37px de altura por linha a tabela tomava a tela
+        inteira."""
+        i = FONTE.index(".tv-aluguel td, .tv-aluguel th")
+        regra = FONTE[i:i + 700]
+        self.assertIn("padding:3px 8px", regra)
+        self.assertIn("font-size:11.5px", regra)
+        # E o nome da loja nao ocupa mil pixels: travado, ele deixa as colunas
+        # de numero perto umas das outras, que e como se compara.
+        self.assertIn("max-width:210px", regra)
+
+
     def test_a_tela_nao_lista_a_dre_inteira(self):
         """A versao anterior abria cada subgrupo E cada sublinha dos dois
         grupos, e o resultado era a mesma tabela que ja existe no relatorio em
