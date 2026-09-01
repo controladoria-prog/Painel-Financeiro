@@ -6640,6 +6640,13 @@ class TesteContaSelecionavelEEconomias(unittest.TestCase):
         self.assertIn(".tv-conta-mensal .sec {{ font-size:8.5px;", regra)
         self.assertLess(FONTE.index(".tv-aluguel td, .tv-aluguel th"), i,
                         "a regra compacta precisa vir DEPOIS da .tv-aluguel")
+        # E a coluna da LOJA nao engole a folga da largura: max-width em
+        # celula de tabela NAO vale no layout automatico, entao o nome leva
+        # width cravado e os meses ficam com width:auto (e um minimo) para
+        # absorver a folga e dar espaco aos numeros.
+        self.assertIn(".tv-conta-mensal td:not(.rot), .tv-conta-mensal "
+                      "th:not(.rot) {{ width:auto; min-width:96px; }}", FONTE)
+        self.assertIn("width:170px; min-width:150px; max-width:none;", FONTE)
 
     def test_o_nome_sem_numero_aguenta_espaco_e_travessao(self):
         """Nome com espaco na frente (" 8.4.2 - Aluguel Complementar")

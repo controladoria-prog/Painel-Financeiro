@@ -4306,8 +4306,17 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             .tv-conta-mensal td, .tv-conta-mensal th {{ padding:2px 6px !important; }}
             .tv-conta-mensal td {{ font-size:10.5px !important; line-height:1.3 !important; }}
             .tv-conta-mensal td.rot {{ font-size:10.5px !important; }}
-            .tv-conta-mensal td:not(.rot), .tv-conta-mensal th:not(.rot) {{ width:96px; }}
+            .tv-conta-mensal td:not(.rot), .tv-conta-mensal th:not(.rot) {{ width:auto; min-width:96px; }}
             .tv-conta-mensal .sec {{ font-size:8.5px; margin-top:0; }}
+            /* A coluna da LOJA engolia a folga da largura (print de
+               01/09/2026): max-width em célula de tabela NÃO vale no layout
+               automático, e como só os meses tinham width cravado, todo o
+               excedente ia para a única coluna sem width -- a do nome.
+               Invertido: width no nome, meses com width:auto (e um mínimo)
+               para absorver a folga e dar espaço aos números. */
+            .tv-conta-mensal td.rot, .tv-conta-mensal th.rot {{
+                width:170px; min-width:150px; max-width:none;
+            }}
 
             /* A célula de calor NÃO pode criar contexto de empilhamento nem
                subir na pilha: com z-index próprio ela passava por cima da
