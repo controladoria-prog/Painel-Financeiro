@@ -340,8 +340,15 @@ def _subgrupos_nivel2(linhas_disponiveis, numero_grupo):
 
 def _nome_sem_numero_dre(nome_linha):
     """Remove o prefixo numérico da linha da DRE (ex.: "8.3 - Pessoal" vira
-    "Pessoal") -- só para exibição mais limpa."""
-    return re.sub(r"^\d+(\.\d+)*\s*-\s*", "", str(nome_linha)).strip()
+    "Pessoal") -- só para exibição mais limpa.
+
+    Dois cuidados aprendidos na tela (01/09/2026): o nome pode vir com
+    ESPAÇO NA FRENTE (" 8.4.2 - Aluguel Complementar"), e aí o ^ não achava
+    o número e o rótulo saía duplicado ("Somar 8.4.2 - Aluguel Complementar
+    (8.4.2)"); e o separador pode chegar como meia-risca ou travessão em
+    vez de hífen quando a planilha passa por editor de texto."""
+    return re.sub(r"^\d+(\.\d+)*\s*[-\u2013\u2014]\s*", "",
+                  str(nome_linha).strip()).strip()
 
 
 def _montar_linhas_com_expansao(todas_linhas, modo, grupos_alternados):
@@ -3358,9 +3365,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             st.markdown("".join(partes), unsafe_allow_html=True)
 
     # =====================================================================
-    # Estouros contra o orçado
+    # Estouros e economias contra o orçado, lado a lado
     # =====================================================================
-    # ---- Estouros, na largura inteira -----------------------------------
     # O bloco "Peso das saídas em cada loja" saiu daqui (28/08/2026). Duas
     # razões: ele dividia as saídas pela receita LÍQUIDA de cada unidade, e no
     # escritório -- que tem receita residual de poucos milhares -- o índice
@@ -3368,55 +3374,126 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
     # respondia a mesma pergunta do aluguel por loja logo abaixo, só que com
     # outro numerador.
     #
-    # Sem ele, os estouros ocupam a largura toda em vez de deixar meia tela
-    # vazia. Melhor um bloco inteiro do que dois pela metade.
-    st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
+    # Os estouros ficaram um tempo sozinhos na largura inteira, mas era
+    # espaço demais para cinco colunas -- e a tela só contava o lado ruim: o
+    # cartão lá em cima diz "gastou menos R$ X" e nada mostrava DE ONDE veio
+    # a folga. Lado a lado, as duas tabelas fecham o desvio do cartão: à
+    # esquerda onde passou, à direita onde sobrou (01/09/2026).
+    #
+    # A folga varre o MESMO nível 2 dos estouros, mas SEM exigir gasto:
+    # conta orçada que ainda não gastou nada é economia inteira (até aqui).
+    # Os `subgrupos` lá de cima descartam linha sem gasto -- daí a varredura
+    # própria; sem ela, estouros − economias não bateria com o desvio total.
+    economias = []
+    for _linha_grupo_eco in ("6 - Despesas Variáveis", "8 - Despesas Operacionais"):
+        for linha_sub in _subgrupos_nivel2(linhas_dre,
+                                           _numero_linha_dre(_linha_grupo_eco)):
+            _orc_sub, _real_sub = _orc(linha_sub), _real(linha_sub)
+            folga = _orc_sub - _real_sub
+            if folga <= 0:
+                continue
+            economias.append({
+                "conta": _nome_sem_numero_dre(linha_sub), "linha": linha_sub,
+                "grupo": _nome_sem_numero_dre(_linha_grupo_eco),
+                "orcado": _orc_sub, "realizado": _real_sub, "folga": folga,
+            })
+    economias.sort(key=lambda e: -e["folga"])
+
+    col_est, col_eco = st.columns(2)
+    with col_est:
+        st.markdown('<div class="tv-section-title">🚨 Maiores estouros contra o orçado</div>',
+                    unsafe_allow_html=True)
+        if not estouros:
+            st.markdown(
+                '<div class="tv-panel" style="padding:14px;">'
+                f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
+                "orçado no período.</span></div>", unsafe_allow_html=True)
+        elif abrir_por_mes:
+            # O ESTOURO DE CADA MÊS, e não o do período repetido: é o que diz se a
+            # conta estourou uma vez ou todo mês -- e essas duas coisas pedem
+            # conversas diferentes.
+            st.markdown(
+                _tabela_por_mes(
+                    "Conta",
+                    [{"nome": e["conta"],
+                      "valores": [_real(e["linha"], [c]) - _orc(e["linha"], [c])
+                                  for c in cols_mes]}
+                     for e in estouros[:8]],
+                    "Estouro de cada mês: gasto − orçado. Fundo mais forte = mês em "
+                    "que a conta mais passou."),
                 unsafe_allow_html=True)
-    if not estouros:
-        st.markdown(
-            '<div class="tv-panel" style="padding:14px;">'
-            f'<span style="color:{COLORS["positive"]};">Nenhum subgrupo acima do '
-            "orçado no período.</span></div>", unsafe_allow_html=True)
-    elif abrir_por_mes:
-        # O ESTOURO DE CADA MÊS, e não o do período repetido: é o que diz se a
-        # conta estourou uma vez ou todo mês -- e essas duas coisas pedem
-        # conversas diferentes.
-        st.markdown(
-            _tabela_por_mes(
-                "Conta",
-                [{"nome": e["conta"],
-                  "valores": [_real(e["linha"], [c]) - _orc(e["linha"], [c])
-                              for c in cols_mes]}
-                 for e in estouros[:8]],
-                "Estouro de cada mês: gasto − orçado. Fundo mais forte = mês em "
-                "que a conta mais passou."),
-            unsafe_allow_html=True)
-    else:
-        linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
-                    '<table class="tv-matriz tv-estouros" style="width:100%;">',
-                    '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
-                    '<th>Gasto</th><th class="tot">Estouro</th>'
-                    '<th class="tot">%</th></tr></thead><tbody>']
-        for item in estouros[:8]:
-            _pct_est = ((item["desvio"] / item["orcado"] * 100)
-                        if item["orcado"] else None)
+        else:
+            linhas_e = ['<div class="tv-panel" style="padding:8px 12px;">',
+                        '<table class="tv-matriz tv-estouros" style="width:100%;">',
+                        '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
+                        '<th>Gasto</th><th class="tot">Estouro</th>'
+                        '<th class="tot">%</th></tr></thead><tbody>']
+            for item in estouros[:8]:
+                _pct_est = ((item["desvio"] / item["orcado"] * 100)
+                            if item["orcado"] else None)
+                linhas_e.append(
+                    f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
+                    f'<span class="sec">{item["grupo"]}</span></td>'
+                    f'<td>{formata_valor_curto(item["orcado"])}</td>'
+                    f'<td>{formata_valor_curto(item["realizado"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["negative"]};">'
+                    f'+{formata_valor_curto(item["desvio"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["negative"]};">'
+                    + ("s/ orç." if _pct_est is None else f"+{_pct_est:.0f}%")
+                    + "</td></tr>")
             linhas_e.append(
-                f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
-                f'<span class="sec">{item["grupo"]}</span></td>'
-                f'<td>{formata_valor_curto(item["orcado"])}</td>'
-                f'<td>{formata_valor_curto(item["realizado"])}</td>'
-                f'<td class="tot" style="color:{COLORS["negative"]};">'
-                f'+{formata_valor_curto(item["desvio"])}</td>'
-                f'<td class="tot" style="color:{COLORS["negative"]};">'
-                + ("s/ orç." if _pct_est is None else f"+{_pct_est:.0f}%")
-                + "</td></tr>")
-        linhas_e.append(
-            "</tbody></table>"
-            f'<div style="text-align:right;font-size:10px;'
-            f'color:{COLORS["text_muted"]};margin-top:4px;">'
-            "Ordenado em reais. <b>s/ orç.</b> = conta sem previsão no orçamento."
-            "</div></div>")
-        st.markdown("".join(linhas_e), unsafe_allow_html=True)
+                "</tbody></table>"
+                f'<div style="text-align:right;font-size:10px;'
+                f'color:{COLORS["text_muted"]};margin-top:4px;">'
+                "Ordenado em reais. <b>s/ orç.</b> = conta sem previsão no orçamento."
+                "</div></div>")
+            st.markdown("".join(linhas_e), unsafe_allow_html=True)
+    with col_eco:
+        st.markdown('<div class="tv-section-title">✅ Maiores economias contra o orçado</div>',
+                    unsafe_allow_html=True)
+        if not economias:
+            st.markdown(
+                '<div class="tv-panel" style="padding:14px;">'
+                f'<span style="color:{COLORS["text_muted"]};">Nenhum subgrupo '
+                "abaixo do orçado no período.</span></div>",
+                unsafe_allow_html=True)
+        elif abrir_por_mes:
+            # A FOLGA de cada mês, espelho da tabela ao lado: sobrar todo mês
+            # e sobrar num mês só também pedem conversas diferentes.
+            st.markdown(
+                _tabela_por_mes(
+                    "Conta",
+                    [{"nome": e["conta"],
+                      "valores": [_orc(e["linha"], [c]) - _real(e["linha"], [c])
+                                  for c in cols_mes]}
+                     for e in economias[:8]],
+                    "Folga de cada mês: orçado − gasto. Fundo mais forte = mês "
+                    "em que mais sobrou."),
+                unsafe_allow_html=True)
+        else:
+            linhas_c = ['<div class="tv-panel" style="padding:8px 12px;">',
+                        '<table class="tv-matriz tv-estouros" style="width:100%;">',
+                        '<thead><tr><th class="rot">Conta</th><th>Orçado</th>'
+                        '<th>Gasto</th><th class="tot">Economia</th>'
+                        '<th class="tot">%</th></tr></thead><tbody>']
+            for item in economias[:8]:
+                _pct_eco = item["folga"] / item["orcado"] * 100
+                linhas_c.append(
+                    f'<tr><td class="rot" title="{item["conta"]}">{item["conta"]}'
+                    f'<span class="sec">{item["grupo"]}</span></td>'
+                    f'<td>{formata_valor_curto(item["orcado"])}</td>'
+                    f'<td>{formata_valor_curto(item["realizado"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["positive"]};">'
+                    f'-{formata_valor_curto(item["folga"])}</td>'
+                    f'<td class="tot" style="color:{COLORS["positive"]};">'
+                    + f"-{_pct_eco:.0f}%" + "</td></tr>")
+            linhas_c.append(
+                "</tbody></table>"
+                f'<div style="text-align:right;font-size:10px;'
+                f'color:{COLORS["text_muted"]};margin-top:4px;">'
+                "Ordenado em reais. Conta orçada e ainda sem gasto conta como "
+                "economia inteira (-100%).</div></div>")
+            st.markdown("".join(linhas_c), unsafe_allow_html=True)
 
     # As lojas são carregadas uma vez, para o bloco do aluguel.
     _lojas = _lojas_individuais_das_abas(abas_visao or [])
@@ -3431,74 +3508,116 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             for chave in chaves)
 
     # =====================================================================
-    # Aluguel sobre o faturamento, por loja
+    # Despesa sobre o faturamento, por loja (conta selecionável)
     # =====================================================================
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="tv-section-title">🏬 Aluguel sobre o faturamento, por loja</div>',
+    st.markdown('<div class="tv-section-title">🏬 Despesa sobre o faturamento, por loja</div>',
                 unsafe_allow_html=True)
 
-    linha_aluguel = _linha_por_numero_tv(linhas_dre, "8.4.1")
+    # O bloco nasceu para o aluguel e ficava preso nele: comparar a Taxa de
+    # Ocupação (ou qualquer outra conta) exigia mudar o código. A conta agora
+    # vem de um SELETOR: qualquer subgrupo de nível 2 das despesas (6 e 8) e
+    # qualquer conta de nível 3 entram na mesma leitura -- faturamento,
+    # despesa e o percentual -- no acumulado e no mês a mês (01/09/2026). O
+    # padrão segue sendo o aluguel (8.4.1), e SÓ com ele selecionado existe a
+    # caixa de somar o complementar: nas outras contas ela não significa
+    # nada, e um grupo como o 8.4 já carrega o 8.4.2 dentro de si.
     linha_complementar = _linha_por_numero_tv(linhas_dre, "8.4.2")
-    incluir_compl = False
-    if linha_complementar is not None:
-        incluir_compl = st.checkbox(
-            f"Somar {_nome_sem_numero_dre(linha_complementar)} (8.4.2)",
-            value=False, key="tv_alug_compl",
-            help="Desligado, a coluna mostra só o aluguel da 8.4.1.",
-        )
-    chaves_aluguel = [linha_aluguel] if linha_aluguel is not None else []
-    if incluir_compl and linha_complementar is not None:
-        chaves_aluguel.append(linha_complementar)
+    rotulos_conta, opcoes_conta = [], {}
+    for linha_dre_opc in linhas_dre:
+        numero_opc = _numero_linha_dre(linha_dre_opc)
+        partes_opc = numero_opc.split(".") if numero_opc else []
+        if not partes_opc or partes_opc[0] not in ("6", "8"):
+            continue
+        if len(partes_opc) not in (2, 3):
+            continue
+        recuo_opc = "· " if len(partes_opc) == 3 else ""
+        rotulo_opc = f"{recuo_opc}{_nome_sem_numero_dre(linha_dre_opc)} ({numero_opc})"
+        if rotulo_opc in opcoes_conta:
+            continue
+        rotulos_conta.append(rotulo_opc)
+        opcoes_conta[rotulo_opc] = linha_dre_opc
 
-    if not chaves_aluguel:
+    if not rotulos_conta:
         st.markdown(
             '<div class="tv-panel" style="padding:14px;">'
-            f'<span style="color:{COLORS["text_muted"]};">Não achei a linha 8.4.1 na '
-            "DRE desta visão.</span></div>", unsafe_allow_html=True)
+            f'<span style="color:{COLORS["text_muted"]};">Não achei subgrupos de '
+            "despesa (6 e 8) na DRE desta visão.</span></div>",
+            unsafe_allow_html=True)
     elif not _lojas or not path_real:
         st.markdown(
             '<div class="tv-panel" style="padding:14px;">'
             f'<span style="color:{COLORS["text_muted"]};">Escolha uma visão que '
-            "contenha lojas para abrir o aluguel por unidade.</span></div>",
+            "contenha lojas para abrir a comparação por unidade.</span></div>",
             unsafe_allow_html=True)
     else:
+        # ARMADILHA conhecida do selectbox com key: o `index` é IGNORADO
+        # quando a sessão já guarda valor, e valor guardado que saiu da lista
+        # (a visão mudou) derruba o widget. Semear e sanear ANTES de criar --
+        # a mesma regra do seletor_periodo_meses do painel normal.
+        _chave_conta = "tv_conta_faturamento"
+        padrao_conta = next((r for r in rotulos_conta if r.endswith("(8.4.1)")),
+                            rotulos_conta[0])
+        if st.session_state.get(_chave_conta) not in opcoes_conta:
+            st.session_state[_chave_conta] = padrao_conta
+        _col_sel, _col_chk, _ = st.columns([0.55, 0.45, 0.6])
+        rotulo_conta = _col_sel.selectbox(
+            "Conta comparada com o faturamento", rotulos_conta,
+            key=_chave_conta, label_visibility="collapsed",
+            help="A despesa desta conta é dividida pela receita bruta de cada loja.")
+        linha_conta = opcoes_conta[rotulo_conta]
+        numero_conta = _numero_linha_dre(linha_conta)
+        nome_conta = _nome_sem_numero_dre(linha_conta)
+        chaves_conta = [linha_conta]
+        # A caixa mora numa VAGA própria: com outra conta escolhida ela some,
+        # e vaga esvaziada não deixa fantasma para trás.
+        _vaga_chk = _col_chk.empty()
+        if numero_conta == "8.4.1" and linha_complementar is not None:
+            if _vaga_chk.checkbox(
+                    f"Somar {_nome_sem_numero_dre(linha_complementar)} (8.4.2)",
+                    value=False, key="tv_alug_compl",
+                    help="Desligado, a coluna mostra só o aluguel da 8.4.1."):
+                chaves_conta.append(linha_complementar)
+        else:
+            _vaga_chk.empty()
+
         CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"
-        registros, sem_faturamento, sem_aluguel = [], [], []
+        registros, sem_faturamento, sem_despesa = [], [], []
         for loja in _lojas:
             _df_o, df_r = _dados_loja.get(loja, (pd.DataFrame(), pd.DataFrame()))
             faturamento = _da_loja(df_r, [CHAVE_FATURAMENTO], cols_periodo)
-            aluguel = _da_loja(df_r, chaves_aluguel, cols_periodo)
-            if not faturamento and not aluguel:
+            despesa = _da_loja(df_r, chaves_conta, cols_periodo)
+            if not faturamento and not despesa:
                 continue
-            if not aluguel:
-                sem_aluguel.append({"loja": loja, "faturamento": faturamento})
+            if not despesa:
+                sem_despesa.append({"loja": loja, "faturamento": faturamento})
                 continue
             if not faturamento:
-                sem_faturamento.append({"loja": loja, "aluguel": aluguel, "df": df_r})
+                sem_faturamento.append({"loja": loja, "despesa": despesa, "df": df_r})
                 continue
             registros.append({
                 "loja": loja, "df": df_r, "faturamento": faturamento,
-                "aluguel": aluguel, "pct": aluguel / faturamento * 100,
+                "despesa": despesa, "pct": despesa / faturamento * 100,
             })
         registros.sort(key=lambda r: -r["pct"])
 
-        if not registros and not sem_faturamento and not sem_aluguel:
+        if not registros and not sem_faturamento and not sem_despesa:
             st.markdown(
                 '<div class="tv-panel" style="padding:14px;">'
-                f'<span style="color:{COLORS["text_muted"]};">Sem aluguel nem '
-                "faturamento nas lojas desta visão.</span></div>",
+                f'<span style="color:{COLORS["text_muted"]};">Sem {nome_conta} '
+                "nem faturamento nas lojas desta visão.</span></div>",
                 unsafe_allow_html=True)
         else:
             soma_fat = sum(r["faturamento"] for r in registros)
-            soma_alu = sum(r["aluguel"] for r in registros)
-            soma_sem = sum(r["aluguel"] for r in sem_faturamento)
-            media_rede = (soma_alu / soma_fat * 100) if soma_fat else 0.0
+            soma_desp = sum(r["despesa"] for r in registros)
+            soma_sem = sum(r["despesa"] for r in sem_faturamento)
+            media_rede = (soma_desp / soma_fat * 100) if soma_fat else 0.0
             acima = [r for r in registros if r["pct"] > media_rede]
 
             st.markdown(
                 f'<div style="display:flex;flex-wrap:wrap;gap:6px 22px;'
                 f'font-size:12px;color:{COLORS["text_muted"]};margin:-2px 0 8px 0;">'
-                + _ind("Aluguel no período", formata_m(soma_alu + soma_sem))
+                + _ind(f"{nome_conta} no período", formata_m(soma_desp + soma_sem))
                 + _ind("Média da rede", f"{media_rede:.2f}%".replace(".", ","),
                        COLORS["primary"])
                 + _ind("Acima da média", f"{len(acima)} de {len(registros)}",
@@ -3507,7 +3626,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 unsafe_allow_html=True,
             )
 
-            # Duas colunas ESTREITAS: a tabela do aluguel tem quatro colunas
+            # Duas colunas ESTREITAS: a tabela acumulada tem quatro colunas
             # curtas e o bloco de exceções tem duas etiquetas. Nenhum dos dois
             # precisa de meia tela, e esticados eles só afastavam os números.
             # ESPAÇOS RESERVADOS fixos, criados SEMPRE nas mesmas colunas, e
@@ -3534,7 +3653,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                           '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
                           'style="min-width:100%;">',
                           '<thead><tr><th class="rot">Loja</th>'
-                          '<th>Faturamento</th><th>Aluguel</th>'
+                          '<th>Faturamento</th><th>Despesa</th>'
                           '<th class="tot">%</th></tr></thead><tbody>']
                 for reg in registros:
                     cor = (COLORS["negative"] if reg["pct"] > media_rede
@@ -3544,23 +3663,23 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     partes.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
                         f'<td>{formata_valor_curto(reg["faturamento"])}</td>'
-                        f'<td>{formata_valor_curto(reg["aluguel"])}</td>'
+                        f'<td>{formata_valor_curto(reg["despesa"])}</td>'
                         f'<td class="tot" style="color:{cor};'
                         f'background:rgba({tom},{alfa:.3f});">'
                         + f"{reg['pct']:.2f}%".replace(".", ",") + "</td></tr>")
                 partes.append(
                     '<tr class="rede"><td class="rot">Rede</td>'
                     f'<td>{formata_valor_curto(soma_fat)}</td>'
-                    f'<td>{formata_valor_curto(soma_alu)}</td>'
+                    f'<td>{formata_valor_curto(soma_desp)}</td>'
                     f'<td class="tot">{f"{media_rede:.2f}%".replace(".", ",")}</td></tr>'
                     "</tbody></table></div>"
                     f'<div style="text-align:right;font-size:10px;'
                     f'color:{COLORS["text_muted"]};margin-top:5px;">'
-                    "Aluguel ÷ receita operacional bruta da própria loja."
+                    f"{nome_conta} ÷ receita operacional bruta da própria loja."
                     "</div></div>")
                 _vaga_tabela.markdown("".join(partes), unsafe_allow_html=True)
 
-            if sem_faturamento or sem_aluguel:
+            if sem_faturamento or sem_despesa:
                 def _chips(itens, cor, valor_de):
                     return "".join(
                         '<span style="display:inline-block;padding:4px 9px;'
@@ -3573,28 +3692,30 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
 
                 _partes_exc = ['<div class="tv-panel" style="padding:9px 12px;">']
                 if sem_faturamento:
-                    sem_faturamento.sort(key=lambda r: -r["aluguel"])
+                    sem_faturamento.sort(key=lambda r: -r["despesa"])
                     _partes_exc.append(
                         f'<div style="font-size:9.5px;letter-spacing:0.9px;'
                         f'text-transform:uppercase;color:{COLORS["text_muted"]};'
-                        'margin-bottom:6px;">Pagam aluguel e não faturam</div>'
+                        'margin-bottom:6px;">'
+                        f"Pagam {nome_conta} e não faturam</div>"
                         + _chips(sem_faturamento, COLORS["warning"],
-                                 lambda i: formata_valor_curto(i["aluguel"])))
-                if sem_aluguel:
-                    sem_aluguel.sort(key=lambda r: -r["faturamento"])
+                                 lambda i: formata_valor_curto(i["despesa"])))
+                if sem_despesa:
+                    sem_despesa.sort(key=lambda r: -r["faturamento"])
                     _partes_exc.append(
                         f'<div style="font-size:9.5px;letter-spacing:0.9px;'
                         f'text-transform:uppercase;color:{COLORS["text_muted"]};'
-                        'margin:7px 0 6px 0;">Faturam e não pagam aluguel</div>'
-                        + _chips(sem_aluguel, COLORS["positive"],
+                        'margin:7px 0 6px 0;">'
+                        f"Faturam e não pagam {nome_conta}</div>"
+                        + _chips(sem_despesa, COLORS["positive"],
                                  lambda i: formata_valor_curto(i["faturamento"])))
                 _partes_exc.append(
                     f'<div style="font-size:9.5px;color:{COLORS["text_muted"]};'
                     'margin-top:2px;">Fora do percentual: sem faturamento não há '
-                    "o que dividir; sem aluguel o índice é zero.</div></div>")
+                    "o que dividir; sem a despesa o índice é zero.</div></div>")
                 # No acumulado as exceções ficam ao lado da tabela; no mês a
-                # mês a tabela é larga e elas vão para cima dela, em faixa
-                # própria. A vaga não usada é esvaziada.
+                # mês elas descem para a faixa larga. A vaga não usada é
+                # esvaziada.
                 _html_exc = "".join(_partes_exc)
                 if abrir_por_mes:
                     _vaga_exc_larga.markdown(_html_exc, unsafe_allow_html=True)
@@ -3604,52 +3725,55 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     _vaga_exc_larga.empty()
 
             if abrir_por_mes and registros:
-                # Faturamento e aluguel do PERÍODO em colunas próprias, e só o
-                # percentual por mês. Antes cada célula tinha duas linhas e a
-                # tabela ficava com o dobro da altura sem dizer o faturamento
-                # em lugar nenhum.
+                # Faturamento e despesa do PERÍODO na coluna final, e os três
+                # números por mês. A LEGENDA fica EM CIMA: no rodapé ela só
+                # era lida depois de vinte linhas de tabela. E cada valor tem
+                # COR DE PAPEL fixo -- faturamento em azul, despesa em âmbar,
+                # as cores que receita e despesa já usam no resto do painel --
+                # para a célula dizer sozinha o que é o quê (01/09/2026).
+                legenda_mensal = (
+                    f'<div style="font-size:10px;color:{COLORS["text_muted"]};'
+                    'margin:0 0 6px 0;">Em cada célula: <b>percentual</b> da '
+                    "despesa sobre a receita bruta do mês e, embaixo, "
+                    f'<b style="color:{COLORS["primary"]};">faturamento</b> · '
+                    f'<b style="color:{COLORS["warning"]};">despesa</b> '
+                    "daquele mês.</div>")
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
                 tabela = ['<div class="tv-panel" style="padding:8px 12px;">',
+                          legenda_mensal,
                           '<div style="overflow-x:auto;">',
-                          '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
-                          'style="min-width:100%;">',
+                          '<table class="tv-matriz tv-matriz-fixa tv-aluguel tv-conta-mensal" style="min-width:100%;">',
                           f'<thead><tr><th class="rot">Loja</th>{cab}'
                           '<th class="tot">Período</th></tr></thead><tbody>']
                 for reg in registros:
                     celulas = ""
                     for coluna in cols_mes:
                         fat_m = _da_loja(reg["df"], [CHAVE_FATURAMENTO], [coluna])
-                        alu_m = _da_loja(reg["df"], chaves_aluguel, [coluna])
+                        desp_m = _da_loja(reg["df"], chaves_conta, [coluna])
                         if not fat_m:
                             celulas += f'<td style="color:{COLORS["text_muted"]};">—</td>'
                             continue
-                        pct_m = alu_m / fat_m * 100
+                        pct_m = desp_m / fat_m * 100
                         cor_m = (COLORS["negative"] if pct_m > media_rede
                                  else COLORS["positive"])
-                        # Os TRÊS números do mês: o percentual em destaque e,
-                        # embaixo, faturamento e aluguel que o produziram. Sem
-                        # eles a tabela mostrava o índice sem a conta, e não
-                        # dava para saber se subiu porque o aluguel aumentou ou
-                        # porque a loja vendeu menos -- que são problemas
-                        # diferentes.
                         celulas += (
                             f'<td style="color:{cor_m};">'
                             + f"{pct_m:.2f}%".replace(".", ",")
-                            + f'<span class="sec">{formata_valor_curto(fat_m)} · '
-                            f'{formata_valor_curto(alu_m)}</span></td>')
+                            + '<span class="sec">'
+                            f'<span style="color:{COLORS["primary"]};">'
+                            f"{formata_valor_curto(fat_m)}</span> · "
+                            f'<span style="color:{COLORS["warning"]};">'
+                            f"{formata_valor_curto(desp_m)}</span></span></td>")
                     tabela.append(
                         f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
                         f'{celulas}<td class="tot">'
                         + f"{reg['pct']:.2f}%".replace(".", ",")
-                        + f'<span class="sec">{formata_valor_curto(reg["faturamento"])} · '
-                        f'{formata_valor_curto(reg["aluguel"])}</span></td></tr>')
-                tabela.append(
-                    "</tbody></table></div>"
-                    f'<div style="text-align:right;font-size:10px;'
-                    f'color:{COLORS["text_muted"]};margin-top:5px;">'
-                    "Em cada célula: <b>percentual</b> do aluguel sobre a receita "
-                    "bruta do mês e, embaixo, <b>faturamento · aluguel</b> daquele mês."
-                    "</div></div>")
+                        + '<span class="sec">'
+                        f'<span style="color:{COLORS["primary"]};">'
+                        f'{formata_valor_curto(reg["faturamento"])}</span> · '
+                        f'<span style="color:{COLORS["warning"]};">'
+                        f'{formata_valor_curto(reg["despesa"])}</span></span></td>')
+                tabela.append("</tbody></table></div></div>")
                 _vaga_mensal.markdown("".join(tabela), unsafe_allow_html=True)
 
 
@@ -4173,6 +4297,17 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                 border-bottom:none; background:rgba(255,255,255,0.04);
             }}
             .tv-aluguel tr.rede td.rot {{ background:#2A3346; }}
+
+            /* Versão MENSAL da tabela de despesa por loja: vinte lojas × nove
+               meses com duas linhas por célula -- no espaçamento normal ela
+               tomava duas telas. Padding e fontes menores SÓ aqui; a
+               acumulada continua confortável. Definida DEPOIS da .tv-aluguel
+               de propósito: mesma especificidade, a última escrita vence. */
+            .tv-conta-mensal td, .tv-conta-mensal th {{ padding:2px 6px !important; }}
+            .tv-conta-mensal td {{ font-size:10.5px !important; line-height:1.3 !important; }}
+            .tv-conta-mensal td.rot {{ font-size:10.5px !important; }}
+            .tv-conta-mensal td:not(.rot), .tv-conta-mensal th:not(.rot) {{ width:96px; }}
+            .tv-conta-mensal .sec {{ font-size:8.5px; margin-top:0; }}
 
             /* A célula de calor NÃO pode criar contexto de empilhamento nem
                subir na pilha: com z-index próprio ela passava por cima da

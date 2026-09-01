@@ -6220,7 +6220,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertEqual(corpo.count("render_kpi_row("), 1,
                          "voltou uma segunda faixa de KPI no meio da tela")
-        self.assertIn('_ind("Aluguel no período"', corpo)
+        self.assertIn('_ind(f"{nome_conta} no período"', corpo)
 
     def test_a_tabela_do_aluguel_e_compacta(self):
         """Sao vinte lojas: a 37px de altura por linha a tabela tomava a tela
@@ -6282,8 +6282,9 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                            if not l.strip().startswith("#"))
         self.assertNotIn("Peso das saídas em cada loja", codigo)
         self.assertNotIn("_media_loja", codigo)
-        # E os estouros passam a ocupar a largura toda, em vez de deixar meia
-        # tela vazia: melhor um bloco inteiro do que dois pela metade.
+        # O lugar dele nao ficou vazio: hoje quem divide a largura com os
+        # estouros e a tabela de economias (col_est, col_eco) -- mas o bloco
+        # por loja nao pode voltar.
         self.assertNotIn("col_est, col_loja = st.columns(", codigo)
 
     def test_a_evolucao_acompanha_a_altura_do_ranque(self):
@@ -6352,10 +6353,10 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         vendeu menos -- que sao problemas diferentes."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        j = corpo.index("alu_m = _da_loja(reg[\"df\"], chaves_aluguel, [coluna])")
+        j = corpo.index("desp_m = _da_loja(reg[\"df\"], chaves_conta, [coluna])")
         trecho = corpo[j:j + 1600]
         self.assertIn("formata_valor_curto(fat_m)", trecho)
-        self.assertIn("formata_valor_curto(alu_m)", trecho)
+        self.assertIn("formata_valor_curto(desp_m)", trecho)
         self.assertIn('{pct_m:.2f}%', trecho)
 
     def test_o_aluguel_usa_espacos_reservados_contra_o_fantasma(self):
@@ -6433,18 +6434,20 @@ class TesteTelaDaRamificacao(unittest.TestCase):
                          "a lista de saltos voltou e com ela o custo dela")
         self.assertNotIn("Subgrupo por mês", corpo)
 
-    def test_o_aluguel_e_medido_contra_o_faturamento_da_propria_loja(self):
-        """Aluguel caro em reais pode ser barato para quem vende muito, e
-        barato em reais pode sufocar quem vende pouco. So o percentual sobre o
-        proprio faturamento compara lojas de tamanhos diferentes."""
+    def test_a_despesa_e_medida_contra_o_faturamento_da_propria_loja(self):
+        """Despesa cara em reais pode ser barata para quem vende muito, e
+        barata em reais pode sufocar quem vende pouco. So o percentual sobre o
+        proprio faturamento compara lojas de tamanhos diferentes. O bloco
+        nasceu para o aluguel; hoje a conta vem do seletor, e as travas valem
+        para qualquer escolha."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn("Aluguel sobre o faturamento", corpo)
+        self.assertIn("Despesa sobre o faturamento", corpo)
         # FATURAMENTO = RECEITA OPERACIONAL BRUTA. Com a liquida o percentual
         # saia maior do que o do contrato, e no escritorio -- que tem receita
         # liquida residual de poucos milhares -- o indice explodia para 1242%.
         self.assertIn('CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"', corpo)
-        self.assertIn('"pct": aluguel / faturamento * 100,', corpo)
+        self.assertIn('"pct": despesa / faturamento * 100,', corpo)
         # Colunas ESTREITAS: a tabela tem quatro colunas curtas e o bloco de
         # excecoes tem duas etiquetas -- nenhum precisa de meia tela.
         self.assertIn("_col_tab, _col_lado, _sobra = st.columns([1, 0.62, 0.5])", corpo)
@@ -6452,29 +6455,30 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         # da tabela: o escritorio paga aluguel de verdade, e enfia-lo numa
         # tabela de percentuais sugere um indice que nao existe.
         self.assertIn("sem_faturamento.append(", corpo)
-        # Loja que nao paga aluguel tambem sai da lista: uma linha inteira com
+        # Loja sem a despesa tambem sai da lista: uma linha inteira com
         # R$ 0,00 e 0,00% ocupa o mesmo espaco das outras e nao diz nada.
         # A CONDICAO, e nao so o append: desligar o ramo deixa a chamada no
         # codigo, inalcancavel, e a busca por texto continuava passando.
-        self.assertIn("            if not aluguel:", corpo)
-        i_ramo = corpo.index("            if not aluguel:")
-        self.assertIn("sem_aluguel.append(", corpo[i_ramo:i_ramo + 700])
-        self.assertIn("Pagam aluguel e não faturam", corpo)
-        self.assertIn("Faturam e não pagam aluguel", corpo)
+        self.assertIn("            if not despesa:", corpo)
+        i_ramo = corpo.index("            if not despesa:")
+        self.assertIn("sem_despesa.append(", corpo[i_ramo:i_ramo + 700])
+        self.assertIn("Pagam {nome_conta} e não faturam", corpo)
+        self.assertIn("Faturam e não pagam {nome_conta}", corpo)
         # A regua e a media DA REDE, nao uma meta de fora.
         self.assertIn("media_rede", corpo)
         self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
-        # A linha e achada pelo NUMERO, nao pelo nome: "8.4.1" nao muda
-        # quando alguem renomeia a conta na planilha, e a busca por texto ja
-        # falhou neste painel uma vez.
-        self.assertIn('_linha_por_numero_tv(linhas_dre, "8.4.1")', corpo)
+        # O padrao e achado pelo NUMERO embutido no rotulo, e o complementar
+        # pelo numero direto: "8.4.1" nao muda quando alguem renomeia a conta
+        # na planilha, e a busca por texto ja falhou neste painel uma vez.
+        self.assertIn('r.endswith("(8.4.1)")', corpo)
+        self.assertIn('numero_conta == "8.4.1"', corpo)
         self.assertIn('_linha_por_numero_tv(linhas_dre, "8.4.2")', corpo)
         # O complementar e OPCIONAL e desligado por padrao: quem soma os dois
         # sem perceber compara aluguel com aluguel + complementar entre lojas.
         self.assertIn('key="tv_alug_compl"', corpo)
         self.assertIn("value=False, key=\"tv_alug_compl\"", corpo)
         # A tabela mostra os TRES numeros pedidos.
-        self.assertIn("<th>Faturamento</th><th>Aluguel</th>", corpo)
+        self.assertIn("<th>Faturamento</th><th>Despesa</th>", corpo)
         self.assertIn('<th class="tot">%</th>', corpo)
         # SEM barra: ao lado de tres numeros ela nao acrescentava leitura.
         i_tab = corpo.index("<th>Faturamento</th>")
@@ -6515,8 +6519,8 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn('<th class="tot">Estouro</th>', corpo)
 
 
-    def test_o_aluguel_tem_a_visao_mes_a_mes(self):
-        i = FONTE.index("Aluguel sobre o faturamento")
+    def test_o_bloco_da_conta_tem_a_visao_mes_a_mes(self):
+        i = FONTE.index("Despesa sobre o faturamento")
         trecho = FONTE[i:FONTE.index("\ndef ", i)]
         # UMA visao OU a outra, nunca as duas: quem pediu mes a mes ja tem o
         # total na coluna "Periodo" da tabela mensal, e a acumulada logo acima
@@ -6527,10 +6531,9 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         # percentual que nao existe, e numero inventado em tela de parede vira
         # decisao.
         self.assertIn("if not fat_m:", trecho)
-        # Faturamento e aluguel do PERIODO em colunas proprias, e so o
-        # percentual por mes: antes cada celula tinha duas linhas e a tabela
-        # ficava com o dobro da altura sem dizer o faturamento em lugar nenhum.
-        self.assertIn("<th>Faturamento</th><th>Aluguel</th>", trecho)
+        # Faturamento e despesa do PERIODO na coluna final, e os tres numeros
+        # em cada mes -- percentual em cima, faturamento e despesa embaixo.
+        self.assertIn("<th>Faturamento</th><th>Despesa</th>", trecho)
 
     def test_a_loja_sem_percentual_vai_para_o_fim(self):
         """Modelo da ordenacao: quem esta sufocando o resultado aparece
@@ -6547,6 +6550,107 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn('("6", "6 - Despesas Variáveis")', FONTE)
         self.assertIn('("8", "8 - Despesas Operacionais")', FONTE)
 
+
+
+class TesteContaSelecionavelEEconomias(unittest.TestCase):
+    """01/09/2026: os estouros dividem a largura com as economias, e o bloco
+    por loja compara QUALQUER conta escolhida num seletor -- nao so o
+    aluguel."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_nome_sem_numero_dre"])
+
+    def _corpo(self):
+        i = FONTE.index("def _corpo_despesas_tv(")
+        return FONTE[i:FONTE.index("\ndef ", i + 10)]
+
+    def test_a_conta_comparada_e_selecionavel(self):
+        """O bloco por loja nasceu para o aluguel e ficava preso nele: para
+        comparar a Taxa de Ocupacao era preciso mudar o codigo. A conta agora
+        vem de um seletor com os niveis 2 e 3 dos grupos 6 e 8; o padrao segue
+        sendo o 8.4.1 e a caixa do complementar so existe com ele
+        selecionado."""
+        corpo = self._corpo()
+        self.assertIn('r.endswith("(8.4.1)")', corpo,
+                      "o padrao do seletor deixou de ser o aluguel")
+        self.assertIn('partes_opc[0] not in ("6", "8")', corpo)
+        self.assertIn("len(partes_opc) not in (2, 3)", corpo)
+        # Semear ANTES de criar o widget: selectbox com key IGNORA o index
+        # quando a sessao ja guarda valor, e valor que saiu da lista derruba o
+        # widget -- mesma armadilha ja pega no seletor_periodo_meses.
+        j = corpo.index("if st.session_state.get(_chave_conta) not in opcoes_conta:")
+        self.assertLess(j, corpo.index("_col_sel.selectbox("),
+                        "a semente entrou depois do widget -- nao semeia nada")
+        # O 8.4.2 so entra DENTRO do ramo do aluguel, uma unica vez.
+        k = corpo.index('if numero_conta == "8.4.1" and linha_complementar is not None:')
+        fim = corpo.index("_vaga_chk.empty()", k)
+        self.assertIn("chaves_conta.append(linha_complementar)", corpo[k:fim],
+                      "o complementar escapou do ramo do aluguel")
+        self.assertEqual(corpo.count("chaves_conta.append(linha_complementar)"), 1)
+
+    def test_economias_fecham_a_conta_ao_lado_dos_estouros(self):
+        """O cartao diz "gastou menos R$ X" e a tela so mostrava o lado ruim.
+        Lado a lado, estouros e economias explicam o desvio inteiro -- e para
+        fechar essa conta a folga NAO pode exigir gasto: conta orcada que
+        ainda nao gastou e economia inteira, e os `subgrupos` descartam linha
+        sem gasto, dai a varredura propria."""
+        corpo = self._corpo()
+        self.assertIn("col_est, col_eco = st.columns(2)", corpo,
+                      "os estouros voltaram a ocupar a largura inteira")
+        self.assertIn("Maiores economias contra o orçado", corpo)
+        j = corpo.index("economias = []")
+        trecho = corpo[j:j + 1500]
+        self.assertIn("folga = _orc_sub - _real_sub", trecho)
+        self.assertIn("if folga <= 0:", trecho)
+        self.assertIn('economias.sort(key=lambda e: -e["folga"])', trecho)
+        # E o bloco muda de forma no mes a mes, como todos os outros.
+        k = corpo.index("with col_eco:")
+        self.assertIn("_tabela_por_mes(", corpo[k:k + 2600],
+                      "as economias ignoram o filtro de mes a mes")
+
+    def test_a_legenda_do_mensal_fica_em_cima_e_com_as_cores(self):
+        """No rodape a legenda so era lida depois de vinte linhas de tabela, e
+        "R$ 94 mil · R$ 13 mil" nao dizia qual valor era receita e qual era
+        despesa. Agora cada valor tem cor de papel fixo -- faturamento em
+        azul, despesa em ambar -- e a legenda em cima apresenta as duas."""
+        corpo = self._corpo()
+        j = corpo.index("if abrir_por_mes and registros:")
+        trecho = corpo[j:corpo.index("_vaga_mensal.markdown(", j)]
+        self.assertLess(trecho.index("Em cada célula:"),
+                        trecho.index("<table class="),
+                        "a legenda voltou para o rodape")
+        self.assertIn('<b style="color:{COLORS["primary"]};">faturamento</b>', trecho)
+        self.assertIn('<b style="color:{COLORS["warning"]};">despesa</b>', trecho)
+        # As cores valem DENTRO das celulas, nao so na legenda.
+        self.assertIn("formata_valor_curto(fat_m)", trecho)
+        self.assertIn("formata_valor_curto(desp_m)", trecho)
+
+    def test_o_mensal_e_compacto_sem_apertar_o_acumulado(self):
+        """Vinte lojas x nove meses com duas linhas por celula tomavam duas
+        telas. A classe propria aperta padding e fonte SO na tabela mensal --
+        e precisa vir DEPOIS da .tv-aluguel no CSS, porque com a mesma
+        especificidade e a ultima escrita que vence."""
+        self.assertIn('tv-aluguel tv-conta-mensal"', FONTE,
+                      "a tabela mensal perdeu a classe compacta")
+        i = FONTE.index(".tv-conta-mensal td, .tv-conta-mensal th")
+        regra = FONTE[i:i + 600]
+        self.assertIn("padding:2px 6px", regra)
+        self.assertIn("font-size:10.5px", regra)
+        self.assertIn(".tv-conta-mensal .sec {{ font-size:8.5px;", regra)
+        self.assertLess(FONTE.index(".tv-aluguel td, .tv-aluguel th"), i,
+                        "a regra compacta precisa vir DEPOIS da .tv-aluguel")
+
+    def test_o_nome_sem_numero_aguenta_espaco_e_travessao(self):
+        """Nome com espaco na frente (" 8.4.2 - Aluguel Complementar")
+        escapava do ^ da expressao e o rotulo saia duplicado na tela: "Somar
+        8.4.2 - Aluguel Complementar (8.4.2)". E planilha editada fora troca
+        hifen por meia-risca sem avisar."""
+        f = self.ns["_nome_sem_numero_dre"]
+        self.assertEqual(f(" 8.4.2 - Aluguel Complementar"), "Aluguel Complementar")
+        self.assertEqual(f("8.4.2 \u2013 Aluguel Complementar"), "Aluguel Complementar")
+        self.assertEqual(f("8.3 - Pessoal"), "Pessoal")
+        self.assertEqual(f("Linha sem numero"), "Linha sem numero")
 
 
 class TesteOrdemDeDefinicao(unittest.TestCase):
