@@ -6226,12 +6226,14 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         """Sao vinte lojas: a 37px de altura por linha a tabela tomava a tela
         inteira."""
         i = FONTE.index(".tv-aluguel td, .tv-aluguel th")
-        regra = FONTE[i:i + 700]
+        regra = FONTE[i:i + 1100]
         self.assertIn("padding:3px 8px", regra)
         self.assertIn("font-size:11.5px", regra)
-        # E o nome da loja nao ocupa mil pixels: travado, ele deixa as colunas
-        # de numero perto umas das outras, que e como se compara.
-        self.assertIn("max-width:210px", regra)
+        # Distribuicao INVERTIDA da largura: width cravado nos numeros mandava
+        # a folga toda para a coluna do nome. O nome leva width + max-width (o
+        # max-width alimenta as reticencias) e os numeros absorvem a folga.
+        self.assertIn("width:auto; min-width:80px;", regra)
+        self.assertIn("width:190px; max-width:190px;", regra)
 
 
     def test_todo_bloco_muda_de_forma_no_mes_a_mes(self):
@@ -6366,19 +6368,19 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         de grupos do painel principal, mesma solucao."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
-                     "_vaga_exc_larga"):
+        for vaga in ("_vaga_tabela", "_vaga_tab_dir", "_vaga_exc_lado",
+                     "_vaga_mensal", "_vaga_exc_larga"):
             self.assertIn(f"{vaga} = ", corpo, f"sumiu a vaga {vaga}")
         # E cada uma tem de ser LIMPA quando nao e usada: criar a vaga sem
         # esvaziar nao resolve nada.
-        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
-                     "_vaga_exc_larga"):
+        for vaga in ("_vaga_tabela", "_vaga_tab_dir", "_vaga_exc_lado",
+                     "_vaga_mensal", "_vaga_exc_larga"):
             self.assertIn(f"{vaga}.empty()", corpo,
                           f"a vaga {vaga} nunca e esvaziada")
         # E o conteudo tem de SAIR pela vaga, nao por um st.markdown solto:
         # markdown solto desenha fora do espaco reservado e o fantasma volta.
-        for vaga in ("_vaga_tabela", "_vaga_exc_lado", "_vaga_mensal",
-                     "_vaga_exc_larga"):
+        for vaga in ("_vaga_tabela", "_vaga_tab_dir", "_vaga_exc_lado",
+                     "_vaga_mensal", "_vaga_exc_larga"):
             self.assertIn(f"{vaga}.markdown(", corpo,
                           f"a vaga {vaga} existe mas nada e desenhado nela")
 
@@ -6448,9 +6450,11 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         # liquida residual de poucos milhares -- o indice explodia para 1242%.
         self.assertIn('CHAVE_FATURAMENTO = "1 - Receita Operacional Bruta"', corpo)
         self.assertIn('"pct": despesa / faturamento * 100,', corpo)
-        # Colunas ESTREITAS: a tabela tem quatro colunas curtas e o bloco de
-        # excecoes tem duas etiquetas -- nenhum precisa de meia tela.
-        self.assertIn("_col_tab, _col_lado, _sobra = st.columns([1, 0.62, 0.5])", corpo)
+        # A acumulada divide em DUAS METADES lado a lado (>= 6 lojas): inteira
+        # numa coluna, empilhava vinte lojas e deixava um quarto da tela vazio.
+        self.assertIn("_col_tab, _col_tab2, _col_lado = st.columns([1, 1, 0.66])", corpo)
+        self.assertIn("if len(registros) >= 6:", corpo)
+        self.assertIn('"Continua na tabela ao lado ›"', corpo)
         # Unidade SEM faturamento vai para um bloco proprio, e nao para o fim
         # da tabela: o escritorio paga aluguel de verdade, e enfia-lo numa
         # tabela de percentuais sugere um indice que nao existe.
@@ -6604,10 +6608,23 @@ class TesteContaSelecionavelEEconomias(unittest.TestCase):
         self.assertIn("folga = _orc_sub - _real_sub", trecho)
         self.assertIn("if folga <= 0:", trecho)
         self.assertIn('economias.sort(key=lambda e: -e["folga"])', trecho)
-        # E o bloco muda de forma no mes a mes, como todos os outros.
-        k = corpo.index("with col_eco:")
-        self.assertIn("_tabela_por_mes(", corpo[k:k + 2600],
+        # E o bloco muda de forma no mes a mes -- e de LUGAR: uma coluna por
+        # mes nao cabe em meia tela, entao as duas tabelas descem empilhadas
+        # na largura inteira, por vagas proprias (o fantasma de sempre quando
+        # o conteudo troca de posicao entre execucoes).
+        self.assertIn("html_eco = _titulo_eco + _tabela_por_mes(", corpo,
                       "as economias ignoram o filtro de mes a mes")
+        for vaga in ("_vaga_est_col", "_vaga_eco_col",
+                     "_vaga_est_larga", "_vaga_eco_larga"):
+            self.assertIn(f"{vaga} = ", corpo, f"sumiu a vaga {vaga}")
+            self.assertIn(f"{vaga}.empty()", corpo, f"a vaga {vaga} nunca e esvaziada")
+            self.assertIn(f"{vaga}.markdown(", corpo, f"nada sai pela vaga {vaga}")
+        j = corpo.index("_vaga_eco_larga = st.empty()")
+        k = corpo.index("\n    if abrir_por_mes:", j)
+        rota = corpo[k:k + 420]
+        self.assertIn("_vaga_est_col.empty()", rota)
+        self.assertIn("_vaga_est_larga.markdown(", rota,
+                      "no mes a mes os estouros tem de sair na largura inteira")
 
     def test_a_legenda_do_mensal_fica_em_cima_e_com_as_cores(self):
         """No rodape a legenda so era lida depois de vinte linhas de tabela, e
