@@ -6628,16 +6628,18 @@ class TesteContaSelecionavelEEconomias(unittest.TestCase):
 
     def test_o_mensal_e_compacto_sem_apertar_o_acumulado(self):
         """Vinte lojas x nove meses com duas linhas por celula tomavam duas
-        telas. A classe propria aperta padding e fonte SO na tabela mensal --
-        e precisa vir DEPOIS da .tv-aluguel no CSS, porque com a mesma
-        especificidade e a ultima escrita que vence."""
+        telas. A classe propria aperta o PADDING so na tabela mensal -- e
+        precisa vir DEPOIS da .tv-aluguel no CSS, porque com a mesma
+        especificidade e a ultima escrita que vence. As FONTES, ao
+        contrario, subiram depois que a coluna do nome soltou a largura:
+        o aperto era horizontal, e leitura de TV pede numero maior."""
         self.assertIn('tv-aluguel tv-conta-mensal"', FONTE,
                       "a tabela mensal perdeu a classe compacta")
         i = FONTE.index(".tv-conta-mensal td, .tv-conta-mensal th")
-        regra = FONTE[i:i + 600]
+        regra = FONTE[i:i + 800]
         self.assertIn("padding:2px 6px", regra)
-        self.assertIn("font-size:10.5px", regra)
-        self.assertIn(".tv-conta-mensal .sec {{ font-size:8.5px;", regra)
+        self.assertIn("font-size:12px", regra)
+        self.assertIn(".tv-conta-mensal .sec {{ font-size:10px;", regra)
         self.assertLess(FONTE.index(".tv-aluguel td, .tv-aluguel th"), i,
                         "a regra compacta precisa vir DEPOIS da .tv-aluguel")
         # E a coluna da LOJA nao engole a folga da largura: max-width em

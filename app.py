@@ -4304,10 +4304,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                acumulada continua confortável. Definida DEPOIS da .tv-aluguel
                de propósito: mesma especificidade, a última escrita vence. */
             .tv-conta-mensal td, .tv-conta-mensal th {{ padding:2px 6px !important; }}
-            .tv-conta-mensal td {{ font-size:10.5px !important; line-height:1.3 !important; }}
-            .tv-conta-mensal td.rot {{ font-size:10.5px !important; }}
+            /* Depois que a coluna do nome soltou a largura (print 14:27 de
+               01/09/2026), o aperto deixou de ser horizontal: as fontes
+               sobem para leitura de TV -- a compactação fica no padding e
+               na coluna do nome, não na fonte. */
+            .tv-conta-mensal td {{ font-size:12px !important; line-height:1.35 !important; }}
+            .tv-conta-mensal td.rot {{ font-size:11px !important; }}
             .tv-conta-mensal td:not(.rot), .tv-conta-mensal th:not(.rot) {{ width:auto; min-width:96px; }}
-            .tv-conta-mensal .sec {{ font-size:8.5px; margin-top:0; }}
+            .tv-conta-mensal .sec {{ font-size:10px; margin-top:1px; }}
             /* A coluna da LOJA engolia a folga da largura (print de
                01/09/2026): max-width em célula de tabela NÃO vale no layout
                automático, e como só os meses tinham width cravado, todo o
