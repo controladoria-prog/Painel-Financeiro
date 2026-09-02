@@ -13649,7 +13649,8 @@ def _deltas_pendentes_do_fechamento(df_fech, cols_periodo, cols_dados,
     usa abs() pelo mesmo motivo).
 
     Devolve (delta_receita_liquida, delta_ebitda, detalhes); os deltas são
-    magnitudes a SUBTRAIR do realizado, e `detalhes` alimenta a legenda.
+    magnitudes a SUBTRAIR do realizado, e `detalhes` lista processo, mês e
+    valor de cada pendência.
     `valor_da_linha(linha, coluna)` é injetado para a função ser testável
     sem planilha de verdade.
     """
@@ -15662,18 +15663,18 @@ with tab1:
 
         # ---- Projeção de fechamento da margem (lançamentos pendentes) ---
         # O valor REALIZADO continua sendo o número grande do cartão; a
-        # projeção entra no subtexto e na legenda logo abaixo dos cartões.
+        # projeção entra SÓ no subtexto -- a legenda detalhada que existiu
+        # abaixo dos cartões foi retirada a pedido (print de 02/09/2026).
         # Planilha de fechamento ausente ou com erro = cartão como sempre
         # foi -- a projeção é um acréscimo, nunca uma dependência.
         _margem_sub = "Realizada no Período"
         _cor_sub_margem = None
-        _proj_fech = None
         _url_fech_kpi = url_csv_do_fechamento(_segredo_com_origem("FECHAMENTO_CSV_URL")[0])
         if _url_fech_kpi:
             _df_fech_kpi, _erro_fech_kpi = carregar_planilha_fechamento(_url_fech_kpi)
             if not _erro_fech_kpi and not _df_fech_kpi.empty:
                 _hoje_fech = datetime.now(FUSO_BR).date()
-                _d_rec_f, _d_eb_f, _det_fech = _deltas_pendentes_do_fechamento(
+                _d_rec_f, _d_eb_f, _ = _deltas_pendentes_do_fechamento(
                     _df_fech_kpi, cols_kpi, list(meses_cols),
                     (_hoje_fech.year, _hoje_fech.month),
                     lambda linha, col: get_valor_consolidado_multi(
@@ -15682,7 +15683,6 @@ with tab1:
                 _rec_proj_f = rec_liq_real_kpi - _d_rec_f
                 if _d_eb_f > 0 and _rec_proj_f > 0:
                     _margem_proj_f = (ebitda_real_kpi - _d_eb_f) / _rec_proj_f * 100
-                    _proj_fech = (_margem_proj_f, ebitda_real_kpi - _d_eb_f, _det_fech)
                     _margem_sub = f"Projeção de fechamento: {_margem_proj_f:.1f}%"
                     _cor_sub_margem = COLORS["warning"]
 
@@ -15700,17 +15700,6 @@ with tab1:
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
-
-        if _proj_fech is not None:
-            _mg_p, _eb_p, _det_p = _proj_fech
-            _itens_p = " · ".join(
-                f"{d['processo']} {d['mes']} ~{formata_m(d['valor'])}" for d in _det_p)
-            st.caption(
-                f"🎯 **Projeção de fechamento da margem: {_mg_p:.1f}%** "
-                f"(EBITDA {formata_m(_eb_p)}). A planilha de Fechamento aponta "
-                f"lançamento pendente — {_itens_p} — estimado pela média dos "
-                "últimos 3 meses fechados."
-            )
 
         # ---- Ritmo do mês corrente: orçado proporcional aos dias ----
         # Comparar o realizado parcial de um mês em andamento contra o
