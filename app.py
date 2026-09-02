@@ -18,7 +18,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -44,6 +44,12 @@ st.set_page_config(
 )
 
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
+
+# Os lançamentos do sistema chegam com DOIS DIAS de atraso (D+2): no dia
+# 02/09 só existe o dia 01 -- e incompleto. Toda régua que compara o
+# realizado do mês corrente contra "dias decorridos" precisa andar com a
+# DATA DOS DADOS, não com o calendário (02/09/2026).
+DIAS_DEFASAGEM_DADOS = 2
 
 # ============================================================================
 # 2. DESIGN SYSTEM — paleta única, usada tanto no CSS quanto nos gráficos
@@ -13606,6 +13612,100 @@ def carregar_planilha_fechamento(url):
     return limpo, ""
 
 
+# ---------------------------------------------------------------------------
+# Projeção de fechamento da margem EBITDA
+# ---------------------------------------------------------------------------
+# O cartão de margem lia só o realizado -- e mês recém-virado ainda não tem
+# ICMS nem folha lançados (o diário chega D+2; o fechamento contábil demora
+# mais). Em 02/09/2026 a margem YTD aparecia em 23,9% com agosto sem os dois:
+# inflada. A projeção estima o que falta pela MÉDIA DOS ÚLTIMOS 3 MESES
+# FECHADOS e diz como o período tende a fechar; o que está pendente vem da
+# planilha de Fechamento Mensal (status ≠ OK) -- as duas regras foram
+# escolhidas pelo usuário em 02/09/2026. A DEPRECIAÇÃO fica fora de
+# propósito: ela entra abaixo do EBITDA e não mexe nesta margem.
+#
+# Cada processo pendente aponta a linha da DRE que ele lança e o efeito da
+# falta: "receita_liquida" derruba receita líquida E EBITDA na mesma medida
+# (dedução por lançar); "ebitda" derruba só o EBITDA (despesa por lançar).
+IMPACTO_FECHAMENTO_EBITDA = {
+    "ICMS": ("2 - Deduções da Receita Operacional Bruta", "receita_liquida"),
+    "FOPAG": ("8.3 - Pessoal", "ebitda"),
+}
+
+
+def _deltas_pendentes_do_fechamento(df_fech, cols_periodo, cols_dados,
+                                    ano_mes_atual, valor_da_linha):
+    """Quanto ainda falta ser lançado nos meses ABERTOS do período.
+
+    Mês aberto = anterior ao mês corrente do calendário (o corrente é assunto
+    da faixa de ritmo, não desta projeção) cujo processo está diferente de OK
+    e de N/A na planilha de fechamento -- linha ausente conta como Pendente,
+    a mesma regra da aba de Fechamento. A estimativa de cada lançamento é a
+    média do |valor| da linha nos últimos 3 meses com o processo OK e valor
+    nos dados; sem nenhum mês assim não há base e o processo fica de fora.
+    A diferença é travada em zero: processo pendente só ACRESCENTA
+    lançamento, nunca desfaz o que já está lá -- e |valor| porque a planilha
+    guarda dedução negativa e despesa ora positiva, ora negativa (o bridge
+    usa abs() pelo mesmo motivo).
+
+    Devolve (delta_receita_liquida, delta_ebitda, detalhes); os deltas são
+    magnitudes a SUBTRAIR do realizado, e `detalhes` alimenta a legenda.
+    `valor_da_linha(linha, coluna)` é injetado para a função ser testável
+    sem planilha de verdade.
+    """
+    if df_fech is None or len(df_fech) == 0:
+        return 0.0, 0.0, []
+    status_por = {}
+    for _, ln in df_fech.iterrows():
+        try:
+            chave = (int(ln[COL_FECH_ANO]), int(ln[COL_FECH_MES]),
+                     _normalizar_coluna_fin(str(ln[COL_FECH_PROCESSO])))
+        except (TypeError, ValueError):
+            continue
+        status_por[chave] = str(ln[COL_FECH_STATUS])
+
+    def _ano_mes(coluna):
+        try:
+            mes, ano = str(coluna).split("/")
+            return int(ano), int(mes)
+        except (AttributeError, ValueError):
+            return None
+
+    delta_rec, delta_eb, detalhes = 0.0, 0.0, []
+    for processo, (linha_dre, efeito) in IMPACTO_FECHAMENTO_EBITDA.items():
+        proc_norm = _normalizar_coluna_fin(processo)
+        fechados = []
+        for coluna in cols_dados:
+            am = _ano_mes(coluna)
+            if am is None:
+                continue
+            if status_por.get((am[0], am[1], proc_norm)) != STATUS_OK:
+                continue
+            if abs(valor_da_linha(linha_dre, coluna)) <= 0:
+                continue
+            fechados.append((am, coluna))
+        fechados.sort()
+        base = fechados[-3:]
+        if not base:
+            continue
+        media = sum(abs(valor_da_linha(linha_dre, c)) for _, c in base) / len(base)
+        for coluna in cols_periodo:
+            am = _ano_mes(coluna)
+            if am is None or am >= tuple(ano_mes_atual):
+                continue
+            situacao = status_por.get((am[0], am[1], proc_norm), STATUS_PENDENTE)
+            if situacao in (STATUS_OK, STATUS_NAO_SE_APLICA):
+                continue
+            delta = media - abs(valor_da_linha(linha_dre, coluna))
+            if delta <= 0:
+                continue
+            if efeito == "receita_liquida":
+                delta_rec += delta
+            delta_eb += delta
+            detalhes.append({"processo": processo, "mes": coluna, "valor": delta})
+    return delta_rec, delta_eb, detalhes
+
+
 # ============================================================================
 # 7.10 ORÇAMENTO 2027 — por plano de contas
 # ============================================================================
@@ -15560,6 +15660,32 @@ with tab1:
         cor_diff_eb = cor_variacao(diff_ebitda_kpi)
         cor_mg_eb = cor_variacao(margem_ebitda_kpi)
 
+        # ---- Projeção de fechamento da margem (lançamentos pendentes) ---
+        # O valor REALIZADO continua sendo o número grande do cartão; a
+        # projeção entra no subtexto e na legenda logo abaixo dos cartões.
+        # Planilha de fechamento ausente ou com erro = cartão como sempre
+        # foi -- a projeção é um acréscimo, nunca uma dependência.
+        _margem_sub = "Realizada no Período"
+        _cor_sub_margem = None
+        _proj_fech = None
+        _url_fech_kpi = url_csv_do_fechamento(_segredo_com_origem("FECHAMENTO_CSV_URL")[0])
+        if _url_fech_kpi:
+            _df_fech_kpi, _erro_fech_kpi = carregar_planilha_fechamento(_url_fech_kpi)
+            if not _erro_fech_kpi and not _df_fech_kpi.empty:
+                _hoje_fech = datetime.now(FUSO_BR).date()
+                _d_rec_f, _d_eb_f, _det_fech = _deltas_pendentes_do_fechamento(
+                    _df_fech_kpi, cols_kpi, list(meses_cols),
+                    (_hoje_fech.year, _hoje_fech.month),
+                    lambda linha, col: get_valor_consolidado_multi(
+                        list_df_real, linha, [col]),
+                )
+                _rec_proj_f = rec_liq_real_kpi - _d_rec_f
+                if _d_eb_f > 0 and _rec_proj_f > 0:
+                    _margem_proj_f = (ebitda_real_kpi - _d_eb_f) / _rec_proj_f * 100
+                    _proj_fech = (_margem_proj_f, ebitda_real_kpi - _d_eb_f, _det_fech)
+                    _margem_sub = f"Projeção de fechamento: {_margem_proj_f:.1f}%"
+                    _cor_sub_margem = COLORS["warning"]
+
         st.markdown(
             render_kpi_row([
                 dict(label="RECEITA LÍQUIDA (YTD)", value=formata_brl(rec_liq_real_kpi), value_color=cor_rec,
@@ -15569,18 +15695,37 @@ with tab1:
                 dict(label="VARIAÇÃO EBITDA", value=formata_brl(diff_ebitda_kpi), value_color=cor_diff_eb,
                      subtext=f"{pct_ebitda_kpi:+.1f}% vs Orçamento", subtext_color=cor_diff_eb, icon="⚖️"),
                 dict(label="MARGEM EBITDA %", value=f"{margem_ebitda_kpi:.1f}%", value_color=cor_mg_eb,
-                     subtext="Realizada no Período", icon="🎯"),
+                     subtext=_margem_sub, subtext_color=_cor_sub_margem, icon="🎯"),
             ]),
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
+
+        if _proj_fech is not None:
+            _mg_p, _eb_p, _det_p = _proj_fech
+            _itens_p = " · ".join(
+                f"{d['processo']} {d['mes']} ~{formata_m(d['valor'])}" for d in _det_p)
+            st.caption(
+                f"🎯 **Projeção de fechamento da margem: {_mg_p:.1f}%** "
+                f"(EBITDA {formata_m(_eb_p)}). A planilha de Fechamento aponta "
+                f"lançamento pendente — {_itens_p} — estimado pela média dos "
+                "últimos 3 meses fechados."
+            )
 
         # ---- Ritmo do mês corrente: orçado proporcional aos dias ----
         # Comparar o realizado parcial de um mês em andamento contra o
         # orçamento cheio faz o desvio parecer sempre catastrófico. Aqui o
         # orçamento é ajustado aos dias já decorridos, que é a comparação
         # justa enquanto o mês não fecha.
-        _hoje_ritmo = datetime.now(FUSO_BR).date()
+        # A régua anda com a DATA DOS DADOS (hoje − D+2), não com o
+        # calendário: medir contra a meta "até hoje" cobrava dias que ainda
+        # nem chegaram (print de 02/09/2026: 35% no dia 2, com um único dia
+        # parcial de lançamento). Nos primeiros dias do mês a referência cai
+        # no MÊS ANTERIOR fechando -- que é o que os números realmente
+        # contam; se esse mês não está no período filtrado, a faixa não
+        # aparece, como sempre foi para período sem o mês da referência.
+        _hoje_ritmo = (datetime.now(FUSO_BR).date()
+                       - timedelta(days=DIAS_DEFASAGEM_DADOS))
         _col_mes_atual, _frac_mes, _dias_corridos, _dias_mes = _fator_proporcional_mes_corrente(
             cols_kpi, meses_cols, _hoje_ritmo
         )
@@ -15632,7 +15777,8 @@ with tab1:
                                 {ritmo_rec_pct:.0f}%
                             </div>
                             <div style="font-size:10.5px; color:{COLORS['text_muted']}; margin-top:2px;">
-                                do esperado · dia {_dias_corridos} de {_dias_mes}
+                                do esperado · dia {_dias_corridos} de {_dias_mes}<br>
+                                dados até {_hoje_ritmo.strftime('%d/%m')} · D+{DIAS_DEFASAGEM_DADOS}
                             </div>
                         </div>
                         <div style="flex:1; min-width:250px;">
@@ -15651,7 +15797,7 @@ with tab1:
                             <div style="display:flex; justify-content:space-between; margin-top:5px;
                                         font-size:11px; color:{COLORS['text_muted']};">
                                 <span>Realizado <b style="color:{COLORS['text']};">{formata_m(rec_real_mes)}</b></span>
-                                <span>Meta até hoje <b style="color:{COLORS['text']};">{formata_m(rec_orc_mes_prop)}</b></span>
+                                <span>Meta até {_hoje_ritmo.strftime('%d/%m')} <b style="color:{COLORS['text']};">{formata_m(rec_orc_mes_prop)}</b></span>
                             </div>
                         </div>
                         <div style="display:flex; align-items:stretch; gap:20px;

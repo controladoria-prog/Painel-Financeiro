@@ -47,6 +47,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    "_deltas_pendentes_do_fechamento": ["_normalizar_coluna_fin"],
     "_linhas_raiz_do_conjunto": ["_eh_linha_de_resultado", "_normalizar_texto"],
     "_eh_linha_de_resultado": ["_normalizar_texto"],
     "resolver_planos_forcados": ["_planos_sem_linha_dre", "_normalizar_texto"],
@@ -82,6 +83,10 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "_deltas_pendentes_do_fechamento": [
+        "COL_FECH_ANO", "COL_FECH_MES", "COL_FECH_PROCESSO", "COL_FECH_STATUS",
+        "STATUS_OK", "STATUS_NAO_SE_APLICA", "STATUS_PENDENTE",
+        "IMPACTO_FECHAMENTO_EBITDA"],
     "_eh_linha_de_resultado": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
     "_assinatura_coluna_fin": ["LIGACOES_NOME_COLUNA", "_ACENTOS_FIN"],
@@ -7125,6 +7130,116 @@ class TesteFormatacao(unittest.TestCase):
 # ============================================================================
 # 7. TRAVAS ESTRUTURAIS - as regressoes que ja aconteceram
 # ============================================================================
+class TesteProjecaoDeFechamentoDaMargem(unittest.TestCase):
+    """02/09/2026: a margem YTD saia 23,9% com agosto ainda sem ICMS e sem
+    folha -- inflada. A projecao estima o que falta pela media dos ultimos 3
+    meses fechados (planilha de Fechamento), e o mes corrente fica de fora:
+    ele e assunto da faixa de ritmo, nao desta conta."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["_deltas_pendentes_do_fechamento"])
+        # staticmethod: guardada crua como atributo de classe, a função
+        # viraria METODO e o self entraria como primeiro argumento.
+        cls.f = staticmethod(cls.ns["_deltas_pendentes_do_fechamento"])
+
+    LINHA_DED = "2 - Deduções da Receita Operacional Bruta"
+    LINHA_FOL = "8.3 - Pessoal"
+    COLS = ["05/2026", "06/2026", "07/2026", "08/2026", "09/2026"]
+
+    def _planilha(self, linhas):
+        return pd.DataFrame(linhas, columns=["Ano", "Mês", "Processo", "Status"])
+
+    def _pega(self, valores):
+        return lambda linha, col: valores.get((linha, col), 0.0)
+
+    def test_estima_pela_media_e_ignora_o_mes_corrente(self):
+        """Agosto pendente entra pela media de mai-jul; setembro (corrente)
+        fica fora mesmo Pendente na planilha. Deducao vem NEGATIVA da DRE e a
+        folha ausente na planilha conta como Pendente -- os dois casos reais
+        do print de 02/09/2026."""
+        fech = self._planilha(
+            [[2026, m, "ICMS", "OK"] for m in (5, 6, 7)]
+            + [[2026, 8, "ICMS", "Pendente"], [2026, 9, "ICMS", "Pendente"]]
+            + [[2026, m, "FOPAG", "OK"] for m in (5, 6, 7)])
+        valores = {
+            (self.LINHA_DED, "05/2026"): -100.0,
+            (self.LINHA_DED, "06/2026"): -110.0,
+            (self.LINHA_DED, "07/2026"): -120.0,
+            (self.LINHA_DED, "08/2026"): -30.0,
+            (self.LINHA_FOL, "05/2026"): 200.0,
+            (self.LINHA_FOL, "06/2026"): 200.0,
+            (self.LINHA_FOL, "07/2026"): 200.0,
+        }
+        d_rec, d_eb, det = self.f(fech, self.COLS, self.COLS, (2026, 9),
+                                  self._pega(valores))
+        self.assertAlmostEqual(d_rec, 80.0)       # media 110 - |−30|
+        self.assertAlmostEqual(d_eb, 280.0)       # 80 do ICMS + 200 da folha
+        self.assertEqual({(d["processo"], d["mes"]) for d in det},
+                         {("ICMS", "08/2026"), ("FOPAG", "08/2026")},
+                         "setembro (mes corrente) nao pode entrar na projecao")
+
+    def test_trava_em_zero_e_respeita_o_na(self):
+        """Mes que ja tem MAIS lancado que a media nao gera delta (processo
+        pendente so acrescenta, nunca desfaz), e N/A nao e pendencia."""
+        fech = self._planilha(
+            [[2026, m, "ICMS", "OK"] for m in (5, 6, 7)]
+            + [[2026, 8, "ICMS", "Pendente"], [2026, 8, "FOPAG", "N/A"]]
+            + [[2026, m, "FOPAG", "OK"] for m in (5, 6, 7)])
+        valores = {
+            (self.LINHA_DED, "05/2026"): -100.0,
+            (self.LINHA_DED, "06/2026"): -110.0,
+            (self.LINHA_DED, "07/2026"): -120.0,
+            (self.LINHA_DED, "08/2026"): -150.0,
+            (self.LINHA_FOL, "05/2026"): 200.0,
+            (self.LINHA_FOL, "06/2026"): 200.0,
+            (self.LINHA_FOL, "07/2026"): 200.0,
+        }
+        d_rec, d_eb, det = self.f(fech, self.COLS, self.COLS, (2026, 9),
+                                  self._pega(valores))
+        self.assertEqual((d_rec, d_eb, det), (0.0, 0.0, []))
+
+    def test_sem_mes_fechado_nao_ha_base(self):
+        """Processo sem nenhum mes OK (ou OK sem valor nos dados) fica fora:
+        projetar sem base inventaria numero."""
+        fech = self._planilha(
+            [[2026, m, "ICMS", "Pendente"] for m in (5, 6, 7, 8)]
+            + [[2026, m, "FOPAG", "OK"] for m in (5, 6, 7)])
+        valores = {(self.LINHA_DED, "08/2026"): -30.0}   # folha OK mas sem valor
+        d_rec, d_eb, det = self.f(fech, self.COLS, self.COLS, (2026, 9),
+                                  self._pega(valores))
+        self.assertEqual((d_rec, d_eb, det), (0.0, 0.0, []))
+
+    def test_o_cartao_le_a_projecao_e_a_depreciacao_fica_fora(self):
+        i = FONTE.index("IMPACTO_FECHAMENTO_EBITDA = {")
+        mapa = FONTE[i:FONTE.index("}", i)]
+        self.assertIn('"ICMS"', mapa)
+        self.assertIn('"FOPAG"', mapa)
+        # Depreciacao entra ABAIXO do EBITDA: no mapa ela so inventaria delta.
+        self.assertNotIn("Deprecia", mapa)
+        self.assertIn("subtext=_margem_sub", FONTE,
+                      "o cartao da margem parou de ler a projecao")
+        self.assertIn("Projeção de fechamento:", FONTE)
+
+
+class TesteRitmoComDefasagem(unittest.TestCase):
+    """02/09/2026: os lancamentos chegam D+2, e o ritmo do mes cobrava a
+    meta 'ate hoje' com um unico dia parcial de dado (35% no dia 2). A
+    regua anda com a data dos dados, nao com o calendario."""
+
+    def test_a_regua_do_ritmo_anda_com_a_data_dos_dados(self):
+        i = FONTE.index("DIAS_DEFASAGEM_DADOS = ")
+        self.assertIn("DIAS_DEFASAGEM_DADOS = 2", FONTE[i:i + 40],
+                      "a defasagem D+2 mudou de valor sem mudar o teste")
+        j = FONTE.index("_hoje_ritmo = (datetime.now(FUSO_BR).date()")
+        self.assertIn("- timedelta(days=DIAS_DEFASAGEM_DADOS)", FONTE[j:j + 180],
+                      "o ritmo voltou a medir contra o calendario de hoje")
+        # E a tela DIZ que a regua anda atrasada -- sem o rotulo, o numero
+        # parece errado para quem compara com o dia do calendario.
+        self.assertIn("dados até {_hoje_ritmo.strftime('%d/%m')} · D+{DIAS_DEFASAGEM_DADOS}", FONTE)
+        self.assertIn("Meta até {_hoje_ritmo.strftime('%d/%m')}", FONTE)
+
+
 class TesteTravasEstruturais(unittest.TestCase):
     """Estes testes nao olham resultado: olham o codigo. Cada um trava uma
     decisao que ja foi desfeita sem querer e custou horas para achar."""
