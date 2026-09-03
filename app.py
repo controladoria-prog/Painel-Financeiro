@@ -2714,71 +2714,17 @@ def _linhas_folha_do_conjunto(linhas):
 # a meta e responder "e se" na hora. As três coisas nascem aqui como funções
 # sem Streamlit e sem planilha: recebem os números que a tela já calculou e
 # devolvem texto ou número. Puras de propósito -- são testadas com valores
-# inventados na suíte, e a tela só encaixa.
+# inventados na suíte, e a tela só encaixa. E são as MESMAS funções que o
+# briefing das 7h (briefing.py, via GitHub Actions) executa fora do app: a
+# tela e o e-mail contam a mesma história porque saem da mesma fonte.
+#
+# 04/09/2026, depois do primeiro print: a narrativa deixou de REPETIR os
+# cartões e passou a EXPLICAR -- quanto do gap é calendário (mês corrente com
+# um dia lançado), de onde vem o gap do EBITDA (receita ou custo) e qual
+# "folga" é só lançamento de fechamento que ainda não entrou.
 def _pct_br(valor, casas=1):
     """Percentual com vírgula decimal, como se escreve em português."""
     return f"{valor:.{casas}f}".replace(".", ",")
-
-
-def montar_narrativa_executiva(fatos):
-    """Frases em português a partir dos números que a tela já calcula.
-
-    DETERMINÍSTICA de propósito: nada aqui inventa número -- cada frase aponta
-    um valor que está em algum cartão da tela, então a narrativa nunca diz
-    algo que a tela não sustente (foi o critério para não usar IA em número
-    financeiro). Cada frase só entra quando o fato existe: dict vazio devolve
-    lista vazia, receita sem orçado não gera comparação.
-
-    `fatos` aceita: rec_real, rec_orc, ebitda_real, ebitda_orc, margem,
-    margem_proj, ritmo{mes, pct, dia, dias, data_dados, chance}, estouro{conta,
-    desvio, pct}, economia{conta, folga}, concentracao{n, total}.
-    """
-    f = fatos or {}
-    frases = []
-    rec_real, rec_orc = f.get("rec_real"), f.get("rec_orc")
-    if rec_real is not None and rec_orc:
-        var = (rec_real / rec_orc - 1) * 100
-        frases.append(
-            f"A receita líquida acumulada é {formata_valor_curto(rec_real)}, "
-            f"{_pct_br(abs(var))}% {'abaixo' if var < 0 else 'acima'} do orçado "
-            f"({formata_valor_curto(rec_orc)}).")
-    eb_real, eb_orc = f.get("ebitda_real"), f.get("ebitda_orc")
-    if eb_real is not None:
-        txt = f"O EBITDA soma {formata_valor_curto(eb_real)}"
-        if eb_orc:
-            var_eb = (eb_real / eb_orc - 1) * 100
-            txt += (f", {_pct_br(abs(var_eb))}% "
-                    f"{'abaixo' if var_eb < 0 else 'acima'} do orçado")
-        if f.get("margem") is not None:
-            txt += f", com margem de {_pct_br(f['margem'])}%"
-        if f.get("margem_proj") is not None:
-            txt += (f" — e a margem tende a fechar em {_pct_br(f['margem_proj'])}% "
-                    "quando os lançamentos pendentes do fechamento entrarem")
-        frases.append(txt + ".")
-    r = f.get("ritmo")
-    if r:
-        txt = (f"{str(r.get('mes', '')).capitalize()} corre a {r['pct']:.0f}% do "
-               f"esperado até o dia {r['dia']} de {r['dias']} (dados até "
-               f"{r['data_dados']})")
-        if r.get("chance") is not None:
-            txt += (f"; a chance de fechar o mês dentro do orçado está em "
-                    f"{r['chance'] * 100:.0f}%")
-        frases.append(txt + ".")
-    e = f.get("estouro")
-    if e:
-        pct = (f" (+{e['pct']:.0f}%)" if e.get("pct") is not None
-               else " (conta sem orçamento)")
-        frases.append(f"O maior estouro é {e['conta']}: "
-                      f"{formata_valor_curto(e['desvio'])} acima do orçado{pct}.")
-    c = f.get("economia")
-    if c:
-        frases.append(f"A maior folga veio de {c['conta']}: "
-                      f"{formata_valor_curto(c['folga'])} abaixo do orçado.")
-    k = f.get("concentracao")
-    if k and k.get("n"):
-        frases.append(f"{k['n']} de {k['total']} subgrupos de despesa respondem "
-                      "por 80% do gasto do período.")
-    return frases
 
 
 def probabilidade_de_bater_meta(razoes_historicas, razao_projetada,
@@ -2808,36 +2754,321 @@ def probabilidade_de_bater_meta(razoes_historicas, razao_projetada,
     return min(max(prob, 0.01), 0.99)
 
 
-def simular_ebitda(base, ajustes):
+def fatos_do_ritmo(list_df_real, list_df_orc, cols_kpi, meses_cols, m_map, hoje_dados):
+    """Tudo o que a faixa de ritmo E a narrativa dizem sobre o mês de
+    referência, numa fonte só. `hoje_dados` já vem descontado da defasagem
+    (D+2). Devolve None quando o mês de referência não está no período --
+    sem mês, sem faixa, como sempre foi."""
+    col, frac, dias_corridos, dias_mes = _fator_proporcional_mes_corrente(cols_kpi, meses_cols, hoje_dados)
+    if col is None:
+        return None
+    receita, ebitda = "3 - Receita Operacional Liquida", "11 - EBITDA"
+    nome = next((n for n, c in m_map.items() if c == col), col)
+    rec_real = get_valor_consolidado_multi(list_df_real, receita, [col])
+    rec_orc_cheio = get_valor_consolidado_multi(list_df_orc, receita, [col])
+    rec_orc_prop = rec_orc_cheio * frac
+    eb_real = get_valor_consolidado_multi(list_df_real, ebitda, [col])
+    eb_orc_prop = get_valor_consolidado_multi(list_df_orc, ebitda, [col]) * frac
+    rec_proj = (rec_real / dias_corridos * dias_mes) if dias_corridos else 0.0
+    # Histórico de realizado/orçado dos meses ANTERIORES do ano, para a chance.
+    idx = meses_cols.index(col) if col in meses_cols else 0
+    razoes = []
+    for c in meses_cols[:idx]:
+        o = get_valor_consolidado_multi(list_df_orc, receita, [c])
+        r = get_valor_consolidado_multi(list_df_real, receita, [c])
+        if o > 0 and r > 0:
+            razoes.append(r / o)
+    chance = probabilidade_de_bater_meta(
+        razoes, (rec_proj / rec_orc_cheio) if rec_orc_cheio else None, frac)
+    return {
+        "col": col, "mes": nome, "frac": frac, "dia": dias_corridos, "dias": dias_mes,
+        "data_dados": hoje_dados.strftime("%d/%m"),
+        "rec_real": rec_real, "rec_orc_cheio": rec_orc_cheio, "rec_orc_prop": rec_orc_prop,
+        "pct": (rec_real / rec_orc_prop * 100) if rec_orc_prop else 0.0,
+        "ebitda_pct": (eb_real / eb_orc_prop * 100) if eb_orc_prop else 0.0,
+        "rec_proj": rec_proj, "chance": chance, "n_hist": len(razoes),
+    }
+
+
+def projetar_margem_fechamento(rec_liq, ebitda, delta_rec, delta_ebitda):
+    """Margem (%) de fechamento depois de descontar o que ainda falta lançar.
+    None quando não há nada pendente ou a receita projetada não presta."""
+    if not delta_ebitda or delta_ebitda <= 0:
+        return None
+    rec_proj = rec_liq - (delta_rec or 0.0)
+    if rec_proj <= 0:
+        return None
+    return (ebitda - delta_ebitda) / rec_proj * 100
+
+
+def montar_fatos_executivos(valor, linhas_dre, cols_kpi, col_mes_corrente, nome_mes_corrente,
+                            pendencias=None, ritmo=None, margem_proj=None, rotulo_periodo=""):
+    """Os FATOS da narrativa, numa fonte só (tela e e-mail).
+
+    `valor(lado, linha, cols, exato)` é injetado: na tela é o
+    get_valor_consolidado_multi sobre as listas de DataFrames; na suíte é um
+    dicionário. Isso é o que deixa a função testável sem planilha.
+
+    Duas decisões que valem a leitura:
+    - BASE FECHADA. Toda análise de "por quê" tira o mês corrente do
+      calendário: com um dia lançado contra um mês inteiro de orçado, TODA
+      conta pareceria abaixo do orçado e o gap de receita dobraria (print de
+      03/09/2026: 21,9% no acumulado, 10,8% até agosto). O mês corrente entra
+      só como explicação do gap.
+    - ARTEFATO DE FECHAMENTO. Folga de linha cujo lançamento ainda não
+      entrou (folha de agosto, ICMS) NÃO é economia -- é a planilha de
+      fechamento dizendo "falta". Quando a pendência explica metade ou mais
+      da folga, a linha sai do pódio de folgas e vira frase própria.
+    """
+    receita, ebitda = "3 - Receita Operacional Liquida", "11 - EBITDA"
+    cols_fech = [c for c in cols_kpi if c != col_mes_corrente]
+    tem_corrente = col_mes_corrente in cols_kpi and bool(cols_fech)
+    base = cols_fech if tem_corrente else list(cols_kpi)
+    f = {"periodo": rotulo_periodo, "ritmo": ritmo, "margem_proj": margem_proj,
+         "mes_corrente": None}
+    f["rec_real"], f["rec_orc"] = valor("real", receita, cols_kpi), valor("orc", receita, cols_kpi)
+    f["ebitda_real"], f["ebitda_orc"] = valor("real", ebitda, cols_kpi), valor("orc", ebitda, cols_kpi)
+    f["fechado"] = {
+        "rec_real": valor("real", receita, base), "rec_orc": valor("orc", receita, base),
+        "ebitda_real": valor("real", ebitda, base), "ebitda_orc": valor("orc", ebitda, base),
+    }
+    if tem_corrente:
+        f["mes_corrente"] = {
+            "col": col_mes_corrente, "mes": nome_mes_corrente,
+            "rec_real": valor("real", receita, [col_mes_corrente]),
+            "rec_orc": valor("orc", receita, [col_mes_corrente]),
+            "dia": (ritmo or {}).get("dia") if (ritmo or {}).get("col") == col_mes_corrente else None,
+        }
+    itens = []
+    for grupo in ("6", "8"):
+        for linha in _subgrupos_nivel2(linhas_dre, grupo):
+            r = abs(valor("real", linha, base, True))
+            o = abs(valor("orc", linha, base, True))
+            if not r and not o:
+                continue
+            itens.append({"conta": _nome_sem_numero_dre(linha), "linha": linha,
+                          "realizado": r, "orcado": o})
+    f["estouros"] = [
+        {"conta": e["conta"], "desvio": e["desvio"],
+         "pct": (e["desvio"] / e["orcado"] * 100) if e["orcado"] else None}
+        for e in ofensores_por_desvio(itens)[:3]
+    ]
+    pend_por_linha = {}
+    for d in (pendencias or []):
+        linha_p = IMPACTO_FECHAMENTO_EBITDA.get(d.get("processo"), (None,))[0]
+        if linha_p:
+            pend_por_linha[linha_p] = pend_por_linha.get(linha_p, 0.0) + float(d.get("valor", 0) or 0)
+    folgas, artefatos = [], []
+    for i in itens:
+        folga = i["orcado"] - i["realizado"]
+        if folga <= 0:
+            continue
+        pend = pend_por_linha.get(i["linha"], 0.0)
+        if pend >= 0.5 * folga:
+            artefatos.append({"conta": i["conta"], "folga": folga, "pendente": pend})
+        else:
+            folgas.append({"conta": i["conta"], "folga": folga - pend,
+                           "pct": ((folga - pend) / i["orcado"] * 100) if i["orcado"] else None})
+    folgas.sort(key=lambda x: -x["folga"])
+    artefatos.sort(key=lambda x: -x["folga"])
+    f["folgas"], f["artefatos"] = folgas[:2], artefatos[:2]
+    gastos = sorted((i["realizado"] for i in itens if i["realizado"] > 0), reverse=True)
+    f["concentracao"] = None
+    if gastos:
+        total, acumulado, n80 = sum(gastos), 0.0, 0
+        for g in gastos:
+            acumulado += g
+            n80 += 1
+            if acumulado >= 0.8 * total:
+                break
+        f["concentracao"] = {"n": n80, "total": len(gastos)}
+    return f
+
+
+def _lista_pt(partes):
+    partes = [p for p in partes if p]
+    if len(partes) <= 1:
+        return "".join(partes)
+    return ", ".join(partes[:-1]) + " e " + partes[-1]
+
+
+def montar_narrativa_executiva(fatos):
+    """Itens {rotulo, texto, tom} em português a partir dos fatos.
+
+    DETERMINÍSTICA de propósito: nada aqui inventa número -- cada frase aponta
+    um valor que a tela sustenta (foi o critério para não usar IA em número
+    financeiro). Cada item só entra quando o fato existe: dict vazio devolve
+    lista vazia. O texto carrega <b> nos números-chave; o e-mail em texto puro
+    usa narrativa_em_texto, que tira as tags.
+    """
+    f = fatos or {}
+    itens = []
+    fech = f.get("fechado") or {}
+    mc = f.get("mes_corrente")
+
+    # Receita: o gap e quanto dele é calendário.
+    rec_real, rec_orc = f.get("rec_real"), f.get("rec_orc")
+    if rec_real is not None and rec_orc:
+        var = (rec_real / rec_orc - 1) * 100
+        texto = (f"{formata_valor_curto(rec_real)} no acumulado, <b>{_pct_br(abs(var))}% "
+                 f"{'abaixo' if var < 0 else 'acima'}</b> do orçado ({formata_valor_curto(rec_orc)}).")
+        if mc and fech.get("rec_orc"):
+            gap_mes = mc["rec_orc"] - mc["rec_real"]
+            var_f = (fech["rec_real"] / fech["rec_orc"] - 1) * 100
+            dias = (f"com {mc['dia']} dia{'s' if mc['dia'] != 1 else ''} lançado{'s' if mc['dia'] != 1 else ''} "
+                    if mc.get("dia") else "ainda em andamento ")
+            texto = (f"{formata_valor_curto(rec_real)} no acumulado, {_pct_br(abs(var))}% "
+                     f"{'abaixo' if var < 0 else 'acima'} do orçado — mas "
+                     f"{formata_valor_curto(abs(gap_mes))} desse gap é {str(mc['mes']).lower()}, "
+                     f"{dias}contra o orçado do mês inteiro. "
+                     f"Sem ele, o desvio real é <b>{_pct_br(abs(var_f))}% "
+                     f"{'abaixo' if var_f < 0 else 'acima'}</b> "
+                     f"({formata_valor_curto(fech['rec_real'])} contra {formata_valor_curto(fech['rec_orc'])}).")
+            var = var_f
+        itens.append({"rotulo": "Receita", "texto": texto,
+                      "tom": "negativo" if var < 0 else "positivo"})
+
+    # EBITDA: de onde vem o gap (receita ou custo), margem e projeção.
+    eb_real = fech.get("ebitda_real", f.get("ebitda_real"))
+    eb_orc = fech.get("ebitda_orc", f.get("ebitda_orc"))
+    rec_b, rec_ob = fech.get("rec_real", rec_real), fech.get("rec_orc", rec_orc)
+    if eb_real is not None:
+        prefixo = f"Até {str(mc['mes']).lower()} excluído, " if mc else ""
+        texto = f"{prefixo}o EBITDA soma <b>{formata_valor_curto(eb_real)}</b>"
+        if eb_orc:
+            gap = eb_real - eb_orc
+            texto += (f", {_pct_br(abs(gap / eb_orc * 100))}% "
+                      f"{'abaixo' if gap < 0 else 'acima'} do orçado ({formata_valor_curto(eb_orc)})")
+            if rec_ob and rec_b is not None:
+                margem_orc = eb_orc / rec_ob
+                efeito_rec = (rec_b - rec_ob) * margem_orc
+                efeito_custo = gap - efeito_rec
+                pedacos = []
+                if abs(efeito_rec) >= 1:
+                    pedacos.append(
+                        f"a receita {'menor' if efeito_rec < 0 else 'maior'} "
+                        f"{'explica' if efeito_rec < 0 else 'soma'} {formata_valor_curto(abs(efeito_rec))} "
+                        f"(na margem orçada de {_pct_br(margem_orc * 100)}%)")
+                if abs(efeito_custo) >= 1:
+                    pedacos.append(
+                        f"custos e despesas {'acima do orçado pesam' if efeito_custo < 0 else 'abaixo do orçado devolvem'} "
+                        f"{formata_valor_curto(abs(efeito_custo))}")
+                if pedacos:
+                    texto += ": " + "; ".join(pedacos)
+        texto += "."
+        if rec_b:
+            texto += f" Margem de <b>{_pct_br(eb_real / rec_b * 100)}%</b>"
+            if f.get("margem_proj") is not None:
+                texto += (f", que tende a fechar em <b>{_pct_br(f['margem_proj'])}%</b> no período "
+                          "quando os lançamentos pendentes do fechamento entrarem")
+            texto += "."
+        tom = "negativo" if (eb_orc and eb_real < eb_orc) else "positivo"
+        itens.append({"rotulo": "EBITDA", "texto": texto, "tom": tom})
+
+    # Ritmo do mês de referência.
+    r = f.get("ritmo")
+    if r:
+        texto = (f"{str(r.get('mes', '')).capitalize()} corre a <b>{r['pct']:.0f}%</b> do esperado "
+                 f"até o dia {r['dia']} de {r['dias']} (dados até {r['data_dados']}, D+2)")
+        if r.get("chance") is not None:
+            texto += f"; a chance de fechar o mês dentro do orçado está em <b>{r['chance'] * 100:.0f}%</b>"
+        itens.append({"rotulo": "Ritmo", "texto": texto + ".",
+                      "tom": "positivo" if r["pct"] >= 100 else "alerta" if r["pct"] >= 90 else "negativo"})
+
+    # Quem puxou para baixo.
+    est = f.get("estouros") or []
+    if est:
+        partes = []
+        for e in est:
+            pct = (f", +{e['pct']:.0f}%" if e.get("pct") is not None else ", sem orçamento")
+            partes.append(f"<b>{e['conta']}</b> (+{formata_valor_curto(e['desvio'])}{pct})")
+        itens.append({"rotulo": "Estouros", "tom": "negativo",
+                      "texto": f"Quem mais passou do orçado: {_lista_pt(partes)}."})
+
+    # Folgas de verdade -- e o que só PARECE folga.
+    folgas, artef = f.get("folgas") or [], f.get("artefatos") or []
+    if folgas or artef:
+        texto = ""
+        if folgas:
+            partes = [f"<b>{c['conta']}</b> (−{formata_valor_curto(c['folga'])}"
+                      + (f", −{c['pct']:.0f}%" if c.get("pct") is not None else "") + ")"
+                      for c in folgas]
+            texto = f"Folga real: {_lista_pt(partes)}."
+        if artef:
+            partes = [f"{a['conta']} aparece {formata_valor_curto(a['folga'])} abaixo do orçado"
+                      for a in artef]
+            texto += (" " if texto else "") + (
+                f"{_lista_pt(partes)}, mas é lançamento pendente do fechamento "
+                f"({formata_valor_curto(sum(a['pendente'] for a in artef))} ainda por entrar) "
+                "— não é economia.")
+        itens.append({"rotulo": "Folgas", "texto": texto,
+                      "tom": "positivo" if folgas else "alerta"})
+
+    k = f.get("concentracao")
+    if k and k.get("n"):
+        base = f" até {str(mc['mes']).lower()} excluído" if mc else ""
+        itens.append({"rotulo": "Concentração", "tom": "neutro",
+                      "texto": f"<b>{k['n']} de {k['total']}</b> subgrupos de despesa respondem "
+                               f"por 80% do gasto{base}."})
+    return itens
+
+
+def narrativa_em_texto(itens):
+    """A narrativa sem HTML, uma linha por item -- para o e-mail em texto puro
+    e para qualquer canal que não renderize tag."""
+    return "\n".join(
+        f"{i['rotulo']}: {re.sub(r'<[^>]+>', '', i['texto'])}" for i in (itens or []))
+
+
+def simular_ebitda(base, ajustes, meta_ebitda=None):
     """EBITDA e margem do período depois de mexer nos controles do simulador.
 
     `base` traz MAGNITUDES do realizado (rec_liq, cmv, desp_var, pessoal,
     marketing, ocupacao) e o ebitda como está na DRE; `ajustes` traz
-    percentuais (rec, pessoal, marketing, ocupacao). Regras do modelo, as
-    mesmas escritas na tela: CMV e despesas variáveis acompanham a receita;
+    percentuais (rec, cmv, pessoal, marketing, ocupacao). Regras do modelo,
+    as mesmas escritas na tela: CMV e despesas variáveis acompanham a receita
+    (e o CMV ainda aceita um ajuste próprio -- negociação com fornecedor);
     folha, marketing e ocupação só mudam pelo próprio controle. Linha que
     tem controle próprio E mora dentro das variáveis (o marketing, 6.24)
     entra em `variaveis_com_controle` para não ser contada duas vezes. Tudo
     em abs(): a planilha guarda custo ora positivo, ora negativo, e o bridge
     já trata assim.
+
+    Devolve também `partes` (o efeito de cada alavanca, para a decomposição
+    na tela) e, com `meta_ebitda`, quanto de receita a mais (%) fecharia a
+    conta na margem de contribuição atual -- a resposta para "e só com
+    venda?".
     """
     b = {k: abs(float(base.get(k, 0) or 0))
          for k in ("rec_liq", "cmv", "desp_var", "pessoal", "marketing", "ocupacao")}
     ebitda = float(base.get("ebitda", 0) or 0)
     a = {k: float(ajustes.get(k, 0) or 0) / 100
-         for k in ("rec", "pessoal", "marketing", "ocupacao")}
+         for k in ("rec", "cmv", "pessoal", "marketing", "ocupacao")}
     variaveis_puras = max(b["desp_var"] - abs(float(base.get("variaveis_com_controle", 0) or 0)), 0.0)
-    d_rec = b["rec_liq"] * a["rec"]
-    d_cmv = b["cmv"] * a["rec"]
-    d_var = variaveis_puras * a["rec"]
-    d_pes = b["pessoal"] * a["pessoal"]
-    d_mkt = b["marketing"] * a["marketing"]
-    d_ocu = b["ocupacao"] * a["ocupacao"]
-    ebitda_sim = ebitda + d_rec - d_cmv - d_var - d_pes - d_mkt - d_ocu
-    rec_sim = b["rec_liq"] + d_rec
+    partes = {
+        "receita": b["rec_liq"] * a["rec"],
+        "cmv": -(b["cmv"] * a["rec"] + b["cmv"] * a["cmv"]),
+        "variaveis": -(variaveis_puras * a["rec"]),
+        "pessoal": -(b["pessoal"] * a["pessoal"]),
+        "marketing": -(b["marketing"] * a["marketing"]),
+        "ocupacao": -(b["ocupacao"] * a["ocupacao"]),
+    }
+    ebitda_sim = ebitda + sum(partes.values())
+    rec_sim = b["rec_liq"] + partes["receita"]
     margem_sim = (ebitda_sim / rec_sim * 100) if rec_sim else None
-    return {"ebitda": ebitda_sim, "receita": rec_sim, "margem": margem_sim,
-            "delta_ebitda": ebitda_sim - ebitda}
+    saida = {"ebitda": ebitda_sim, "receita": rec_sim, "margem": margem_sim,
+             "delta_ebitda": ebitda_sim - ebitda, "partes": partes,
+             "receita_para_meta_pct": None}
+    if meta_ebitda is not None and b["rec_liq"] > 0:
+        # Margem de contribuição por real de receita: o que sobra depois do
+        # CMV e das variáveis que andam junto com a venda.
+        mc = 1.0 - (b["cmv"] * (1 + a["cmv"]) + variaveis_puras) / b["rec_liq"]
+        falta = float(meta_ebitda) - ebitda_sim
+        if falta <= 0:
+            saida["receita_para_meta_pct"] = 0.0
+        elif mc > 0 and rec_sim > 0:
+            saida["receita_para_meta_pct"] = falta / (rec_sim * mc) * 100
+    return saida
 
 
 def _fator_proporcional_mes_corrente(colunas_periodo, meses_cols_ref, data_hoje):
@@ -15804,23 +16035,23 @@ with tab1:
         _margem_sub = "Realizada no Período"
         _cor_sub_margem = None
         _margem_proj_val = None
+        _det_fech = []
         _url_fech_kpi = url_csv_do_fechamento(_segredo_com_origem("FECHAMENTO_CSV_URL")[0])
         if _url_fech_kpi:
             _df_fech_kpi, _erro_fech_kpi = carregar_planilha_fechamento(_url_fech_kpi)
             if not _erro_fech_kpi and not _df_fech_kpi.empty:
                 _hoje_fech = datetime.now(FUSO_BR).date()
-                _d_rec_f, _d_eb_f, _ = _deltas_pendentes_do_fechamento(
+                _d_rec_f, _d_eb_f, _det_fech = _deltas_pendentes_do_fechamento(
                     _df_fech_kpi, cols_kpi, list(meses_cols),
                     (_hoje_fech.year, _hoje_fech.month),
                     lambda linha, col: get_valor_consolidado_multi(
                         list_df_real, linha, [col]),
                 )
-                _rec_proj_f = rec_liq_real_kpi - _d_rec_f
-                if _d_eb_f > 0 and _rec_proj_f > 0:
-                    _margem_proj_f = (ebitda_real_kpi - _d_eb_f) / _rec_proj_f * 100
-                    _margem_sub = f"Projeção de fechamento: {_margem_proj_f:.1f}%"
+                _margem_proj_val = projetar_margem_fechamento(
+                    rec_liq_real_kpi, ebitda_real_kpi, _d_rec_f, _d_eb_f)
+                if _margem_proj_val is not None:
+                    _margem_sub = f"Projeção de fechamento: {_margem_proj_val:.1f}%"
                     _cor_sub_margem = COLORS["warning"]
-                    _margem_proj_val = _margem_proj_f
 
         st.markdown(
             render_kpi_row([
@@ -15851,30 +16082,19 @@ with tab1:
         # aparece, como sempre foi para período sem o mês da referência.
         _hoje_ritmo = (datetime.now(FUSO_BR).date()
                        - timedelta(days=DIAS_DEFASAGEM_DADOS))
-        _col_mes_atual, _frac_mes, _dias_corridos, _dias_mes = _fator_proporcional_mes_corrente(
-            cols_kpi, meses_cols, _hoje_ritmo
-        )
-        _fatos_ritmo = None
-        if _col_mes_atual is not None:
-            _nome_mes_atual = next(
-                (nome for nome, col in m_map.items() if col == _col_mes_atual), _col_mes_atual
-            )
-            rec_real_mes = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", [_col_mes_atual])
-            rec_orc_mes_cheio = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", [_col_mes_atual])
-            rec_orc_mes_prop = rec_orc_mes_cheio * _frac_mes
-            gap_rec_mes = rec_real_mes - rec_orc_mes_prop
-            ritmo_rec_pct = (rec_real_mes / rec_orc_mes_prop * 100) if rec_orc_mes_prop else 0
-
-            ebitda_real_mes = get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [_col_mes_atual])
-            ebitda_orc_mes_prop = get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", [_col_mes_atual]) * _frac_mes
-            ritmo_ebitda_pct = (ebitda_real_mes / ebitda_orc_mes_prop * 100) if ebitda_orc_mes_prop else 0
-
-            # Projeção simples do mês: mantido o ritmo diário atual
-            rec_projetada_mes = (rec_real_mes / _dias_corridos * _dias_mes) if _dias_corridos else 0
-
-            # Faixa compacta em vez de uma fileira de cards: a informação é
-            # de acompanhamento, não merece o mesmo peso visual dos KPIs
-            # principais.
+        _fatos_ritmo = fatos_do_ritmo(list_df_real, list_df_orc, cols_kpi, meses_cols, m_map, _hoje_ritmo)
+        if _fatos_ritmo is not None:
+            # A conta é da fatos_do_ritmo (pura): aqui só se desempacota e se
+            # escolhem as cores. É a MESMA função que o briefing das 7h roda.
+            _nome_mes_atual = _fatos_ritmo["mes"]
+            _dias_corridos, _dias_mes = _fatos_ritmo["dia"], _fatos_ritmo["dias"]
+            rec_real_mes = _fatos_ritmo["rec_real"]
+            rec_orc_mes_cheio = _fatos_ritmo["rec_orc_cheio"]
+            rec_orc_mes_prop = _fatos_ritmo["rec_orc_prop"]
+            ritmo_rec_pct = _fatos_ritmo["pct"]
+            ritmo_ebitda_pct = _fatos_ritmo["ebitda_pct"]
+            rec_projetada_mes = _fatos_ritmo["rec_proj"]
+            _chance_meta = _fatos_ritmo["chance"]
             _cor_ritmo = COLORS["positive"] if ritmo_rec_pct >= 100 else (
                 COLORS["warning"] if ritmo_rec_pct >= 90 else COLORS["negative"]
             )
@@ -15884,34 +16104,12 @@ with tab1:
             _cor_ritmo_ebitda = COLORS["positive"] if ritmo_ebitda_pct >= 100 else (
                 COLORS["warning"] if ritmo_ebitda_pct >= 90 else COLORS["negative"]
             )
-            # ---- Chance de bater a meta do mês (03/09/2026) ----
-            # Um número que qualquer diretor lê em um segundo. A conta é da
-            # probabilidade_de_bater_meta (pura, testada): ritmo atual
-            # misturado com a média histórica realizado/orçado dos meses
-            # anteriores do ano, pesada pelo quanto do mês já passou. Com
-            # 8-9 meses de base é grossa -- o rótulo diz quantos entraram.
-            _idx_mes_atual = meses_cols.index(_col_mes_atual) if _col_mes_atual in meses_cols else 0
-            _razoes_hist = []
-            for _col_h in meses_cols[:_idx_mes_atual]:
-                _orc_h = get_valor_consolidado_multi(list_df_orc, "3 - Receita Operacional Liquida", [_col_h])
-                _real_h = get_valor_consolidado_multi(list_df_real, "3 - Receita Operacional Liquida", [_col_h])
-                if _orc_h > 0 and _real_h > 0:
-                    _razoes_hist.append(_real_h / _orc_h)
-            _chance_meta = probabilidade_de_bater_meta(
-                _razoes_hist,
-                (rec_projetada_mes / rec_orc_mes_cheio) if rec_orc_mes_cheio else None,
-                _frac_mes)
             _chance_txt = f"{_chance_meta * 100:.0f}%" if _chance_meta is not None else "—"
-            _chance_sub = (f"{len(_razoes_hist)} meses de histórico" if _chance_meta is not None
+            _chance_sub = (f"{_fatos_ritmo['n_hist']} meses de histórico" if _chance_meta is not None
                            else "sem histórico suficiente")
             _cor_chance = (COLORS["text_muted"] if _chance_meta is None else
                            COLORS["positive"] if _chance_meta >= 0.6 else
                            COLORS["warning"] if _chance_meta >= 0.4 else COLORS["negative"])
-            _fatos_ritmo = {
-                "mes": _nome_mes_atual, "pct": ritmo_rec_pct, "dia": _dias_corridos,
-                "dias": _dias_mes, "data_dados": _hoje_ritmo.strftime("%d/%m"),
-                "chance": _chance_meta,
-            }
 
             st.markdown(
                 html_compacto(f"""
@@ -16003,93 +16201,79 @@ with tab1:
             )
 
         # =================================================================
-        # Narrativa executiva -- "O que aconteceu e por quê" (03/09/2026)
+        # Narrativa executiva -- "O que aconteceu e por quê" (03-04/09/2026)
         # =================================================================
-        # Chefe lê texto antes de gráfico. As frases nascem dos MESMOS números
-        # dos cartões e da faixa de ritmo (montar_narrativa_executiva é pura e
-        # testada); o que precisa de conta própria aqui é só o pódio dos
-        # subgrupos de despesa -- maior estouro, maior folga e concentração --
-        # no mesmo nível 2 e com o mesmo ofensores_por_desvio da TV.
+        # Chefe lê texto antes de gráfico -- mas texto que repete o cartão não
+        # vale a tela. A narrativa EXPLICA: quanto do gap é calendário, de onde
+        # vem o gap do EBITDA, quem estourou, qual folga é real e qual é só
+        # lançamento de fechamento que ainda não entrou. Os fatos vêm de
+        # montar_fatos_executivos e o texto de montar_narrativa_executiva --
+        # puras, e as MESMAS que o briefing das 7h (briefing.py) executa.
         _linhas_vg = []
         if list_df_real:
             _df_ref_vg = list_df_real[0]
             _col_nome_vg = "Nome" if "Nome" in _df_ref_vg.columns else _df_ref_vg.columns[0]
             _linhas_vg = list(_df_ref_vg[_col_nome_vg].dropna().unique().astype(str))
-        _itens_sub = []
-        for _num_g in ("6", "8"):
-            for _linha_s in _subgrupos_nivel2(_linhas_vg, _num_g):
-                _real_s = abs(get_valor_consolidado_multi(
-                    list_df_real, _linha_s, cols_kpi, exato_linha_sintetica=True))
-                _orc_s = abs(get_valor_consolidado_multi(
-                    list_df_orc, _linha_s, cols_kpi, exato_linha_sintetica=True))
-                if not _real_s and not _orc_s:
-                    continue
-                _itens_sub.append({"conta": _nome_sem_numero_dre(_linha_s), "linha": _linha_s,
-                                   "realizado": _real_s, "orcado": _orc_s})
-        _fato_estouro = None
-        _estouros_vg = ofensores_por_desvio(_itens_sub)
-        if _estouros_vg:
-            _e0 = _estouros_vg[0]
-            _fato_estouro = {"conta": _e0["conta"], "desvio": _e0["desvio"],
-                             "pct": (_e0["desvio"] / _e0["orcado"] * 100) if _e0["orcado"] else None}
-        _folgas_vg = sorted(((i["orcado"] - i["realizado"], i) for i in _itens_sub
-                             if i["orcado"] - i["realizado"] > 0), key=lambda p: -p[0])
-        _fato_economia = ({"conta": _folgas_vg[0][1]["conta"], "folga": _folgas_vg[0][0]}
-                          if _folgas_vg else None)
-        _fato_conc = None
-        _gastos_vg = sorted((i["realizado"] for i in _itens_sub if i["realizado"] > 0), reverse=True)
-        if _gastos_vg:
-            _total_g, _acum_g, _n80 = sum(_gastos_vg), 0.0, 0
-            for _g in _gastos_vg:
-                _acum_g += _g
-                _n80 += 1
-                if _acum_g >= 0.8 * _total_g:
-                    break
-            _fato_conc = {"n": _n80, "total": len(_gastos_vg)}
-        _frases_vg = montar_narrativa_executiva({
-            "rec_real": rec_liq_real_kpi, "rec_orc": rec_liq_orc_kpi,
-            "ebitda_real": ebitda_real_kpi, "ebitda_orc": ebitda_orc_kpi,
-            "margem": margem_ebitda_kpi, "margem_proj": _margem_proj_val,
-            "ritmo": _fatos_ritmo, "estouro": _fato_estouro,
-            "economia": _fato_economia, "concentracao": _fato_conc,
-        })
-        if _frases_vg:
+        _hoje_cal = datetime.now(FUSO_BR).date()
+        _col_corrente_vg = f"{_hoje_cal.month:02d}/{_hoje_cal.year}"
+        _nome_corrente_vg = next((n for n, c in m_map.items() if c == _col_corrente_vg), _col_corrente_vg)
+
+        def _valor_vg(lado, linha, cols, exato=False):
+            return get_valor_consolidado_multi(
+                list_df_orc if lado == "orc" else list_df_real, linha, cols,
+                exato_linha_sintetica=exato)
+
+        _fatos_vg = montar_fatos_executivos(
+            _valor_vg, _linhas_vg, cols_kpi, _col_corrente_vg, _nome_corrente_vg,
+            pendencias=_det_fech, ritmo=_fatos_ritmo, margem_proj=_margem_proj_val,
+            rotulo_periodo=label_periodo_kpi)
+        _itens_vg = montar_narrativa_executiva(_fatos_vg)
+        if _itens_vg:
+            _cor_tom = {"negativo": COLORS["negative"], "positivo": COLORS["positive"],
+                        "alerta": COLORS["warning"], "neutro": COLORS["text_muted"]}
+            _base_txt = (f"base: até {_nome_corrente_vg.lower()} excluído · dados D+{DIAS_DEFASAGEM_DADOS}"
+                         if _fatos_vg.get("mes_corrente") else f"dados D+{DIAS_DEFASAGEM_DADOS}")
+            _linhas_html = "".join(
+                f'<div style="display:flex; gap:12px; padding:6px 0; border-top:1px solid {COLORS["border"]};">'
+                f'<div style="flex:0 0 100px; font-size:9.5px; letter-spacing:0.8px; text-transform:uppercase;'
+                f' color:{_cor_tom.get(i["tom"], COLORS["text_muted"])}; padding-top:3px;">'
+                f'<span style="display:inline-block; width:6px; height:6px; border-radius:50%;'
+                f' background:{_cor_tom.get(i["tom"], COLORS["text_muted"])}; margin-right:6px;"></span>{i["rotulo"]}</div>'
+                f'<div style="flex:1; font-size:12.5px; line-height:1.5; color:{COLORS["text"]};">{i["texto"]}</div>'
+                "</div>"
+                for i in _itens_vg)
             st.markdown(
                 html_compacto(
                     f'<div style="background:{COLORS["surface"]}; border:1px solid {COLORS["border"]};'
                     f' border-left:3px solid {COLORS["primary"]}; border-radius:8px;'
-                    ' padding:12px 16px; margin-bottom:14px;">'
+                    ' padding:10px 16px 6px 16px; margin-bottom:14px;">'
+                    '<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">'
                     f'<div style="font-size:10px; color:{COLORS["text_muted"]}; text-transform:uppercase;'
-                    f' letter-spacing:0.5px; margin-bottom:6px;">📝 O que aconteceu e por quê · {label_periodo_kpi}</div>'
-                    + "".join(
-                        f'<div style="font-size:13px; line-height:1.6; color:{COLORS["text"]};">• {_fr}</div>'
-                        for _fr in _frases_vg)
-                    + "</div>"),
+                    f' letter-spacing:0.5px;">📝 O que aconteceu e por quê · {label_periodo_kpi}</div>'
+                    f'<div style="font-size:10px; color:{COLORS["text_muted"]};">{_base_txt}</div></div>'
+                    + _linhas_html + "</div>"),
                 unsafe_allow_html=True,
             )
 
         # =================================================================
-        # Simulador executivo -- "e se..." (03/09/2026)
+        # Simulador executivo -- "e se..." (03-04/09/2026)
         # =================================================================
-        # A pergunta da reunião ("e se cortarmos 10% do marketing?") passa a
-        # ser respondida puxando um controle, e não "volto com a conta na
-        # semana que vem". A simulação por departamento continua lá embaixo;
-        # esta é a visão de cima, sobre o consolidado do período filtrado. A
-        # conta é da simular_ebitda (pura, testada); aqui só se colhem as
-        # magnitudes do realizado -- as mesmas linhas e o mesmo abs() do
-        # bridge -- e se desenha.
-        with st.expander("🧪 Simulador executivo — e se…", expanded=False):
-            st.caption(
-                "Mexa nos controles e veja EBITDA e margem do período recalculados na hora. "
-                "CMV e despesas variáveis acompanham a receita; folha, marketing e ocupação "
-                "só mudam pelo próprio controle."
-            )
-            _sc1, _sc2, _sc3, _sc4 = st.columns(4)
-            _aj_rec = _sc1.slider("Receita líquida (%)", -20, 20, 0, 1, key="sim_exec_rec")
-            _aj_pes = _sc2.slider("Folha · Pessoal (%)", -20, 20, 0, 1, key="sim_exec_pes")
-            _aj_mkt = _sc3.slider("Marketing (%)", -50, 20, 0, 1, key="sim_exec_mkt")
-            _aj_ocu = _sc4.slider("Ocupação · aluguel (%)", -20, 20, 0, 1, key="sim_exec_ocu")
+        # A pergunta da reunião ("e se cortarmos 10% do marketing?") é
+        # respondida puxando um controle. Depois do primeiro print: cada
+        # controle diz o que a linha vale hoje e quanto o ajuste representa em
+        # reais; o CMV ganhou controle próprio (negociação com fornecedor); o
+        # impacto sai decomposto por alavanca; e "para bater o orçado" também
+        # responde em receita ("e só com venda?"). A conta é da
+        # simular_ebitda (pura, testada); aqui se colhem as magnitudes --
+        # mesmas linhas e mesmo abs() do bridge -- e se desenha.
+        _CHAVES_SIM = ("sim_exec_rec", "sim_exec_cmv", "sim_exec_pes", "sim_exec_mkt", "sim_exec_ocu")
 
+        def _zerar_simulador():
+            # Em callback pode-se escrever no estado de um widget já criado.
+            for _ch in _CHAVES_SIM:
+                st.session_state[_ch] = 0
+
+        with st.expander("🧪 Simulador executivo — e se…", expanded=False):
             def _mag_vg(linha, exato=True):
                 if not linha:
                     return 0.0
@@ -16106,17 +16290,41 @@ with tab1:
                  and len((_numero_linha_dre(l) or "").split(".")) == 2), None)
             _cmv_vg = _mag_vg("4 - ") or _mag_vg("4 - Custo das Vendas", False)
             _var_vg = _mag_vg("6 - Despesas Variáveis", False) or _mag_vg("Despesas Variáveis", False)
-            _mkt_vg = _mag_vg(_lin_mkt)
+            _pes_vg, _mkt_vg, _ocu_vg = _mag_vg(_lin_pes), _mag_vg(_lin_mkt), _mag_vg(_lin_ocu)
             _base_sim = {
                 "rec_liq": rec_liq_real_kpi, "cmv": _cmv_vg, "desp_var": _var_vg,
-                "pessoal": _mag_vg(_lin_pes), "marketing": _mkt_vg, "ocupacao": _mag_vg(_lin_ocu),
+                "pessoal": _pes_vg, "marketing": _mkt_vg, "ocupacao": _ocu_vg,
                 "ebitda": ebitda_real_kpi,
                 "variaveis_com_controle": (
                     _mkt_vg if (_lin_mkt and (_numero_linha_dre(_lin_mkt) or "").startswith("6.")) else 0.0),
             }
-            _sim = simular_ebitda(_base_sim, {"rec": _aj_rec, "pessoal": _aj_pes,
-                                              "marketing": _aj_mkt, "ocupacao": _aj_ocu})
+            _c_txt, _c_btn = st.columns([1, 0.2])
+            _c_txt.caption(
+                "Mexa nos controles e veja EBITDA e margem do período recalculados na hora. "
+                "CMV e despesas variáveis acompanham a receita (o CMV ainda aceita ajuste próprio); "
+                "folha, marketing e ocupação só mudam pelo próprio controle."
+            )
+            _c_btn.button("Zerar controles", on_click=_zerar_simulador, key="sim_exec_zerar",
+                          width="stretch")
+            _controles = [
+                ("sim_exec_rec", "Receita líquida", -20, 20, rec_liq_real_kpi, "rec"),
+                ("sim_exec_cmv", "CMV · negociação", -10, 10, _cmv_vg, "cmv"),
+                ("sim_exec_pes", "Folha · Pessoal", -20, 20, _pes_vg, "pessoal"),
+                ("sim_exec_mkt", "Marketing", -50, 20, _mkt_vg, "marketing"),
+                ("sim_exec_ocu", "Ocupação · aluguel", -20, 20, _ocu_vg, "ocupacao"),
+            ]
+            _cols_ctrl = st.columns(len(_controles))
+            _ajustes_sim = {}
+            for _col_c, (_ch, _rot, _mn, _mx, _hoje_v, _chave_aj) in zip(_cols_ctrl, _controles):
+                _aj = _col_c.slider(f"{_rot} (%)", _mn, _mx, 0, 1, key=_ch)
+                _ajustes_sim[_chave_aj] = _aj
+                _efeito = abs(_hoje_v) * _aj / 100
+                _col_c.caption(
+                    f"hoje {formata_valor_curto(abs(_hoje_v))}"
+                    + (f" → {'+' if _efeito >= 0 else '−'}{formata_valor_curto(abs(_efeito))}" if _aj else ""))
+            _sim = simular_ebitda(_base_sim, _ajustes_sim, meta_ebitda=ebitda_orc_kpi)
             _falta_orc = ebitda_orc_kpi - _sim["ebitda"]
+            _pct_venda = _sim["receita_para_meta_pct"]
             _cards_sim = [
                 dict(label="EBITDA SIMULADO", value=formata_m(_sim["ebitda"]),
                      value_color=cor_variacao(_sim["delta_ebitda"]),
@@ -16133,10 +16341,28 @@ with tab1:
                 dict(label="PARA BATER O ORÇADO",
                      value=(formata_m(_falta_orc) if _falta_orc > 0 else "batido"),
                      value_color=(COLORS["negative"] if _falta_orc > 0 else COLORS["positive"]),
-                     subtext=("ainda falta de EBITDA" if _falta_orc > 0
-                              else f"sobra {formata_m(-_falta_orc)} sobre o orçado"), icon="🧪"),
+                     subtext=(
+                         (f"ainda falta de EBITDA · ou +{_pct_venda:.1f}% de receita, tudo o mais igual"
+                          if (_pct_venda is not None and _pct_venda > 0) else "ainda falta de EBITDA")
+                         if _falta_orc > 0
+                         else f"sobra {formata_m(-_falta_orc)} sobre o orçado"), icon="🧪"),
             ]
             st.markdown(render_kpi_row(_cards_sim), unsafe_allow_html=True)
+            _rotulos_partes = [("receita", "Receita"), ("cmv", "CMV"), ("variaveis", "Variáveis"),
+                               ("pessoal", "Folha"), ("marketing", "Marketing"), ("ocupacao", "Ocupação")]
+            _chips_sim = "".join(
+                f'<span style="padding:4px 9px; border:1px solid {COLORS["border"]}; border-radius:7px;">'
+                f'{_rot} <b style="font-family:{FONTE_MONO}; color:{cor_variacao(_sim["partes"][_k])};">'
+                f'{"+" if _sim["partes"][_k] >= 0 else "−"}{formata_valor_curto(abs(_sim["partes"][_k]))}</b></span>'
+                for _k, _rot in _rotulos_partes if abs(_sim["partes"][_k]) >= 1)
+            if _chips_sim:
+                st.markdown(
+                    html_compacto(
+                        f'<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; font-size:11px;'
+                        f' color:{COLORS["text_muted"]};"><span style="padding-top:5px;">Decomposição do impacto:</span>'
+                        + _chips_sim + "</div>"),
+                    unsafe_allow_html=True,
+                )
 
         st.caption(f"Visualização e Eficiência referente ao período: **{label_periodo_kpi}**")
 

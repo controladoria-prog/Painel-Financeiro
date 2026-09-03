@@ -22,8 +22,10 @@ import hashlib
 from datetime import date, datetime
 import hmac
 import io
+import os
 import re
 import sys
+import tempfile
 import time
 import unittest
 from datetime import datetime
@@ -47,7 +49,9 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
-    "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto"],
+    "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto", "_lista_pt"],
+    "montar_fatos_executivos": ["_subgrupos_nivel2", "_nome_sem_numero_dre",
+                                "ofensores_por_desvio", "_numero_linha_dre"],
     "_deltas_pendentes_do_fechamento": ["_normalizar_coluna_fin"],
     "_linhas_raiz_do_conjunto": ["_eh_linha_de_resultado", "_normalizar_texto"],
     "_eh_linha_de_resultado": ["_normalizar_texto"],
@@ -84,6 +88,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "montar_fatos_executivos": ["IMPACTO_FECHAMENTO_EBITDA"],
     "_deltas_pendentes_do_fechamento": [
         "COL_FECH_ANO", "COL_FECH_MES", "COL_FECH_PROCESSO", "COL_FECH_STATUS",
         "STATUS_OK", "STATUS_NAO_SE_APLICA", "STATUS_PENDENTE",
@@ -4811,7 +4816,7 @@ class TesteGeradorDoOrcamento2027(unittest.TestCase):
             for linha in range(2, 7):
                 ref = f"{col}{linha}"
                 cons[ref] = ArrayFormula(ref, f"=SUMPRODUCT('UNIDADE A'!{ref})")
-        caminho = "/tmp/modelo_orcamento_teste.xlsx"
+        caminho = os.path.join(tempfile.gettempdir(), "modelo_orcamento_teste.xlsx")
         wb.save(caminho)
         return caminho
 
@@ -4856,10 +4861,11 @@ class TesteGeradorDoOrcamento2027(unittest.TestCase):
         todas_as_linhas = {e["linha"]: [111.0, 222.0] for e in estrutura}
         valores = {"UNIDADE A": todas_as_linhas, "CONSOLIDADO": todas_as_linhas}
         saida, _ = self.ns["gerar_excel_orcamento"](caminho, valores)
-        with open("/tmp/saida_orcamento_teste.xlsx", "wb") as arq:
+        _saida = os.path.join(tempfile.gettempdir(), "saida_orcamento_teste.xlsx")
+        with open(_saida, "wb") as arq:
             arq.write(saida)
         antes = load_workbook(caminho)
-        depois = load_workbook("/tmp/saida_orcamento_teste.xlsx")
+        depois = load_workbook(_saida)
         destruidas = 0
         for aba in antes.sheetnames:
             a, b = antes[aba], depois[aba]
@@ -5153,7 +5159,7 @@ class TesteConfrontoComAMeta(unittest.TestCase):
 
     def _planilha_meta(self, linhas, cabecalho=None):
         colunas = cabecalho or (["Loja", "Conta"] + [f"{m:02d}/2027" for m in range(1, 13)])
-        caminho = "/tmp/meta_teste.xlsx"
+        caminho = os.path.join(tempfile.gettempdir(), "meta_teste.xlsx")
         pd.DataFrame(linhas, columns=colunas).to_excel(caminho, index=False)
         return caminho
 
@@ -7224,55 +7230,114 @@ class TesteProjecaoDeFechamentoDaMargem(unittest.TestCase):
 
 
 class TesteNarrativaChanceESimulador(unittest.TestCase):
-    """03/09/2026: o painel passa a FALAR (narrativa deterministica), a dizer a
-    chance de bater a meta e a responder 'e se' na Visao Geral. As tres sao
-    funcoes puras -- aqui elas recebem numeros inventados e tem de devolver
-    exatamente o que a tela vai mostrar."""
+    """03-04/09/2026: o painel passa a FALAR (narrativa deterministica que
+    EXPLICA em vez de repetir os cartoes), a dizer a chance de bater a meta e
+    a responder 'e se' na Visao Geral. As funcoes sao puras: recebem numeros
+    inventados e tem de devolver exatamente o que a tela e o e-mail mostram."""
+
+    LINHAS = ["3 - Receita Operacional Liquida", "11 - EBITDA",
+              "6 - Despesas Variáveis", "6.24 - Esforços de Marketing",
+              "8 - Despesas Operacionais", "8.3 - Pessoal", "8.4 - Taxa de Ocupação"]
+    COLS = ["07/2026", "08/2026", "09/2026"]
 
     @classmethod
     def setUpClass(cls):
         import math as _math
-        cls.ns = carregar(["montar_narrativa_executiva", "probabilidade_de_bater_meta",
-                           "simular_ebitda"], extras={"math": _math})
+        cls.ns = carregar(["montar_fatos_executivos", "montar_narrativa_executiva",
+                           "narrativa_em_texto", "probabilidade_de_bater_meta",
+                           "projetar_margem_fechamento", "simular_ebitda"],
+                          extras={"math": _math})
 
-    def test_a_narrativa_conta_a_historia_com_virgula_decimal(self):
-        f = self.ns["montar_narrativa_executiva"]
-        frases = f({
-            "rec_real": 81_273_576.0, "rec_orc": 103_891_908.0,
-            "ebitda_real": 19_384_126.0, "ebitda_orc": 24_256_350.0,
-            "margem": 23.9, "margem_proj": 22.3,
-            "ritmo": {"mes": "agosto", "pct": 89.4, "dia": 31, "dias": 31,
-                      "data_dados": "31/08", "chance": 0.38},
-            "estouro": {"conta": "Taxa de Emissão de Boleto", "desvio": 787_000.0, "pct": 98.0},
-            "economia": {"conta": "Pessoal", "folga": 1_700_000.0},
-            "concentracao": {"n": 8, "total": 26},
-        })
-        self.assertEqual(len(frases), 6)
-        self.assertIn("21,8% abaixo do orçado", frases[0])
-        self.assertIn("20,1% abaixo do orçado", frases[1])
-        self.assertIn("margem de 23,9%", frases[1])
-        self.assertIn("fechar em 22,3%", frases[1])
-        self.assertIn("Agosto corre a 89%", frases[2])
-        self.assertIn("dados até 31/08", frases[2])
-        self.assertIn("38%", frases[2])
-        self.assertIn("R$ 787 mil acima do orçado (+98%)", frases[3])
-        self.assertIn("R$ 1,7M abaixo do orçado", frases[4])
-        self.assertIn("8 de 26 subgrupos", frases[5])
-        # Nada inventado: sem fato, sem frase -- e receita sem orcado nao
-        # gera comparacao.
-        self.assertEqual(f({}), [])
-        self.assertEqual(f({"rec_real": 10.0, "rec_orc": 0}), [])
-        so_estouro = f({"estouro": {"conta": "Displays", "desvio": 6_000.0, "pct": None}})
-        self.assertEqual(len(so_estouro), 1)
-        self.assertIn("conta sem orçamento", so_estouro[0])
+    def _valor_de(self, tabela):
+        def valor(lado, linha, cols, exato=False):
+            return sum(tabela.get((lado, linha, c), 0.0) for c in cols)
+        return valor
+
+    def _tabela_padrao(self):
+        t = {}
+
+        def por_mes(lado, linha, valores):
+            for c, v in zip(self.COLS, valores):
+                t[(lado, linha, c)] = float(v)
+        por_mes("real", self.LINHAS[0], [100, 100, 3])
+        por_mes("orc", self.LINHAS[0], [100, 110, 120])
+        por_mes("real", self.LINHAS[1], [20, 20, 0])
+        por_mes("orc", self.LINHAS[1], [25, 25, 30])
+        por_mes("real", "6.24 - Esforços de Marketing", [10, 10, 0])
+        por_mes("orc", "6.24 - Esforços de Marketing", [8, 8, 8])
+        por_mes("real", "8.3 - Pessoal", [30, 0, 0])          # folha de agosto nao lancada
+        por_mes("orc", "8.3 - Pessoal", [30, 30, 30])
+        por_mes("real", "8.4 - Taxa de Ocupação", [12, 12, 0])
+        por_mes("orc", "8.4 - Taxa de Ocupação", [15, 15, 15])
+        return t
+
+    def _fatos_padrao(self, **extra):
+        return self.ns["montar_fatos_executivos"](
+            self._valor_de(self._tabela_padrao()), self.LINHAS, self.COLS, "09/2026", "SETEMBRO",
+            pendencias=[{"processo": "FOPAG", "mes": "08/2026", "valor": 30.0}], **extra)
+
+    def test_os_fatos_usam_a_base_fechada_e_separam_artefato_de_folga(self):
+        """Setembro (corrente) sai da analise de 'por que': com um dia lancado
+        contra um mes de orcado, toda conta pareceria abaixo do orcado. E a
+        folga de Pessoal e a folha de agosto ainda nao lancada -- artefato de
+        fechamento, nao economia (feedback do print de 03/09/2026)."""
+        f = self._fatos_padrao()
+        self.assertEqual(f["mes_corrente"]["rec_orc"], 120)
+        self.assertEqual((f["fechado"]["rec_real"], f["fechado"]["rec_orc"]), (200, 210))
+        self.assertEqual((f["fechado"]["ebitda_real"], f["fechado"]["ebitda_orc"]), (40, 50))
+        self.assertEqual(f["estouros"][0]["conta"], "Esforços de Marketing")
+        self.assertAlmostEqual(f["estouros"][0]["desvio"], 4.0)
+        self.assertEqual([x["conta"] for x in f["folgas"]], ["Taxa de Ocupação"])
+        self.assertAlmostEqual(f["folgas"][0]["folga"], 6.0)
+        self.assertEqual(f["artefatos"][0]["conta"], "Pessoal")
+        self.assertAlmostEqual(f["artefatos"][0]["pendente"], 30.0)
+        self.assertEqual(f["concentracao"], {"n": 3, "total": 3})
+        # Sem o mes corrente no periodo, a base fechada e o periodo inteiro.
+        g = self.ns["montar_fatos_executivos"](
+            self._valor_de(self._tabela_padrao()), self.LINHAS, self.COLS[:2], "09/2026", "SETEMBRO")
+        self.assertIsNone(g["mes_corrente"])
+        self.assertEqual(g["fechado"]["rec_orc"], 210)
+
+    def test_a_narrativa_explica_em_vez_de_repetir(self):
+        f = self._fatos_padrao(
+            margem_proj=18.5,
+            ritmo={"col": "09/2026", "mes": "SETEMBRO", "pct": 70.0, "dia": 1, "dias": 30,
+                   "data_dados": "01/09", "chance": 0.02})
+        itens = self.ns["montar_narrativa_executiva"](f)
+        self.assertEqual([i["rotulo"] for i in itens],
+                         ["Receita", "EBITDA", "Ritmo", "Estouros", "Folgas", "Concentração"])
+        por = {i["rotulo"]: i for i in itens}
+        # Receita: 38,5% abaixo no acumulado, mas R$ 117 do gap e setembro; sem ele, 4,8%.
+        self.assertIn("38,5% abaixo", por["Receita"]["texto"])
+        self.assertIn("R$ 117 desse gap é setembro", por["Receita"]["texto"])
+        self.assertIn("com 1 dia lançado", por["Receita"]["texto"])
+        self.assertIn("<b>4,8% abaixo</b>", por["Receita"]["texto"])
+        self.assertEqual(por["Receita"]["tom"], "negativo")
+        # EBITDA: 20% abaixo; a receita menor explica R$ 2 (margem orcada 23,8%), custos pesam R$ 8.
+        self.assertIn("20,0% abaixo do orçado", por["EBITDA"]["texto"])
+        self.assertIn("a receita menor explica R$ 2 (na margem orçada de 23,8%)", por["EBITDA"]["texto"])
+        self.assertIn("custos e despesas acima do orçado pesam R$ 8", por["EBITDA"]["texto"])
+        self.assertIn("Margem de <b>20,0%</b>", por["EBITDA"]["texto"])
+        self.assertIn("fechar em <b>18,5%</b>", por["EBITDA"]["texto"])
+        self.assertIn("Setembro corre a <b>70%</b>", por["Ritmo"]["texto"])
+        self.assertIn("<b>2%</b>", por["Ritmo"]["texto"])
+        self.assertIn("<b>Esforços de Marketing</b> (+R$ 4, +25%)", por["Estouros"]["texto"])
+        self.assertIn("Folga real: <b>Taxa de Ocupação</b> (−R$ 6, −20%)", por["Folgas"]["texto"])
+        self.assertIn("Pessoal aparece R$ 30 abaixo do orçado, mas é lançamento pendente",
+                      por["Folgas"]["texto"])
+        self.assertIn("não é economia", por["Folgas"]["texto"])
+        self.assertIn("<b>3 de 3</b> subgrupos", por["Concentração"]["texto"])
+        # Sem fato, sem frase; e o texto puro perde as tags.
+        self.assertEqual(self.ns["montar_narrativa_executiva"]({}), [])
+        texto = self.ns["narrativa_em_texto"](itens)
+        self.assertNotIn("<b>", texto)
+        self.assertIn("Receita: R$ 203 no acumulado", texto)
 
     def test_a_chance_pesa_historico_no_comeco_e_ritmo_no_fim(self):
         p = self.ns["probabilidade_de_bater_meta"]
         hist = [1.00, 1.04, 0.97, 1.02, 0.99]
         self.assertIsNone(p([1.0, 1.1], 1.2, 0.5), "com menos de 3 meses nao ha base")
         self.assertIsNone(p(hist, None, 0.5))
-        # Ritmo pessimo (metade da meta): com 5% do mes andado o historico
-        # ainda segura; com 95% andado esta quase decidido.
         cedo = p(hist, 0.5, 0.05)
         tarde = p(hist, 0.5, 0.95)
         self.assertGreater(cedo, tarde)
@@ -7283,7 +7348,13 @@ class TesteNarrativaChanceESimulador(unittest.TestCase):
         for valor in (p(hist, 3.0, 1.0), p(hist, 0.1, 1.0)):
             self.assertTrue(0.01 <= valor <= 0.99, "chance nunca vira certeza absoluta")
 
-    def test_o_simulador_move_cmv_e_variaveis_com_a_receita(self):
+    def test_a_projecao_da_margem_desconta_o_pendente(self):
+        pr = self.ns["projetar_margem_fechamento"]
+        self.assertAlmostEqual(pr(100.0, 20.0, 5.0, 8.0), 12.0 / 95.0 * 100)
+        self.assertIsNone(pr(100.0, 20.0, 0.0, 0.0), "sem pendencia nao ha projecao")
+        self.assertIsNone(pr(4.0, 2.0, 5.0, 6.0), "receita projetada negativa nao presta")
+
+    def test_o_simulador_decompoe_por_alavanca_e_responde_em_receita(self):
         s = self.ns["simular_ebitda"]
         base = {"rec_liq": 1000.0, "cmv": -400.0, "desp_var": 150.0, "pessoal": 150.0,
                 "marketing": 50.0, "ocupacao": 80.0, "ebitda": 220.0,
@@ -7295,28 +7366,113 @@ class TesteNarrativaChanceESimulador(unittest.TestCase):
         # +100 de receita, -40 de CMV (negativo na planilha, magnitude aqui),
         # -10 das variaveis PURAS (150 menos os 50 do marketing).
         self.assertAlmostEqual(r["ebitda"], 270.0)
-        self.assertAlmostEqual(r["receita"], 1100.0)
-        m = s(base, {"marketing": -50, "pessoal": 10, "ocupacao": 5})
-        # +25 do marketing, -15 da folha, -4 da ocupacao.
-        self.assertAlmostEqual(m["ebitda"], 226.0)
-        self.assertAlmostEqual(m["delta_ebitda"], 6.0)
+        self.assertAlmostEqual(r["partes"]["cmv"], -40.0)
+        self.assertAlmostEqual(r["partes"]["variaveis"], -10.0)
+        m = s(base, {"marketing": -50, "pessoal": 10, "ocupacao": 5, "cmv": -5})
+        # +25 do marketing, -15 da folha, -4 da ocupacao, +20 do CMV negociado.
+        self.assertAlmostEqual(m["ebitda"], 246.0)
+        self.assertAlmostEqual(m["partes"]["cmv"], 20.0)
+        # "E so com venda?": margem de contribuicao 50% -> faltam 50 = +10% de receita.
+        meta = s(base, {}, meta_ebitda=270.0)
+        self.assertAlmostEqual(meta["receita_para_meta_pct"], 10.0)
+        self.assertEqual(s(base, {}, meta_ebitda=200.0)["receita_para_meta_pct"], 0.0)
         self.assertIsNone(s({"rec_liq": 0.0, "ebitda": 5.0}, {})["margem"])
 
-    def test_a_visao_geral_liga_os_tres_na_mesma_fonte(self):
+    def test_a_visao_geral_liga_tudo_na_mesma_fonte(self):
         i = FONTE.index("with tab1:")
         corpo = FONTE[i:FONTE.index("\nwith tab2:", i)]
-        self.assertIn("montar_narrativa_executiva({", corpo)
-        self.assertIn("probabilidade_de_bater_meta(", corpo)
-        self.assertIn("simular_ebitda(_base_sim", corpo)
+        self.assertIn("_fatos_ritmo = fatos_do_ritmo(", corpo)
+        self.assertIn("montar_fatos_executivos(", corpo)
+        self.assertIn("montar_narrativa_executiva(_fatos_vg)", corpo)
+        self.assertIn("simular_ebitda(_base_sim, _ajustes_sim, meta_ebitda=ebitda_orc_kpi)", corpo)
         self.assertIn("Chance de bater a meta", corpo)
-        # A narrativa le a MESMA projecao do cartao da margem e o MESMO ritmo
-        # da faixa -- nao recalcula nada por conta propria.
-        self.assertIn('"margem_proj": _margem_proj_val', corpo)
-        self.assertIn("_margem_proj_val = _margem_proj_f", corpo)
-        self.assertIn('"ritmo": _fatos_ritmo', corpo)
-        j = corpo.index("_fatos_ritmo = None")
-        self.assertLess(j, corpo.index("if _col_mes_atual is not None:"),
-                        "a variavel do ritmo precisa existir mesmo sem mes de referencia")
+        # Mesma projecao do cartao e mesmas pendencias da planilha de fechamento.
+        self.assertIn("_margem_proj_val = projetar_margem_fechamento(", corpo)
+        self.assertIn("pendencias=_det_fech, ritmo=_fatos_ritmo, margem_proj=_margem_proj_val", corpo)
+        # Zerar controles so em callback: escrever no estado de widget ja
+        # criado fora de callback derruba a tela.
+        self.assertIn("on_click=_zerar_simulador", corpo)
+
+
+class TesteBriefingPorEmail(unittest.TestCase):
+    """04/09/2026: o briefing das 7h (GitHub Actions + e-mail) reaproveita as
+    funcoes do app por AST, sem importar o Streamlit. Se alguem renomear uma
+    semente no app, este teste cai aqui -- e nao as 7h, em silencio."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os as _os
+        caminho = _os.path.join(_os.path.dirname(_os.path.abspath(CAMINHO_APP)), "briefing.py")
+        spec = importlib.util.spec_from_file_location("briefing_em_teste", caminho)
+        cls.briefing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.briefing)
+        cls.ns = cls.briefing.carregar_funcoes_do_app(CAMINHO_APP)
+
+    def test_as_sementes_carregam_do_app_sem_streamlit(self):
+        for nome in self.briefing.SEMENTES:
+            self.assertIn(nome, self.ns, f"a semente {nome} nao veio do app")
+        self.assertEqual(self.ns["DIAS_DEFASAGEM_DADOS"], 2)
+        # A narrativa do e-mail e a da tela: a MESMA funcao.
+        itens = self.ns["montar_narrativa_executiva"]({"rec_real": 10.0, "rec_orc": 20.0})
+        self.assertEqual(itens[0]["rotulo"], "Receita")
+        self.assertIn("50,0% abaixo", itens[0]["texto"])
+
+    def test_o_streamlit_de_mentira_engole_decorador_e_chamada(self):
+        st = self.briefing._StreamlitDeMentira()
+
+        def funcao():
+            return 1
+        self.assertIs(st.cache_data(ttl=None, max_entries=1)(funcao), funcao)
+        self.assertIs(st.cache_data(funcao), funcao)
+        st.warning("nada acontece")
+        self.assertFalse(st.secrets["qualquer"])
+        self.assertEqual(list(st.columns(3)), [])
+
+    def test_o_briefing_roda_de_ponta_a_ponta_com_planilha_local(self):
+        """O caminho inteiro -- abrir o Excel, achar os meses, ritmo, fatos e
+        narrativa -- com dois arquivos pequenos no lugar dos links do Google.
+        E o que o GitHub Actions faz as 7h, sem rede."""
+        import os as _os
+        import tempfile
+        cols = ["07/2026", "08/2026", "09/2026"]
+        real = pd.DataFrame({"Nome": ["3 - Receita Operacional Liquida", "11 - EBITDA",
+                                      "6 - Despesas Variáveis", "6.24 - Esforços de Marketing",
+                                      "8 - Despesas Operacionais", "8.3 - Pessoal"],
+                             cols[0]: [100, 20, 10, 10, 30, 30], cols[1]: [100, 20, 10, 10, 0, 0],
+                             cols[2]: [3, 0, 0, 0, 0, 0]})
+        orc = real.copy()
+        orc[cols[0]], orc[cols[1]], orc[cols[2]] = ([100, 25, 8, 8, 30, 30], [110, 25, 8, 8, 30, 30],
+                                                  [120, 30, 8, 8, 30, 30])
+        with tempfile.TemporaryDirectory() as pasta:
+            p_real, p_orc = _os.path.join(pasta, "real.xlsx"), _os.path.join(pasta, "orc.xlsx")
+            real.to_excel(p_real, sheet_name="DRE CONSOLIDADO", index=False)
+            orc.to_excel(p_orc, sheet_name="DRE CONSOLIDADO", index=False)
+            fatos, itens, ctx = self.briefing.montar_briefing(
+                self.ns, hoje=datetime(2026, 9, 4).date(), aba="DRE CONSOLIDADO",
+                url_orc=p_orc, url_real=p_real)
+        self.assertEqual(ctx["rotulo"], "Acumulado YTD até SETEMBRO")
+        self.assertEqual(fatos["rec_real"], 203)
+        rotulos = [i["rotulo"] for i in itens]
+        self.assertEqual(rotulos[:3], ["Receita", "EBITDA", "Ritmo"])
+        self.assertIn("R$ 117 desse gap é setembro", itens[0]["texto"])
+        self.assertIn("Setembro corre a", itens[2]["texto"])
+
+    def test_o_email_traz_kpis_narrativa_e_link(self):
+        fatos = {"periodo": "Acumulado YTD até SETEMBRO", "rec_real": 81.2e6, "rec_orc": 103.9e6,
+                 "ebitda_real": 19.3e6, "ebitda_orc": 24.3e6, "margem_proj": 22.3,
+                 "ritmo": {"mes": "SETEMBRO", "pct": 70.0, "dia": 1, "dias": 30, "chance": 0.02}}
+        itens = [{"rotulo": "Receita", "texto": "Teste com <b>negrito</b>.", "tom": "negativo"}]
+        html, texto = self.briefing.montar_email(itens, fatos, datetime(2026, 9, 4).date(),
+                                                 "https://painel.exemplo", self.ns)
+        self.assertIn("sexta-feira, 04/09/2026", html)
+        self.assertIn("R$ 81,2M", html)
+        self.assertIn("fecha em 22,3%", html)
+        self.assertIn("chance de bater a meta: 2%", html)
+        self.assertIn("<b>negrito</b>", html)
+        self.assertIn("https://painel.exemplo", html)
+        self.assertNotIn("<b>", texto)
+        self.assertIn("Receita: Teste com negrito.", texto)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
