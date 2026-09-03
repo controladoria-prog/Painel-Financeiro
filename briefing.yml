@@ -1,0 +1,31 @@
+name: Briefing executivo (7h)
+
+# 11:00 UTC = 07:00 em Porto Velho (UTC-4), de segunda a sexta. O GitHub pode
+# atrasar alguns minutos em horário de pico; não é falha.
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install --quiet pandas numpy openpyxl
+
+      - name: Calcular e enviar o briefing
+        env:
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          FECHAMENTO_CSV_URL: ${{ secrets.FECHAMENTO_CSV_URL }}
+          LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+        run: python briefing.py
