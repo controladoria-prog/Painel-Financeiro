@@ -47,6 +47,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto"],
     "_deltas_pendentes_do_fechamento": ["_normalizar_coluna_fin"],
     "_linhas_raiz_do_conjunto": ["_eh_linha_de_resultado", "_normalizar_texto"],
     "_eh_linha_de_resultado": ["_normalizar_texto"],
@@ -7220,6 +7221,102 @@ class TesteProjecaoDeFechamentoDaMargem(unittest.TestCase):
         self.assertIn("subtext=_margem_sub", FONTE,
                       "o cartao da margem parou de ler a projecao")
         self.assertIn("Projeção de fechamento:", FONTE)
+
+
+class TesteNarrativaChanceESimulador(unittest.TestCase):
+    """03/09/2026: o painel passa a FALAR (narrativa deterministica), a dizer a
+    chance de bater a meta e a responder 'e se' na Visao Geral. As tres sao
+    funcoes puras -- aqui elas recebem numeros inventados e tem de devolver
+    exatamente o que a tela vai mostrar."""
+
+    @classmethod
+    def setUpClass(cls):
+        import math as _math
+        cls.ns = carregar(["montar_narrativa_executiva", "probabilidade_de_bater_meta",
+                           "simular_ebitda"], extras={"math": _math})
+
+    def test_a_narrativa_conta_a_historia_com_virgula_decimal(self):
+        f = self.ns["montar_narrativa_executiva"]
+        frases = f({
+            "rec_real": 81_273_576.0, "rec_orc": 103_891_908.0,
+            "ebitda_real": 19_384_126.0, "ebitda_orc": 24_256_350.0,
+            "margem": 23.9, "margem_proj": 22.3,
+            "ritmo": {"mes": "agosto", "pct": 89.4, "dia": 31, "dias": 31,
+                      "data_dados": "31/08", "chance": 0.38},
+            "estouro": {"conta": "Taxa de Emissão de Boleto", "desvio": 787_000.0, "pct": 98.0},
+            "economia": {"conta": "Pessoal", "folga": 1_700_000.0},
+            "concentracao": {"n": 8, "total": 26},
+        })
+        self.assertEqual(len(frases), 6)
+        self.assertIn("21,8% abaixo do orçado", frases[0])
+        self.assertIn("20,1% abaixo do orçado", frases[1])
+        self.assertIn("margem de 23,9%", frases[1])
+        self.assertIn("fechar em 22,3%", frases[1])
+        self.assertIn("Agosto corre a 89%", frases[2])
+        self.assertIn("dados até 31/08", frases[2])
+        self.assertIn("38%", frases[2])
+        self.assertIn("R$ 787 mil acima do orçado (+98%)", frases[3])
+        self.assertIn("R$ 1,7M abaixo do orçado", frases[4])
+        self.assertIn("8 de 26 subgrupos", frases[5])
+        # Nada inventado: sem fato, sem frase -- e receita sem orcado nao
+        # gera comparacao.
+        self.assertEqual(f({}), [])
+        self.assertEqual(f({"rec_real": 10.0, "rec_orc": 0}), [])
+        so_estouro = f({"estouro": {"conta": "Displays", "desvio": 6_000.0, "pct": None}})
+        self.assertEqual(len(so_estouro), 1)
+        self.assertIn("conta sem orçamento", so_estouro[0])
+
+    def test_a_chance_pesa_historico_no_comeco_e_ritmo_no_fim(self):
+        p = self.ns["probabilidade_de_bater_meta"]
+        hist = [1.00, 1.04, 0.97, 1.02, 0.99]
+        self.assertIsNone(p([1.0, 1.1], 1.2, 0.5), "com menos de 3 meses nao ha base")
+        self.assertIsNone(p(hist, None, 0.5))
+        # Ritmo pessimo (metade da meta): com 5% do mes andado o historico
+        # ainda segura; com 95% andado esta quase decidido.
+        cedo = p(hist, 0.5, 0.05)
+        tarde = p(hist, 0.5, 0.95)
+        self.assertGreater(cedo, tarde)
+        self.assertGreater(cedo, 0.15)
+        self.assertLessEqual(tarde, 0.02)
+        self.assertGreater(p(hist, 1.10, 0.9), 0.9)
+        self.assertGreaterEqual(p(hist, 1.05, 1.0), 0.95, "mes fechado acima da meta")
+        for valor in (p(hist, 3.0, 1.0), p(hist, 0.1, 1.0)):
+            self.assertTrue(0.01 <= valor <= 0.99, "chance nunca vira certeza absoluta")
+
+    def test_o_simulador_move_cmv_e_variaveis_com_a_receita(self):
+        s = self.ns["simular_ebitda"]
+        base = {"rec_liq": 1000.0, "cmv": -400.0, "desp_var": 150.0, "pessoal": 150.0,
+                "marketing": 50.0, "ocupacao": 80.0, "ebitda": 220.0,
+                "variaveis_com_controle": 50.0}   # o marketing mora nas variaveis
+        neutro = s(base, {})
+        self.assertAlmostEqual(neutro["ebitda"], 220.0)
+        self.assertAlmostEqual(neutro["margem"], 22.0)
+        r = s(base, {"rec": 10})
+        # +100 de receita, -40 de CMV (negativo na planilha, magnitude aqui),
+        # -10 das variaveis PURAS (150 menos os 50 do marketing).
+        self.assertAlmostEqual(r["ebitda"], 270.0)
+        self.assertAlmostEqual(r["receita"], 1100.0)
+        m = s(base, {"marketing": -50, "pessoal": 10, "ocupacao": 5})
+        # +25 do marketing, -15 da folha, -4 da ocupacao.
+        self.assertAlmostEqual(m["ebitda"], 226.0)
+        self.assertAlmostEqual(m["delta_ebitda"], 6.0)
+        self.assertIsNone(s({"rec_liq": 0.0, "ebitda": 5.0}, {})["margem"])
+
+    def test_a_visao_geral_liga_os_tres_na_mesma_fonte(self):
+        i = FONTE.index("with tab1:")
+        corpo = FONTE[i:FONTE.index("\nwith tab2:", i)]
+        self.assertIn("montar_narrativa_executiva({", corpo)
+        self.assertIn("probabilidade_de_bater_meta(", corpo)
+        self.assertIn("simular_ebitda(_base_sim", corpo)
+        self.assertIn("Chance de bater a meta", corpo)
+        # A narrativa le a MESMA projecao do cartao da margem e o MESMO ritmo
+        # da faixa -- nao recalcula nada por conta propria.
+        self.assertIn('"margem_proj": _margem_proj_val', corpo)
+        self.assertIn("_margem_proj_val = _margem_proj_f", corpo)
+        self.assertIn('"ritmo": _fatos_ritmo', corpo)
+        j = corpo.index("_fatos_ritmo = None")
+        self.assertLess(j, corpo.index("if _col_mes_atual is not None:"),
+                        "a variavel do ritmo precisa existir mesmo sem mes de referencia")
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
