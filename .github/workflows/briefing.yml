@@ -1,10 +1,10 @@
-name: Briefing executivo (7h)
+name: Briefing executivo (8h)
 
-# 11:00 UTC = 07:00 em Porto Velho (UTC-4), de segunda a sexta. O GitHub pode
+# 12:00 UTC = 08:00 em Porto Velho (UTC-4, sem horário de verão), de segunda a sexta. O GitHub pode
 # atrasar alguns minutos em horário de pico; não é falha.
 on:
   schedule:
-    - cron: "0 11 * * 1-5"
+    - cron: "0 12 * * 1-5"
   workflow_dispatch:
 
 jobs:

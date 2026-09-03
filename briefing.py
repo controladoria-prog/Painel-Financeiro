@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Briefing executivo das 7h -- roda no GitHub Actions e envia por e-mail.
+"""Briefing executivo das 8h -- roda no GitHub Actions e envia por e-mail.
 
 Reaproveita as funções do app.py SEM importar o Streamlit: extrai o fonte de
 cada função e constante por AST (o mesmo truque da suíte de testes), fecha as
