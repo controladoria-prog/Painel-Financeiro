@@ -7451,7 +7451,7 @@ class TesteBriefingPorEmail(unittest.TestCase):
             fatos, itens, ctx = self.briefing.montar_briefing(
                 self.ns, hoje=datetime(2026, 9, 4).date(), aba="DRE CONSOLIDADO",
                 url_orc=p_orc, url_real=p_real)
-        self.assertEqual(ctx["rotulo"], "Acumulado YTD até SETEMBRO")
+        self.assertEqual(ctx["rotulo"], "Acumulado YTD até Setembro")
         self.assertEqual(fatos["rec_real"], 203)
         rotulos = [i["rotulo"] for i in itens]
         self.assertEqual(rotulos[:3], ["Receita", "EBITDA", "Ritmo"])
@@ -7464,11 +7464,18 @@ class TesteBriefingPorEmail(unittest.TestCase):
                  "ritmo": {"mes": "SETEMBRO", "pct": 70.0, "dia": 1, "dias": 30, "chance": 0.02}}
         itens = [{"rotulo": "Receita", "texto": "Teste com <b>negrito</b>.", "tom": "negativo"}]
         html, texto = self.briefing.montar_email(itens, fatos, datetime(2026, 9, 4).date(),
-                                                 "https://painel.exemplo", self.ns)
+                                                 "https://painel.exemplo", self.ns,
+                                                 logo_src="cid:logo-grupo-beea")
         self.assertIn("sexta-feira, 04/09/2026", html)
         self.assertIn("R$ 81,2M", html)
-        self.assertIn("fecha em 22,3%", html)
-        self.assertIn("chance de bater a meta: 2%", html)
+        self.assertIn("fecha em <b>22,3%</b>", html)
+        self.assertIn("chance de bater a meta: <b>2%</b>", html)
+        # Semaforo pela base fechada do EBITDA (aqui, -20,6%), logo por CID e
+        # assunto que ja conta a historia sem abrir o e-mail.
+        self.assertIn(">ATENÇÃO<", html)
+        self.assertIn('src="cid:logo-grupo-beea"', html)
+        self.assertEqual(self.briefing.assunto_do_briefing(fatos, datetime(2026, 9, 4).date()),
+                         "Briefing 04/09 · EBITDA 20,6% abaixo do orçado · Setembro a 70% do ritmo")
         self.assertIn("<b>negrito</b>", html)
         self.assertIn("https://painel.exemplo", html)
         self.assertNotIn("<b>", texto)

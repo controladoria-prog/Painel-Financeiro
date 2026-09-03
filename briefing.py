@@ -61,7 +61,7 @@ SEMENTES = [
     "narrativa_em_texto", "projetar_margem_fechamento",
     "_deltas_pendentes_do_fechamento", "url_csv_do_fechamento",
     "carregar_planilha_fechamento", "formata_valor_curto", "_pct_br",
-    "DIAS_DEFASAGEM_DADOS", "FUSO_BR",
+    "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64",
 ]
 
 NOMES_MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -194,7 +194,7 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
 
     col_corrente = f"{hoje.month:02d}/{hoje.year}"
     nome_corrente = next((n for n, c in m_map.items() if c == col_corrente), col_corrente)
-    rotulo = f"Acumulado YTD até {nome_corrente}"
+    rotulo = f"Acumulado YTD até {str(nome_corrente).capitalize()}"
     fatos = ns["montar_fatos_executivos"](
         valor, linhas, cols_kpi, col_corrente, nome_corrente,
         pendencias=pendencias, ritmo=ritmo, margem_proj=margem_proj, rotulo_periodo=rotulo)
@@ -203,73 +203,234 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
     return fatos, itens, contexto
 
 
-def montar_email(itens, fatos, hoje, link_painel="", ns=None):
-    """Devolve (html, texto). O HTML é claro e simples de propósito: cliente
-    de e-mail no celular não respeita tema escuro nem CSS esperto."""
-    fmt = (ns or {}).get("formata_valor_curto", lambda v: f"R$ {v:,.0f}")
-    pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
-    tirar_tags = lambda t: re.sub(r"<[^>]+>", "", t)   # noqa: E731
-    dia = f"{DIAS_SEMANA[hoje.weekday()]}, {hoje.strftime('%d/%m/%Y')}"
-    cores = {"negativo": "#c0392b", "positivo": "#1e8449", "alerta": "#b9770e", "neutro": "#7f8c8d"}
+# ---------------------------------------------------------------------------
+# O E-MAIL
+# ---------------------------------------------------------------------------
+# Regras de e-mail, que não são as da web: tabela para tudo (Outlook não
+# entende flex/grid), estilo INLINE em cada célula (o Gmail apaga <style>),
+# fundo claro (cliente de celular ignora tema escuro), fonte segura, largura
+# de 640px e uma coluna só no miolo. Logo por CID (imagem anexada ao próprio
+# e-mail): o Gmail bloqueia imagem embutida em base64 e a de link externo
+# chega "bloqueada" até a pessoa clicar.
+CORES = {
+    "fundo": "#EEF1F5", "cartao": "#FFFFFF", "borda": "#E3E7ED", "texto": "#1F2937",
+    "apagado": "#6B7280", "marca": "#1B2A41", "marca_claro": "#9FB3D1",
+    "positivo": "#1E8449", "negativo": "#C0392B", "alerta": "#B9770E", "neutro": "#6B7280",
+}
+FONTE = "'Segoe UI', Helvetica, Arial, sans-serif"
+CID_LOGO = "logo-grupo-beea"
 
-    kpis = []
-    if fatos.get("rec_real") is not None:
-        kpis.append(("Receita líquida YTD", fmt(fatos["rec_real"]),
-                     f"orçado {fmt(fatos['rec_orc'])}" if fatos.get("rec_orc") else ""))
-    if fatos.get("ebitda_real") is not None:
-        kpis.append(("EBITDA YTD", fmt(fatos["ebitda_real"]),
-                     f"orçado {fmt(fatos['ebitda_orc'])}" if fatos.get("ebitda_orc") else ""))
-    if fatos.get("rec_real"):
-        margem = fatos["ebitda_real"] / fatos["rec_real"] * 100
-        sub = (f"fecha em {pct(fatos['margem_proj'])}% com os lançamentos pendentes"
-               if fatos.get("margem_proj") is not None else "realizada no período")
-        kpis.append(("Margem EBITDA", f"{pct(margem)}%", sub))
+
+def _tirar_tags(texto):
+    return re.sub(r"<[^>]+>", "", str(texto or ""))
+
+
+def status_geral(fatos):
+    """Semáforo do topo. Mede o EBITDA na BASE FECHADA (estrutural), não o
+    ritmo de um dia: no dia 1 do mês o ritmo é ruído, e um semáforo que
+    acende vermelho por dois dias de venda perde a credibilidade na terceira
+    manhã. Devolve (rótulo, cor, frase curta para o assunto)."""
+    fech = fatos.get("fechado") or {}
+    eb_r = fech.get("ebitda_real", fatos.get("ebitda_real"))
+    eb_o = fech.get("ebitda_orc", fatos.get("ebitda_orc"))
+    if not eb_o or eb_r is None:
+        return "SEM ORÇADO", CORES["neutro"], ""
+    gap = eb_r / eb_o - 1
+    pct = f"{abs(gap) * 100:.1f}".replace(".", ",")
+    frase = f"EBITDA {pct}% {'abaixo' if gap < 0 else 'acima'} do orçado"
+    if gap >= 0:
+        return "NO ORÇADO", CORES["positivo"], frase
+    if gap > -0.05:
+        return "OBSERVAR", CORES["alerta"], frase
+    return "ATENÇÃO", CORES["negativo"], frase
+
+
+def assunto_do_briefing(fatos, hoje):
+    """O assunto já conta a história: quem não abrir o e-mail sabe o essencial."""
+    partes = [f"Briefing {hoje.strftime('%d/%m')}"]
+    _, _, frase = status_geral(fatos)
+    if frase:
+        partes.append(frase)
     r = fatos.get("ritmo")
     if r:
-        sub = (f"chance de bater a meta: {r['chance'] * 100:.0f}%" if r.get("chance") is not None
-               else f"dia {r['dia']} de {r['dias']}")
-        kpis.append((f"Ritmo de {str(r['mes']).capitalize()}", f"{r['pct']:.0f}%", sub))
+        partes.append(f"{str(r['mes']).capitalize()} a {r['pct']:.0f}% do ritmo")
+    return " · ".join(partes)
 
-    celulas_kpi = "".join(
-        '<td style="padding:10px 12px; border:1px solid #e3e6ea; border-radius:6px; vertical-align:top; width:25%;">'
-        f'<div style="font-size:10px; letter-spacing:0.6px; color:#7f8c8d; text-transform:uppercase;">{rotulo}</div>'
-        f'<div style="font-size:20px; font-weight:700; color:#2c3e50; margin:2px 0;">{valor}</div>'
-        f'<div style="font-size:11px; color:#7f8c8d;">{sub}</div></td>'
-        for rotulo, valor, sub in kpis)
-    linhas_narrativa = "".join(
-        '<tr><td style="padding:9px 10px 9px 0; border-top:1px solid #e3e6ea; vertical-align:top; width:110px;'
-        f' font-size:10px; letter-spacing:0.8px; text-transform:uppercase; color:{cores.get(i["tom"], "#7f8c8d")};">'
-        f'{i["rotulo"]}</td>'
-        f'<td style="padding:9px 0; border-top:1px solid #e3e6ea; font-size:14px; line-height:1.5; color:#2c3e50;">'
-        f'{i["texto"]}</td></tr>'
-        for i in itens)
-    rodape_link = (f'<a href="{link_painel}" style="color:#2874a6;">Abrir o painel</a> · '
-                   if link_painel else "")
+
+def _cartao_kpi(rotulo, valor, sub, cor_topo, cor_sub):
+    return (
+        '<td width="50%" valign="top" style="width:50%; padding:6px; vertical-align:top;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="width:100%; border:1px solid {CORES["borda"]}; border-top:3px solid {cor_topo}; '
+        f'border-radius:6px; background:{CORES["cartao"]};">'
+        f'<tr><td style="padding:13px 15px 12px 15px; font-family:{FONTE};">'
+        f'<div style="font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:{CORES["apagado"]};">{rotulo}</div>'
+        f'<div style="font-size:25px; font-weight:700; color:{CORES["texto"]}; margin-top:4px; line-height:1.1;">{valor}</div>'
+        f'<div style="font-size:12px; color:{cor_sub}; margin-top:6px; line-height:1.4;">{sub}</div>'
+        "</td></tr></table></td>")
+
+
+def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
+    """Devolve (html, texto). `logo_src` é "cid:..." no envio e um data-URI
+    na prévia gravada em disco; vazio, o cabeçalho usa um selo com as
+    iniciais."""
+    fmt = (ns or {}).get("formata_valor_curto", lambda v: f"R$ {v:,.0f}")
+    pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
+    dia = f"{DIAS_SEMANA[hoje.weekday()]}, {hoje.strftime('%d/%m/%Y')}"
+    status, cor_status, _ = status_geral(fatos)
+    r = fatos.get("ritmo")
+    mc = fatos.get("mes_corrente") or {}
+    tons = {"negativo": CORES["negativo"], "positivo": CORES["positivo"],
+            "alerta": CORES["alerta"], "neutro": CORES["neutro"]}
+
+    def _delta(real, orc):
+        if not orc or real is None:
+            return "", CORES["apagado"]
+        var = (real / orc - 1) * 100
+        seta = "▲" if var >= 0 else "▼"
+        return (f"{seta} {pct(abs(var))}% vs orçado ({fmt(orc)})",
+                CORES["positivo"] if var >= 0 else CORES["negativo"])
+
+    # ---- cartões (2 x 2) ----
+    cartoes = []
+    if fatos.get("rec_real") is not None:
+        sub, cor = _delta(fatos["rec_real"], fatos.get("rec_orc"))
+        cartoes.append(_cartao_kpi("Receita líquida YTD", fmt(fatos["rec_real"]), sub, cor, cor))
+    if fatos.get("ebitda_real") is not None:
+        sub, cor = _delta(fatos["ebitda_real"], fatos.get("ebitda_orc"))
+        cartoes.append(_cartao_kpi("EBITDA YTD", fmt(fatos["ebitda_real"]), sub, cor, cor))
+    if fatos.get("rec_real"):
+        margem = fatos["ebitda_real"] / fatos["rec_real"] * 100
+        if fatos.get("margem_proj") is not None:
+            sub, cor = (f"fecha em <b>{pct(fatos['margem_proj'])}%</b> com os lançamentos pendentes",
+                        CORES["alerta"])
+        else:
+            sub, cor = "realizada no período", CORES["apagado"]
+        cartoes.append(_cartao_kpi("Margem EBITDA", f"{pct(margem)}%", sub, CORES["marca"], cor))
+    if r:
+        cor_r = (CORES["positivo"] if r["pct"] >= 100 else
+                 CORES["alerta"] if r["pct"] >= 90 else CORES["negativo"])
+        sub = f"do esperado · dia {r['dia']} de {r['dias']}"
+        if r.get("chance") is not None:
+            sub += f" · chance de bater a meta: <b>{r['chance'] * 100:.0f}%</b>"
+        cartoes.append(_cartao_kpi(f"Ritmo de {str(r['mes']).capitalize()}", f"{r['pct']:.0f}%",
+                                   sub, cor_r, CORES["apagado"]))
+    linhas_kpi = ""
+    for i in range(0, len(cartoes), 2):
+        par = cartoes[i:i + 2]
+        if len(par) == 1:
+            par.append('<td width="50%"></td>')
+        linhas_kpi += "<tr>" + "".join(par) + "</tr>"
+
+    # ---- barra de ritmo ----
+    bloco_ritmo = ""
+    if r and r.get("rec_orc_prop") and r.get("data_dados"):
+        cheio = max(2, min(100, int(round(r["pct"]))))
+        cor_r = (CORES["positivo"] if r["pct"] >= 100 else
+                 CORES["alerta"] if r["pct"] >= 90 else CORES["negativo"])
+        bloco_ritmo = (
+            f'<tr><td style="background:{CORES["cartao"]}; padding:6px 26px 18px 26px; font-family:{FONTE};">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>'
+            f'<td style="font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:{CORES["apagado"]};">'
+            f'Ritmo de {str(r["mes"]).capitalize()} · realizado vs. meta até {r["data_dados"]}</td>'
+            f'<td align="right" style="font-size:12px; color:{CORES["texto"]};">'
+            f'<b>{fmt(r.get("rec_real", 0))}</b> de {fmt(r["rec_orc_prop"])}</td></tr></table>'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; margin-top:7px;"><tr>'
+            f'<td width="{cheio}%" bgcolor="{cor_r}" style="width:{cheio}%; background:{cor_r};">'
+            '<div style="height:10px; line-height:10px; font-size:1px;">&nbsp;</div></td>'
+            f'<td bgcolor="{CORES["borda"]}" style="background:{CORES["borda"]};">'
+            '<div style="height:10px; line-height:10px; font-size:1px;">&nbsp;</div></td>'
+            "</tr></table>"
+            f'<div style="font-size:11px; color:{CORES["apagado"]}; margin-top:6px;">'
+            f'A barra cheia é a meta até {r["data_dados"]} (dados chegam D+2). '
+            f'Projeção do mês no ritmo atual: <b>{fmt(r.get("rec_proj", 0))}</b> contra {fmt(r.get("rec_orc_cheio", 0))} orçados.</div>'
+            "</td></tr>")
+
+    # ---- narrativa ----
+    linhas_narrativa = ""
+    for i in itens:
+        cor = tons.get(i.get("tom"), CORES["neutro"])
+        linhas_narrativa += (
+            "<tr>"
+            f'<td width="4" bgcolor="{cor}" style="width:4px; background:{cor}; font-size:0; line-height:0;">&nbsp;</td>'
+            f'<td width="92" valign="top" style="vertical-align:top; padding:13px 8px 11px 12px; font-family:{FONTE}; font-size:10px; '
+            f'letter-spacing:1.1px; text-transform:uppercase; font-weight:700; color:{cor}; '
+            f'border-bottom:1px solid {CORES["borda"]};">{i["rotulo"]}</td>'
+            f'<td valign="top" style="vertical-align:top; padding:11px 0 11px 6px; font-family:{FONTE}; font-size:14px; line-height:1.55; '
+            f'color:{CORES["texto"]}; border-bottom:1px solid {CORES["borda"]};">{i["texto"]}</td>'
+            "</tr>")
+
+    # ---- cabeçalho ----
+    if logo_src:
+        selo = (f'<img src="{logo_src}" width="46" height="46" alt="Grupo B&amp;A" '
+                'style="display:block; width:46px; height:46px; border-radius:23px;">')
+    else:
+        selo = ('<div style="width:46px; height:46px; border-radius:23px; background:#FFFFFF; '
+                f'color:{CORES["marca"]}; font-family:{FONTE}; font-weight:700; font-size:15px; '
+                'text-align:center; line-height:46px;">B&amp;A</div>')
+    base = (f"Análise sobre os meses fechados · {str(mc['mes']).lower()} entra só como explicação do gap · "
+            if mc else "")
+    preheader = (_tirar_tags(itens[0]["texto"])[:140] + "…") if itens else ""
+    botao = (
+        '<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:6px auto 0 auto;">'
+        f'<tr><td bgcolor="{CORES["marca"]}" style="background:{CORES["marca"]}; border-radius:6px;">'
+        f'<a href="{link_painel}" style="display:inline-block; padding:12px 28px; font-family:{FONTE}; font-size:14px; '
+        'font-weight:600; color:#FFFFFF; text-decoration:none;">Abrir o painel &rarr;</a></td></tr></table>'
+        if link_painel else "")
+
     html = (
-        '<div style="font-family:Segoe UI, Arial, sans-serif; max-width:760px; margin:0 auto; color:#2c3e50;">'
-        '<div style="font-size:11px; letter-spacing:1px; text-transform:uppercase; color:#7f8c8d;">'
-        'Controladoria B&amp;A · briefing executivo</div>'
-        f'<h2 style="margin:4px 0 14px 0; font-size:20px;">{fatos.get("periodo", "")} · {dia}</h2>'
-        f'<table cellspacing="6" cellpadding="0" style="width:100%; border-collapse:separate;"><tr>{celulas_kpi}</tr></table>'
-        '<div style="font-size:11px; letter-spacing:0.8px; text-transform:uppercase; color:#7f8c8d; margin:18px 0 4px 0;">'
-        'O que aconteceu e por quê</div>'
-        f'<table cellspacing="0" cellpadding="0" style="width:100%;">{linhas_narrativa}</table>'
-        f'<div style="font-size:11px; color:#7f8c8d; margin-top:18px;">{rodape_link}'
-        'Gerado automaticamente pelo painel a partir das planilhas de Orçado, Realizado e Fechamento · '
-        'lançamentos chegam D+2 · a chance de bater a meta é uma estimativa a partir do histórico do ano.</div>'
-        '</div>')
-    texto = (f"Controladoria B&A · briefing executivo\n{fatos.get('periodo', '')} · {dia}\n\n"
-             + "\n".join(f"{rotulo}: {tirar_tags(valor)} ({sub})" if sub else f"{rotulo}: {tirar_tags(valor)}"
-                         for rotulo, valor, sub in kpis)
+        '<meta charset="utf-8">'
+        f'<div style="display:none; max-height:0; overflow:hidden; opacity:0;">{preheader}</div>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="{CORES["fundo"]}" '
+        f'style="background:{CORES["fundo"]};"><tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px; max-width:100%;">'
+        # cabeçalho
+        f'<tr><td bgcolor="{CORES["marca"]}" style="background:{CORES["marca"]}; padding:22px 26px; border-radius:10px 10px 0 0;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>'
+        f'<td width="46" valign="middle">{selo}</td>'
+        f'<td valign="middle" style="padding-left:14px; font-family:{FONTE};">'
+        f'<div style="font-size:10px; letter-spacing:1.6px; text-transform:uppercase; color:{CORES["marca_claro"]};">'
+        'Controladoria B&amp;A · Briefing executivo</div>'
+        f'<div style="font-size:20px; font-weight:700; color:#FFFFFF; margin-top:3px; line-height:1.2;">{fatos.get("periodo", "")}</div>'
+        f'<div style="font-size:12px; color:{CORES["marca_claro"]}; margin-top:3px;">{dia}'
+        + (f' · dados até {r["data_dados"]} (D+2)' if r and r.get("data_dados") else "") + "</div></td>"
+        f'<td align="right" valign="top" style="font-family:{FONTE};">'
+        f'<span style="display:inline-block; padding:5px 11px; border-radius:12px; background:{cor_status}; '
+        f'color:#FFFFFF; font-size:10px; font-weight:700; letter-spacing:1.2px;">{status}</span></td>'
+        "</tr></table></td></tr>"
+        # KPIs
+        f'<tr><td style="background:{CORES["cartao"]}; padding:14px 20px 8px 20px;">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">{linhas_kpi}</table></td></tr>'
+        + bloco_ritmo +
+        # narrativa
+        f'<tr><td style="background:{CORES["cartao"]}; padding:8px 26px 4px 26px; font-family:{FONTE};">'
+        f'<div style="font-size:10px; letter-spacing:1.4px; text-transform:uppercase; color:{CORES["apagado"]}; '
+        f'padding-bottom:8px; border-bottom:2px solid {CORES["marca"]};">O que aconteceu e por quê</div>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">{linhas_narrativa}</table></td></tr>'
+        # rodapé
+        f'<tr><td align="center" style="background:{CORES["cartao"]}; padding:18px 26px 24px 26px; '
+        f'border-radius:0 0 10px 10px; font-family:{FONTE};">{botao}'
+        f'<div style="font-size:11px; line-height:1.5; color:{CORES["apagado"]}; margin-top:16px;">'
+        f'{base}lançamentos chegam D+2 · a chance de bater a meta é uma estimativa a partir do histórico do ano.<br>'
+        'Gerado automaticamente pelo painel a partir das planilhas de Orçado, Realizado e Fechamento.</div>'
+        "</td></tr></table></td></tr></table>")
+
+    kpis_texto = []
+    for c in cartoes:
+        partes = [_tirar_tags(p) for p in re.findall(r"<div[^>]*>(.*?)</div>", c)]
+        if len(partes) >= 3:
+            kpis_texto.append(f"{partes[0]}: {partes[1]} ({partes[2]})")
+    texto = (f"Controladoria B&A · briefing executivo · {status}\n{fatos.get('periodo', '')} · {dia}\n\n"
+             + "\n".join(kpis_texto)
              + "\n\nO que aconteceu e por quê\n"
              + (ns or {}).get("narrativa_em_texto", lambda it: "\n".join(
-                 f"{i['rotulo']}: {tirar_tags(i['texto'])}" for i in it))(itens)
+                 f"{i['rotulo']}: {_tirar_tags(i['texto'])}" for i in it))(itens)
              + (f"\n\nPainel: {link_painel}" if link_painel else "")
              + "\n\nGerado automaticamente pelo painel. Lançamentos chegam D+2.")
     return html, texto
 
 
-def enviar_email(assunto, html, texto):
+def enviar_email(assunto, html, texto, logo_b64=""):
     usuario = os.environ["SMTP_USUARIO"]
     senha = os.environ["SMTP_SENHA"]
     destinos = [d.strip() for d in os.environ["EMAIL_DESTINO"].split(",") if d.strip()]
@@ -279,10 +440,15 @@ def enviar_email(assunto, html, texto):
     porta = int(os.environ.get("SMTP_PORTA", "465"))
     mensagem = EmailMessage()
     mensagem["Subject"] = assunto
-    mensagem["From"] = usuario
+    mensagem["From"] = f"Controladoria B&A <{usuario}>"
     mensagem["To"] = ", ".join(destinos)
     mensagem.set_content(texto)
     mensagem.add_alternative(html, subtype="html")
+    if logo_b64:
+        # O logo viaja DENTRO do e-mail, ligado ao HTML pelo Content-ID.
+        parte_html = mensagem.get_payload()[1]
+        parte_html.add_related(base64.b64decode(logo_b64), maintype="image", subtype="jpeg",
+                               cid=f"<{CID_LOGO}>")
     with smtplib.SMTP_SSL(servidor, porta, context=ssl.create_default_context()) as conexao:
         conexao.login(usuario, senha)
         conexao.send_message(mensagem)
@@ -294,18 +460,25 @@ def main(argv):
     fatos, itens, ctx = montar_briefing(ns, url_fech=os.environ.get("FECHAMENTO_CSV_URL", ""))
     if not itens:
         raise SystemExit("A narrativa saiu vazia -- confira as planilhas.")
-    html, texto = montar_email(itens, fatos, ctx["hoje"], os.environ.get("LINK_PAINEL", ""), ns)
-    assunto = f"Briefing executivo · {ctx['rotulo']} · {ctx['hoje'].strftime('%d/%m')}"
+    link = os.environ.get("LINK_PAINEL", "")
+    logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
+    assunto = assunto_do_briefing(fatos, ctx["hoje"])
     if "--salvar" in argv:
+        # Na prévia em disco o logo vai embutido (data-URI), que o navegador
+        # aceita; no e-mail vai por CID, que os clientes de e-mail aceitam.
+        html_previa, _ = montar_email(itens, fatos, ctx["hoje"], link, ns,
+                                      logo_src=f"data:image/jpeg;base64,{logo_b64}" if logo_b64 else "")
         caminho = argv[argv.index("--salvar") + 1]
         with open(caminho, "w", encoding="utf-8") as arquivo:
-            arquivo.write(html)
+            arquivo.write(html_previa)
         print(f"HTML gravado em {caminho}")
+    html, texto = montar_email(itens, fatos, ctx["hoje"], link, ns,
+                               logo_src=f"cid:{CID_LOGO}" if logo_b64 else "")
     if "--teste" in argv:
         print(assunto)
         print(texto)
         return
-    destinos = enviar_email(assunto, html, texto)
+    destinos = enviar_email(assunto, html, texto, logo_b64)
     print(f"Briefing enviado para {', '.join(destinos)}: {assunto}")
 
 
