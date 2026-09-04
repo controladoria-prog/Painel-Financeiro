@@ -7458,6 +7458,37 @@ class TesteBriefingPorEmail(unittest.TestCase):
         self.assertIn("R$ 117 desse gap é setembro", itens[0]["texto"])
         self.assertIn("Setembro corre a", itens[2]["texto"])
 
+    def test_escopo_do_departamento_gestores_e_idempotencia(self):
+        """04/09/2026: alerta e board pack por gestor usam os mapas do proprio
+        app; departamento por plano de contas fica fora (seria chute); e o
+        briefing do dia nao sai duas vezes."""
+        b = self.briefing
+        linhas = ["6 - Despesas Variáveis", "6.6 - Material de Embalagem", "6.24 - Marketing",
+                  "8 - Despesas Operacionais", "8.3 - Pessoal"]
+        ns = {"_subgrupos_nivel2": self.ns["_subgrupos_nivel2"],
+              "_nome_sem_numero_dre": self.ns["_nome_sem_numero_dre"],
+              "ofensores_por_desvio": self.ns["ofensores_por_desvio"]}
+        self.assertEqual(b.linhas_do_departamento({"linhas_dre": ["ATE_EBITDA"]}, linhas, ns),
+                         ["6.6 - Material de Embalagem", "6.24 - Marketing", "8.3 - Pessoal"])
+        self.assertEqual(b.linhas_do_departamento({"linhas_dre": ["6.6 - Material de Embalagem", "x"]}, linhas, ns),
+                         ["6.6 - Material de Embalagem"])
+        self.assertIsNone(b.linhas_do_departamento({"linhas_dre": ["RESTANTE"], "forcar_planos_contas": ["RESTANTE"]},
+                                                   linhas, ns))
+        self.assertEqual(b.emails_do_departamento("MKT", {"a@x": "MKT", "b@x": "RH"}, {"c@x": "MKT"}), ["a@x", "c@x"])
+        tabela = {("real", "6.6 - Material de Embalagem", "07/2026"): 130.0, ("orc", "6.6 - Material de Embalagem", "07/2026"): 100.0,
+                  ("real", "8.3 - Pessoal", "07/2026"): 80.0, ("orc", "8.3 - Pessoal", "07/2026"): 100.0,
+                  ("real", "8.3 - Pessoal", "09/2026"): 50.0}   # setembro (corrente) fica fora
+        valor = lambda lado, linha, cols, exato=False: sum(tabela.get((lado, linha, c), 0.0) for c in cols)  # noqa: E731
+        f = b.fatos_do_departamento(valor, ["6.6 - Material de Embalagem", "8.3 - Pessoal"], ["07/2026", "09/2026"],
+                                    "09/2026", "Compras", ns)
+        self.assertEqual((f["gasto_real"], f["gasto_orc"], f["n_acima"], f["n_contas"]), (210.0, 200.0, 1, 2))
+        self.assertEqual(f["estouros"][0]["conta"], "Material de Embalagem")
+        self.assertEqual(f["folgas"][0]["conta"], "Pessoal")
+        itens = b.narrativa_departamento(f, self.ns)
+        self.assertIn("5,0% acima", itens[0]["texto"])
+        self.assertTrue(b.ja_enviado_hoje([{"data": "2026-09-04"}], datetime(2026, 9, 4).date()))
+        self.assertFalse(b.ja_enviado_hoje([{"data": "2026-09-03"}], datetime(2026, 9, 4).date()))
+
     def test_o_email_traz_kpis_narrativa_e_link(self):
         fatos = {"periodo": "Acumulado YTD até SETEMBRO", "rec_real": 81.2e6, "rec_orc": 103.9e6,
                  "ebitda_real": 19.3e6, "ebitda_orc": 24.3e6, "margem_proj": 22.3,
@@ -7480,6 +7511,147 @@ class TesteBriefingPorEmail(unittest.TestCase):
         self.assertIn("https://painel.exemplo", html)
         self.assertNotIn("<b>", texto)
         self.assertIn("Receita: Teste com negrito.", texto)
+
+
+class TesteHistoricoDeltaEPlacar(unittest.TestCase):
+    """04/09/2026: o briefing passa a dizer o que mudou desde o ultimo envio
+    e a conferir a chance de bater a meta contra o fechamento real."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os as _os
+        caminho = _os.path.join(_os.path.dirname(_os.path.abspath(CAMINHO_APP)), "briefing.py")
+        spec = importlib.util.spec_from_file_location("briefing_hist", caminho)
+        cls.b = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.b)
+
+    def test_o_historico_nao_duplica_o_dia_e_acha_o_anterior(self):
+        b = self.b
+        h = b.registrar_no_historico([], {"data": "2026-09-01", "chance": 0.1})
+        h = b.registrar_no_historico(h, {"data": "2026-09-01", "chance": 0.2})   # mesmo dia: substitui
+        h = b.registrar_no_historico(h, {"data": "2026-09-04", "chance": 0.3})
+        self.assertEqual([e["data"] for e in h], ["2026-09-01", "2026-09-04"])
+        self.assertEqual(h[0]["chance"], 0.2)
+        # Segunda-feira olha para sexta, nao para "ontem".
+        self.assertEqual(b.entrada_anterior(h, datetime(2026, 9, 7).date())["data"], "2026-09-04")
+        self.assertIsNone(b.entrada_anterior(h, datetime(2026, 9, 1).date()))
+
+    def test_a_comparacao_fala_em_delta_e_respeita_a_virada_do_mes(self):
+        b = self.b
+        ontem = {"mes_col": "09/2026", "mes": "SETEMBRO", "rec_mes": 200_000.0, "ritmo_pct": 55.0,
+                 "chance": 0.01, "estouros": ["Marketing"]}
+        hoje = {"mes_col": "09/2026", "mes": "SETEMBRO", "rec_mes": 300_000.0, "ritmo_pct": 70.0,
+                "chance": 0.05, "estouros": ["Marketing", "Serviços de Terceiros"]}
+        frases = b.comparar_com_ontem(hoje, ontem, fmt=lambda v: f"R$ {v / 1000:.0f} mil")
+        self.assertIn("receita de setembro +R$ 100 mil", frases[0])
+        self.assertIn("ritmo 55% → 70%", frases[1])
+        self.assertIn("chance de bater a meta 1% → 5%", frases[2])
+        self.assertIn("conta nova acima do orçado: Serviços de Terceiros", frases[3])
+        virou = b.comparar_com_ontem({**hoje, "mes_col": "10/2026", "mes": "OUTUBRO"}, ontem)
+        self.assertIn("virou: Setembro → Outubro", virou[0])
+        self.assertEqual(b.comparar_com_ontem(hoje, None), [])
+
+    def test_o_placar_confere_a_previsao_do_dia_15_com_o_fechamento(self):
+        b = self.b
+        hist = [{"mes_col": "07/2026", "dia": 10, "chance": 0.80},
+                {"mes_col": "07/2026", "dia": 15, "chance": 0.70},
+                {"mes_col": "07/2026", "dia": 28, "chance": 0.10},   # depois do corte: nao vale
+                {"mes_col": "08/2026", "dia": 14, "chance": 0.20},
+                {"mes_col": "09/2026", "dia": 3, "chance": 0.02}]    # mes aberto: sem resultado
+        placar = b.placar_da_chance(hist, {"07/2026": True, "08/2026": True})
+        self.assertEqual((placar["meses"], placar["acertos"]), (2, 1))
+        self.assertEqual([d["acertou"] for d in placar["detalhes"]], [True, False])
+        self.assertIn("acertou 1 de 2 meses", b.texto_placar(placar))
+        self.assertIn("começa a contar", b.texto_placar(b.placar_da_chance([], {})))
+
+
+class TesteAlertasDoDia(unittest.TestCase):
+    """04/09/2026: alerta imediato so quando algo cruza uma linha, e cada
+    ponto avisado uma vez."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os as _os
+        import sys as _sys
+        pasta = _os.path.dirname(_os.path.abspath(CAMINHO_APP))
+        if pasta not in _sys.path:
+            _sys.path.insert(0, pasta)
+        spec = importlib.util.spec_from_file_location("alertas_teste", _os.path.join(pasta, "alertas.py"))
+        cls.a = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.a)
+
+    def test_regras_e_memoria(self):
+        a = self.a
+        fatos = {"mes_corrente": {"col": "09/2026"},
+                 "estouros": [{"conta": "Boleto", "desvio": 800_000.0, "pct": 98.0},
+                              {"conta": "Displays", "desvio": 6_000.0, "pct": None},
+                              {"conta": "Miuda", "desvio": 5_000.0, "pct": 3.0}],
+                 "ritmo": {"col": "09/2026", "mes": "SETEMBRO", "dia": 16, "pct": 72.0, "chance": 0.2,
+                           "rec_real": 1.0, "rec_orc_prop": 2.0, "data_dados": "14/09"}}
+        hoje = datetime(2026, 9, 16).date()
+        alertas = a.avaliar_alertas(fatos, hoje, fmt=lambda v: f"R$ {v:,.0f}")
+        chaves = [x["chave"] for x in alertas]
+        self.assertIn("estouro:Boleto:09/2026", chaves)
+        self.assertNotIn("estouro:Miuda:09/2026", chaves, "estouro pequeno nao e alerta")
+        self.assertIn("ritmo:09/2026", chaves, "ritmo avisa UMA vez por mes, nao por dia")
+        # Dia 1 nao dispara ritmo (dois dias de venda nao dizem nada).
+        cedo = a.avaliar_alertas({**fatos, "ritmo": {**fatos["ritmo"], "dia": 3}}, hoje)
+        self.assertFalse([x for x in cedo if x["chave"].startswith("ritmo")])
+        # Memoria: o que ja foi avisado nao volta.
+        self.assertEqual([x["chave"] for x in a.novos_alertas(alertas, ["estouro:Boleto:09/2026"])],
+                         [c for c in chaves if c != "estouro:Boleto:09/2026"])
+        html, texto = a.montar_email_alerta(alertas, fatos, hoje, "https://x")
+        self.assertIn("Boleto passou do orçado", html)
+        self.assertIn("https://x", html)
+        self.assertIn("Setembro corre a 72%", texto)
+
+
+class TesteBoardPack(unittest.TestCase):
+    """04/09/2026: a apresentacao do fechamento sai sozinha, com os mesmos
+    numeros e a mesma narrativa do e-mail."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os as _os
+        import sys as _sys
+        try:
+            import pptx  # noqa: F401
+        except ImportError:
+            raise unittest.SkipTest("python-pptx nao instalado (pip install python-pptx)")
+        pasta = _os.path.dirname(_os.path.abspath(CAMINHO_APP))
+        if pasta not in _sys.path:
+            _sys.path.insert(0, pasta)
+        spec = importlib.util.spec_from_file_location("board_pack_teste", _os.path.join(pasta, "board_pack.py"))
+        cls.bp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.bp)
+
+    def test_gera_seis_slides_com_a_narrativa(self):
+        from pptx import Presentation
+        fatos = {"periodo": "Acumulado YTD até Setembro", "rec_real": 81.2e6, "rec_orc": 103.9e6,
+                 "ebitda_real": 19.3e6, "ebitda_orc": 24.3e6, "margem_proj": 22.3,
+                 "fechado": {"rec_real": 80.9e6, "rec_orc": 91.0e6, "ebitda_real": 19.3e6, "ebitda_orc": 21.9e6},
+                 "ritmo": {"mes": "SETEMBRO", "pct": 70.0, "dia": 1, "dias": 30, "chance": 0.02},
+                 "estouros": [{"conta": "Boleto", "desvio": 1.1e6, "pct": 206.0}],
+                 "folgas": [{"conta": "Cartão", "folga": 912e3, "pct": 63.0}],
+                 "artefatos": [{"conta": "Pessoal", "folga": 96e3, "pendente": 691e3}]}
+        itens = [{"rotulo": "Receita", "texto": "Teste <b>x</b>.", "tom": "negativo"},
+                 {"rotulo": "EBITDA", "texto": "Outro.", "tom": "positivo"}]
+        series = {"rotulos": ["Jul", "Ago"], "rec_real": [10e6, 10.2e6], "rec_orc": [10.8e6, 11.4e6],
+                  "eb_real": [2e6, 2.9e6], "eb_orc": [2.6e6, 2.9e6]}
+        dados = self.bp.montar_board_pack(fatos, itens, series, datetime(2026, 9, 5).date())
+        self.assertGreater(len(dados), 20_000)
+        apresentacao = Presentation(io.BytesIO(dados))
+        self.assertEqual(len(apresentacao.slides), 6)
+        textos = " ".join(f.text_frame.text for s in apresentacao.slides for f in s.shapes if f.has_text_frame)
+        # A tabela e um quadro grafico: as celulas nao entram no text_frame das formas.
+        textos += " ".join(c.text for s in apresentacao.slides for f in s.shapes if f.has_table
+                           for linha in f.table.rows for c in linha.cells)
+        self.assertIn("ATENÇÃO", textos)
+        self.assertIn("Teste x.", textos, "a narrativa vai sem as tags de negrito")
+        self.assertIn("lançamento pendente (não é economia)", textos)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):

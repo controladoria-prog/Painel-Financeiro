@@ -10,6 +10,7 @@ duplicado, e quando o app mudar a regra, o e-mail muda junto.
 
 Uso:
     python briefing.py                    calcula e envia (precisa das variáveis abaixo)
+    python briefing.py --forcar           reenvia mesmo que o de hoje já tenha saído
     python briefing.py --teste            calcula e imprime o e-mail em texto, sem enviar
     python briefing.py --salvar b.html    grava o HTML do e-mail para conferir no navegador
 
@@ -28,6 +29,7 @@ import gc
 import hashlib
 import hmac
 import io
+import json
 import math
 import os
 import re
@@ -61,7 +63,9 @@ SEMENTES = [
     "narrativa_em_texto", "projetar_margem_fechamento",
     "_deltas_pendentes_do_fechamento", "url_csv_do_fechamento",
     "carregar_planilha_fechamento", "formata_valor_curto", "_pct_br",
-    "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64",
+    "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64", "MODELOS_RELATORIO",
+    "MAPA_EMAIL_DEPARTAMENTO", "EMAILS_TRAVADOS_NO_DEPARTAMENTO", "_subgrupos_nivel2",
+    "ofensores_por_desvio", "_nome_sem_numero_dre",
 ]
 
 NOMES_MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -159,8 +163,8 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
     hoje = hoje or datetime.now(ns["FUSO_BR"]).date()
     hoje_dados = hoje - timedelta(days=ns["DIAS_DEFASAGEM_DADOS"])
     aba = aba or os.environ.get("ABA_DRE", "DRE CONSOLIDADO")
-    url_orc = url_orc or os.environ.get("URL_ORCADO", URL_ORCADO_PADRAO)
-    url_real = url_real or os.environ.get("URL_REALIZADO", URL_REALIZADO_PADRAO)
+    url_orc = url_orc or urls_das_planilhas()[0]
+    url_real = url_real or urls_das_planilhas()[1]
 
     list_df_orc, list_df_real = ns["carregar_dados_abas"](url_orc, url_real, [aba])
     df_ref = next((d for d in list_df_real if d is not None and not d.empty), None)
@@ -199,8 +203,248 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
         valor, linhas, cols_kpi, col_corrente, nome_corrente,
         pendencias=pendencias, ritmo=ritmo, margem_proj=margem_proj, rotulo_periodo=rotulo)
     itens = ns["montar_narrativa_executiva"](fatos)
-    contexto = {"hoje": hoje, "hoje_dados": hoje_dados, "aba": aba, "rotulo": rotulo}
+    # Meses FECHADOS: bateu (True) ou não (False) a receita orçada. É o gabarito
+    # do placar da chance.
+    resultado_por_mes = {}
+    for c in meses_cols:
+        if int(c[:2]) >= hoje.month:
+            continue
+        o = gv(list_df_orc, "3 - Receita Operacional Liquida", [c])
+        r_ = gv(list_df_real, "3 - Receita Operacional Liquida", [c])
+        if o > 0 and r_ > 0:
+            resultado_por_mes[c] = r_ >= o
+    contexto = {"hoje": hoje, "hoje_dados": hoje_dados, "aba": aba, "rotulo": rotulo,
+                "resultado_por_mes": resultado_por_mes, "list_df_real": list_df_real, "linhas": linhas,
+                "list_df_orc": list_df_orc, "meses_cols": meses_cols, "m_map": m_map}
     return fatos, itens, contexto
+
+
+# ---------------------------------------------------------------------------
+# HISTÓRICO: o que cada briefing viu, para o próximo dizer "desde ontem"
+# ---------------------------------------------------------------------------
+# O GitHub Actions grava este arquivo de volta no repositório a cada envio.
+# Duas coisas nascem dele: a linha "desde o último briefing" (chefe lê
+# delta, não foto) e o placar da chance de bater a meta (a previsão do dia
+# 15 conferida contra o fechamento real -- é o que dá credibilidade ao
+# número).
+CAMINHO_HISTORICO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "dados", "historico_briefing.json")
+LIMITE_HISTORICO = 400
+DIA_DE_CORTE_DO_PLACAR = 15
+
+
+def carregar_historico(caminho=CAMINHO_HISTORICO):
+    try:
+        with open(caminho, encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        return dados if isinstance(dados, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def salvar_historico(historico, caminho=CAMINHO_HISTORICO):
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "w", encoding="utf-8") as arquivo:
+        json.dump(historico, arquivo, ensure_ascii=False, indent=1)
+
+
+def entrada_do_dia(fatos, hoje):
+    """O que vale guardar de um briefing: pouco, e sempre no mesmo formato."""
+    r = fatos.get("ritmo") or {}
+    return {
+        "data": hoje.isoformat(),
+        "mes_col": r.get("col"), "mes": r.get("mes"), "dia": r.get("dia"),
+        "rec_mes": r.get("rec_real"), "ritmo_pct": r.get("pct"), "chance": r.get("chance"),
+        "rec_ytd": fatos.get("rec_real"), "ebitda_ytd": fatos.get("ebitda_real"),
+        "margem_proj": fatos.get("margem_proj"),
+        "estouros": [e["conta"] for e in (fatos.get("estouros") or [])],
+    }
+
+
+def registrar_no_historico(historico, entrada, limite=LIMITE_HISTORICO):
+    """Substitui a entrada do mesmo dia (rodar duas vezes não duplica) e
+    mantém só as últimas `limite`."""
+    novo = [h for h in (historico or []) if h.get("data") != entrada["data"]]
+    novo.append(entrada)
+    novo.sort(key=lambda h: h.get("data", ""))
+    return novo[-limite:]
+
+
+def entrada_anterior(historico, hoje):
+    """O último briefing ANTES de hoje -- na segunda, é o de sexta."""
+    alvo = hoje.isoformat()
+    anteriores = [h for h in (historico or []) if h.get("data", "") < alvo]
+    return anteriores[-1] if anteriores else None
+
+
+def comparar_com_ontem(atual, anterior, fmt=None):
+    """Frases curtas do que mudou. Vazio sem base; se o mês virou, diz isso
+    em vez de comparar receita de setembro com receita de agosto."""
+    if not anterior:
+        return []
+    fmt = fmt or (lambda v: f"R$ {v:,.0f}")
+    frases = []
+    mesmo_mes = atual.get("mes_col") and atual.get("mes_col") == anterior.get("mes_col")
+    if mesmo_mes:
+        if atual.get("rec_mes") is not None and anterior.get("rec_mes") is not None:
+            d = atual["rec_mes"] - anterior["rec_mes"]
+            frases.append(f"receita de {str(atual.get('mes', '')).lower()} "
+                          f"{'+' if d >= 0 else '−'}{fmt(abs(d))}")
+        if atual.get("ritmo_pct") is not None and anterior.get("ritmo_pct") is not None:
+            frases.append(f"ritmo {anterior['ritmo_pct']:.0f}% → {atual['ritmo_pct']:.0f}%")
+        if atual.get("chance") is not None and anterior.get("chance") is not None:
+            frases.append(f"chance de bater a meta {anterior['chance'] * 100:.0f}% → "
+                          f"{atual['chance'] * 100:.0f}%")
+    elif anterior.get("mes_col") and atual.get("mes_col"):
+        frases.append(f"o mês de referência virou: {str(anterior.get('mes', '')).capitalize()} → "
+                      f"{str(atual.get('mes', '')).capitalize()}")
+    novos = [c for c in (atual.get("estouros") or []) if c not in (anterior.get("estouros") or [])]
+    if novos:
+        frases.append("conta nova acima do orçado: " + ", ".join(novos))
+    elif atual.get("estouros") is not None:
+        frases.append("nenhuma conta nova acima do orçado")
+    return frases
+
+
+def placar_da_chance(historico, resultado_por_mes, dia_corte=DIA_DE_CORTE_DO_PLACAR):
+    """Confere a chance registrada até o dia de corte de cada mês com o
+    resultado real (bateu ou não). Devolve {meses, acertos, detalhes}."""
+    por_mes = {}
+    for h in (historico or []):
+        col, dia, chance = h.get("mes_col"), h.get("dia"), h.get("chance")
+        if not col or dia is None or chance is None or dia > dia_corte:
+            continue
+        if col not in por_mes or dia >= por_mes[col]["dia"]:
+            por_mes[col] = {"dia": dia, "chance": chance}
+    detalhes = []
+    for col, bateu in (resultado_por_mes or {}).items():
+        if col in por_mes and bateu is not None:
+            previu = por_mes[col]["chance"] >= 0.5
+            detalhes.append({"mes": col, "dia": por_mes[col]["dia"], "chance": por_mes[col]["chance"],
+                             "bateu": bool(bateu), "acertou": previu == bool(bateu)})
+    return {"meses": len(detalhes), "acertos": sum(1 for d in detalhes if d["acertou"]),
+            "detalhes": detalhes}
+
+
+def series_mensais(ns, list_df_real, list_df_orc, meses_cols, m_map, ate_mes):
+    """Receita e EBITDA por mês, realizado e orçado, até `ate_mes` (1-12).
+    Alimenta os gráficos do board pack."""
+    gv = ns["get_valor_consolidado_multi"]
+    saida = {"rotulos": [], "rec_real": [], "rec_orc": [], "eb_real": [], "eb_orc": []}
+    for nome, col in m_map.items():
+        if int(col[:2]) > ate_mes:
+            continue
+        saida["rotulos"].append(nome.capitalize()[:3])
+        saida["rec_real"].append(gv(list_df_real, "3 - Receita Operacional Liquida", [col]))
+        saida["rec_orc"].append(gv(list_df_orc, "3 - Receita Operacional Liquida", [col]))
+        saida["eb_real"].append(gv(list_df_real, "11 - EBITDA", [col]))
+        saida["eb_orc"].append(gv(list_df_orc, "11 - EBITDA", [col]))
+    return saida
+
+
+# ---------------------------------------------------------------------------
+# DEPARTAMENTOS: o escopo de cada gestor, para alertas e board pack por área
+# ---------------------------------------------------------------------------
+def urls_das_planilhas():
+    return (os.environ.get("URL_ORCADO", URL_ORCADO_PADRAO),
+            os.environ.get("URL_REALIZADO", URL_REALIZADO_PADRAO))
+
+
+def ja_enviado_hoje(historico, hoje):
+    """Idempotência do dia: o agendador do GitHub atrasa e às vezes falha, então
+    há DOIS horários agendados; o segundo vê que já saiu e fica quieto."""
+    alvo = hoje.isoformat()
+    return any(h.get("data") == alvo for h in (historico or []))
+
+
+def emails_do_departamento(departamento, mapa_email_departamento, emails_travados=None):
+    """Quem é gestor daquele departamento, pelos mapas de acesso do próprio
+    app (e-mail -> departamento). Vale para alerta e para o board pack."""
+    juntos = {**(emails_travados or {}), **(mapa_email_departamento or {})}
+    return sorted({e for e, d in juntos.items() if d == departamento})
+
+
+def linhas_do_departamento(modelo, linhas_da_visao, ns):
+    """Resolve o escopo de um departamento em linhas da DRE.
+    - ["ATE_EBITDA"]: todos os subgrupos de despesa (nível 2 de 6 e 8) da visão;
+    - lista explícita: ela mesma (as linhas que existem na visão);
+    - "RESTANTE" / só planos de contas forçados: None -- esse recorte vive no
+      plano de contas dentro do app, e fora dele seria chute."""
+    linhas = [str(l) for l in (modelo.get("linhas_dre") or [])]
+    existentes = set(linhas_da_visao)
+    if linhas == ["ATE_EBITDA"]:
+        return [l for g in ("6", "8") for l in ns["_subgrupos_nivel2"](list(linhas_da_visao), g)]
+    explicitas = [l for l in linhas if l in existentes]
+    if explicitas:
+        return explicitas
+    return None
+
+
+def fatos_do_departamento(valor, linhas, cols, col_corrente, nome, ns, rotulo_periodo=""):
+    """Gasto realizado x orçado do departamento nos meses fechados, com o
+    pódio de contas. `valor(lado, linha, cols, exato)` injetado, como sempre."""
+    cols_fech = [c for c in cols if c != col_corrente] or list(cols)
+    itens = []
+    for linha in linhas:
+        r = abs(valor("real", linha, cols_fech, True))
+        o = abs(valor("orc", linha, cols_fech, True))
+        if not r and not o:
+            continue
+        itens.append({"conta": ns["_nome_sem_numero_dre"](linha), "linha": linha, "realizado": r, "orcado": o})
+    acima = ns["ofensores_por_desvio"](itens)
+    folgas = sorted(({"conta": i["conta"], "folga": i["orcado"] - i["realizado"],
+                      "pct": ((i["orcado"] - i["realizado"]) / i["orcado"] * 100) if i["orcado"] else None}
+                     for i in itens if i["orcado"] - i["realizado"] > 0), key=lambda x: -x["folga"])
+    return {
+        "departamento": nome, "periodo": rotulo_periodo,
+        "gasto_real": sum(i["realizado"] for i in itens), "gasto_orc": sum(i["orcado"] for i in itens),
+        "estouros": [{"conta": e["conta"], "desvio": e["desvio"],
+                      "pct": (e["desvio"] / e["orcado"] * 100) if e["orcado"] else None} for e in acima[:5]],
+        "folgas": folgas[:5], "n_contas": len(itens), "n_acima": len(acima),
+        "mes_excluido": col_corrente if col_corrente in cols and len(cols) > 1 else None,
+    }
+
+
+def narrativa_departamento(f, ns=None):
+    fmt = (ns or {}).get("formata_valor_curto", lambda v: f"R$ {v:,.0f}")
+    pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
+    itens = []
+    if f.get("gasto_orc"):
+        var = (f["gasto_real"] / f["gasto_orc"] - 1) * 100
+        itens.append({"rotulo": "Gasto", "tom": "negativo" if var > 0 else "positivo",
+                      "texto": (f"<b>{fmt(f['gasto_real'])}</b> nos meses fechados, "
+                                f"<b>{pct(abs(var))}% {'acima' if var > 0 else 'abaixo'}</b> do orçado "
+                                f"({fmt(f['gasto_orc'])}).")})
+    if f.get("estouros"):
+        partes = [f"<b>{e['conta']}</b> (+{fmt(e['desvio'])}"
+                  + (f", +{e['pct']:.0f}%" if e.get("pct") is not None else ", sem orçamento") + ")"
+                  for e in f["estouros"][:3]]
+        itens.append({"rotulo": "Estouros", "tom": "negativo",
+                      "texto": f"Quem mais passou do orçado: {_lista_pt(partes)}."})
+    if f.get("folgas"):
+        partes = [f"<b>{c['conta']}</b> (−{fmt(c['folga'])}"
+                  + (f", −{c['pct']:.0f}%" if c.get("pct") is not None else "") + ")" for c in f["folgas"][:2]]
+        itens.append({"rotulo": "Folgas", "tom": "positivo", "texto": f"Sobrou em {_lista_pt(partes)}."})
+    if f.get("n_contas"):
+        itens.append({"rotulo": "Cobertura", "tom": "neutro",
+                      "texto": f"<b>{f['n_acima']} de {f['n_contas']}</b> contas do departamento acima do orçado."})
+    return itens
+
+
+def _lista_pt(partes):
+    partes = [p for p in partes if p]
+    return "".join(partes) if len(partes) <= 1 else ", ".join(partes[:-1]) + " e " + partes[-1]
+
+
+def series_departamento(valor, linhas, m_map, ate_mes):
+    saida = {"rotulos": [], "gasto_real": [], "gasto_orc": []}
+    for nome, col in m_map.items():
+        if int(col[:2]) > ate_mes:
+            continue
+        saida["rotulos"].append(nome.capitalize()[:3])
+        saida["gasto_real"].append(sum(abs(valor("real", l, [col], True)) for l in linhas))
+        saida["gasto_orc"].append(sum(abs(valor("orc", l, [col], True)) for l in linhas))
+    return saida
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +514,8 @@ def _cartao_kpi(rotulo, valor, sub, cor_topo, cor_sub):
         "</td></tr></table></td>")
 
 
-def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
+def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src="",
+                 desde_ontem=None, data_anterior=None, placar=None):
     """Devolve (html, texto). `logo_src` é "cid:..." no envio e um data-URI
     na prévia gravada em disco; vazio, o cabeçalho usa um selo com as
     iniciais."""
@@ -321,6 +566,19 @@ def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
         if len(par) == 1:
             par.append('<td width="50%"></td>')
         linhas_kpi += "<tr>" + "".join(par) + "</tr>"
+
+    # ---- desde o último briefing ----
+    bloco_delta = ""
+    if desde_ontem:
+        rotulo_ant = (f"Desde o briefing de {data_anterior[8:10]}/{data_anterior[5:7]}"
+                      if data_anterior else "Desde o último briefing")
+        bloco_delta = (
+            f'<tr><td style="background:{CORES["cartao"]}; padding:4px 26px 8px 26px; font-family:{FONTE};">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>'
+            f'<td style="background:#F4F7FB; border:1px solid {CORES["borda"]}; border-radius:6px; padding:10px 14px;">'
+            f'<div style="font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:{CORES["apagado"]};">{rotulo_ant}</div>'
+            f'<div style="font-size:13px; line-height:1.5; color:{CORES["texto"]}; margin-top:3px;">{" · ".join(desde_ontem)}</div>'
+            '</td></tr></table></td></tr>')
 
     # ---- barra de ritmo ----
     bloco_ritmo = ""
@@ -401,7 +659,7 @@ def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
         # KPIs
         f'<tr><td style="background:{CORES["cartao"]}; padding:14px 20px 8px 20px;">'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">{linhas_kpi}</table></td></tr>'
-        + bloco_ritmo +
+        + bloco_delta + bloco_ritmo +
         # narrativa
         f'<tr><td style="background:{CORES["cartao"]}; padding:8px 26px 4px 26px; font-family:{FONTE};">'
         f'<div style="font-size:10px; letter-spacing:1.4px; text-transform:uppercase; color:{CORES["apagado"]}; '
@@ -412,6 +670,7 @@ def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
         f'border-radius:0 0 10px 10px; font-family:{FONTE};">{botao}'
         f'<div style="font-size:11px; line-height:1.5; color:{CORES["apagado"]}; margin-top:16px;">'
         f'{base}lançamentos chegam D+2 · a chance de bater a meta é uma estimativa a partir do histórico do ano.<br>'
+        f'{texto_placar(placar)}<br>'
         'Gerado automaticamente pelo painel a partir das planilhas de Orçado, Realizado e Fechamento.</div>'
         "</td></tr></table></td></tr></table>")
 
@@ -422,18 +681,34 @@ def montar_email(itens, fatos, hoje, link_painel="", ns=None, logo_src=""):
             kpis_texto.append(f"{partes[0]}: {partes[1]} ({partes[2]})")
     texto = (f"Controladoria B&A · briefing executivo · {status}\n{fatos.get('periodo', '')} · {dia}\n\n"
              + "\n".join(kpis_texto)
+             + ("\n\nDesde o último briefing: " + " · ".join(desde_ontem) if desde_ontem else "")
              + "\n\nO que aconteceu e por quê\n"
              + (ns or {}).get("narrativa_em_texto", lambda it: "\n".join(
                  f"{i['rotulo']}: {_tirar_tags(i['texto'])}" for i in it))(itens)
              + (f"\n\nPainel: {link_painel}" if link_painel else "")
+             + "\n\n" + texto_placar(placar)
              + "\n\nGerado automaticamente pelo painel. Lançamentos chegam D+2.")
     return html, texto
 
 
-def enviar_email(assunto, html, texto, logo_b64=""):
-    usuario = os.environ["SMTP_USUARIO"]
-    senha = os.environ["SMTP_SENHA"]
-    destinos = [d.strip() for d in os.environ["EMAIL_DESTINO"].split(",") if d.strip()]
+def texto_placar(placar):
+    """Uma linha honesta sobre o placar: nos primeiros meses ele ainda não
+    existe, e dizer isso vale mais do que esconder."""
+    if not placar or not placar.get("meses"):
+        return ("Placar da chance de bater a meta: começa a contar no primeiro mês fechado "
+                "com histórico de briefings.")
+    return (f"Placar da chance de bater a meta: acertou {placar['acertos']} de {placar['meses']} "
+            f"meses (previsão registrada até o dia {DIA_DE_CORTE_DO_PLACAR}).")
+
+
+def enviar_email(assunto, html, texto, logo_b64="", anexos=None, destinos=None, credenciais=None):
+    """`destinos` e `credenciais` ({"usuario", "senha"}) sobrepõem as variáveis de
+    ambiente: é assim que o app envia pelo st.secrets e os alertas falam com
+    cada gestor."""
+    credenciais = credenciais or {}
+    usuario = credenciais.get("usuario") or os.environ["SMTP_USUARIO"]
+    senha = credenciais.get("senha") or os.environ["SMTP_SENHA"]
+    destinos = list(destinos or [d.strip() for d in os.environ.get("EMAIL_DESTINO", "").split(",") if d.strip()])
     if not destinos:
         raise SystemExit("EMAIL_DESTINO está vazio.")
     servidor = os.environ.get("SMTP_SERVIDOR", "smtp.gmail.com")
@@ -449,6 +724,8 @@ def enviar_email(assunto, html, texto, logo_b64=""):
         parte_html = mensagem.get_payload()[1]
         parte_html.add_related(base64.b64decode(logo_b64), maintype="image", subtype="jpeg",
                                cid=f"<{CID_LOGO}>")
+    for nome, conteudo, maintype, subtype in (anexos or []):
+        mensagem.add_attachment(conteudo, maintype=maintype, subtype=subtype, filename=nome)
     with smtplib.SMTP_SSL(servidor, porta, context=ssl.create_default_context()) as conexao:
         conexao.login(usuario, senha)
         conexao.send_message(mensagem)
@@ -463,23 +740,36 @@ def main(argv):
     link = os.environ.get("LINK_PAINEL", "")
     logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
     assunto = assunto_do_briefing(fatos, ctx["hoje"])
+    historico = carregar_historico()
+    if ja_enviado_hoje(historico, ctx["hoje"]) and "--forcar" not in argv and "--teste" not in argv:
+        print(f"O briefing de {ctx['hoje'].strftime('%d/%m')} já foi enviado; nada a fazer (use --forcar para reenviar).")
+        return
+    anterior = entrada_anterior(historico, ctx["hoje"])
+    atual = entrada_do_dia(fatos, ctx["hoje"])
+    desde_ontem = comparar_com_ontem(atual, anterior, ns.get("formata_valor_curto"))
+    placar = placar_da_chance(historico, ctx["resultado_por_mes"])
+    extras = dict(desde_ontem=desde_ontem, data_anterior=(anterior or {}).get("data"), placar=placar)
     if "--salvar" in argv:
         # Na prévia em disco o logo vai embutido (data-URI), que o navegador
         # aceita; no e-mail vai por CID, que os clientes de e-mail aceitam.
         html_previa, _ = montar_email(itens, fatos, ctx["hoje"], link, ns,
-                                      logo_src=f"data:image/jpeg;base64,{logo_b64}" if logo_b64 else "")
+                                      logo_src=f"data:image/jpeg;base64,{logo_b64}" if logo_b64 else "",
+                                      **extras)
         caminho = argv[argv.index("--salvar") + 1]
         with open(caminho, "w", encoding="utf-8") as arquivo:
             arquivo.write(html_previa)
         print(f"HTML gravado em {caminho}")
     html, texto = montar_email(itens, fatos, ctx["hoje"], link, ns,
-                               logo_src=f"cid:{CID_LOGO}" if logo_b64 else "")
+                               logo_src=f"cid:{CID_LOGO}" if logo_b64 else "", **extras)
     if "--teste" in argv:
         print(assunto)
         print(texto)
         return
     destinos = enviar_email(assunto, html, texto, logo_b64)
     print(f"Briefing enviado para {', '.join(destinos)}: {assunto}")
+    # O histórico só avança depois do envio: um envio que falhou não vira
+    # o "ontem" de amanhã.
+    salvar_historico(registrar_no_historico(historico, atual))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+name: Alertas do dia
+
+# 13, 15, 17, 19 e 21 UTC = 9h, 11h, 13h, 15h e 17h em Porto Velho, de segunda a sexta.
+# Só manda e-mail quando algo cruzou uma linha e ainda não foi avisado.
+on:
+  schedule:
+    - cron: "7 13,15,17,19,21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  avaliar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install --quiet pandas numpy openpyxl
+
+      - name: Avaliar e avisar
+        env:
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          FECHAMENTO_CSV_URL: ${{ secrets.FECHAMENTO_CSV_URL }}
+          LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+        run: python alertas.py
+
+      - name: Lembrar o que já foi avisado
+        run: |
+          git config user.name "briefing-bot"
+          git config user.email "briefing-bot@users.noreply.github.com"
+          git add dados/estado_alertas.json
+          git commit -m "Alertas avisados $(date -u +%d/%m/%Y)" || echo "nada novo"
+          git pull --rebase origin main
+          git push origin HEAD:main

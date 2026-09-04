@@ -2722,6 +2722,19 @@ def _linhas_folha_do_conjunto(linhas):
 # cartões e passou a EXPLICAR -- quanto do gap é calendário (mês corrente com
 # um dia lançado), de onde vem o gap do EBITDA (receita ou custo) e qual
 # "folga" é só lançamento de fechamento que ainda não entrou.
+# O mapa mora AQUI, e não junto da projeção de fechamento (lá embaixo), de
+# propósito: a TV roda no meio do arquivo e a narrativa dela passa por
+# montar_fatos_executivos, que cita o mapa. Nome citado antes de existir
+# derruba o app com NameError -- é a armadilha da ordem de definição.
+# Cada processo pendente aponta a linha da DRE que ele lança e o efeito da
+# falta: "receita_liquida" derruba receita líquida E EBITDA na mesma medida
+# (dedução por lançar); "ebitda" derruba só o EBITDA (despesa por lançar).
+IMPACTO_FECHAMENTO_EBITDA = {
+    "ICMS": ("2 - Deduções da Receita Operacional Bruta", "receita_liquida"),
+    "FOPAG": ("8.3 - Pessoal", "ebitda"),
+}
+
+
 def _pct_br(valor, casas=1):
     """Percentual com vírgula decimal, como se escreve em português."""
     return f"{valor:.{casas}f}".replace(".", ",")
@@ -4890,6 +4903,44 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             + "</div>",
             unsafe_allow_html=True,
         )
+        # ---- Narrativa executiva na parede (04/09/2026) ----
+        # A mesma montar_narrativa_executiva da Visão Geral e do e-mail. Sem
+        # a planilha de fechamento aqui (ela é carregada depois do ponto em
+        # que a TV roda), as "folgas" não conseguem separar economia de
+        # lançamento pendente -- por isso ficam FORA da parede, de propósito.
+        _col_nome_narr = "Nome" if "Nome" in df_ref_tv.columns else df_ref_tv.columns[0]
+        _linhas_narr = list(df_ref_tv[_col_nome_narr].dropna().unique().astype(str))
+        _hoje_narr = datetime.now(FUSO_BR).date()
+        _col_corr_narr = f"{_hoje_narr.month:02d}/{_hoje_narr.year}"
+        _nome_corr_narr = next((n for n, c in m_map_tv.items() if c == _col_corr_narr), _col_corr_narr)
+
+        def _valor_narr(lado, linha, cols, exato=False):
+            return get_valor_consolidado_multi(
+                list_df_orc_tv if lado == "orc" else list_df_real_tv, linha, cols,
+                exato_linha_sintetica=exato)
+
+        _fatos_narr = montar_fatos_executivos(
+            _valor_narr, _linhas_narr, cols_ytd, _col_corr_narr, _nome_corr_narr,
+            ritmo=fatos_do_ritmo(list_df_real_tv, list_df_orc_tv, cols_ytd, meses_cols_tv, m_map_tv,
+                                 _hoje_narr - timedelta(days=DIAS_DEFASAGEM_DADOS)),
+            rotulo_periodo=legenda_periodo_tv)
+        _fatos_narr["folgas"], _fatos_narr["artefatos"] = [], []
+        _itens_narr = montar_narrativa_executiva(_fatos_narr)
+        if _itens_narr:
+            _cor_tom_tv = {"negativo": COLORS["negative"], "positivo": COLORS["positive"],
+                           "alerta": COLORS["warning"], "neutro": COLORS["text_muted"]}
+            st.markdown(
+                '<div class="tv-panel" style="padding:10px 16px 6px 16px;">'
+                '<div class="tv-section-title" style="margin-left:0;">📝 O que aconteceu e por quê</div>'
+                + "".join(
+                    f'<div style="display:flex; gap:12px; padding:5px 0; border-top:1px dashed {COLORS["border_soft"]};">'
+                    f'<div style="flex:0 0 108px; font-size:10px; letter-spacing:0.9px; text-transform:uppercase;'
+                    f' color:{_cor_tom_tv.get(i["tom"], COLORS["text_muted"])}; padding-top:3px; font-weight:700;">{i["rotulo"]}</div>'
+                    f'<div style="flex:1; font-size:13.5px; line-height:1.5; color:{COLORS["text"]};">{i["texto"]}</div></div>'
+                    for i in _itens_narr)
+                + "</div>",
+                unsafe_allow_html=True,
+            )
 
         # ---------------- Atingimento vs. Orçado (barras minimalistas) ----------------
         def _tv_barra_atingimento(titulo, valor_real, valor_orc, pct_atg, cor):
@@ -12588,6 +12639,7 @@ def montar_relatorio_excel(
     resumos_anuais=None,
     mapa_meses_anual=None,
     apenas_planos_com_linha_dre=False,
+    narrativa_executiva=None,
 ):
     """Gera um relatório Excel formatado com três planilhas:
     - Resumo: total do ano por conta, CONSOLIDADO (não muda com a divisão por loja).
@@ -13352,6 +13404,19 @@ def montar_relatorio_excel(
                 mapa_meses_anual or mapa_meses, contas_sel, gerado_em,
             )
 
+    if narrativa_executiva:
+        # A abertura do arquivo é a mesma leitura da tela e do e-mail das 8h:
+        # o que aconteceu e por quê, em português, antes de qualquer tabela.
+        ws_res = wb.create_sheet("Resumo executivo", 0)
+        ws_res["A1"] = "O que aconteceu e por quê"
+        ws_res["A1"].font = Font(bold=True, size=13)
+        for _i, _item in enumerate(narrativa_executiva, start=3):
+            ws_res.cell(row=_i, column=1, value=str(_item.get("rotulo", ""))).font = Font(bold=True)
+            _cel = ws_res.cell(row=_i, column=2, value=re.sub(r"<[^>]+>", "", str(_item.get("texto", ""))))
+            _cel.alignment = Alignment(wrap_text=True, vertical="top")
+        ws_res.column_dimensions["A"].width = 16
+        ws_res.column_dimensions["B"].width = 110
+        wb.active = 0
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
@@ -13989,15 +14054,6 @@ def carregar_planilha_fechamento(url):
 # escolhidas pelo usuário em 02/09/2026. A DEPRECIAÇÃO fica fora de
 # propósito: ela entra abaixo do EBITDA e não mexe nesta margem.
 #
-# Cada processo pendente aponta a linha da DRE que ele lança e o efeito da
-# falta: "receita_liquida" derruba receita líquida E EBITDA na mesma medida
-# (dedução por lançar); "ebitda" derruba só o EBITDA (despesa por lançar).
-IMPACTO_FECHAMENTO_EBITDA = {
-    "ICMS": ("2 - Deduções da Receita Operacional Bruta", "receita_liquida"),
-    "FOPAG": ("8.3 - Pessoal", "ebitda"),
-}
-
-
 def _deltas_pendentes_do_fechamento(df_fech, cols_periodo, cols_dados,
                                     ano_mes_atual, valor_da_linha):
     """Quanto ainda falta ser lançado nos meses ABERTOS do período.
@@ -15733,6 +15789,8 @@ else:
 # ---------------------------------------------------------------------------
 # ABA 1: VISÃO GERAL & CHARTS
 # ---------------------------------------------------------------------------
+_itens_vg = []   # a narrativa da Visão Geral; o Excel a reaproveita
+_fatos_vg = None   # os fatos dela; o board pack sob demanda reaproveita
 with tab1:
     if departamento_ativo:
         nome_departamento_curto = _nome_departamento_curto(departamento_ativo)
@@ -16597,6 +16655,95 @@ with tab1:
     # ---------------------------------------------------------------------------
     # ABA 2: DRE COMPLETA & DESVIOS
     # ---------------------------------------------------------------------------
+    # =================================================================
+    # Board pack sob demanda (04/09/2026)
+    # =================================================================
+    # A mesma apresentação que o robô manda no fechamento, gerada AGORA com
+    # o filtro da tela -- consolidado ou o departamento ativo -- para baixar
+    # ou enviar aos gestores. O código é o de board_pack.py/briefing.py,
+    # importados só na hora: o app não depende do python-pptx enquanto
+    # ninguém pede a apresentação.
+    with st.expander("📊 Board pack — apresentação do período (PPTX)", expanded=False):
+        st.caption("A apresentação do fechamento, gerada agora com o filtro atual. Baixe ou envie aos gestores.")
+        if st.button("Gerar apresentação", key="bp_gerar"):
+            try:
+                import board_pack as _bp
+                import briefing as _bf
+            except ImportError as _erro_bp:
+                st.warning(f"Não deu para montar: {_erro_bp}. Falta `python-pptx` no requirements.txt do app.")
+            else:
+                _hoje_bp = datetime.now(FUSO_BR).date()
+                _col_corr_bp = f"{_hoje_bp.month:02d}/{_hoje_bp.year}"
+                _ns_bp = {"formata_valor_curto": formata_valor_curto, "_pct_br": _pct_br,
+                          "get_valor_consolidado_multi": get_valor_consolidado_multi,
+                          "ofensores_por_desvio": ofensores_por_desvio,
+                          "_nome_sem_numero_dre": _nome_sem_numero_dre,
+                          "_subgrupos_nivel2": _subgrupos_nivel2}
+
+                def _valor_bp(lado, linha, cols, exato=False):
+                    return get_valor_consolidado_multi(
+                        list_df_orc if lado == "orc" else list_df_real, linha, cols,
+                        exato_linha_sintetica=exato)
+
+                _aviso_bp, _bytes_bp = "", b""
+                if departamento_ativo:
+                    _df_ref_bp = next((d for d in list_df_real if d is not None and not d.empty), None)
+                    _linhas_visao_bp = (list(_df_ref_bp["Nome"].dropna().unique().astype(str))
+                                        if _df_ref_bp is not None and "Nome" in _df_ref_bp.columns else [])
+                    _linhas_bp = _bf.linhas_do_departamento(MODELOS_RELATORIO[departamento_ativo],
+                                                            _linhas_visao_bp, _ns_bp)
+                    if not _linhas_bp:
+                        _aviso_bp = ("Este departamento é definido por plano de contas, e o board pack "
+                                     "por área ainda lê só linhas da DRE. Use a visão Controladoria.")
+                    else:
+                        _fatos_bp = _bf.fatos_do_departamento(_valor_bp, _linhas_bp, cols_kpi, _col_corr_bp,
+                                                              departamento_ativo, _ns_bp,
+                                                              rotulo_periodo=label_periodo_kpi)
+                        _itens_bp = _bf.narrativa_departamento(_fatos_bp, _ns_bp)
+                        _series_bp = _bf.series_departamento(_valor_bp, _linhas_bp, m_map, ate_mes=_hoje_bp.month)
+                        _bytes_bp = _bp.montar_board_pack(_fatos_bp, _itens_bp, _series_bp, _hoje_bp, _ns_bp,
+                                                          modo="departamento")
+                else:
+                    _series_bp = _bf.series_mensais(_ns_bp, list_df_real, list_df_orc, list(meses_cols), m_map,
+                                                    ate_mes=_hoje_bp.month)
+                    _bytes_bp = _bp.montar_board_pack(_fatos_vg or {"periodo": label_periodo_kpi}, _itens_vg,
+                                                      _series_bp, _hoje_bp, _ns_bp)
+                if _aviso_bp:
+                    st.info(_aviso_bp)
+                else:
+                    _area_bp = (departamento_ativo or "consolidado").split(" - ")[-1].strip().lower().replace(" ", "_")
+                    st.session_state["bp_bytes"] = _bytes_bp
+                    st.session_state["bp_nome"] = f"board_pack_{_area_bp}_{_hoje_bp:%Y-%m-%d}.pptx"
+        if st.session_state.get("bp_bytes"):
+            st.download_button("⬇️ Baixar a apresentação", st.session_state["bp_bytes"],
+                               file_name=st.session_state["bp_nome"],
+                               mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                               key="bp_baixar")
+            import briefing as _bf2
+            _dest_bp = (_bf2.emails_do_departamento(departamento_ativo, MAPA_EMAIL_DEPARTAMENTO,
+                                                    EMAILS_TRAVADOS_NO_DEPARTAMENTO)
+                        if departamento_ativo else []) or [usuario_atual.get("email", "")]
+            _dest_bp = [d for d in _dest_bp if d]
+            _smtp_usr = _segredo_com_origem("SMTP_USUARIO")[0]
+            _smtp_pwd = _segredo_com_origem("SMTP_SENHA")[0]
+            if _smtp_usr and _smtp_pwd and _dest_bp:
+                if st.button(f"✉️ Enviar para {', '.join(_dest_bp)}", key="bp_enviar"):
+                    try:
+                        _bf2.enviar_email(
+                            f"Board pack · {label_periodo_kpi}" + (f" · {departamento_ativo}" if departamento_ativo else ""),
+                            "<p>Segue o board pack do período, gerado pelo painel.</p>",
+                            "Segue o board pack do período, gerado pelo painel.",
+                            LOGO_BEEA_B64,
+                            anexos=[(st.session_state["bp_nome"], st.session_state["bp_bytes"], "application",
+                                     "vnd.openxmlformats-officedocument.presentationml.presentation")],
+                            destinos=_dest_bp, credenciais={"usuario": _smtp_usr, "senha": _smtp_pwd})
+                        st.success(f"Enviado para {', '.join(_dest_bp)}.")
+                    except Exception as _erro_envio:   # noqa: BLE001 -- erro de SMTP vira mensagem na tela
+                        st.error(f"Não consegui enviar: {_erro_envio}")
+            else:
+                st.caption("Para enviar por e-mail daqui, cadastre SMTP_USUARIO e SMTP_SENHA nos Secrets do Streamlit "
+                           "(os mesmos do GitHub).")
+
 with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
@@ -18938,6 +19085,7 @@ with tab5:
                 apenas_planos_com_linha_dre=info_modelo_sel.get(
                     "apenas_planos_com_linha_dre", False
                 ),
+                narrativa_executiva=_itens_vg,
             )
         st.session_state["relatorio_excel_bytes"] = excel_bytes
 
