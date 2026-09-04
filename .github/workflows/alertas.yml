@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "7 13,15,17,19,21 * * 1-5"
   workflow_dispatch:
+    inputs:
+      exemplo:
+        description: "Mandar um alerta de EXEMPLO (dados fictícios), só para ver o e-mail"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -33,7 +38,7 @@ jobs:
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
           FECHAMENTO_CSV_URL: ${{ secrets.FECHAMENTO_CSV_URL }}
           LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
-        run: python alertas.py
+        run: python alertas.py ${{ github.event.inputs.exemplo == 'true' && '--exemplo' || '' }}
 
       - name: Lembrar o que já foi avisado
         run: |

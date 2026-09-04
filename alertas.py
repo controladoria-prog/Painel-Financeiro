@@ -10,6 +10,7 @@ não chega duas vezes.
 Uso:
     python alertas.py            avalia e envia (se houver alerta novo)
     python alertas.py --teste    avalia e imprime, sem enviar nem lembrar
+    python alertas.py --exemplo  manda um alerta ficticio, so para ver a cara do e-mail
 
 Regras (todas sobre a DRE, que é o que roda sem o app):
     1. Conta acima do orçado na base fechada, com estouro relevante
@@ -171,8 +172,27 @@ def montar_email_alerta(alertas, fatos, hoje, link_painel="", logo_src="", depar
     return html, texto
 
 
+def enviar_exemplo(ns, hoje, link):
+    """Um alerta de mentira, só para ver a cara do e-mail: dados fictícios,
+    assunto marcado, e a memória dos alertas fica intocada."""
+    exemplo = [
+        {"chave": "exemplo:1", "titulo": "Taxa de Emissão de Boleto passou do orçado",
+         "detalhe": "+R$ 832 mil acima do orçado (+103%) nos meses fechados. (EXEMPLO)", "tom": "negativo"},
+        {"chave": "exemplo:2", "titulo": "Setembro corre a 76% do esperado no dia 17",
+         "detalhe": "Realizado R$ 6,1M contra meta de R$ 8,0M até 15/09 (D+2). Chance de bater a meta: 18%. (EXEMPLO)",
+         "tom": "alerta"},
+    ]
+    logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
+    html, texto = montar_email_alerta(exemplo, {}, hoje, link, f"cid:{CID_LOGO}" if logo_b64 else "")
+    destinos = enviar_email(f"[EXEMPLO] Alerta {hoje.strftime('%d/%m')} · como o aviso chega", html, texto, logo_b64)
+    print(f"Alerta de exemplo enviado para {', '.join(destinos)}.")
+
+
 def main(argv):
     ns = carregar_funcoes_do_app()
+    if "--exemplo" in argv:
+        enviar_exemplo(ns, datetime.now(ns["FUSO_BR"]).date(), os.environ.get("LINK_PAINEL", ""))
+        return
     fatos, _itens, ctx = montar_briefing(ns, url_fech=os.environ.get("FECHAMENTO_CSV_URL", ""))
     fmt = ns.get("formata_valor_curto")
     geral = avaliar_alertas(fatos, ctx["hoje"], fmt)
