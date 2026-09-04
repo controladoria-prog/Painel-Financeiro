@@ -16667,7 +16667,11 @@ with tab1:
     # trocar de visão; o gestor gera a do próprio departamento. O código é
     # o de board_pack.py/briefing.py; o python-pptx só é importado no clique.
     with st.expander("📊 Board pack — apresentação do período (PPTX)", expanded=False):
+        import importlib
         import briefing as _bf
+        # O Streamlit guarda o módulo importado na memória entre execuções; sem o
+        # reload, um briefing.py novo no repositório continuava velho aqui.
+        _bf = importlib.reload(_bf)
         _eh_admin_bp = str(usuario_atual.get("perfil", "")).strip().lower() == "admin"
         _meu_email_bp = str(usuario_atual.get("email", "")).strip().lower()
         if _eh_admin_bp and not departamento_ativo:
@@ -16691,6 +16695,7 @@ with tab1:
         if st.button("Gerar apresentação", key="bp_gerar"):
             try:
                 import board_pack as _bp
+                _bp = importlib.reload(_bp)
             except ImportError as _erro_bp:
                 st.warning(f"Não deu para montar: {_erro_bp}. Falta `python-pptx` no requirements.txt do app.")
             else:
