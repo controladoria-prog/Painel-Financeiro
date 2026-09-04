@@ -1,0 +1,19 @@
+[
+ {
+  "data": "2026-09-04",
+  "mes_col": "09/2026",
+  "mes": "SETEMBRO",
+  "dia": 2,
+  "rec_mes": 703679.08,
+  "ritmo_pct": 81.9524238012109,
+  "chance": 0.01829698790981593,
+  "rec_ytd": 81676630.67,
+  "ebitda_ytd": 19222415.39,
+  "margem_proj": 22.02612315091731,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Despesas Administrativas"
+  ]
+ }
+]
