@@ -173,19 +173,35 @@ def montar_email_alerta(alertas, fatos, hoje, link_painel="", logo_src="", depar
 
 
 def enviar_exemplo(ns, hoje, link):
-    """Um alerta de mentira, só para ver a cara do e-mail: dados fictícios,
-    assunto marcado, e a memória dos alertas fica intocada."""
-    exemplo = [
+    """Alertas de mentira, só para ver a cara do e-mail: o geral vai para o
+    EMAIL_DESTINO; o de cada departamento vai SÓ para a cópia da controladoria,
+    com o nome do gestor a quem iria -- exemplo fictício não entra na caixa
+    dos gestores. A memória dos alertas fica intocada."""
+    logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
+    logo_src = f"cid:{CID_LOGO}" if logo_b64 else ""
+    geral = [
         {"chave": "exemplo:1", "titulo": "Taxa de Emissão de Boleto passou do orçado",
          "detalhe": "+R$ 832 mil acima do orçado (+103%) nos meses fechados. (EXEMPLO)", "tom": "negativo"},
         {"chave": "exemplo:2", "titulo": "Setembro corre a 76% do esperado no dia 17",
          "detalhe": "Realizado R$ 6,1M contra meta de R$ 8,0M até 15/09 (D+2). Chance de bater a meta: 18%. (EXEMPLO)",
          "tom": "alerta"},
     ]
-    logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
-    html, texto = montar_email_alerta(exemplo, {}, hoje, link, f"cid:{CID_LOGO}" if logo_b64 else "")
-    destinos = enviar_email(f"[EXEMPLO] Alerta {hoje.strftime('%d/%m')} · como o aviso chega", html, texto, logo_b64)
-    print(f"Alerta de exemplo enviado para {', '.join(destinos)}.")
+    html, texto = montar_email_alerta(geral, {}, hoje, link, logo_src)
+    destinos = enviar_email(f"[EXEMPLO] Alerta {hoje.strftime('%d/%m')} · como o aviso geral chega", html, texto, logo_b64)
+    print(f"Exemplo geral enviado para {', '.join(destinos)}.")
+    copia = [e.strip() for e in os.environ.get("EMAIL_COPIA_DEPARTAMENTOS", os.environ.get("SMTP_USUARIO", "")).split(",") if e.strip()]
+    for departamento in (ns.get("MODELOS_RELATORIO") or {}):
+        gestores = emails_do_departamento(departamento, ns.get("MAPA_EMAIL_DEPARTAMENTO"),
+                                          ns.get("EMAILS_TRAVADOS_NO_DEPARTAMENTO"))
+        if not gestores or not copia:
+            continue
+        exemplo = [{"chave": "exemplo:dep", "titulo": "Serviços de Terceiros passou do orçado",
+                    "detalhe": f"+R$ 120 mil acima do orçado (+20%) nos meses fechados · {departamento}. (EXEMPLO)",
+                    "tom": "negativo"}]
+        html, texto = montar_email_alerta(exemplo, {}, hoje, link, logo_src, departamento)
+        enviar_email(f"[EXEMPLO] Alerta {hoje.strftime('%d/%m')} · {departamento} · iria para {', '.join(gestores)}",
+                     html, texto, logo_b64, destinos=copia)
+        print(f"Exemplo de {departamento} enviado para {', '.join(copia)} (no real iria para {', '.join(gestores)}).")
 
 
 def main(argv):

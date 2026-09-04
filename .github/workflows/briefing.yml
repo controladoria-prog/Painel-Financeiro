@@ -1,11 +1,11 @@
-name: Briefing executivo (8h)
+name: Briefing executivo (10h)
 
-# 12:07 UTC = 08:07 em Porto Velho (UTC-4, sem horário de verão), de segunda a sexta. O GitHub pode
-# atrasar alguns minutos em horário de pico; não é falha.
+# Porto Velho é UTC-4 (sem horário de verão): 14:07 UTC = 10:07 lá, de segunda a sexta. O GitHub pode
+# atrasar o agendamento (hoje atrasou 4h); por isso há dois disparos e o envio é idempotente.
 on:
   schedule:
-    - cron: "7 12 * * 1-5"    # 08:07 em Porto Velho
-    - cron: "45 12 * * 1-5"   # 08:45: rede de segurança -- se o das 08:07 já saiu, este fica quieto
+    - cron: "7 14 * * 1-5"    # 10:07 em Porto Velho
+    - cron: "45 14 * * 1-5"   # 10:45: rede de segurança -- se o das 10:07 já saiu, este fica quieto
   workflow_dispatch:
     inputs:
       forcar:
@@ -46,7 +46,7 @@ jobs:
         run: |
           git config user.name "briefing-bot"
           git config user.email "briefing-bot@users.noreply.github.com"
-          git add dados/historico_briefing.json
+          if [ -f dados/historico_briefing.json ]; then git add dados/historico_briefing.json; fi
           git commit -m "Histórico do briefing $(date -u +%d/%m/%Y)" || echo "sem mudança no histórico"
           git pull --rebase origin main
           git push origin HEAD:main

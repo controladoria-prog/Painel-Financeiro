@@ -861,7 +861,8 @@ def main(argv):
         print(texto)
         return
     destinos = enviar_email(assunto, html, texto, logo_b64)
-    print(f"Briefing enviado para {', '.join(destinos)}: {assunto}")
+    agora_pvh = datetime.now(ZoneInfo("America/Porto_Velho")).strftime("%H:%M")
+    print(f"Briefing enviado às {agora_pvh} (Porto Velho) para {', '.join(destinos)}: {assunto}")
     # O histórico só avança depois do envio: um envio que falhou não vira
     # o "ontem" de amanhã.
     salvar_historico(registrar_no_historico(historico, atual))
