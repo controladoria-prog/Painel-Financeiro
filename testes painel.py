@@ -7472,8 +7472,18 @@ class TesteBriefingPorEmail(unittest.TestCase):
                          ["6.6 - Material de Embalagem", "6.24 - Marketing", "8.3 - Pessoal"])
         self.assertEqual(b.linhas_do_departamento({"linhas_dre": ["6.6 - Material de Embalagem", "x"]}, linhas, ns),
                          ["6.6 - Material de Embalagem"])
-        self.assertIsNone(b.linhas_do_departamento({"linhas_dre": ["RESTANTE"], "forcar_planos_contas": ["RESTANTE"]},
-                                                   linhas, ns))
+        # RESTANTE resolve pelo MESMO resolvedor do app (_resolver_termo_departamento):
+        # o que nenhum outro departamento reivindica -- Material de Embalagem e de Compras.
+        restante = b.linhas_do_departamento({"linhas_dre": ["RESTANTE"]}, linhas, self.ns)
+        self.assertIsInstance(restante, list)
+        self.assertNotIn("6.6 - Material de Embalagem", restante)
+        html, texto = b.montar_email_board_pack(
+            {"periodo": "Acumulado", "gasto_real": 208.0, "gasto_orc": 200.0},
+            [{"rotulo": "Gasto", "texto": "x <b>y</b>", "tom": "negativo"}], datetime(2026, 9, 4).date(),
+            "https://p", "cid:logo", departamento="Compras", ns=self.ns)
+        self.assertIn(">OBSERVAR<", html)
+        self.assertIn("Board pack · Compras", html)
+        self.assertIn("em anexo", texto)
         self.assertEqual(b.emails_do_departamento("MKT", {"a@x": "MKT", "b@x": "RH"}, {"c@x": "MKT"}), ["a@x", "c@x"])
         tabela = {("real", "6.6 - Material de Embalagem", "07/2026"): 130.0, ("orc", "6.6 - Material de Embalagem", "07/2026"): 100.0,
                   ("real", "8.3 - Pessoal", "07/2026"): 80.0, ("orc", "8.3 - Pessoal", "07/2026"): 100.0,

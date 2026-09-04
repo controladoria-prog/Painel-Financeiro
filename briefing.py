@@ -65,7 +65,8 @@ SEMENTES = [
     "carregar_planilha_fechamento", "formata_valor_curto", "_pct_br",
     "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64", "MODELOS_RELATORIO",
     "MAPA_EMAIL_DEPARTAMENTO", "EMAILS_TRAVADOS_NO_DEPARTAMENTO", "_subgrupos_nivel2",
-    "ofensores_por_desvio", "_nome_sem_numero_dre",
+    "ofensores_por_desvio", "_nome_sem_numero_dre", "_resolver_termo_departamento",
+    "_numero_linha_dre",
 ]
 
 NOMES_MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -365,19 +366,30 @@ def emails_do_departamento(departamento, mapa_email_departamento, emails_travado
 
 
 def linhas_do_departamento(modelo, linhas_da_visao, ns):
-    """Resolve o escopo de um departamento em linhas da DRE.
-    - ["ATE_EBITDA"]: todos os subgrupos de despesa (nível 2 de 6 e 8) da visão;
-    - lista explícita: ela mesma (as linhas que existem na visão);
-    - "RESTANTE" / só planos de contas forçados: None -- esse recorte vive no
-      plano de contas dentro do app, e fora dele seria chute."""
-    linhas = [str(l) for l in (modelo.get("linhas_dre") or [])]
-    existentes = set(linhas_da_visao)
-    if linhas == ["ATE_EBITDA"]:
-        return [l for g in ("6", "8") for l in ns["_subgrupos_nivel2"](list(linhas_da_visao), g)]
-    explicitas = [l for l in linhas if l in existentes]
-    if explicitas:
-        return explicitas
-    return None
+    """Resolve o escopo de um departamento em linhas da DRE com o MESMO
+    resolvedor do app (_resolver_termo_departamento: RESTANTE, FILHAS:,
+    PREFIXO:, texto). Exceção deliberada: "ATE_EBITDA" vira os subgrupos de
+    despesa (nível 2 de 6 e 8), porque a DRE inteira não tem "gasto total".
+    Ancestral e descendente nunca ficam juntos -- somaria duas vezes."""
+    linhas_da_visao = list(linhas_da_visao)
+    achadas = []
+    for termo in [str(t) for t in (modelo.get("linhas_dre") or [])]:
+        if termo == "ATE_EBITDA":
+            novas = [l for g in ("6", "8") for l in ns["_subgrupos_nivel2"](linhas_da_visao, g)]
+        elif "_resolver_termo_departamento" in ns:
+            novas = list(ns["_resolver_termo_departamento"](termo, linhas_da_visao) or [])
+        else:
+            novas = [termo] if termo in linhas_da_visao else []
+        achadas += [l for l in novas if l not in achadas]
+    numero = ns.get("_numero_linha_dre", lambda l: "")
+    numeros = {l: (numero(l) or "") for l in achadas}
+
+    def tem_ancestral(linha):
+        n = numeros[linha]
+        return any(o != linha and numeros[o] and n.startswith(numeros[o] + ".") for o in achadas)
+
+    achadas = [l for l in achadas if not tem_ancestral(l)]
+    return achadas or None
 
 
 def fatos_do_departamento(valor, linhas, cols, col_corrente, nome, ns, rotulo_periodo=""):
@@ -699,6 +711,89 @@ def texto_placar(placar):
                 "com histórico de briefings.")
     return (f"Placar da chance de bater a meta: acertou {placar['acertos']} de {placar['meses']} "
             f"meses (previsão registrada até o dia {DIA_DE_CORTE_DO_PLACAR}).")
+
+
+def moldura_email(titulo, subtitulo, pill, cor_pill, corpo, link_painel="", logo_src="",
+                  rodape="", rotulo_botao="Abrir o painel"):
+    """A MESMA moldura para briefing, alerta e board pack: cabeçalho navy com
+    logo e selo, miolo branco e botão. Quem recebe reconhece a casa."""
+    if logo_src:
+        selo = (f'<img src="{logo_src}" width="46" height="46" alt="Grupo B&amp;A" '
+                'style="display:block; width:46px; height:46px; border-radius:23px;">')
+    else:
+        selo = ('<div style="width:46px; height:46px; border-radius:23px; background:#FFFFFF; '
+                f'color:{CORES["marca"]}; font-family:{FONTE}; font-weight:700; font-size:15px; '
+                'text-align:center; line-height:46px;">B&amp;A</div>')
+    botao = (
+        '<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:6px auto 0 auto;">'
+        f'<tr><td bgcolor="{CORES["marca"]}" style="background:{CORES["marca"]}; border-radius:6px;">'
+        f'<a href="{link_painel}" style="display:inline-block; padding:12px 28px; font-family:{FONTE}; font-size:14px; '
+        f'font-weight:600; color:#FFFFFF; text-decoration:none;">{rotulo_botao} &rarr;</a></td></tr></table>'
+        if link_painel else "")
+    return (
+        '<meta charset="utf-8">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="{CORES["fundo"]}" '
+        f'style="background:{CORES["fundo"]};"><tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px; max-width:100%;">'
+        f'<tr><td bgcolor="{CORES["marca"]}" style="background:{CORES["marca"]}; padding:22px 26px; border-radius:10px 10px 0 0;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>'
+        f'<td width="46" valign="middle">{selo}</td>'
+        f'<td valign="middle" style="padding-left:14px; font-family:{FONTE};">'
+        f'<div style="font-size:10px; letter-spacing:1.6px; text-transform:uppercase; color:{CORES["marca_claro"]};">'
+        'Controladoria B&amp;A</div>'
+        f'<div style="font-size:20px; font-weight:700; color:#FFFFFF; margin-top:3px; line-height:1.2;">{titulo}</div>'
+        f'<div style="font-size:12px; color:{CORES["marca_claro"]}; margin-top:3px;">{subtitulo}</div></td>'
+        f'<td align="right" valign="top" style="font-family:{FONTE};">'
+        f'<span style="display:inline-block; padding:5px 11px; border-radius:12px; background:{cor_pill}; '
+        f'color:#FFFFFF; font-size:10px; font-weight:700; letter-spacing:1.2px;">{pill}</span></td>'
+        "</tr></table></td></tr>"
+        f'<tr><td style="background:{CORES["cartao"]}; padding:14px 26px 6px 26px; font-family:{FONTE};">{corpo}</td></tr>'
+        f'<tr><td align="center" style="background:{CORES["cartao"]}; padding:14px 26px 24px 26px; '
+        f'border-radius:0 0 10px 10px; font-family:{FONTE};">{botao}'
+        f'<div style="font-size:11px; line-height:1.5; color:{CORES["apagado"]}; margin-top:16px;">{rodape}</div>'
+        "</td></tr></table></td></tr></table>")
+
+
+def linhas_de_narrativa_html(itens):
+    tons = {"negativo": CORES["negativo"], "positivo": CORES["positivo"],
+            "alerta": CORES["alerta"], "neutro": CORES["neutro"]}
+    return ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">' + "".join(
+        "<tr>"
+        f'<td width="4" bgcolor="{tons.get(i.get("tom"), CORES["neutro"])}" style="width:4px; background:{tons.get(i.get("tom"), CORES["neutro"])}; font-size:0; line-height:0;">&nbsp;</td>'
+        f'<td width="92" valign="top" style="vertical-align:top; padding:13px 8px 11px 12px; font-family:{FONTE}; font-size:10px; '
+        f'letter-spacing:1.1px; text-transform:uppercase; font-weight:700; color:{tons.get(i.get("tom"), CORES["neutro"])}; '
+        f'border-bottom:1px solid {CORES["borda"]};">{i["rotulo"]}</td>'
+        f'<td valign="top" style="vertical-align:top; padding:11px 0 11px 6px; font-family:{FONTE}; font-size:14px; line-height:1.55; '
+        f'color:{CORES["texto"]}; border-bottom:1px solid {CORES["borda"]};">{i["texto"]}</td></tr>'
+        for i in itens) + "</table>")
+
+
+def montar_email_board_pack(fatos, itens, hoje, link_painel="", logo_src="", departamento=None, ns=None):
+    """E-mail que acompanha o PPTX: a mesma cara do briefing, o resumo em
+    linhas e o aviso de que a apresentação vai em anexo."""
+    pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
+    dia = f"{DIAS_SEMANA[hoje.weekday()]}, {hoje.strftime('%d/%m/%Y')}"
+    if departamento:
+        gasto_real, gasto_orc = fatos.get("gasto_real", 0.0), fatos.get("gasto_orc", 0.0)
+        gap = (gasto_real / gasto_orc - 1) if gasto_orc else 0.0
+        status = "NO ORÇADO" if gap <= 0 else ("OBSERVAR" if gap <= 0.05 else "ATENÇÃO")
+        cor = {"NO ORÇADO": CORES["positivo"], "OBSERVAR": CORES["alerta"]}.get(status, CORES["negativo"])
+        frase = f"Gasto {pct(abs(gap) * 100)}% {'acima' if gap > 0 else 'abaixo'} do orçado" if gasto_orc else ""
+        titulo = f"Board pack · {departamento}"
+    else:
+        status, cor, frase = status_geral(fatos)
+        titulo = f"Board pack · {fatos.get('periodo', '')}"
+    corpo = (f'<div style="font-size:14px; line-height:1.55; color:{CORES["texto"]}; margin-bottom:10px;">'
+             f'Segue a apresentação do período <b>em anexo</b> (PPTX, pronta para a reunião){": " + frase if frase else ""}.</div>'
+             + linhas_de_narrativa_html(itens))
+    html = moldura_email(titulo, f"{fatos.get('periodo', '')} · {dia}", status, cor, corpo, link_painel, logo_src,
+                         "Gerado pelo painel da Controladoria a partir das planilhas de Orçado, Realizado e Fechamento · "
+                         "base: meses fechados · lançamentos chegam D+2.")
+    texto = (f"{titulo} · {dia} · {status}\n\nSegue a apresentação do período em anexo (PPTX).\n\n"
+             + (ns or {}).get("narrativa_em_texto", lambda it: "\n".join(
+                 f"{i['rotulo']}: {_tirar_tags(i['texto'])}" for i in it))(itens)
+             + (f"\n\nPainel: {link_painel}" if link_painel else ""))
+    return html, texto
 
 
 def enviar_email(assunto, html, texto, logo_b64="", anexos=None, destinos=None, credenciais=None):

@@ -30,7 +30,7 @@ from datetime import datetime
 
 from briefing import (CID_LOGO, CORES, FONTE, DIAS_SEMANA, carregar_funcoes_do_app,
                       emails_do_departamento, enviar_email, fatos_do_departamento,
-                      linhas_do_departamento, montar_briefing, urls_das_planilhas)
+                      linhas_do_departamento, moldura_email, montar_briefing, urls_das_planilhas)
 
 CAMINHO_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "dados", "estado_alertas.json")
@@ -148,42 +148,25 @@ def novos_alertas(alertas, chaves_enviadas):
     return [a for a in alertas if a["chave"] not in ja]
 
 
-def montar_email_alerta(alertas, fatos, hoje, link_painel="", logo_src=""):
+def montar_email_alerta(alertas, fatos, hoje, link_painel="", logo_src="", departamento=None):
+    """A mesma moldura do briefing; o selo vermelho e as linhas com barra
+    dizem que é alerta."""
     dia = f"{DIAS_SEMANA[hoje.weekday()]}, {hoje.strftime('%d/%m/%Y')} · {datetime.now().strftime('%H:%M')} UTC"
     cor = {"negativo": CORES["negativo"], "alerta": CORES["alerta"]}
-    linhas = "".join(
+    linhas = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">' + "".join(
         "<tr>"
-        f'<td width="4" bgcolor="{cor.get(a["tom"], CORES["alerta"])}" style="width:4px; background:{cor.get(a["tom"], CORES["alerta"])}; font-size:0;">&nbsp;</td>'
+        f'<td width="4" bgcolor="{cor.get(x["tom"], CORES["alerta"])}" style="width:4px; background:{cor.get(x["tom"], CORES["alerta"])}; font-size:0;">&nbsp;</td>'
         f'<td style="padding:12px 0 12px 14px; font-family:{FONTE}; border-bottom:1px solid {CORES["borda"]};">'
-        f'<div style="font-size:15px; font-weight:700; color:{CORES["texto"]};">{a["titulo"]}</div>'
-        f'<div style="font-size:13px; color:{CORES["apagado"]}; margin-top:3px;">{a["detalhe"]}</div></td></tr>'
-        for a in alertas)
-    selo = (f'<img src="{logo_src}" width="40" height="40" alt="Grupo B&amp;A" style="display:block; border-radius:20px;">'
-            if logo_src else "")
-    botao = (f'<a href="{link_painel}" style="display:inline-block; margin-top:14px; padding:10px 22px; background:{CORES["marca"]}; '
-             f'color:#FFFFFF; font-family:{FONTE}; font-size:13px; font-weight:600; text-decoration:none; border-radius:6px;">Abrir o painel &rarr;</a>'
-             if link_painel else "")
-    html = (
-        '<meta charset="utf-8">'
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="{CORES["fundo"]}" style="background:{CORES["fundo"]};">'
-        '<tr><td align="center" style="padding:24px 12px;">'
-        '<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px; max-width:100%;">'
-        f'<tr><td bgcolor="{CORES["negativo"]}" style="background:{CORES["negativo"]}; padding:18px 24px; border-radius:10px 10px 0 0;">'
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>'
-        f'<td width="40">{selo}</td>'
-        f'<td style="padding-left:12px; font-family:{FONTE};">'
-        '<div style="font-size:10px; letter-spacing:1.6px; text-transform:uppercase; color:rgba(255,255,255,0.8);">Controladoria B&amp;A · alerta</div>'
-        f'<div style="font-size:19px; font-weight:700; color:#FFFFFF; margin-top:2px;">{len(alertas)} ponto{"s" if len(alertas) != 1 else ""} de atenção</div>'
-        f'<div style="font-size:12px; color:rgba(255,255,255,0.8); margin-top:2px;">{dia}</div></td></tr></table></td></tr>'
-        f'<tr><td align="center" style="background:{CORES["cartao"]}; padding:8px 26px 22px 26px; border-radius:0 0 10px 10px;">'
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">{linhas}</table>'
-        f'{botao}'
-        f'<div style="font-family:{FONTE}; font-size:11px; color:{CORES["apagado"]}; margin-top:14px;">'
-        'Este aviso só é enviado quando algo cruza uma linha, e cada ponto é avisado uma vez. '
-        'Base: DRE realizada e orçada, meses fechados; lançamentos chegam D+2.</div>'
-        "</td></tr></table></td></tr></table>")
-    texto = (f"Controladoria B&A · alerta · {dia}\n\n"
-             + "\n".join(f"- {a['titulo']}: {a['detalhe']}" for a in alertas)
+        f'<div style="font-size:15px; font-weight:700; color:{CORES["texto"]};">{x["titulo"]}</div>'
+        f'<div style="font-size:13px; color:{CORES["apagado"]}; margin-top:3px;">{x["detalhe"]}</div></td></tr>'
+        for x in alertas) + "</table>")
+    n = len(alertas)
+    titulo = f"{n} ponto{'s' if n != 1 else ''} de atenção" + (f" · {departamento}" if departamento else "")
+    html = moldura_email(titulo, dia, "ALERTA", CORES["negativo"], linhas, link_painel, logo_src,
+                         "Este aviso só é enviado quando algo cruza uma linha, e cada ponto é avisado uma vez. "
+                         "Base: DRE realizada e orçada, meses fechados; lançamentos chegam D+2.")
+    texto = (f"Controladoria B&A · alerta · {dia}" + (f" · {departamento}" if departamento else "") + "\n\n"
+             + "\n".join(f"- {x['titulo']}: {x['detalhe']}" for x in alertas)
              + (f"\n\nPainel: {link_painel}" if link_painel else ""))
     return html, texto
 
@@ -227,11 +210,15 @@ def main(argv):
         destinos = enviar_email(assunto, html, texto, logo_b64)
         print(f"Alerta geral enviado para {', '.join(destinos)}: {assunto}")
         enviados += [x["chave"] for x in novos_geral]
+    # A controladoria recebe cópia de todo alerta de departamento (EMAIL_COPIA_DEPARTAMENTOS;
+    # por padrão, a própria conta que envia).
+    copia = [e.strip() for e in os.environ.get("EMAIL_COPIA_DEPARTAMENTOS", os.environ.get("SMTP_USUARIO", "")).split(",") if e.strip()]
     for departamento, emails, al in novos_dep:
-        html, texto = montar_email_alerta(al, fatos, ctx["hoje"], link, logo_src)
+        html, texto = montar_email_alerta(al, fatos, ctx["hoje"], link, logo_src, departamento)
         assunto = f"Alerta {ctx['hoje'].strftime('%d/%m')} · {departamento} · " + al[0]["titulo"]
-        enviar_email(assunto, html, texto, logo_b64, destinos=emails)
-        print(f"Alerta de {departamento} enviado para {', '.join(emails)}")
+        destinos = sorted(set(emails) | set(copia))
+        enviar_email(assunto, html, texto, logo_b64, destinos=destinos)
+        print(f"Alerta de {departamento} enviado para {', '.join(destinos)}")
         enviados += [x["chave"] for x in al]
     salvar_estado(estado + enviados)
 

@@ -52,6 +52,9 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # DATA DOS DADOS, não com o calendário (02/09/2026).
 DIAS_DEFASAGEM_DADOS = 2
 
+# Link público do painel, para o rodapé dos e-mails enviados de dentro do app.
+LINK_PAINEL_PADRAO = "https://painel-financeiro-controladoriabeea.streamlit.app"
+
 # ============================================================================
 # 2. DESIGN SYSTEM — paleta única, usada tanto no CSS quanto nos gráficos
 # ============================================================================
@@ -16659,16 +16662,35 @@ with tab1:
     # Board pack sob demanda (04/09/2026)
     # =================================================================
     # A mesma apresentação que o robô manda no fechamento, gerada AGORA com
-    # o filtro da tela -- consolidado ou o departamento ativo -- para baixar
-    # ou enviar aos gestores. O código é o de board_pack.py/briefing.py,
-    # importados só na hora: o app não depende do python-pptx enquanto
-    # ninguém pede a apresentação.
+    # o filtro da tela, para baixar ou enviar aos gestores. O admin, na
+    # visão Controladoria, escolhe o departamento e os destinatários sem
+    # trocar de visão; o gestor gera a do próprio departamento. O código é
+    # o de board_pack.py/briefing.py; o python-pptx só é importado no clique.
     with st.expander("📊 Board pack — apresentação do período (PPTX)", expanded=False):
-        st.caption("A apresentação do fechamento, gerada agora com o filtro atual. Baixe ou envie aos gestores.")
+        import briefing as _bf
+        _eh_admin_bp = str(usuario_atual.get("perfil", "")).strip().lower() == "admin"
+        _meu_email_bp = str(usuario_atual.get("email", "")).strip().lower()
+        if _eh_admin_bp and not departamento_ativo:
+            _alvo_bp = st.selectbox(
+                "Gerar para", ["Controladoria (consolidado)"] + list(MODELOS_RELATORIO.keys()), key="bp_alvo",
+                format_func=lambda n: n if n.startswith("Controladoria") else _nome_departamento_curto(n))
+            _dep_bp = None if _alvo_bp.startswith("Controladoria") else _alvo_bp
+        else:
+            _dep_bp = departamento_ativo
+        _gestores_bp = (_bf.emails_do_departamento(_dep_bp, MAPA_EMAIL_DEPARTAMENTO, EMAILS_TRAVADOS_NO_DEPARTAMENTO)
+                        if _dep_bp else []) or ([_meu_email_bp] if _meu_email_bp else [])
+        if _eh_admin_bp:
+            _todos_bp = sorted((set(MAPA_EMAIL_DEPARTAMENTO) | set(EMAILS_TRAVADOS_NO_DEPARTAMENTO)
+                                | {_meu_email_bp}) - {""})
+            # A chave muda com o alvo: multiselect com key fixa ignora o default novo.
+            _dest_bp = st.multiselect("Enviar para", _todos_bp, default=[e for e in _gestores_bp if e in _todos_bp],
+                                      key=f"bp_dest_{_nome_departamento_curto(_dep_bp) if _dep_bp else 'cons'}")
+        else:
+            _dest_bp = _gestores_bp
+        st.caption("A apresentação do período com o filtro atual. Gere, baixe e, se quiser, envie.")
         if st.button("Gerar apresentação", key="bp_gerar"):
             try:
                 import board_pack as _bp
-                import briefing as _bf
             except ImportError as _erro_bp:
                 st.warning(f"Não deu para montar: {_erro_bp}. Falta `python-pptx` no requirements.txt do app.")
             else:
@@ -16677,72 +16699,74 @@ with tab1:
                 _ns_bp = {"formata_valor_curto": formata_valor_curto, "_pct_br": _pct_br,
                           "get_valor_consolidado_multi": get_valor_consolidado_multi,
                           "ofensores_por_desvio": ofensores_por_desvio,
-                          "_nome_sem_numero_dre": _nome_sem_numero_dre,
-                          "_subgrupos_nivel2": _subgrupos_nivel2}
-
-                def _valor_bp(lado, linha, cols, exato=False):
-                    return get_valor_consolidado_multi(
-                        list_df_orc if lado == "orc" else list_df_real, linha, cols,
-                        exato_linha_sintetica=exato)
-
+                          "_nome_sem_numero_dre": _nome_sem_numero_dre, "_subgrupos_nivel2": _subgrupos_nivel2,
+                          "_resolver_termo_departamento": _resolver_termo_departamento,
+                          "_numero_linha_dre": _numero_linha_dre, "narrativa_em_texto": narrativa_em_texto}
                 _aviso_bp, _bytes_bp = "", b""
-                if departamento_ativo:
-                    _df_ref_bp = next((d for d in list_df_real if d is not None and not d.empty), None)
+                if _dep_bp:
+                    _modelo_bp = MODELOS_RELATORIO[_dep_bp]
+                    _visoes_bp = _modelo_bp.get("visoes_permitidas") or []
+                    _real_bp, _orc_bp = list_df_real, list_df_orc
+                    if _visoes_bp and _visoes_bp[0] not in (abas_para_carregar or []):
+                        # O departamento vive noutra visão (ex.: VD CONSOLIDADO): carrega sem trocar a tela.
+                        _orc_bp, _real_bp = carregar_dados_abas(path_orc, path_real, [_visoes_bp[0]])
+                    _df_ref_bp = next((d for d in _real_bp if d is not None and not d.empty), None)
                     _linhas_visao_bp = (list(_df_ref_bp["Nome"].dropna().unique().astype(str))
                                         if _df_ref_bp is not None and "Nome" in _df_ref_bp.columns else [])
-                    _linhas_bp = _bf.linhas_do_departamento(MODELOS_RELATORIO[departamento_ativo],
-                                                            _linhas_visao_bp, _ns_bp)
+                    _linhas_bp = _bf.linhas_do_departamento(_modelo_bp, _linhas_visao_bp, _ns_bp)
+
+                    def _valor_bp(lado, linha, cols, exato=False, _r=_real_bp, _o=_orc_bp):
+                        return get_valor_consolidado_multi(_o if lado == "orc" else _r, linha, cols,
+                                                           exato_linha_sintetica=exato)
+
                     if not _linhas_bp:
-                        _aviso_bp = ("Este departamento é definido por plano de contas, e o board pack "
-                                     "por área ainda lê só linhas da DRE. Use a visão Controladoria.")
+                        _aviso_bp = "Não achei linhas da DRE para este departamento nesta visão."
                     else:
                         _fatos_bp = _bf.fatos_do_departamento(_valor_bp, _linhas_bp, cols_kpi, _col_corr_bp,
-                                                              departamento_ativo, _ns_bp,
-                                                              rotulo_periodo=label_periodo_kpi)
+                                                              _dep_bp, _ns_bp, rotulo_periodo=label_periodo_kpi)
                         _itens_bp = _bf.narrativa_departamento(_fatos_bp, _ns_bp)
                         _series_bp = _bf.series_departamento(_valor_bp, _linhas_bp, m_map, ate_mes=_hoje_bp.month)
                         _bytes_bp = _bp.montar_board_pack(_fatos_bp, _itens_bp, _series_bp, _hoje_bp, _ns_bp,
                                                           modo="departamento")
                 else:
+                    _fatos_bp = _fatos_vg or {"periodo": label_periodo_kpi}
+                    _itens_bp = _itens_vg
                     _series_bp = _bf.series_mensais(_ns_bp, list_df_real, list_df_orc, list(meses_cols), m_map,
                                                     ate_mes=_hoje_bp.month)
-                    _bytes_bp = _bp.montar_board_pack(_fatos_vg or {"periodo": label_periodo_kpi}, _itens_vg,
-                                                      _series_bp, _hoje_bp, _ns_bp)
+                    _bytes_bp = _bp.montar_board_pack(_fatos_bp, _itens_bp, _series_bp, _hoje_bp, _ns_bp)
                 if _aviso_bp:
                     st.info(_aviso_bp)
                 else:
-                    _area_bp = (departamento_ativo or "consolidado").split(" - ")[-1].strip().lower().replace(" ", "_")
+                    _area_bp = (_nome_departamento_curto(_dep_bp) if _dep_bp else "consolidado").lower().replace(" ", "_")
                     st.session_state["bp_bytes"] = _bytes_bp
                     st.session_state["bp_nome"] = f"board_pack_{_area_bp}_{_hoje_bp:%Y-%m-%d}.pptx"
+                    st.session_state["bp_email"] = _bf.montar_email_board_pack(
+                        _fatos_bp, _itens_bp, _hoje_bp, LINK_PAINEL_PADRAO, "", _dep_bp, _ns_bp)
         if st.session_state.get("bp_bytes"):
             st.download_button("⬇️ Baixar a apresentação", st.session_state["bp_bytes"],
                                file_name=st.session_state["bp_nome"],
                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                                key="bp_baixar")
-            import briefing as _bf2
-            _dest_bp = (_bf2.emails_do_departamento(departamento_ativo, MAPA_EMAIL_DEPARTAMENTO,
-                                                    EMAILS_TRAVADOS_NO_DEPARTAMENTO)
-                        if departamento_ativo else []) or [usuario_atual.get("email", "")]
-            _dest_bp = [d for d in _dest_bp if d]
             _smtp_usr = _segredo_com_origem("SMTP_USUARIO")[0]
             _smtp_pwd = _segredo_com_origem("SMTP_SENHA")[0]
             if _smtp_usr and _smtp_pwd and _dest_bp:
                 if st.button(f"✉️ Enviar para {', '.join(_dest_bp)}", key="bp_enviar"):
                     try:
-                        _bf2.enviar_email(
-                            f"Board pack · {label_periodo_kpi}" + (f" · {departamento_ativo}" if departamento_ativo else ""),
-                            "<p>Segue o board pack do período, gerado pelo painel.</p>",
-                            "Segue o board pack do período, gerado pelo painel.",
-                            LOGO_BEEA_B64,
+                        _html_bp, _texto_bp = st.session_state["bp_email"]
+                        _html_bp = _html_bp.replace('src=""', f'src="cid:{_bf.CID_LOGO}"')
+                        _bf.enviar_email(
+                            f"Board pack · {label_periodo_kpi}" + (f" · {_nome_departamento_curto(_dep_bp)}" if _dep_bp else ""),
+                            _html_bp, _texto_bp, LOGO_BEEA_B64,
                             anexos=[(st.session_state["bp_nome"], st.session_state["bp_bytes"], "application",
                                      "vnd.openxmlformats-officedocument.presentationml.presentation")],
-                            destinos=_dest_bp, credenciais={"usuario": _smtp_usr, "senha": _smtp_pwd})
+                            destinos=list(_dest_bp), credenciais={"usuario": _smtp_usr, "senha": _smtp_pwd})
                         st.success(f"Enviado para {', '.join(_dest_bp)}.")
                     except Exception as _erro_envio:   # noqa: BLE001 -- erro de SMTP vira mensagem na tela
                         st.error(f"Não consegui enviar: {_erro_envio}")
+            elif not _dest_bp:
+                st.caption("Nenhum destinatário escolhido.")
             else:
-                st.caption("Para enviar por e-mail daqui, cadastre SMTP_USUARIO e SMTP_SENHA nos Secrets do Streamlit "
-                           "(os mesmos do GitHub).")
+                st.caption("Para enviar por e-mail daqui, cadastre SMTP_USUARIO e SMTP_SENHA nos Secrets do Streamlit.")
 
 with tab2:
     st.markdown(f'<div class="section-title">📋 Análise de DRE e Desvios — {label_visao} · {label_periodo_graf}</div>', unsafe_allow_html=True)
