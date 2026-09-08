@@ -98,8 +98,9 @@ def causas_do_gap(fatos, modo, ns=None):
     pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
     cat = {}
     if modo == "departamento":
-        efeito = (f"Gasto {fmt(fatos.get('gasto_real', 0))} contra {fmt(fatos.get('gasto_orc', 0))} orçados "
-                  f"({fatos.get('departamento', '')})")
+        g_r, g_o = fatos.get("gasto_real", 0), fatos.get("gasto_orc", 0)
+        efeito = (f"Gasto {fmt(g_r)} contra {fmt(g_o)} orçados: "
+                  f"{'+' if g_r >= g_o else '−'}{fmt(abs(g_r - g_o))}")
         cat["Contas acima do orçado"] = [f"{e['conta']}: +{fmt(e['desvio'])}" + (f" (+{e['pct']:.0f}%)" if e.get("pct") is not None else " (sem orçamento)")
                                         for e in (fatos.get("estouros") or [])[:4]]
         cat["Contas com folga"] = [f"{c['conta']}: −{fmt(c['folga'])}" for c in (fatos.get("folgas") or [])[:3]]
@@ -137,32 +138,49 @@ def causas_do_gap(fatos, modo, ns=None):
     return efeito, cat
 
 
-def _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia):
+def _cortar(texto, limite):
+    texto = str(texto)
+    return texto if len(texto) <= limite else texto[:limite - 1].rstrip() + "…"
+
+
+def _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia, ns=None):
+    """Layout em GRADE: seis blocos fixos (3 em cima, 3 embaixo), espinhas
+    curtas que nunca cruzam texto, caixa do efeito com o número grande."""
     from pptx.enum.shapes import MSO_CONNECTOR
     slide = apresentacao.slides.add_slide(em_branco)
     _cabecalho(slide, "Ishikawa · causas do gap organizadas pelos dados", dia)
-    # espinha e efeito
-    espinha = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(0.8), Inches(4.05), Inches(10.6), Inches(4.05))
+    y_espinha = 4.05
+    espinha = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(0.6), Inches(y_espinha), Inches(9.9), Inches(y_espinha))
     espinha.line.color.rgb = NAVY
     espinha.line.width = Pt(3)
-    _retangulo(slide, 10.6, 3.35, 2.5, 1.4, NAVY)
-    _texto(slide, 10.7, 3.45, 2.3, 1.2, efeito, 11, BRANCO, True)
+    # caixa do efeito: número grande em cima, detalhe embaixo
+    _retangulo(slide, 9.95, 3.05, 2.95, 2.0, NAVY)
+    partes = str(efeito).split(":", 1)
+    destaque = partes[1].strip() if len(partes) > 1 else partes[0]
+    detalhe = partes[0].strip() if len(partes) > 1 else ""
+    _texto(slide, 10.1, 3.2, 2.7, 0.7, destaque, 22, BRANCO, True)
+    _texto(slide, 10.1, 3.95, 2.7, 1.0, detalhe, 10, RGBColor(0x9F, 0xB3, 0xD1))
     nomes = list(categorias.keys())[:6]
-    posicoes_x = [1.6, 4.6, 7.6]
+    colunas_x = [0.6, 3.75, 6.9]
+    largura = 2.9
     for i, nome in enumerate(nomes):
         em_cima = i < 3
-        x = posicoes_x[i % 3]
-        y_topo, y_base = (1.15, 4.05) if em_cima else (4.05, 6.95)
-        osso = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x), Inches(y_topo if em_cima else y_base),
-                                          Inches(x + 1.2), Inches(y_base if em_cima else y_topo))
+        x = colunas_x[i % 3]
+        if em_cima:
+            y_bloco, y_ini_osso, y_fim_osso = 1.1, 3.45, y_espinha
+        else:
+            y_bloco, y_ini_osso, y_fim_osso = 4.6, 4.6, y_espinha
+        osso = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x + 1.2), Inches(y_ini_osso),
+                                          Inches(x + 1.7), Inches(y_fim_osso))
         osso.line.color.rgb = CINZA
-        osso.line.width = Pt(1.5)
-        y_rot = 1.0 if em_cima else 6.55
-        _texto(slide, x - 0.3, y_rot, 2.9, 0.35, nome.upper(), 10, NAVY, True)
-        y_itens = (1.4 if em_cima else 4.45)
-        for j, item in enumerate(categorias[nome][:4]):
-            _texto(slide, x + 0.15, y_itens + j * 0.5, 2.9, 0.5, "• " + item, 9, TEXTO)
-    _texto(slide, 0.5, 7.05, 12.3, 0.35,
+        osso.line.width = Pt(1.75)
+        _retangulo(slide, x, y_bloco, largura, 0.05, NAVY)
+        _texto(slide, x, y_bloco + 0.08, largura, 0.35, nome.upper(), 10, NAVY, True)
+        y_item = y_bloco + 0.45
+        for item in categorias[nome][:3]:
+            _texto(slide, x, y_item, largura, 0.6, "• " + _cortar(item, 95), 9, TEXTO)
+            y_item += 0.6
+    _texto(slide, 0.5, 7.0, 12.3, 0.35,
            "As causas são as que os números mostram (quanto e onde). O motivo de negócio de cada uma é de quem lança a conta.",
            9, CINZA)
 
@@ -195,7 +213,7 @@ def _slide_5w2h(apresentacao, em_branco, fatos, modo, hoje, dia, ns=None):
         linhas.append(("Nada fora do orçado nos dados", "—", onde, quando, "—", "Manter acompanhamento", "—"))
     tabela = slide.shapes.add_table(len(linhas), 7, Inches(0.4), Inches(1.15), Inches(12.5),
                                     Inches(0.55 * len(linhas))).table
-    larguras = (2.4, 1.6, 1.4, 1.5, 1.6, 2.8, 1.2)
+    larguras = (2.3, 1.5, 1.3, 1.4, 1.5, 3.3, 1.2)
     for k, w in enumerate(larguras):
         tabela.columns[k].width = Inches(w)
     for i, linha in enumerate(linhas):
@@ -203,7 +221,7 @@ def _slide_5w2h(apresentacao, em_branco, fatos, modo, hoje, dia, ns=None):
             celula = tabela.cell(i, j)
             celula.text = str(valor)
             paragrafo = celula.text_frame.paragraphs[0]
-            paragrafo.font.size = Pt(10 if i else 10)
+            paragrafo.font.size = Pt(9)
             paragrafo.font.bold = i == 0
             paragrafo.font.color.rgb = BRANCO if i == 0 else TEXTO
             celula.fill.solid()
@@ -369,7 +387,7 @@ def montar_board_pack(fatos, itens, series, hoje, ns=None, modo="consolidado"):
 
     # 6-8) Ishikawa, 5W2H e 5 Porquês com os dados que existem
     efeito, categorias = causas_do_gap(fatos, "consolidado", ns)
-    _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia)
+    _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia, ns)
     _slide_5w2h(apresentacao, em_branco, fatos, "consolidado", hoje, dia, ns)
     _slide_5_porques(apresentacao, em_branco, fatos, "consolidado", dia, ns)
 
@@ -458,7 +476,7 @@ def _board_pack_departamento(fatos, itens, series, hoje, ns=None):
         tabela.columns[k].width = Inches(w)
 
     efeito, categorias = causas_do_gap(fatos, "departamento", ns)
-    _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia)
+    _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia, ns)
     _slide_5w2h(apresentacao, em_branco, fatos, "departamento", hoje, dia, ns)
     _slide_5_porques(apresentacao, em_branco, fatos, "departamento", dia, ns)
     slide = apresentacao.slides.add_slide(em_branco)
