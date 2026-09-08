@@ -57,6 +57,7 @@ def _retangulo(slide, x, y, w, h, cor):
     forma.fill.solid()
     forma.fill.fore_color.rgb = cor
     forma.line.fill.background()
+    forma.shadow.inherit = False   # sem sombra padrão do PowerPoint
     return forma
 
 
@@ -167,19 +168,20 @@ def _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia, ns=None):
         em_cima = i < 3
         x = colunas_x[i % 3]
         if em_cima:
-            y_bloco, y_ini_osso, y_fim_osso = 1.1, 3.45, y_espinha
+            y_bloco, y_ini_osso, y_fim_osso = 1.1, 3.4, y_espinha
         else:
-            y_bloco, y_ini_osso, y_fim_osso = 4.6, 4.6, y_espinha
-        osso = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x + 1.2), Inches(y_ini_osso),
-                                          Inches(x + 1.7), Inches(y_fim_osso))
+            y_bloco, y_ini_osso, y_fim_osso = 4.7, 4.7, y_espinha
+        osso = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x + 1.45), Inches(y_ini_osso),
+                                          Inches(x + 1.9), Inches(y_fim_osso))
         osso.line.color.rgb = CINZA
         osso.line.width = Pt(1.75)
+        _retangulo(slide, x, y_bloco, largura, 2.3, RGBColor(0xF4, 0xF7, 0xFB))
         _retangulo(slide, x, y_bloco, largura, 0.05, NAVY)
-        _texto(slide, x, y_bloco + 0.08, largura, 0.35, nome.upper(), 10, NAVY, True)
+        _texto(slide, x + 0.05, y_bloco + 0.08, largura - 0.1, 0.35, nome.upper(), 10, NAVY, True)
         y_item = y_bloco + 0.45
         for item in categorias[nome][:3]:
-            _texto(slide, x, y_item, largura, 0.6, "• " + _cortar(item, 95), 9, TEXTO)
-            y_item += 0.6
+            _texto(slide, x + 0.05, y_item, largura - 0.1, 0.6, "• " + _cortar(item, 95), 9, TEXTO)
+            y_item += 0.58
     _texto(slide, 0.5, 7.0, 12.3, 0.35,
            "As causas são as que os números mostram (quanto e onde). O motivo de negócio de cada uma é de quem lança a conta.",
            9, CINZA)
@@ -287,6 +289,38 @@ def _slide_5_porques(apresentacao, em_branco, fatos, modo, dia, ns=None):
         y += 1.1
 
 
+def _slides_narrativa(apresentacao, em_branco, itens, dia):
+    """Cada item ocupa o que o texto pede (linhas estimadas a 120 caracteres);
+    quando a soma passa do que cabe, a narrativa segue num segundo slide em
+    vez de estourar o rodapé."""
+    import math
+    altura_util, y0 = 5.85, 1.2
+    blocos = []
+    for item in itens:
+        texto = item["texto"].replace("<b>", "").replace("</b>", "")
+        linhas = max(1, math.ceil(len(texto) / 120))
+        blocos.append((item, texto, 0.32 + 0.24 * linhas))
+    paginas, atual, soma = [], [], 0.0
+    for bloco in blocos:
+        if atual and soma + bloco[2] > altura_util:
+            paginas.append(atual)
+            atual, soma = [], 0.0
+        atual.append(bloco)
+        soma += bloco[2]
+    if atual:
+        paginas.append(atual)
+    for n, pagina in enumerate(paginas, start=1):
+        slide = apresentacao.slides.add_slide(em_branco)
+        titulo = "O que aconteceu e por quê" + (f" ({n}/{len(paginas)})" if len(paginas) > 1 else "")
+        _cabecalho(slide, titulo, dia)
+        y = y0
+        for item, texto, altura in pagina:
+            _retangulo(slide, 0.5, y + 0.06, 0.06, altura - 0.14, TONS.get(item.get("tom"), CINZA))
+            _texto(slide, 0.7, y, 1.6, 0.4, item["rotulo"].upper(), 10, TONS.get(item.get("tom"), CINZA), True)
+            _texto(slide, 2.3, y - 0.03, 10.5, altura, texto, 12, TEXTO)
+            y += altura
+
+
 def montar_board_pack(fatos, itens, series, hoje, ns=None, modo="consolidado"):
     """Devolve os bytes do PPTX. `modo="departamento"` troca receita/EBITDA
     por gasto realizado x orçado do departamento (fatos_do_departamento)."""
@@ -391,16 +425,8 @@ def montar_board_pack(fatos, itens, series, hoje, ns=None, modo="consolidado"):
     _slide_5w2h(apresentacao, em_branco, fatos, "consolidado", hoje, dia, ns)
     _slide_5_porques(apresentacao, em_branco, fatos, "consolidado", dia, ns)
 
-    # 6) narrativa
-    slide = apresentacao.slides.add_slide(em_branco)
-    _cabecalho(slide, "O que aconteceu e por quê", dia)
-    y = 1.2
-    for item in itens:
-        texto_limpo = item["texto"].replace("<b>", "").replace("</b>", "")
-        _retangulo(slide, 0.5, y + 0.08, 0.06, 0.55, TONS.get(item.get("tom"), CINZA))
-        _texto(slide, 0.7, y, 1.6, 0.4, item["rotulo"].upper(), 10, TONS.get(item.get("tom"), CINZA), True)
-        _texto(slide, 2.3, y - 0.02, 10.5, 0.95, texto_limpo, 13, TEXTO)
-        y += 0.95
+    # 6) narrativa (um ou dois slides, conforme o tamanho)
+    _slides_narrativa(apresentacao, em_branco, itens, dia)
     saida = io.BytesIO()
     apresentacao.save(saida)
     return saida.getvalue()
@@ -479,14 +505,7 @@ def _board_pack_departamento(fatos, itens, series, hoje, ns=None):
     _slide_ishikawa(apresentacao, em_branco, efeito, categorias, dia, ns)
     _slide_5w2h(apresentacao, em_branco, fatos, "departamento", hoje, dia, ns)
     _slide_5_porques(apresentacao, em_branco, fatos, "departamento", dia, ns)
-    slide = apresentacao.slides.add_slide(em_branco)
-    _cabecalho(slide, "O que aconteceu e por quê", dia)
-    y = 1.2
-    for item in itens:
-        _retangulo(slide, 0.5, y + 0.08, 0.06, 0.55, TONS.get(item.get("tom"), CINZA))
-        _texto(slide, 0.7, y, 1.6, 0.4, item["rotulo"].upper(), 10, TONS.get(item.get("tom"), CINZA), True)
-        _texto(slide, 2.3, y - 0.02, 10.5, 0.95, item["texto"].replace("<b>", "").replace("</b>", ""), 13, TEXTO)
-        y += 0.95
+    _slides_narrativa(apresentacao, em_branco, itens, dia)
     saida = io.BytesIO()
     apresentacao.save(saida)
     return saida.getvalue()
