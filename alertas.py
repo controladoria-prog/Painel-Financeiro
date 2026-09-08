@@ -31,7 +31,7 @@ from datetime import datetime
 
 from briefing import (CID_LOGO, CORES, FONTE, DIAS_SEMANA, carregar_funcoes_do_app,
                       emails_do_departamento, enviar_email, fatos_do_departamento,
-                      linhas_do_departamento, moldura_email, montar_briefing, urls_das_planilhas)
+                      linhas_do_departamento_escopo, moldura_email, montar_briefing, urls_das_planilhas)
 
 CAMINHO_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "dados", "estado_alertas.json")
@@ -116,7 +116,7 @@ def alertas_dos_departamentos(ns, ctx, fmt=None):
             linhas_visao = list(df_ref[col_nome].dropna().unique().astype(str))
         else:
             list_df_orc, list_df_real, linhas_visao = ctx["list_df_orc"], ctx["list_df_real"], ctx["linhas"]
-        linhas = linhas_do_departamento(modelo, linhas_visao, ns)
+        linhas = linhas_do_departamento_escopo(modelo, linhas_visao, ns)
         if not linhas:
             continue
 

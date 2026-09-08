@@ -383,7 +383,7 @@ def emails_do_departamento(departamento, mapa_email_departamento, emails_travado
     return sorted({e for e, d in juntos.items() if d == departamento})
 
 
-def linhas_do_departamento(modelo, linhas_da_visao, ns):
+def linhas_do_departamento_escopo(modelo, linhas_da_visao, ns):
     """Resolve o escopo de um departamento em linhas da DRE com o MESMO
     resolvedor do app (_resolver_termo_departamento: RESTANTE, FILHAS:,
     PREFIXO:, texto). Exceção deliberada: "ATE_EBITDA" vira os subgrupos de
@@ -624,6 +624,18 @@ def prova_de_fogo_orcamento(realizado_mensal, proposto_anual, tolerancia=0.15):
         saida.append({"linha": linha, "proposto": proposto, "run_rate": run_rate, "recente": recente,
                       "diff": diff, "veredito": "acima do ritmo atual" if diff > 0 else "abaixo do ritmo atual"})
     saida.sort(key=lambda s: -abs(s["diff"]))
+    return saida
+
+
+def responsaveis_por_conta(ns, linhas_da_visao):
+    """{nome da conta: departamento curto} pelo escopo de cada departamento
+    no app -- é o 'Quem' do 5W2H. Conta sem dono fica fora."""
+    saida = {}
+    nome = ns.get("_nome_sem_numero_dre", lambda l: l)
+    for departamento, modelo in (ns.get("MODELOS_RELATORIO") or {}).items():
+        curto = str(departamento).split(" - ")[-1].strip()
+        for linha in (linhas_do_departamento_escopo(modelo, linhas_da_visao, ns) or []):
+            saida.setdefault(nome(linha), curto)
     return saida
 
 

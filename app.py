@@ -2874,7 +2874,7 @@ def montar_fatos_executivos(valor, linhas_dre, cols_kpi, col_mes_corrente, nome_
             itens.append({"conta": _nome_sem_numero_dre(linha), "linha": linha,
                           "realizado": r, "orcado": o})
     f["estouros"] = [
-        {"conta": e["conta"], "desvio": e["desvio"],
+        {"conta": e["conta"], "desvio": e["desvio"], "linha": e.get("linha", ""),
          "pct": (e["desvio"] / e["orcado"] * 100) if e["orcado"] else None}
         for e in ofensores_por_desvio(itens)[:3]
     ]
@@ -16320,7 +16320,8 @@ with tab1:
             _lojas_vg = list(VISOES_CONSOLIDADAS["DRE CONSOLIDADO"])   # as 21 unidades, nunca uma visão consolidada
             if _lojas_vg and _cols_fech_vg:
                 _lojas_gap_vg = _bfn.lojas_que_explicam(_bfn.desvio_por_loja(
-                    {"get_valor_consolidado_multi": get_valor_consolidado_multi},
+                    {"get_valor_consolidado_multi": get_valor_consolidado_multi,
+                     "VISOES_CONSOLIDADAS": VISOES_CONSOLIDADAS},
                     carregar_dados_por_loja(path_orc, path_real, _lojas_vg), _cols_fech_vg))
         except Exception as _erro_lojas:   # noqa: BLE001 -- loja sem aba não derruba a Visão Geral
             _lojas_gap_vg = None
@@ -16748,7 +16749,8 @@ with tab1:
                           "ofensores_por_desvio": ofensores_por_desvio,
                           "_nome_sem_numero_dre": _nome_sem_numero_dre, "_subgrupos_nivel2": _subgrupos_nivel2,
                           "_resolver_termo_departamento": _resolver_termo_departamento,
-                          "_numero_linha_dre": _numero_linha_dre, "narrativa_em_texto": narrativa_em_texto}
+                          "_numero_linha_dre": _numero_linha_dre, "narrativa_em_texto": narrativa_em_texto,
+                          "MODELOS_RELATORIO": MODELOS_RELATORIO, "VISOES_CONSOLIDADAS": VISOES_CONSOLIDADAS}
                 _aviso_bp, _bytes_bp = "", b""
                 if _dep_bp:
                     _modelo_bp = MODELOS_RELATORIO[_dep_bp]
@@ -16760,7 +16762,7 @@ with tab1:
                     _df_ref_bp = next((d for d in _real_bp if d is not None and not d.empty), None)
                     _linhas_visao_bp = (list(_df_ref_bp["Nome"].dropna().unique().astype(str))
                                         if _df_ref_bp is not None and "Nome" in _df_ref_bp.columns else [])
-                    _linhas_bp = _bf.linhas_do_departamento(_modelo_bp, _linhas_visao_bp, _ns_bp)
+                    _linhas_bp = _bf.linhas_do_departamento_escopo(_modelo_bp, _linhas_visao_bp, _ns_bp)
 
                     def _valor_bp(lado, linha, cols, exato=False, _r=_real_bp, _o=_orc_bp):
                         return get_valor_consolidado_multi(_o if lado == "orc" else _r, linha, cols,
@@ -16776,7 +16778,8 @@ with tab1:
                         _bytes_bp = _bp.montar_board_pack(_fatos_bp, _itens_bp, _series_bp, _hoje_bp, _ns_bp,
                                                           modo="departamento")
                 else:
-                    _fatos_bp = _fatos_vg or {"periodo": label_periodo_kpi}
+                    _fatos_bp = dict(_fatos_vg or {"periodo": label_periodo_kpi})
+                    _fatos_bp["responsaveis"] = _bf.responsaveis_por_conta(_ns_bp, _linhas_vg)
                     _itens_bp = _itens_vg
                     _series_bp = _bf.series_mensais(_ns_bp, list_df_real, list_df_orc, list(meses_cols), m_map,
                                                     ate_mes=_hoje_bp.month)

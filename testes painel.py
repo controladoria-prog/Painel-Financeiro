@@ -7468,13 +7468,13 @@ class TesteBriefingPorEmail(unittest.TestCase):
         ns = {"_subgrupos_nivel2": self.ns["_subgrupos_nivel2"],
               "_nome_sem_numero_dre": self.ns["_nome_sem_numero_dre"],
               "ofensores_por_desvio": self.ns["ofensores_por_desvio"]}
-        self.assertEqual(b.linhas_do_departamento({"linhas_dre": ["ATE_EBITDA"]}, linhas, ns),
+        self.assertEqual(b.linhas_do_departamento_escopo({"linhas_dre": ["ATE_EBITDA"]}, linhas, ns),
                          ["6.6 - Material de Embalagem", "6.24 - Marketing", "8.3 - Pessoal"])
-        self.assertEqual(b.linhas_do_departamento({"linhas_dre": ["6.6 - Material de Embalagem", "x"]}, linhas, ns),
+        self.assertEqual(b.linhas_do_departamento_escopo({"linhas_dre": ["6.6 - Material de Embalagem", "x"]}, linhas, ns),
                          ["6.6 - Material de Embalagem"])
         # RESTANTE resolve pelo MESMO resolvedor do app (_resolver_termo_departamento):
         # o que nenhum outro departamento reivindica -- Material de Embalagem e de Compras.
-        restante = b.linhas_do_departamento({"linhas_dre": ["RESTANTE"]}, linhas, self.ns)
+        restante = b.linhas_do_departamento_escopo({"linhas_dre": ["RESTANTE"]}, linhas, self.ns)
         self.assertIsInstance(restante, list)
         self.assertNotIn("6.6 - Material de Embalagem", restante)
         html, texto = b.montar_email_board_pack(
@@ -7685,7 +7685,7 @@ class TesteBoardPack(unittest.TestCase):
         dados = self.bp.montar_board_pack(fatos, itens, series, datetime(2026, 9, 5).date())
         self.assertGreater(len(dados), 20_000)
         apresentacao = Presentation(io.BytesIO(dados))
-        self.assertEqual(len(apresentacao.slides), 6)
+        self.assertEqual(len(apresentacao.slides), 9, "6 originais + Ishikawa, 5W2H e 5 Porques")
         textos = " ".join(f.text_frame.text for s in apresentacao.slides for f in s.shapes if f.has_text_frame)
         # A tabela e um quadro grafico: as celulas nao entram no text_frame das formas.
         textos += " ".join(c.text for s in apresentacao.slides for f in s.shapes if f.has_table
@@ -7693,6 +7693,9 @@ class TesteBoardPack(unittest.TestCase):
         self.assertIn("ATENÇÃO", textos)
         self.assertIn("Teste x.", textos, "a narrativa vai sem as tags de negrito")
         self.assertIn("lançamento pendente (não é economia)", textos)
+        for titulo in ("Ishikawa", "5W2H", "5 Porquês", "Aqui os dados param"):
+            self.assertIn(titulo, textos, f"faltou {titulo} no board pack")
+        self.assertIn("Boleto passou do orçado", textos)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
