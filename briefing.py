@@ -66,7 +66,7 @@ SEMENTES = [
     "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64", "MODELOS_RELATORIO",
     "MAPA_EMAIL_DEPARTAMENTO", "EMAILS_TRAVADOS_NO_DEPARTAMENTO", "_subgrupos_nivel2",
     "ofensores_por_desvio", "_nome_sem_numero_dre", "_resolver_termo_departamento",
-    "_numero_linha_dre", "carregar_dados_por_loja", "_planilha_aberta",
+    "_numero_linha_dre", "carregar_dados_por_loja", "_planilha_aberta", "VISOES_CONSOLIDADAS",
 ]
 
 NOMES_MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -204,7 +204,7 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
     # Quais lojas explicam o gap: uma aba por loja no mesmo Excel.
     lojas_gap = None
     try:
-        lojas = [l.strip() for l in os.environ.get("LOJAS", "").split(",") if l.strip()] or lojas_do_workbook(url_real, ns)
+        lojas = lojas_oficiais(ns)
         if lojas and cols_fechados:
             dados_por_loja = ns["carregar_dados_por_loja"](url_orc, url_real, lojas)
             lojas_gap = lojas_que_explicam(desvio_por_loja(ns, dados_por_loja, cols_fechados))
@@ -222,10 +222,6 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
     foto = fotografar_fechados(valor, linhas_vigiadas(linhas, ns), cols_fechados, hoje)
     itens += comparar_fotografias(foto, carregar_fotografia(), {v: k for k, v in m_map.items()},
                                   ns.get("formata_valor_curto"), ns)
-    # Ações em aberto (planilha de Ações, opcional).
-    acoes = acoes_em_aberto(carregar_acoes(os.environ.get("ACOES_CSV_URL", "")), hoje)
-    if item_de_acoes(acoes):
-        itens.append(item_de_acoes(acoes))
     # Meses FECHADOS: bateu (True) ou não (False) a receita orçada. É o gabarito
     # do placar da chance.
     resultado_por_mes = {}
@@ -551,11 +547,27 @@ def comparar_fotografias(atual, anterior, nomes_meses=None, fmt=None, ns=None, m
     return itens
 
 
-def lojas_do_workbook(caminho, ns, excluir=("CONSOLID", " + ")):
-    """As abas de loja do Excel: tudo que não é visão consolidada/agrupada."""
-    with ns["_planilha_aberta"](caminho) as livro:
-        nomes = list(getattr(livro, "sheet_names", []) or [])
-    return [n for n in nomes if not any(x in n.upper() for x in excluir)]
+def lojas_oficiais(ns):
+    """As unidades de verdade -- a lista canônica do app (VISOES_CONSOLIDADAS
+    ["DRE CONSOLIDADO"]): 2 ABPR + 5 VD + 13 LJ + Escritório Matriz. Uma visão
+    consolidada (LJ - G&A, VD CONSOLIDADO) nunca é loja."""
+    return list((ns.get("VISOES_CONSOLIDADAS") or {}).get("DRE CONSOLIDADO") or [])
+
+
+def lojas_do_departamento(departamento, ns):
+    """As lojas que um departamento de loja enxerga: as visões permitidas
+    dele traduzidas em unidades; sem visão declarada, todas."""
+    modelo = (ns.get("MODELOS_RELATORIO") or {}).get(departamento) or {}
+    visoes = modelo.get("visoes_permitidas") or []
+    mapa = ns.get("VISOES_CONSOLIDADAS") or {}
+    if not visoes:
+        return lojas_oficiais(ns)
+    lojas = []
+    for visao in visoes:
+        for loja in (mapa.get(visao) or ([visao] if visao in lojas_oficiais(ns) else [])):
+            if loja not in lojas:
+                lojas.append(loja)
+    return lojas
 
 
 def desvio_por_loja(ns, dados_por_loja, cols_fechados):
@@ -585,50 +597,6 @@ def lojas_que_explicam(desvios, fracao=0.7):
             break
     return {"n": len(escolhidas), "total_lojas": len(desvios), "total_negativo": total,
             "fracao": acumulado / total, "lojas": escolhidas}
-
-
-def carregar_acoes(url_csv):
-    """Planilha de Ações (CSV publicado): Data, Alerta, Ação, Dono, Prazo, Status."""
-    if not url_csv:
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(url_csv, dtype=str).fillna("")
-    except Exception:   # noqa: BLE001 -- planilha fora do ar não pode derrubar o briefing
-        return pd.DataFrame()
-    chaves = {"acao": "Ação", "acão": "Ação", "ação": "Ação", "dono": "Dono", "responsavel": "Dono",
-              "responsável": "Dono", "prazo": "Prazo", "status": "Status", "alerta": "Alerta", "data": "Data"}
-    renome = {c: chaves[c.strip().lower()] for c in df.columns if c.strip().lower() in chaves}
-    return df.rename(columns=renome)
-
-
-def acoes_em_aberto(df, hoje):
-    if df is None or df.empty or "Ação" not in df.columns:
-        return []
-    fechados = ("concluída", "concluida", "concluído", "concluido", "cancelada", "cancelado", "feito", "ok")
-    saida = []
-    for _, ln in df.iterrows():
-        status = str(ln.get("Status", "")).strip().lower()
-        if not str(ln.get("Ação", "")).strip() or status in fechados:
-            continue
-        prazo = pd.to_datetime(str(ln.get("Prazo", "")), dayfirst=True, errors="coerce")
-        vencida = bool(prazo is not pd.NaT and not pd.isna(prazo) and prazo.date() < hoje)
-        saida.append({"acao": str(ln.get("Ação", "")).strip(), "dono": str(ln.get("Dono", "")).strip(),
-                      "prazo": prazo.strftime("%d/%m") if not pd.isna(prazo) else "", "vencida": vencida,
-                      "alerta": str(ln.get("Alerta", "")).strip()})
-    saida.sort(key=lambda a: (not a["vencida"], a["prazo"]))
-    return saida
-
-
-def item_de_acoes(acoes):
-    if not acoes:
-        return None
-    vencidas = [a for a in acoes if a["vencida"]]
-    partes = [f"<b>{a['acao']}</b> ({a['dono'] or 'sem dono'}, prazo {a['prazo'] or 'sem prazo'})" for a in vencidas[:3]]
-    texto = f"{len(acoes)} ação{'ões' if len(acoes) != 1 else ''} em aberto"
-    if vencidas:
-        texto += f", <b>{len(vencidas)} vencida{'s' if len(vencidas) != 1 else ''}</b>: {_lista_pt(partes)}"
-        texto += f" e mais {len(vencidas) - 3}" if len(vencidas) > 3 else ""
-    return {"rotulo": "Ações", "tom": "negativo" if vencidas else "neutro", "texto": texto + "."}
 
 
 def prova_de_fogo_orcamento(realizado_mensal, proposto_anual, tolerancia=0.15):

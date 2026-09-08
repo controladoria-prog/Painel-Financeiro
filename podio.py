@@ -11,12 +11,12 @@ Uso:
     python podio.py            calcula e envia
     python podio.py --teste    calcula e imprime, sem enviar
 """
-import json
 import os
 import sys
 
-from briefing import (CID_LOGO, CORES, FONTE, DIAS_SEMANA, carregar_funcoes_do_app, enviar_email,
-                      lojas_do_workbook, moldura_email, montar_briefing, urls_das_planilhas)
+from briefing import (CID_LOGO, CORES, FONTE, DIAS_SEMANA, carregar_funcoes_do_app, emails_do_departamento,
+                      enviar_email, lojas_do_departamento, lojas_oficiais, moldura_email, montar_briefing,
+                      urls_das_planilhas)
 
 
 def ranking_das_lojas(ns, dados_por_loja, ritmo, cols_fechados):
@@ -36,7 +36,9 @@ def ranking_das_lojas(ns, dados_por_loja, ritmo, cols_fechados):
         saida.append({"loja": loja, "rec_mes": rec_mes, "meta_mes": meta_mes,
                       "ritmo_pct": (rec_mes / meta_mes * 100) if meta_mes else None,
                       "ebitda_real": eb_r, "ebitda_orc": eb_o, "desvio": eb_r - eb_o})
-    saida.sort(key=lambda r: -(r["ritmo_pct"] if r["ritmo_pct"] is not None else -1))
+    # Sem meta de receita (o escritório) não se compete: fica fora do pódio.
+    saida = [r for r in saida if r["ritmo_pct"] is not None]
+    saida.sort(key=lambda r: -r["ritmo_pct"])
     for i, r in enumerate(saida, start=1):
         r["posicao"] = i
     return saida
@@ -82,7 +84,7 @@ def main(argv):
     ns = carregar_funcoes_do_app()
     fatos, _itens, ctx = montar_briefing(ns, url_fech=os.environ.get("FECHAMENTO_CSV_URL", ""))
     url_orc, url_real = urls_das_planilhas()
-    lojas = [l.strip() for l in os.environ.get("LOJAS", "").split(",") if l.strip()] or lojas_do_workbook(url_real, ns)
+    lojas = lojas_oficiais(ns)
     hoje = ctx["hoje"]
     cols_fech = [c for c in ctx["m_map"].values() if int(c[:2]) < hoje.month]
     dados = ns["carregar_dados_por_loja"](url_orc, url_real, lojas)
@@ -99,19 +101,18 @@ def main(argv):
     assunto = f"Pódio das lojas {hoje.strftime('%d/%m')} · {ranking[0]['loja']} lidera"
     destinos = enviar_email(assunto, html, texto, logo_b64)
     print(f"Pódio enviado para {', '.join(destinos)}.")
-    try:
-        gerentes = json.loads(os.environ.get("EMAILS_LOJAS", "") or "{}")
-    except ValueError:
-        gerentes = {}
-    for r in ranking:
-        email = gerentes.get(r["loja"])
-        if not email:
+    for departamento in (ns.get("MODELOS_RELATORIO") or {}):
+        emails = emails_do_departamento(departamento, ns.get("MAPA_EMAIL_DEPARTAMENTO"),
+                                        ns.get("EMAILS_TRAVADOS_NO_DEPARTAMENTO"))
+        minhas = set(lojas_do_departamento(departamento, ns))
+        recorte = [r for r in ranking if r["loja"] in minhas]
+        if not emails or not recorte or len(recorte) == len(ranking) and "Comercial" not in departamento:
             continue
-        html_l, texto_l = montar_email_podio(ranking, fatos.get("ritmo"), hoje, link, logo_src, ns, destaque=r["loja"])
-        enviar_email(f"Pódio das lojas {hoje.strftime('%d/%m')} · {r['loja']} está em {r['posicao']}º", html_l, texto_l,
-                     logo_b64, destinos=[e.strip() for e in str(email).split(",") if e.strip()])
-        print(f"Pódio de {r['loja']} enviado para {email}.")
-
+        curto = departamento.split(" - ")[-1].strip()
+        html_d, texto_d = montar_email_podio(recorte, fatos.get("ritmo"), hoje, link, logo_src, ns, destaque=curto)
+        enviar_email(f"Pódio das lojas {hoje.strftime('%d/%m')} · {curto} · {recorte[0]['loja']} lidera", html_d, texto_d,
+                     logo_b64, destinos=emails)
+        print(f"Pódio de {curto} enviado para {', '.join(emails)}.")
 
 if __name__ == "__main__":
     main(sys.argv[1:])

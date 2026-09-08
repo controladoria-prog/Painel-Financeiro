@@ -16317,7 +16317,7 @@ with tab1:
         _cols_fech_vg = [c for c in cols_kpi if c != _col_corrente_vg]
         _lojas_gap_vg = None
         try:
-            _lojas_vg = [a for a in abas_disponiveis if not any(x in str(a).upper() for x in ("CONSOLID", " + "))]
+            _lojas_vg = list(VISOES_CONSOLIDADAS["DRE CONSOLIDADO"])   # as 21 unidades, nunca uma visão consolidada
             if _lojas_vg and _cols_fech_vg:
                 _lojas_gap_vg = _bfn.lojas_que_explicam(_bfn.desvio_por_loja(
                     {"get_valor_consolidado_multi": get_valor_consolidado_multi},
@@ -16700,27 +16700,6 @@ with tab1:
     # ---------------------------------------------------------------------------
     # ABA 2: DRE COMPLETA & DESVIOS
     # ---------------------------------------------------------------------------
-    # =================================================================
-    # Ações em aberto (08/09/2026) -- alerta vira ação com dono e prazo
-    # =================================================================
-    # A planilha de Ações (CSV publicado, secret ACOES_CSV_URL) é mantida à
-    # mão: Data, Alerta, Ação, Dono, Prazo, Status. Aqui e no briefing ela é
-    # só lida; o painel deixa de ser relatório e vira cobrança.
-    _url_acoes = _segredo_com_origem("ACOES_CSV_URL")[0]
-    if _url_acoes:
-        import briefing as _bfa
-        _acoes_vg = _bfa.acoes_em_aberto(_bfa.carregar_acoes(_url_acoes), datetime.now(FUSO_BR).date())
-        _n_venc = sum(1 for a in _acoes_vg if a["vencida"])
-        with st.expander(f"📌 Ações em aberto — {len(_acoes_vg)} ({_n_venc} vencida{'s' if _n_venc != 1 else ''})",
-                         expanded=bool(_n_venc)):
-            if _acoes_vg:
-                st.dataframe(pd.DataFrame([{"Ação": a["acao"], "Dono": a["dono"], "Prazo": a["prazo"],
-                                            "Situação": "VENCIDA" if a["vencida"] else "no prazo",
-                                            "Alerta": a["alerta"]} for a in _acoes_vg]),
-                             hide_index=True, width="stretch")
-            else:
-                st.caption("Nenhuma ação em aberto na planilha de Ações.")
-
     # =================================================================
     # Board pack sob demanda (04/09/2026)
     # =================================================================

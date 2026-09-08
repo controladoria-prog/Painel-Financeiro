@@ -7517,13 +7517,12 @@ class TesteBriefingPorEmail(unittest.TestCase):
         self.assertEqual(([l["loja"] for l in g["lojas"]], g["total_lojas"]), (["A", "B"], 4))
         self.assertAlmostEqual(g["fracao"], 1200 / 1300)
         self.assertIsNone(b.lojas_que_explicam([{"loja": "D", "desvio": 400.0}]))
-        df = pd.DataFrame({"Data": ["01/09", "02/09", "03/09"], "Ação": ["Renegociar boleto", "Cortar mkt", "Feita"],
-                           "Dono": ["Ana", "Bia", "Caio"], "Prazo": ["02/09/2026", "20/09/2026", "01/09/2026"],
-                           "Status": ["Em andamento", "Pendente", "Concluída"]})
-        acoes = b.acoes_em_aberto(df, datetime(2026, 9, 8).date())
-        self.assertEqual([(a["acao"], a["vencida"]) for a in acoes], [("Renegociar boleto", True), ("Cortar mkt", False)])
-        self.assertIn("<b>1 vencida</b>", b.item_de_acoes(acoes)["texto"])
-        self.assertIsNone(b.item_de_acoes([]))
+        # As lojas sao a lista canonica do app (21 unidades); visao consolidada nunca entra.
+        lojas = b.lojas_oficiais(self.ns)
+        self.assertEqual(len(lojas), 21)
+        self.assertNotIn("LJ - G&A", lojas)
+        vd = b.lojas_do_departamento("🚗 Relatório de Custos - Coordenação de VD", self.ns)
+        self.assertTrue(vd and all(l.startswith(("VD", "ABPR")) for l in vd), vd)
         prova = b.prova_de_fogo_orcamento({"6.24 - Marketing": [100, 100, 100], "8.3 - Pessoal": [200, 200, 200]},
                                           {"6.24 - Marketing": 900.0, "8.3 - Pessoal": 2500.0}, 0.15)
         self.assertEqual([(p["linha"], p["veredito"]) for p in prova], [("6.24 - Marketing", "abaixo do ritmo atual")])
