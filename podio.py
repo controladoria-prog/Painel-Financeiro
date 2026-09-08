@@ -47,39 +47,60 @@ def ranking_das_lojas(ns, dados_por_loja, ritmo, cols_fechados):
     return saida
 
 
-def montar_email_podio(ranking, ritmo, hoje, link="", logo_src="", ns=None, destaque=None):
+def montar_email_podio(ranking, ritmo, hoje, link="", logo_src="", ns=None, destaque=None, periodo_fechado=""):
+    """Cada célula se explica sozinha: valor principal em destaque, o
+    complemento em letra menor logo abaixo, cabeçalho com o período."""
     fmt = (ns or {}).get("formata_valor_curto", lambda v: f"R$ {v:,.0f}")
     dia = f"{DIAS_SEMANA[hoje.weekday()]}, {hoje.strftime('%d/%m/%Y')}"
     mes = str(ritmo["mes"]).capitalize() if ritmo else ""
-    medalha = {1: "🥇", 2: "🥈", 3: "🥉"}
+    data_dados = ritmo["data_dados"] if ritmo else ""
+    selo = {1: ("1º", "#C9A227"), 2: ("2º", "#8E9AAF"), 3: ("3º", "#B87333")}
+    sub = f'style="font-size:11px; color:{CORES["apagado"]}; margin-top:2px;"'
     linhas = ""
     for r in ranking:
-        cor = (CORES["positivo"] if (r["ritmo_pct"] or 0) >= 100 else
-               CORES["alerta"] if (r["ritmo_pct"] or 0) >= 90 else CORES["negativo"])
+        pct = r["ritmo_pct"]
+        cor_r = (CORES["positivo"] if pct >= 100 else CORES["alerta"] if pct >= 90 else CORES["negativo"])
+        cor_e = CORES["positivo"] if r["desvio"] >= 0 else CORES["negativo"]
         fundo = "#FFF6DA" if destaque and r["loja"] == destaque else ("#F4F7FB" if r["posicao"] % 2 == 0 else "#FFFFFF")
-        ritmo_txt = f"{r['ritmo_pct']:.0f}%" if r["ritmo_pct"] is not None else "—"
-        linhas += (f'<tr style="background:{fundo};">'
-                   f'<td style="padding:7px 8px; font-family:{FONTE}; font-size:13px; color:{CORES["texto"]};">{medalha.get(r["posicao"], r["posicao"])}</td>'
-                   f'<td style="padding:7px 8px; font-family:{FONTE}; font-size:13px; font-weight:600; color:{CORES["texto"]};">{r["loja"]}</td>'
-                   f'<td align="right" style="padding:7px 8px; font-family:{FONTE}; font-size:13px; font-weight:700; color:{cor};">{ritmo_txt}</td>'
-                   f'<td align="right" style="padding:7px 8px; font-family:{FONTE}; font-size:12px; color:{CORES["apagado"]};">{fmt(r["rec_mes"])} / {fmt(r["meta_mes"])}</td>'
-                   f'<td align="right" style="padding:7px 8px; font-family:{FONTE}; font-size:13px; font-weight:700; '
-                   f'color:{CORES["positivo"] if r["desvio"] >= 0 else CORES["negativo"]};">{"+" if r["desvio"] >= 0 else "−"}{fmt(abs(r["desvio"]))}</td></tr>')
-    cabecalho = "".join(f'<th align="{al}" style="padding:6px 8px; font-family:{FONTE}; font-size:10px; letter-spacing:1px; '
-                        f'text-transform:uppercase; color:{CORES["apagado"]}; border-bottom:2px solid {CORES["marca"]};">{t}</th>'
-                        for t, al in (("#", "left"), ("Loja", "left"), (f"Ritmo de {mes}", "right"),
-                                      ("Realizado / meta", "right"), ("EBITDA vs orçado", "right")))
-    corpo = (f'<div style="font-size:13px; color:{CORES["apagado"]}; margin-bottom:8px;">Ritmo = receita do mês contra a meta até '
-             f'{ritmo["data_dados"] if ritmo else ""} (dados D+2). EBITDA = acumulado dos meses fechados.</div>'
-             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">'
-             f"<tr>{cabecalho}</tr>{linhas}</table>")
+        rotulo, cor_selo = selo.get(r["posicao"], (str(r["posicao"]), CORES["borda"]))
+        cor_txt_selo = "#FFFFFF" if r["posicao"] <= 3 else CORES["texto"]
+        linhas += (
+            f'<tr style="background:{fundo};">'
+            f'<td style="padding:9px 6px 9px 8px; font-family:{FONTE};">'
+            f'<span style="display:inline-block; min-width:26px; padding:3px 6px; border-radius:11px; background:{cor_selo}; '
+            f'color:{cor_txt_selo}; font-size:11px; font-weight:700; text-align:center;">{rotulo}</span></td>'
+            f'<td style="padding:9px 8px; font-family:{FONTE}; font-size:13px; font-weight:600; color:{CORES["texto"]};">{r["loja"]}</td>'
+            f'<td align="right" style="padding:9px 8px; font-family:{FONTE};">'
+            f'<div style="font-size:15px; font-weight:700; color:{cor_r};">{pct:.0f}%</div>'
+            f'<div {sub}>{"acima" if pct >= 100 else "abaixo"} da meta</div></td>'
+            f'<td align="right" style="padding:9px 8px; font-family:{FONTE};">'
+            f'<div style="font-size:13px; font-weight:700; color:{CORES["texto"]};">{fmt(r["rec_mes"])}</div>'
+            f'<div {sub}>meta até {data_dados}: {fmt(r["meta_mes"])}</div></td>'
+            f'<td align="right" style="padding:9px 8px; font-family:{FONTE};">'
+            f'<div style="font-size:13px; font-weight:700; color:{cor_e};">{"+" if r["desvio"] >= 0 else "−"}{fmt(abs(r["desvio"]))} '
+            f'{"acima" if r["desvio"] >= 0 else "abaixo"}</div>'
+            f'<div {sub}>{fmt(r["ebitda_real"])} vs {fmt(r["ebitda_orc"])} orçado</div></td></tr>')
+    cab = "".join(
+        f'<th align="{al}" style="padding:6px 8px; font-family:{FONTE}; font-size:10px; letter-spacing:1px; line-height:1.4; '
+        f'text-transform:uppercase; color:{CORES["apagado"]}; border-bottom:2px solid {CORES["marca"]};">{t}</th>'
+        for t, al in (("#", "left"), ("Loja", "left"), (f"Ritmo de {mes}", "right"),
+                      (f"Receita de {mes}<br>até {data_dados}", "right"), (f"EBITDA {periodo_fechado}<br>vs orçado", "right")))
+    legenda = (
+        f'<div style="font-size:12px; line-height:1.6; color:{CORES["apagado"]}; margin-bottom:10px;">'
+        f'<b style="color:{CORES["texto"]};">Ritmo</b>: quanto a loja já vendeu em {mes.lower()} em relação à meta proporcional '
+        f'até {data_dados} (100% = no ritmo da meta; os dados chegam D+2).<br>'
+        f'<b style="color:{CORES["texto"]};">Receita</b>: o vendido no mês e a meta até essa data.<br>'
+        f'<b style="color:{CORES["texto"]};">EBITDA</b>: acumulado dos meses fechados ({periodo_fechado}) contra o orçado do mesmo período. '
+        'A ordem do ranking é pelo ritmo.</div>')
+    corpo = legenda + ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">'
+                       f"<tr>{cab}</tr>{linhas}</table>")
     titulo = f"Pódio das lojas · {mes}" + (f" · {destaque}" if destaque else "")
     lider = ranking[0]["loja"] if ranking else ""
     html = moldura_email(titulo, dia, "RANKING", CORES["marca"], corpo, link, logo_src,
-                         "Gerado automaticamente pelo painel toda segunda-feira. Quem lidera hoje: " + lider + ".")
+                         f"Gerado automaticamente pelo painel toda segunda-feira. Quem lidera o ritmo de {mes.lower()}: {lider}.")
     texto = f"{titulo} · {dia}\n\n" + "\n".join(
-        f"{r['posicao']}. {r['loja']} · ritmo {r['ritmo_pct']:.0f}% · EBITDA {'+' if r['desvio'] >= 0 else '-'}{fmt(abs(r['desvio']))}"
-        if r["ritmo_pct"] is not None else f"{r['posicao']}. {r['loja']}" for r in ranking)
+        f"{r['posicao']}. {r['loja']} · ritmo {r['ritmo_pct']:.0f}% (vendeu {fmt(r['rec_mes'])} de meta {fmt(r['meta_mes'])} até {data_dados})"
+        f" · EBITDA {periodo_fechado} {'+' if r['desvio'] >= 0 else '-'}{fmt(abs(r['desvio']))} vs orçado" for r in ranking)
     return html, texto
 
 
@@ -90,6 +111,9 @@ def main(argv):
     lojas = lojas_oficiais(ns)
     hoje = ctx["hoje"]
     cols_fech = [c for c in ctx["m_map"].values() if int(c[:2]) < hoje.month]
+    nomes_fech = [n for n, c in ctx["m_map"].items() if c in cols_fech]
+    periodo_fechado = (f"{nomes_fech[0][:3].lower()}–{nomes_fech[-1][:3].lower()}" if len(nomes_fech) > 1
+                       else (nomes_fech[0][:3].lower() if nomes_fech else ""))
     dados = ns["carregar_dados_por_loja"](url_orc, url_real, lojas)
     ranking = ranking_das_lojas(ns, dados, fatos.get("ritmo"), cols_fech)
     if not ranking:
@@ -97,7 +121,7 @@ def main(argv):
     logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
     logo_src = f"cid:{CID_LOGO}" if logo_b64 else ""
     link = os.environ.get("LINK_PAINEL", "")
-    html, texto = montar_email_podio(ranking, fatos.get("ritmo"), hoje, link, logo_src, ns)
+    html, texto = montar_email_podio(ranking, fatos.get("ritmo"), hoje, link, logo_src, ns, periodo_fechado=periodo_fechado)
     if "--teste" in argv:
         print(texto)
         return
@@ -112,7 +136,8 @@ def main(argv):
         if not emails or not recorte or len(recorte) == len(ranking) and "Comercial" not in departamento:
             continue
         curto = departamento.split(" - ")[-1].strip()
-        html_d, texto_d = montar_email_podio(recorte, fatos.get("ritmo"), hoje, link, logo_src, ns, destaque=curto)
+        html_d, texto_d = montar_email_podio(recorte, fatos.get("ritmo"), hoje, link, logo_src, ns, destaque=curto,
+                                             periodo_fechado=periodo_fechado)
         enviar_email(f"Pódio das lojas {hoje.strftime('%d/%m')} · {curto} · {recorte[0]['loja']} lidera", html_d, texto_d,
                      logo_b64, destinos=emails)
         print(f"Pódio de {curto} enviado para {', '.join(emails)}.")
