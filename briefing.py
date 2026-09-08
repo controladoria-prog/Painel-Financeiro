@@ -66,7 +66,7 @@ SEMENTES = [
     "DIAS_DEFASAGEM_DADOS", "FUSO_BR", "LOGO_BEEA_B64", "MODELOS_RELATORIO",
     "MAPA_EMAIL_DEPARTAMENTO", "EMAILS_TRAVADOS_NO_DEPARTAMENTO", "_subgrupos_nivel2",
     "ofensores_por_desvio", "_nome_sem_numero_dre", "_resolver_termo_departamento",
-    "_numero_linha_dre",
+    "_numero_linha_dre", "carregar_dados_por_loja", "_planilha_aberta",
 ]
 
 NOMES_MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -200,10 +200,32 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
     col_corrente = f"{hoje.month:02d}/{hoje.year}"
     nome_corrente = next((n for n, c in m_map.items() if c == col_corrente), col_corrente)
     rotulo = f"Acumulado YTD até {str(nome_corrente).capitalize()}"
+    cols_fechados = [c for c in cols_kpi if c != col_corrente]
+    # Quais lojas explicam o gap: uma aba por loja no mesmo Excel.
+    lojas_gap = None
+    try:
+        lojas = [l.strip() for l in os.environ.get("LOJAS", "").split(",") if l.strip()] or lojas_do_workbook(url_real, ns)
+        if lojas and cols_fechados:
+            dados_por_loja = ns["carregar_dados_por_loja"](url_orc, url_real, lojas)
+            lojas_gap = lojas_que_explicam(desvio_por_loja(ns, dados_por_loja, cols_fechados))
+    except Exception as erro:   # noqa: BLE001 -- loja sem aba não derruba o briefing
+        print(f"(lojas: {erro})")
+    # Ano contra ano acorda sozinho quando a planilha tiver o ano anterior.
+    cols_ano_ant = [f"{c[:2]}/{int(c[3:]) - 1}" for c in cols_fechados]
+    cols_ano_ant = [c for c in cols_ano_ant if c in df_ref.columns] or None
     fatos = ns["montar_fatos_executivos"](
         valor, linhas, cols_kpi, col_corrente, nome_corrente,
-        pendencias=pendencias, ritmo=ritmo, margem_proj=margem_proj, rotulo_periodo=rotulo)
+        pendencias=pendencias, ritmo=ritmo, margem_proj=margem_proj, rotulo_periodo=rotulo,
+        lojas_gap=lojas_gap, cols_ano_anterior=cols_ano_ant)
     itens = ns["montar_narrativa_executiva"](fatos)
+    # Sentinela de retroativos: fotografia dos meses fechados, comparada com a anterior.
+    foto = fotografar_fechados(valor, linhas_vigiadas(linhas, ns), cols_fechados, hoje)
+    itens += comparar_fotografias(foto, carregar_fotografia(), {v: k for k, v in m_map.items()},
+                                  ns.get("formata_valor_curto"), ns)
+    # Ações em aberto (planilha de Ações, opcional).
+    acoes = acoes_em_aberto(carregar_acoes(os.environ.get("ACOES_CSV_URL", "")), hoje)
+    if item_de_acoes(acoes):
+        itens.append(item_de_acoes(acoes))
     # Meses FECHADOS: bateu (True) ou não (False) a receita orçada. É o gabarito
     # do placar da chance.
     resultado_por_mes = {}
@@ -214,7 +236,7 @@ def montar_briefing(ns, hoje=None, aba=None, url_orc=None, url_real=None, url_fe
         r_ = gv(list_df_real, "3 - Receita Operacional Liquida", [c])
         if o > 0 and r_ > 0:
             resultado_por_mes[c] = r_ >= o
-    contexto = {"hoje": hoje, "hoje_dados": hoje_dados, "aba": aba, "rotulo": rotulo,
+    contexto = {"hoje": hoje, "hoje_dados": hoje_dados, "aba": aba, "rotulo": rotulo, "fotografia": foto,
                 "resultado_por_mes": resultado_por_mes, "list_df_real": list_df_real, "linhas": linhas,
                 "list_df_orc": list_df_orc, "meses_cols": meses_cols, "m_map": m_map}
     return fatos, itens, contexto
@@ -456,6 +478,179 @@ def series_departamento(valor, linhas, m_map, ate_mes):
         saida["rotulos"].append(nome.capitalize()[:3])
         saida["gasto_real"].append(sum(abs(valor("real", l, [col], True)) for l in linhas))
         saida["gasto_orc"].append(sum(abs(valor("orc", l, [col], True)) for l in linhas))
+    return saida
+
+
+# ---------------------------------------------------------------------------
+# NÍVEL 3 (08/09/2026): sentinela de retroativos, lojas que explicam o gap,
+# ano contra ano, ações em aberto e prova de fogo do orçamento
+# ---------------------------------------------------------------------------
+CAMINHO_FOTOGRAFIA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "dados", "fotografia_fechados.json")
+RETROATIVO_MINIMO = 1000.0
+LINHAS_VIGIADAS_FIXAS = ["3 - Receita Operacional Liquida", "2 - Deduções da Receita Operacional Bruta",
+                         "4 - Custo das Vendas", "11 - EBITDA"]
+
+
+def linhas_vigiadas(linhas_da_visao, ns):
+    """O que a sentinela fotografa: receita, deduções, CMV, EBITDA e os
+    subgrupos de despesa (nível 2 de 6 e 8)."""
+    existentes = set(linhas_da_visao)
+    fixas = [l for l in LINHAS_VIGIADAS_FIXAS if l in existentes]
+    subs = [l for g in ("6", "8") for l in ns["_subgrupos_nivel2"](list(linhas_da_visao), g)]
+    return fixas + [l for l in subs if l not in fixas]
+
+
+def fotografar_fechados(valor, linhas, cols_fechados, data):
+    return {"data": data.isoformat(),
+            "meses": {c: {l: float(valor("real", l, [c], True)) for l in linhas} for c in cols_fechados}}
+
+
+def carregar_fotografia(caminho=CAMINHO_FOTOGRAFIA):
+    try:
+        with open(caminho, encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        return dados if isinstance(dados, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def salvar_fotografia(foto, caminho=CAMINHO_FOTOGRAFIA):
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "w", encoding="utf-8") as arquivo:
+        json.dump(foto, arquivo, ensure_ascii=False, indent=1)
+
+
+def comparar_fotografias(atual, anterior, nomes_meses=None, fmt=None, ns=None, minimo=RETROATIVO_MINIMO):
+    """Mês fechado não deveria mudar. Devolve itens de narrativa com o que
+    mudou entre a fotografia anterior e a de hoje -- vazio se nada mudou ou
+    se ainda não há fotografia anterior."""
+    if not anterior or not anterior.get("meses"):
+        return []
+    fmt = fmt or (lambda v: f"R$ {v:,.0f}")
+    nome_linha = (ns or {}).get("_nome_sem_numero_dre", lambda l: l)
+    nomes_meses = nomes_meses or {}
+    itens = []
+    for col, valores in atual.get("meses", {}).items():
+        antes = anterior["meses"].get(col)
+        if not antes:
+            continue
+        mudancas = []
+        for linha, v in valores.items():
+            if linha in antes and abs(v - antes[linha]) >= minimo:
+                mudancas.append((linha, v - antes[linha]))
+        if not mudancas:
+            continue
+        mudancas.sort(key=lambda m: -abs(m[1]))
+        partes = [f"<b>{nome_linha(l)}</b> {'+' if d >= 0 else '−'}{fmt(abs(d))}" for l, d in mudancas[:4]]
+        extra = f" e mais {len(mudancas) - 4}" if len(mudancas) > 4 else ""
+        mes = str(nomes_meses.get(col, col)).capitalize()
+        itens.append({"rotulo": "Retroativos", "tom": "alerta",
+                      "texto": (f"{mes} (mês fechado) mudou desde o briefing de "
+                                f"{anterior['data'][8:10]}/{anterior['data'][5:7]}: {', '.join(partes)}{extra}.")})
+    return itens
+
+
+def lojas_do_workbook(caminho, ns, excluir=("CONSOLID", " + ")):
+    """As abas de loja do Excel: tudo que não é visão consolidada/agrupada."""
+    with ns["_planilha_aberta"](caminho) as livro:
+        nomes = list(getattr(livro, "sheet_names", []) or [])
+    return [n for n in nomes if not any(x in n.upper() for x in excluir)]
+
+
+def desvio_por_loja(ns, dados_por_loja, cols_fechados):
+    gv = ns["get_valor_consolidado_multi"]
+    saida = []
+    for loja, (df_o, df_r) in dados_por_loja.items():
+        real = gv([df_r], "11 - EBITDA", cols_fechados) if df_r is not None and not df_r.empty else 0.0
+        orc = gv([df_o], "11 - EBITDA", cols_fechados) if df_o is not None and not df_o.empty else 0.0
+        if not real and not orc:
+            continue
+        saida.append({"loja": loja, "ebitda_real": real, "ebitda_orc": orc, "desvio": real - orc})
+    return saida
+
+
+def lojas_que_explicam(desvios, fracao=0.7):
+    """As lojas que, somadas, respondem por `fracao` do EBITDA abaixo do
+    orçado. Devolve None se nenhuma loja está abaixo."""
+    negativas = sorted((d for d in desvios if d["desvio"] < 0), key=lambda d: d["desvio"])
+    total = -sum(d["desvio"] for d in negativas)
+    if not negativas or total <= 0:
+        return None
+    acumulado, escolhidas = 0.0, []
+    for d in negativas:
+        escolhidas.append(d)
+        acumulado += -d["desvio"]
+        if acumulado >= fracao * total:
+            break
+    return {"n": len(escolhidas), "total_lojas": len(desvios), "total_negativo": total,
+            "fracao": acumulado / total, "lojas": escolhidas}
+
+
+def carregar_acoes(url_csv):
+    """Planilha de Ações (CSV publicado): Data, Alerta, Ação, Dono, Prazo, Status."""
+    if not url_csv:
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(url_csv, dtype=str).fillna("")
+    except Exception:   # noqa: BLE001 -- planilha fora do ar não pode derrubar o briefing
+        return pd.DataFrame()
+    chaves = {"acao": "Ação", "acão": "Ação", "ação": "Ação", "dono": "Dono", "responsavel": "Dono",
+              "responsável": "Dono", "prazo": "Prazo", "status": "Status", "alerta": "Alerta", "data": "Data"}
+    renome = {c: chaves[c.strip().lower()] for c in df.columns if c.strip().lower() in chaves}
+    return df.rename(columns=renome)
+
+
+def acoes_em_aberto(df, hoje):
+    if df is None or df.empty or "Ação" not in df.columns:
+        return []
+    fechados = ("concluída", "concluida", "concluído", "concluido", "cancelada", "cancelado", "feito", "ok")
+    saida = []
+    for _, ln in df.iterrows():
+        status = str(ln.get("Status", "")).strip().lower()
+        if not str(ln.get("Ação", "")).strip() or status in fechados:
+            continue
+        prazo = pd.to_datetime(str(ln.get("Prazo", "")), dayfirst=True, errors="coerce")
+        vencida = bool(prazo is not pd.NaT and not pd.isna(prazo) and prazo.date() < hoje)
+        saida.append({"acao": str(ln.get("Ação", "")).strip(), "dono": str(ln.get("Dono", "")).strip(),
+                      "prazo": prazo.strftime("%d/%m") if not pd.isna(prazo) else "", "vencida": vencida,
+                      "alerta": str(ln.get("Alerta", "")).strip()})
+    saida.sort(key=lambda a: (not a["vencida"], a["prazo"]))
+    return saida
+
+
+def item_de_acoes(acoes):
+    if not acoes:
+        return None
+    vencidas = [a for a in acoes if a["vencida"]]
+    partes = [f"<b>{a['acao']}</b> ({a['dono'] or 'sem dono'}, prazo {a['prazo'] or 'sem prazo'})" for a in vencidas[:3]]
+    texto = f"{len(acoes)} ação{'ões' if len(acoes) != 1 else ''} em aberto"
+    if vencidas:
+        texto += f", <b>{len(vencidas)} vencida{'s' if len(vencidas) != 1 else ''}</b>: {_lista_pt(partes)}"
+        texto += f" e mais {len(vencidas) - 3}" if len(vencidas) > 3 else ""
+    return {"rotulo": "Ações", "tom": "negativo" if vencidas else "neutro", "texto": texto + "."}
+
+
+def prova_de_fogo_orcamento(realizado_mensal, proposto_anual, tolerancia=0.15):
+    """Confronta o orçamento proposto com a tendência do ano corrente.
+    `realizado_mensal`: {linha: [valores dos meses fechados]}; `proposto_anual`:
+    {linha: valor}. Run-rate = média mensal × 12; a tendência recente
+    (últimos 3 meses × 4) entra como segunda régua. Devolve as linhas fora da
+    tolerância, com veredito."""
+    saida = []
+    for linha, proposto in proposto_anual.items():
+        meses = [abs(float(v)) for v in (realizado_mensal.get(linha) or []) if v is not None]
+        proposto = abs(float(proposto or 0))
+        if not meses or not proposto:
+            continue
+        run_rate = sum(meses) / len(meses) * 12
+        recente = sum(meses[-3:]) / len(meses[-3:]) * 12
+        diff = proposto / run_rate - 1 if run_rate else 0.0
+        if abs(diff) <= tolerancia:
+            continue
+        saida.append({"linha": linha, "proposto": proposto, "run_rate": run_rate, "recente": recente,
+                      "diff": diff, "veredito": "acima do ritmo atual" if diff > 0 else "abaixo do ritmo atual"})
+    saida.sort(key=lambda s: -abs(s["diff"]))
     return saida
 
 
@@ -866,6 +1061,7 @@ def main(argv):
     # O histórico só avança depois do envio: um envio que falhou não vira
     # o "ontem" de amanhã.
     salvar_historico(registrar_no_historico(historico, atual))
+    salvar_fotografia(ctx["fotografia"])
 
 
 if __name__ == "__main__":

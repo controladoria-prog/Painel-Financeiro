@@ -46,7 +46,7 @@ jobs:
         run: |
           git config user.name "briefing-bot"
           git config user.email "briefing-bot@users.noreply.github.com"
-          if [ -d dados ]; then git add -A dados; fi
+          if [ -f dados/historico_briefing.json ]; then git add dados/historico_briefing.json; fi
           git commit -m "Histórico do briefing $(date -u +%d/%m/%Y)" || echo "sem mudança no histórico"
           git pull --rebase origin main
           git push origin HEAD:main

@@ -1,0 +1,28 @@
+name: Podio das lojas (segunda, 10h)
+
+# 14:07 UTC = 10:07 em Porto Velho, toda segunda-feira.
+on:
+  schedule:
+    - cron: "7 14 * * 1"
+  workflow_dispatch:
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependências
+        run: pip install --quiet pandas numpy openpyxl
+      - name: Calcular e enviar o pódio
+        env:
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          FECHAMENTO_CSV_URL: ${{ secrets.FECHAMENTO_CSV_URL }}
+          LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+          EMAILS_LOJAS: ${{ secrets.EMAILS_LOJAS }}
+        run: python podio.py

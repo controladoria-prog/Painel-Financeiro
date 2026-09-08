@@ -1,24 +1,22 @@
-name: Briefing executivo (10h)
+name: Alertas do dia
 
-# Porto Velho é UTC-4 (sem horário de verão): 14:07 UTC = 10:07 lá, de segunda a sexta. O GitHub pode
-# atrasar o agendamento (hoje atrasou 4h); por isso há dois disparos e o envio é idempotente.
+# 13, 15, 17, 19 e 21 UTC = 9h, 11h, 13h, 15h e 17h em Porto Velho, de segunda a sexta.
+# Só manda e-mail quando algo cruzou uma linha e ainda não foi avisado.
 on:
   schedule:
-    - cron: "7 14 * * 1-5"    # 10:07 em Porto Velho
-    - cron: "45 14 * * 1-5"   # 10:45: rede de segurança -- se o das 10:07 já saiu, este fica quieto
+    - cron: "7 13,15,17,19,21 * * 1-5"
   workflow_dispatch:
     inputs:
-      forcar:
-        description: "Reenviar mesmo que o de hoje já tenha saído"
+      exemplo:
+        description: "Mandar um alerta de EXEMPLO (dados fictícios), só para ver o e-mail"
         type: boolean
         default: false
 
-# O robô grava o histórico do dia de volta no repositório (dados/historico_briefing.json).
 permissions:
   contents: write
 
 jobs:
-  enviar:
+  avaliar:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -33,20 +31,20 @@ jobs:
       - name: Instalar dependências
         run: pip install --quiet pandas numpy openpyxl
 
-      - name: Calcular e enviar o briefing
+      - name: Avaliar e avisar
         env:
           SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
           SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
           FECHAMENTO_CSV_URL: ${{ secrets.FECHAMENTO_CSV_URL }}
           LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
-        run: python briefing.py ${{ github.event.inputs.forcar == 'true' && '--forcar' || '' }}
+        run: python alertas.py ${{ github.event.inputs.exemplo == 'true' && '--exemplo' || '' }}
 
-      - name: Guardar o histórico do dia
+      - name: Lembrar o que já foi avisado
         run: |
           git config user.name "briefing-bot"
           git config user.email "briefing-bot@users.noreply.github.com"
-          if [ -d dados ]; then git add -A dados; fi
-          git commit -m "Histórico do briefing $(date -u +%d/%m/%Y)" || echo "sem mudança no histórico"
+          if [ -f dados/estado_alertas.json ]; then git add dados/estado_alertas.json; fi
+          git commit -m "Alertas avisados $(date -u +%d/%m/%Y)" || echo "nada novo"
           git pull --rebase origin main
           git push origin HEAD:main

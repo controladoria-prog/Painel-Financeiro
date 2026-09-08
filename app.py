@@ -2818,7 +2818,8 @@ def projetar_margem_fechamento(rec_liq, ebitda, delta_rec, delta_ebitda):
 
 
 def montar_fatos_executivos(valor, linhas_dre, cols_kpi, col_mes_corrente, nome_mes_corrente,
-                            pendencias=None, ritmo=None, margem_proj=None, rotulo_periodo=""):
+                            pendencias=None, ritmo=None, margem_proj=None, rotulo_periodo="",
+                            lojas_gap=None, cols_ano_anterior=None):
     """Os FATOS da narrativa, numa fonte só (tela e e-mail).
 
     `valor(lado, linha, cols, exato)` é injetado: na tela é o
@@ -2841,13 +2842,21 @@ def montar_fatos_executivos(valor, linhas_dre, cols_kpi, col_mes_corrente, nome_
     tem_corrente = col_mes_corrente in cols_kpi and bool(cols_fech)
     base = cols_fech if tem_corrente else list(cols_kpi)
     f = {"periodo": rotulo_periodo, "ritmo": ritmo, "margem_proj": margem_proj,
-         "mes_corrente": None}
+         "mes_corrente": None, "lojas_gap": lojas_gap, "ano_anterior": None}
     f["rec_real"], f["rec_orc"] = valor("real", receita, cols_kpi), valor("orc", receita, cols_kpi)
     f["ebitda_real"], f["ebitda_orc"] = valor("real", ebitda, cols_kpi), valor("orc", ebitda, cols_kpi)
     f["fechado"] = {
         "rec_real": valor("real", receita, base), "rec_orc": valor("orc", receita, base),
         "ebitda_real": valor("real", ebitda, base), "ebitda_orc": valor("orc", ebitda, base),
     }
+    # Ano contra ano: só quando a planilha traz o mesmo período do ano anterior
+    # (a partir de 2027, com 2026 na mesma planilha). Sem coluna, sem frase.
+    if cols_ano_anterior:
+        rec_ant = valor("real", receita, cols_ano_anterior)
+        eb_ant = valor("real", ebitda, cols_ano_anterior)
+        if rec_ant or eb_ant:
+            f["ano_anterior"] = {"rec": rec_ant, "ebitda": eb_ant, "rec_atual": f["fechado"]["rec_real"],
+                                 "ebitda_atual": f["fechado"]["ebitda_real"], "n_meses": len(cols_ano_anterior)}
     if tem_corrente:
         f["mes_corrente"] = {
             "col": col_mes_corrente, "mes": nome_mes_corrente,
@@ -3020,6 +3029,24 @@ def montar_narrativa_executiva(fatos):
         itens.append({"rotulo": "Folgas", "texto": texto,
                       "tom": "positivo" if folgas else "alerta"})
 
+    # Quais lojas explicam o EBITDA abaixo do orçado.
+    lg = f.get("lojas_gap")
+    if lg and lg.get("lojas"):
+        partes = [f"<b>{l['loja']}</b> (−{formata_valor_curto(abs(l['desvio']))})" for l in lg["lojas"][:4]]
+        itens.append({"rotulo": "Lojas", "tom": "negativo",
+                      "texto": (f"{lg['n']} de {lg['total_lojas']} lojas explicam {lg['fracao'] * 100:.0f}% do EBITDA "
+                                f"abaixo do orçado: {_lista_pt(partes)}"
+                                + (f" e mais {lg['n'] - 4}" if lg["n"] > 4 else "") + ".")})
+    # Ano contra ano.
+    aa = f.get("ano_anterior")
+    if aa and aa.get("rec"):
+        var_r = (aa["rec_atual"] / aa["rec"] - 1) * 100
+        txt = f"Receita <b>{'+' if var_r >= 0 else '−'}{_pct_br(abs(var_r))}%</b>"
+        if aa.get("ebitda"):
+            var_e = (aa["ebitda_atual"] / aa["ebitda"] - 1) * 100
+            txt += f" e EBITDA <b>{'+' if var_e >= 0 else '−'}{_pct_br(abs(var_e))}%</b>"
+        itens.append({"rotulo": "Ano a ano", "tom": "positivo" if var_r >= 0 else "negativo",
+                      "texto": txt + f" contra o mesmo período do ano anterior ({aa['n_meses']} meses fechados)."})
     k = f.get("concentracao")
     if k and k.get("n"):
         base = f" até {str(mc['mes']).lower()} excluído" if mc else ""
@@ -16284,10 +16311,25 @@ with tab1:
                 list_df_orc if lado == "orc" else list_df_real, linha, cols,
                 exato_linha_sintetica=exato)
 
+        # Quais lojas explicam o gap (uma aba por loja no mesmo Excel) e ano a
+        # ano (acorda quando a planilha tiver as colunas do ano anterior).
+        import briefing as _bfn
+        _cols_fech_vg = [c for c in cols_kpi if c != _col_corrente_vg]
+        _lojas_gap_vg = None
+        try:
+            _lojas_vg = [a for a in abas_disponiveis if not any(x in str(a).upper() for x in ("CONSOLID", " + "))]
+            if _lojas_vg and _cols_fech_vg:
+                _lojas_gap_vg = _bfn.lojas_que_explicam(_bfn.desvio_por_loja(
+                    {"get_valor_consolidado_multi": get_valor_consolidado_multi},
+                    carregar_dados_por_loja(path_orc, path_real, _lojas_vg), _cols_fech_vg))
+        except Exception as _erro_lojas:   # noqa: BLE001 -- loja sem aba não derruba a Visão Geral
+            _lojas_gap_vg = None
+        _cols_ano_ant_vg = [f"{c[:2]}/{int(c[3:]) - 1}" for c in _cols_fech_vg]
+        _cols_ano_ant_vg = [c for c in _cols_ano_ant_vg if list_df_real and c in list_df_real[0].columns] or None
         _fatos_vg = montar_fatos_executivos(
             _valor_vg, _linhas_vg, cols_kpi, _col_corrente_vg, _nome_corrente_vg,
             pendencias=_det_fech, ritmo=_fatos_ritmo, margem_proj=_margem_proj_val,
-            rotulo_periodo=label_periodo_kpi)
+            rotulo_periodo=label_periodo_kpi, lojas_gap=_lojas_gap_vg, cols_ano_anterior=_cols_ano_ant_vg)
         _itens_vg = montar_narrativa_executiva(_fatos_vg)
         if _itens_vg:
             _cor_tom = {"negativo": COLORS["negative"], "positivo": COLORS["positive"],
@@ -16658,6 +16700,27 @@ with tab1:
     # ---------------------------------------------------------------------------
     # ABA 2: DRE COMPLETA & DESVIOS
     # ---------------------------------------------------------------------------
+    # =================================================================
+    # Ações em aberto (08/09/2026) -- alerta vira ação com dono e prazo
+    # =================================================================
+    # A planilha de Ações (CSV publicado, secret ACOES_CSV_URL) é mantida à
+    # mão: Data, Alerta, Ação, Dono, Prazo, Status. Aqui e no briefing ela é
+    # só lida; o painel deixa de ser relatório e vira cobrança.
+    _url_acoes = _segredo_com_origem("ACOES_CSV_URL")[0]
+    if _url_acoes:
+        import briefing as _bfa
+        _acoes_vg = _bfa.acoes_em_aberto(_bfa.carregar_acoes(_url_acoes), datetime.now(FUSO_BR).date())
+        _n_venc = sum(1 for a in _acoes_vg if a["vencida"])
+        with st.expander(f"📌 Ações em aberto — {len(_acoes_vg)} ({_n_venc} vencida{'s' if _n_venc != 1 else ''})",
+                         expanded=bool(_n_venc)):
+            if _acoes_vg:
+                st.dataframe(pd.DataFrame([{"Ação": a["acao"], "Dono": a["dono"], "Prazo": a["prazo"],
+                                            "Situação": "VENCIDA" if a["vencida"] else "no prazo",
+                                            "Alerta": a["alerta"]} for a in _acoes_vg]),
+                             hide_index=True, width="stretch")
+            else:
+                st.caption("Nenhuma ação em aberto na planilha de Ações.")
+
     # =================================================================
     # Board pack sob demanda (04/09/2026)
     # =================================================================
@@ -19407,6 +19470,44 @@ if tab_fech is not None:
 # ---------------------------------------------------------------------------
 if tab_orc is not None:
     with tab_orc:
+        # ---- Prova de fogo do orçamento (08/09/2026) ----
+        # Setembro é mês de orçamento: cada linha do ano seguinte é
+        # confrontada com o ritmo real deste ano (média × 12 e últimos 3
+        # meses × 4). O que estiver fora da tolerância chega na reunião como
+        # pergunta pronta. A conta é da prova_de_fogo_orcamento (briefing.py).
+        with st.expander("🔥 Prova de fogo — o orçamento proposto contra o ritmo real deste ano", expanded=False):
+            st.caption("Suba a proposta (Excel com a coluna Nome e as 12 colunas de mês, ou uma coluna Total). "
+                       "Linhas fora da tolerância aparecem com o veredito.")
+            _pf_arq = st.file_uploader("Proposta do orçamento (.xlsx)", type=["xlsx"], key="pf_arquivo")
+            _pf_tol = st.slider("Tolerância (%)", 5, 40, 15, 5, key="pf_tolerancia")
+            if _pf_arq is not None:
+                try:
+                    import briefing as _bfp
+                    _pf_df = pd.read_excel(_pf_arq)
+                    _pf_nome = "Nome" if "Nome" in _pf_df.columns else _pf_df.columns[0]
+                    _pf_meses = [c for c in _pf_df.columns if c != _pf_nome and pd.api.types.is_numeric_dtype(_pf_df[c])]
+                    _pf_hoje = datetime.now(FUSO_BR).date()
+                    _pf_fech = [c for c in cols_kpi if c != f"{_pf_hoje.month:02d}/{_pf_hoje.year}"]
+                    _pf_proposto, _pf_real = {}, {}
+                    for _, _ln in _pf_df.iterrows():
+                        _nome = str(_ln[_pf_nome]).strip()
+                        if not _nome or _nome == "nan":
+                            continue
+                        _pf_proposto[_nome] = float(pd.to_numeric(_ln[_pf_meses], errors="coerce").fillna(0).sum())
+                        _pf_real[_nome] = [get_valor_consolidado_multi(list_df_real, _nome, [c], exato_linha_sintetica=True)
+                                           for c in _pf_fech]
+                    _pf_saida = _bfp.prova_de_fogo_orcamento(_pf_real, _pf_proposto, _pf_tol / 100)
+                    if _pf_saida:
+                        st.dataframe(pd.DataFrame([{
+                            "Linha": s["linha"], "Proposto (ano)": formata_valor_curto(s["proposto"]),
+                            "Ritmo deste ano (média × 12)": formata_valor_curto(s["run_rate"]),
+                            "Últimos 3 meses × 4": formata_valor_curto(s["recente"]),
+                            "Diferença": f"{'+' if s['diff'] >= 0 else '−'}{abs(s['diff']) * 100:.0f}%",
+                            "Veredito": s["veredito"]} for s in _pf_saida]), hide_index=True, width="stretch")
+                    else:
+                        st.success("Nenhuma linha fora da tolerância: a proposta está alinhada ao ritmo deste ano.")
+                except Exception as _erro_pf:   # noqa: BLE001 -- arquivo estranho vira mensagem
+                    st.error(f"Não consegui ler a proposta: {_erro_pf}")
         st.markdown(
             '<div class="section-title">🎯 Orçamento — por plano de contas</div>',
             unsafe_allow_html=True,

@@ -7499,6 +7499,36 @@ class TesteBriefingPorEmail(unittest.TestCase):
         self.assertTrue(b.ja_enviado_hoje([{"data": "2026-09-04"}], datetime(2026, 9, 4).date()))
         self.assertFalse(b.ja_enviado_hoje([{"data": "2026-09-03"}], datetime(2026, 9, 4).date()))
 
+    def test_nivel_3_sentinela_lojas_acoes_e_prova_de_fogo(self):
+        """08/09/2026: mes fechado que muda vira aviso; lojas que explicam o
+        gap; acoes vencidas; orcamento proposto contra o ritmo real."""
+        b = self.b if hasattr(self, "b") else self.briefing
+        foto_antes = {"data": "2026-09-05", "meses": {"08/2026": {"8.3 - Pessoal": 100.0, "11 - EBITDA": 50.0}}}
+        foto_hoje = {"data": "2026-09-08", "meses": {"08/2026": {"8.3 - Pessoal": 112.5, "11 - EBITDA": 50.3}}}
+        itens = b.comparar_fotografias(foto_hoje, foto_antes, {"08/2026": "AGOSTO"}, minimo=1.0)
+        self.assertEqual(len(itens), 1)
+        self.assertIn("Agosto (mês fechado) mudou desde o briefing de 05/09", itens[0]["texto"])
+        self.assertIn("8.3 - Pessoal</b> +R$ 12", itens[0]["texto"])
+        self.assertNotIn("EBITDA", itens[0]["texto"], "mudanca abaixo do minimo nao e retroativo")
+        self.assertEqual(b.comparar_fotografias(foto_hoje, None), [])
+        lojas = [{"loja": "A", "desvio": -900.0}, {"loja": "B", "desvio": -300.0},
+                 {"loja": "C", "desvio": -100.0}, {"loja": "D", "desvio": 400.0}]
+        g = b.lojas_que_explicam(lojas)
+        self.assertEqual(([l["loja"] for l in g["lojas"]], g["total_lojas"]), (["A", "B"], 4))
+        self.assertAlmostEqual(g["fracao"], 1200 / 1300)
+        self.assertIsNone(b.lojas_que_explicam([{"loja": "D", "desvio": 400.0}]))
+        df = pd.DataFrame({"Data": ["01/09", "02/09", "03/09"], "Ação": ["Renegociar boleto", "Cortar mkt", "Feita"],
+                           "Dono": ["Ana", "Bia", "Caio"], "Prazo": ["02/09/2026", "20/09/2026", "01/09/2026"],
+                           "Status": ["Em andamento", "Pendente", "Concluída"]})
+        acoes = b.acoes_em_aberto(df, datetime(2026, 9, 8).date())
+        self.assertEqual([(a["acao"], a["vencida"]) for a in acoes], [("Renegociar boleto", True), ("Cortar mkt", False)])
+        self.assertIn("<b>1 vencida</b>", b.item_de_acoes(acoes)["texto"])
+        self.assertIsNone(b.item_de_acoes([]))
+        prova = b.prova_de_fogo_orcamento({"6.24 - Marketing": [100, 100, 100], "8.3 - Pessoal": [200, 200, 200]},
+                                          {"6.24 - Marketing": 900.0, "8.3 - Pessoal": 2500.0}, 0.15)
+        self.assertEqual([(p["linha"], p["veredito"]) for p in prova], [("6.24 - Marketing", "abaixo do ritmo atual")])
+        self.assertAlmostEqual(prova[0]["diff"], -0.25)
+
     def test_o_email_traz_kpis_narrativa_e_link(self):
         fatos = {"periodo": "Acumulado YTD até SETEMBRO", "rec_real": 81.2e6, "rec_orc": 103.9e6,
                  "ebitda_real": 19.3e6, "ebitda_orc": 24.3e6, "margem_proj": 22.3,
