@@ -24,7 +24,10 @@ def ranking_das_lojas(ns, dados_por_loja, ritmo, cols_fechados):
     gv = ns["get_valor_consolidado_multi"]
     receita, ebitda = "3 - Receita Operacional Liquida", "11 - EBITDA"
     saida = []
+    oficiais = set(lojas_oficiais(ns))
     for loja, (df_o, df_r) in dados_por_loja.items():
+        if oficiais and loja not in oficiais:
+            continue
         lr = [df_r] if df_r is not None and not df_r.empty else []
         lo = [df_o] if df_o is not None and not df_o.empty else []
         rec_mes = gv(lr, receita, [ritmo["col"]]) if lr and ritmo else 0.0

@@ -7521,6 +7521,8 @@ class TesteBriefingPorEmail(unittest.TestCase):
         lojas = b.lojas_oficiais(self.ns)
         self.assertEqual(len(lojas), 21)
         self.assertNotIn("LJ - G&A", lojas)
+        desvios = b.desvio_por_loja(self.ns, {"LJ - G&A": (pd.DataFrame(), pd.DataFrame({"Nome": ["11 - EBITDA"], "08/2026": [5.0]}))}, ["08/2026"])
+        self.assertEqual(desvios, [], "visao consolidada nao pode virar loja nem por engano")
         vd = b.lojas_do_departamento("🚗 Relatório de Custos - Coordenação de VD", self.ns)
         self.assertTrue(vd and all(l.startswith(("VD", "ABPR")) for l in vd), vd)
         prova = b.prova_de_fogo_orcamento({"6.24 - Marketing": [100, 100, 100], "8.3 - Pessoal": [200, 200, 200]},

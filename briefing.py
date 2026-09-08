@@ -572,8 +572,13 @@ def lojas_do_departamento(departamento, ns):
 
 def desvio_por_loja(ns, dados_por_loja, cols_fechados):
     gv = ns["get_valor_consolidado_multi"]
+    # Só unidade de verdade entra: visão consolidada (LJ - G&A, VD CONSOLIDADO)
+    # que chegue aqui por engano é descartada antes de virar "loja".
+    oficiais = set(lojas_oficiais(ns))
     saida = []
     for loja, (df_o, df_r) in dados_por_loja.items():
+        if oficiais and loja not in oficiais:
+            continue
         real = gv([df_r], "11 - EBITDA", cols_fechados) if df_r is not None and not df_r.empty else 0.0
         orc = gv([df_o], "11 - EBITDA", cols_fechados) if df_o is not None and not df_o.empty else 0.0
         if not real and not orc:
