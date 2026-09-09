@@ -1,0 +1,45 @@
+name: Briefing financeiro (10h)
+
+# Junto do briefing da Controladoria: 14:07 UTC = 10:07 em Porto Velho (UTC-4), seg-sex; segundo disparo de segurança.
+on:
+  schedule:
+    - cron: "7 14 * * 1-5"
+    - cron: "45 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Reenviar mesmo que o de hoje já tenha saído"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependências
+        run: pip install --quiet pandas numpy openpyxl
+      - name: Calcular e enviar o briefing financeiro
+        env:
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+        run: python briefing_financeiro.py ${{ github.event.inputs.forcar == 'true' && '--forcar' || '' }}
+      - name: Guardar o histórico do dia
+        run: |
+          git config user.name "briefing-bot"
+          git config user.email "briefing-bot@users.noreply.github.com"
+          if [ -d dados ]; then git add -A dados; fi
+          git commit -m "Histórico financeiro $(date -u +%d/%m/%Y)" || echo "sem mudança"
+          git pull --rebase origin main
+          git push origin HEAD:main

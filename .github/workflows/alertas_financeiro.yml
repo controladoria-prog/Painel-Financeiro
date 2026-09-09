@@ -1,0 +1,40 @@
+name: Alertas de caixa
+
+# Uma vez por dia: 18:07 UTC = 14:07 em Porto Velho (UTC-4), seg-sex. Só manda e-mail com ponto crítico novo,
+# para os mesmos destinatários do briefing (EMAIL_DESTINO).
+on:
+  schedule:
+    - cron: "7 18 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  avaliar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependências
+        run: pip install --quiet pandas numpy openpyxl
+      - name: Avaliar o caixa e avisar
+        env:
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+        run: python briefing_financeiro.py --alertas
+      - name: Lembrar o que já foi avisado
+        run: |
+          git config user.name "briefing-bot"
+          git config user.email "briefing-bot@users.noreply.github.com"
+          if [ -d dados ]; then git add -A dados; fi
+          git commit -m "Alertas de caixa $(date -u +%d/%m/%Y)" || echo "nada novo"
+          git pull --rebase origin main
+          git push origin HEAD:main

@@ -7698,6 +7698,41 @@ class TesteBoardPack(unittest.TestCase):
         self.assertIn("Boleto passou do orçado", textos)
 
 
+class TesteBriefingFinanceiro(unittest.TestCase):
+    """09/09/2026: a mesma engrenagem do briefing sobre o painel financeiro --
+    saldo D+0, mes ate hoje e os alertas do proprio motor do painel."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import os as _os
+        import sys as _sys
+        pasta = _os.path.dirname(_os.path.abspath(CAMINHO_APP))
+        if pasta not in _sys.path:
+            _sys.path.insert(0, pasta)
+        spec = importlib.util.spec_from_file_location("briefing_fin_teste", _os.path.join(pasta, "briefing_financeiro.py"))
+        cls.bf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.bf)
+        cls.ns = cls.bf.carregar_funcoes_do_app(CAMINHO_APP, cls.bf.SEMENTES_FIN)
+
+    def test_sementes_narrativa_e_email(self):
+        for nome in self.bf.SEMENTES_FIN:
+            self.assertIn(nome, self.ns, f"a semente {nome} nao veio do app")
+        self.assertTrue(callable(self.ns["_avaliar_alertas_fluxo"]))
+        f = {"saldo": 1.2e6, "data_saldo": "09/09", "entradas_mes": 3.0e6, "saidas_mes": 2.5e6, "liquido_mes": 0.5e6,
+             "mes": "09/2026", "alertas": [{"nivel": "critico", "titulo": "Saldo abaixo da reserva", "detalhe": "x"}]}
+        itens = self.bf.narrativa_financeira(f, self.ns)
+        self.assertEqual([i["rotulo"] for i in itens], ["Caixa", "Mês", "Alertas"])
+        self.assertIn("Saldo de <b>R$ 1,2M</b>", itens[0]["texto"])
+        self.assertIn("1 crítico(s)", itens[2]["texto"])
+        html, texto = self.bf.montar_email_financeiro(f, itens, datetime(2026, 9, 9).date(), "https://p", "", self.ns,
+                                                       ["saldo +R$ 100 mil"], "2026-09-08")
+        self.assertIn(">ATENÇÃO<", html)
+        self.assertIn("Desde o briefing de 08/09", html)
+        self.assertIn("Briefing financeiro", texto)
+        self.assertEqual(self.bf.desde_ontem_fin(f, None, str), [])
+
+
 class TesteRitmoComDefasagem(unittest.TestCase):
     """02/09/2026: os lancamentos chegam D+2, e o ritmo do mes cobrava a
     meta 'ate hoje' com um unico dia parcial de dado (35% no dia 2). A
