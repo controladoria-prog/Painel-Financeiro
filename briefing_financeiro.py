@@ -25,6 +25,7 @@ from briefing import (CID_LOGO, CORES, DIAS_SEMANA, FONTE, carregar_funcoes_do_a
 SEMENTES_FIN = [
     "obter_dados_fluxo_caixa", "preparar_fluxo_caixa", "_saldo_posicao_atual_fin", "_avaliar_alertas_fluxo",
     "COL_FIN_VALOR", "META_RESERVA_PADRAO", "FUSO_BR", "LOGO_BEEA_B64", "formata_valor_curto", "_pct_br",
+    "_pivot_fluxo_fin", "_aplicar_meta_como_falta", "COL_FIN_MOVIMENTO", "MOV_RECEBER_META",
 ]
 LIMITE_VENCIDO_PADRAO = 50_000
 LIMITE_CONCENTRACAO_PADRAO = 30
@@ -81,8 +82,33 @@ def fatos_do_caixa(ns, df, hoje):
         "entradas_mes": entradas, "saidas_mes": saidas, "liquido_mes": entradas - saidas,
         "alertas": [{"nivel": a.get("nivel", "atencao"), "titulo": str(a.get("titulo", "")),
                      "detalhe": str(a.get("detalhe", ""))} for a in (alertas or [])],
-        "mes": hoje.strftime("%m/%Y"),
+        "mes": hoje.strftime("%m/%Y"), "meta": meta_do_mes(ns, df, hoje),
     }
+
+
+def meta_do_mes(ns, df, hoje):
+    """Meta de recebimento do mês (a linha '2 - Contas a Receber Meta' da tabela
+    Movimentos por Mês), quanto já foi coberto e quanto falta -- em reais e em
+    % da meta cheia. Usa as MESMAS funções da tabela do painel."""
+    if "Data Efetiva" not in df.columns:
+        return None
+    df_m = df.copy()
+    df_m["PeriodoMes"] = pd.to_datetime(df_m["Data Efetiva"], errors="coerce").dt.to_period("M")
+    meses = sorted(p for p in df_m["PeriodoMes"].dropna().unique())
+    if not meses:
+        return None
+    pivot = ns["_pivot_fluxo_fin"](df_m, "PeriodoMes", ns["COL_FIN_VALOR"], ns["COL_FIN_MOVIMENTO"], meses,
+                                   posicao_saldo="primeira")
+    pivot, meta_cheia = ns["_aplicar_meta_como_falta"](pivot)
+    periodo = pd.Timestamp(hoje).to_period("M")
+    if meta_cheia is None or periodo not in pivot.columns:
+        return None
+    cheia = abs(float(meta_cheia.get(periodo, 0.0) or 0.0))
+    falta = float(pivot.loc[ns["MOV_RECEBER_META"], periodo] or 0.0) if ns["MOV_RECEBER_META"] in pivot.index else 0.0
+    if not cheia:
+        return None
+    return {"meta": cheia, "falta": falta, "coberto": cheia - falta,
+            "pct_falta": falta / cheia * 100, "pct_coberto": (cheia - falta) / cheia * 100}
 
 
 def narrativa_financeira(f, ns=None):
@@ -94,6 +120,17 @@ def narrativa_financeira(f, ns=None):
         itens.append({"rotulo": "Mês", "tom": "positivo" if liq >= 0 else "negativo",
                       "texto": (f"Até aqui no mês: entradas de <b>{fmt(f['entradas_mes'])}</b> e saídas de "
                                 f"<b>{fmt(f['saidas_mes'])}</b> — líquido {'+' if liq >= 0 else '−'}{fmt(abs(liq))}.")})
+    m = f.get("meta")
+    if m:
+        pct = (ns or {}).get("_pct_br", lambda v, casas=1: f"{v:.{casas}f}".replace(".", ","))
+        if m["falta"] > 0:
+            texto = (f"Meta de recebimento do mês: <b>{fmt(m['meta'])}</b>; falta <b>{fmt(m['falta'])}</b> "
+                     f"(<b>{pct(m['pct_falta'])}%</b> da meta) — {pct(m['pct_coberto'])}% já coberto entre recebido e a receber.")
+            tom = "positivo" if m["pct_falta"] <= 10 else "alerta" if m["pct_falta"] <= 30 else "negativo"
+        else:
+            texto = f"Meta de recebimento do mês (<b>{fmt(m['meta'])}</b>) já coberta entre recebido e a receber."
+            tom = "positivo"
+        itens.append({"rotulo": "Meta", "tom": tom, "texto": texto})
     criticos = [a for a in f["alertas"] if a["nivel"] == "critico"]
     atencao = [a for a in f["alertas"] if a["nivel"] != "critico"]
     if criticos or atencao:
@@ -123,7 +160,8 @@ def montar_email_financeiro(f, itens, hoje, link="", logo_src="", ns=None, desde
     cartoes = [("Saldo em caixa", fmt(f["saldo"]), f"posição de {f['data_saldo']}"),
                ("Entradas do mês", fmt(f["entradas_mes"]), "até hoje"),
                ("Saídas do mês", fmt(f["saidas_mes"]), "até hoje"),
-               ("Alertas", str(len(f["alertas"])), f"{len(criticos)} crítico(s)")]
+               (("Falta para a meta", fmt(f["meta"]["falta"]), f"{f['meta']['pct_falta']:.1f}% de {fmt(f['meta']['meta'])}".replace(".", ","))
+                if f.get("meta") else ("Alertas", str(len(f["alertas"])), f"{len(criticos)} crítico(s)"))]
     celulas = "".join(
         f'<td width="25%" valign="top" style="padding:6px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
         f'style="width:100%; border:1px solid {CORES["borda"]}; border-top:3px solid {CORES["marca"]}; border-radius:6px;">'

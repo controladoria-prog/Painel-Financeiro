@@ -7723,6 +7723,11 @@ class TesteBriefingFinanceiro(unittest.TestCase):
              "mes": "09/2026", "alertas": [{"nivel": "critico", "titulo": "Saldo abaixo da reserva", "detalhe": "x"}]}
         itens = self.bf.narrativa_financeira(f, self.ns)
         self.assertEqual([i["rotulo"] for i in itens], ["Caixa", "Mês", "Alertas"])
+        # Meta do mes: quanto falta em reais e em % da meta cheia (print de 09/09/2026).
+        f["meta"] = {"meta": 10.46e6, "falta": 980901.14, "coberto": 9.48e6, "pct_falta": 9.38, "pct_coberto": 90.62}
+        com_meta = self.bf.narrativa_financeira(f, self.ns)
+        self.assertEqual([i["rotulo"] for i in com_meta], ["Caixa", "Mês", "Meta", "Alertas"])
+        self.assertIn("falta <b>R$ 981 mil</b> (<b>9,4%</b> da meta)", com_meta[2]["texto"])
         self.assertIn("Saldo de <b>R$ 1,2M</b>", itens[0]["texto"])
         self.assertIn("1 crítico(s)", itens[2]["texto"])
         html, texto = self.bf.montar_email_financeiro(f, itens, datetime(2026, 9, 9).date(), "https://p", "", self.ns,
