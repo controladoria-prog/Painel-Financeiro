@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "7 18 * * 1-5"
   workflow_dispatch:
+    inputs:
+      exemplo:
+        description: "Mandar um alerta de caixa de EXEMPLO (dados fictícios), só para ver o e-mail"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,7 +34,7 @@ jobs:
           SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
           LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
-        run: python briefing_financeiro.py --alertas
+        run: python briefing_financeiro.py ${{ github.event.inputs.exemplo == 'true' && '--exemplo' || '--alertas' }}
       - name: Lembrar o que já foi avisado
         run: |
           git config user.name "briefing-bot"

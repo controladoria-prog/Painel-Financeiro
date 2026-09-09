@@ -10,6 +10,7 @@ Uso:
     python briefing_financeiro.py --teste    imprime, sem enviar
     python briefing_financeiro.py --forcar   reenvia mesmo que o de hoje já tenha saído
     python briefing_financeiro.py --alertas  modo alerta (uma vez por dia): só manda e-mail se houver ponto crítico novo
+    python briefing_financeiro.py --exemplo  manda um alerta de caixa fictício, só para ver o e-mail
 """
 import json
 import os
@@ -160,6 +161,21 @@ def main(argv):
     logo_b64 = str(ns.get("LOGO_BEEA_B64") or "")
     logo_src = f"cid:{CID_LOGO}" if logo_b64 else ""
     link = os.environ.get("LINK_PAINEL", "")
+    if "--exemplo" in argv:
+        # Alerta de caixa fictício, só para ver a cara do e-mail; não toca na memória.
+        exemplo = [{"nivel": "critico", "titulo": "Saldo abaixo da reserva mínima",
+                    "detalhe": "Saldo de R$ 410 mil contra reserva de R$ 620 mil (30% das saídas do mês). (EXEMPLO)"},
+                   {"nivel": "critico", "titulo": "Vencidos acima do limite",
+                    "detalhe": "R$ 87 mil vencidos há mais de 5 dias, limite R$ 50 mil; 3 fornecedores concentram 71%. (EXEMPLO)"}]
+        linhas = "".join(f'<div style="font-family:{FONTE}; padding:10px 0; border-bottom:1px solid {CORES["borda"]};">'
+                         f'<div style="font-size:15px; font-weight:700; color:{CORES["texto"]};">{a["titulo"]}</div>'
+                         f'<div style="font-size:13px; color:{CORES["apagado"]}; margin-top:3px;">{a["detalhe"]}</div></div>' for a in exemplo)
+        html = moldura_email(f"{len(exemplo)} pontos de atenção no caixa", hoje.strftime("%d/%m/%Y"), "ALERTA", CORES["negativo"],
+                             linhas, link, logo_src, "Exemplo com dados fictícios. No real, cada ponto é avisado uma vez por mês.")
+        texto = "\n".join(f"- {a['titulo']}: {a['detalhe']}" for a in exemplo)
+        destinos = enviar_email(f"[EXEMPLO] Alerta de caixa {hoje.strftime('%d/%m')} · como o aviso chega", html, texto, logo_b64)
+        print(f"Exemplo de alerta de caixa enviado para {', '.join(destinos)}.")
+        return
     if "--alertas" in argv:
         # Modo alerta: linha de base na primeira execução; depois só o que for novo, uma vez por mês.
         chaves = [f"fin:{a['titulo']}:{f['mes']}" for a in f["alertas"] if a["nivel"] == "critico"]
