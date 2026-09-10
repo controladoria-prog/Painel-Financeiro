@@ -11651,6 +11651,9 @@ if eh_admin:
 # diferentes, e misturá-los criaria um perfil novo a cada combinação.
 EMAILS_TRAVADOS_NO_DEPARTAMENTO = {
     "analista02.marketing@grupobeea.com.br": "📣 Relatório de Custos - MKT",
+    # 10/09/2026: login de suprimentos, só Controladoria (fora de
+    # EMAILS_FINANCEIRO_PERMITIDOS) e só a visão de Suprimentos.
+    "suprimentos.administrativo@grupobeea.com.br": "🚚 Relatório de Custos - Suprimentos",
 }
 
 MAPA_EMAIL_DEPARTAMENTO = {
