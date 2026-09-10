@@ -1,5 +1,5 @@
 {
- "data": "2026-09-08",
+ "data": "2026-09-09",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.19,
@@ -278,7 +278,7 @@
    "3 - Receita Operacional Liquida": 11160069.850000001,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
    "4 - Custo das Vendas": -4573362.59,
-   "11 - EBITDA": 4274753.66,
+   "11 - EBITDA": 4165302.8200000003,
    "6.1 - Comissões sobre Vendas": 0.0,
    "6.2 - Taxa com Cartão de Crédito / Débito": -71253.84,
    "6.3 - POS Cartões": -73534.05,
@@ -294,7 +294,7 @@
    "6.13 - Amostras": 0.0,
    "6.14 - Flaconetes": -48370.78,
    "6.15 - Displays": 0.0,
-   "6.16 - Vitrines": -16799.22,
+   "6.16 - Vitrines": -17044.760000000002,
    "6.17 - Precificadores": -205.98,
    "6.18 - Aplicadores Descartáveis": 0.0,
    "6.19 - Perdas de Estoque": 0.0,
@@ -302,16 +302,16 @@
    "6.21 - Fidelidade Marketplace (Meu Clube Multi)": -32827.89,
    "6.22 - Taxa de Remuneração de Esforços de Tech (RET)": -121218.55000000002,
    "6.23 - Infra Estrutura Tecnológica (VSAT)": 0.0,
-   "6.24 - Esforços de Marketing": -111709.96,
+   "6.24 - Esforços de Marketing": -113290.67000000001,
    "6.25 - PDD": 0.0,
    "8.1 - Despesas Estruturais": -173499.53999999998,
    "8.2 - Despesas com Comunicação": -18295.45,
    "8.3 - Pessoal": -501718.18000000005,
    "8.4 - Taxa de Ocupação": -196394.62,
    "8.5 - Despesas com Veículos": -5828.04,
-   "8.6 - Despesas Administrativas": -67242.01000000001,
+   "8.6 - Despesas Administrativas": -68793.56,
    "8.7 - Despesas Gerais": -32234.57,
-   "8.8 - Serviços de Terceiros": -555007.99
+   "8.8 - Serviços de Terceiros": -661081.03
   }
  }
 }
