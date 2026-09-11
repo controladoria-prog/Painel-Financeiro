@@ -49,6 +49,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    "revisar_lancamentos": ["_chave_historico"],
     "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto", "_lista_pt"],
     "montar_fatos_executivos": ["_subgrupos_nivel2", "_nome_sem_numero_dre",
                                 "ofensores_por_desvio", "_numero_linha_dre"],
@@ -88,6 +89,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "revisar_lancamentos": ["CONTAS_GENERICAS_TRECHOS"],
     "montar_fatos_executivos": ["IMPACTO_FECHAMENTO_EBITDA"],
     "_deltas_pendentes_do_fechamento": [
         "COL_FECH_ANO", "COL_FECH_MES", "COL_FECH_PROCESSO", "COL_FECH_STATUS",
@@ -7736,6 +7738,50 @@ class TesteBriefingFinanceiro(unittest.TestCase):
         self.assertIn("Desde o briefing de 08/09", html)
         self.assertIn("Briefing financeiro", texto)
         self.assertEqual(self.bf.desde_ontem_fin(f, None, str), [])
+
+
+class TesteRevisaoDeLancamentos(unittest.TestCase):
+    """11/09/2026: a revisao manual do Rateio de Titulo a Pagar virou tres
+    regras sobre o DIARIO, so na competencia corrente; rateio da mesma nota
+    e OK e nao aparece."""
+
+    @classmethod
+    def setUpClass(cls):
+        import unicodedata as _u
+        cls.ns = carregar(["revisar_lancamentos", "_chave_historico"], extras={"unicodedata": _u})
+
+    def test_tres_regras_e_rateio_fora(self):
+        rev = self.ns["revisar_lancamentos"]
+        linhas = []
+        # meses anteriores: "mensalidade associacao comercial" sempre em Entidades de Classe (4x)
+        for m in ("2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10"):
+            linhas.append([m, "T%s" % m[5:7], "Mensalidade Associação Comercial", "Entidades de Classe", 100.0, "ACR"])
+        # competencia corrente
+        linhas += [
+            ["2026-09-05", "T901", "Mensalidade Associação Comercial", "Outras Despesas Administrativas", 120.0, "ACR"],  # regra 2/3
+            ["2026-09-06", "T902", "Aluguel NF 55", "Aluguel", 5000.0, "Shopping"],       # rateio da mesma nota: OK
+            ["2026-09-06", "T902", "Aluguel NF 55", "Condomínio", 1500.0, "Shopping"],
+            ["2026-09-07", "T903", "Lanche viagem", "Despesas com Viagens", 80.0, "Ana"],   # regra 1: mesmo texto
+            ["2026-09-08", "T904", "Lanche viagem", "Despesas Não Dedutíveis", 90.0, "Bia"],
+            ["2026-09-09", "T905", "Energia elétrica loja", "Energia", 700.0, "Cemig"],     # sem sinal
+        ]
+        df = pd.DataFrame(linhas, columns=["Competência", "Número", "Histórico", "Plano de Contas", "Valor Bruto", "Cliente / Fornecedor"])
+        saida = rev(df, "2026-09")
+        por = {(r["Histórico"], r["Plano de Contas"]): r for _, r in saida.iterrows()}
+        self.assertIn(("Mensalidade Associação Comercial", "Outras Despesas Administrativas"), por)
+        self.assertIn("Fugiu do padrão", por[("Mensalidade Associação Comercial", "Outras Despesas Administrativas")]["Motivo"])
+        self.assertIn(("Lanche viagem", "Despesas com Viagens"), por)
+        self.assertIn(("Lanche viagem", "Despesas Não Dedutíveis"), por)
+        self.assertEqual(por[("Lanche viagem", "Despesas com Viagens")]["Situação"], "CONFERIR")
+        self.assertNotIn(("Aluguel NF 55", "Aluguel"), por, "rateio da mesma nota e OK")
+        self.assertNotIn(("Energia elétrica loja", "Energia"), por)
+        self.assertEqual(len(rev(df, "2026-10")), 0, "competencia sem lancamento nao aponta nada")
+        self.assertEqual(self.ns["_chave_historico"]("NF 123 - Aluguel  SET"), "nf aluguel set")
+
+    def test_a_aba_existe_so_na_controladoria(self):
+        self.assertIn('"🔎 Revisão de Lançamentos",', FONTE)
+        self.assertIn("tab_rev = None   # Revisão de lançamentos é operação da Controladoria", FONTE)
+        self.assertIn("revisar_lancamentos(_df_rev, _comp_rev)", FONTE)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):

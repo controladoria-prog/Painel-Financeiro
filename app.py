@@ -17,6 +17,7 @@ import math
 import os
 import re
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
@@ -3112,6 +3113,95 @@ def simular_ebitda(base, ajustes, meta_ebitda=None):
         elif mc > 0 and rec_sim > 0:
             saida["receita_para_meta_pct"] = falta / (rec_sim * mc) * 100
     return saida
+
+
+# ---------------------------------------------------------------------------
+# Revisão de lançamentos: plano de contas x histórico (11/09/2026)
+# ---------------------------------------------------------------------------
+# Nasceu da revisão manual do Rateio de Título a Pagar (10/09/2026). Só o que
+# os dados sustentam vira regra; o "isto está na conta errada" de última
+# instância continua sendo de quem lança. Três sinais, todos sobre a
+# COMPETÊNCIA CORRENTE e explicados na própria linha:
+#   1. mesmo texto de histórico em contas diferentes no mês (títulos
+#      diferentes -- rateio da mesma nota é OK e fica de fora);
+#   2. fugiu do padrão: nos meses anteriores esse texto foi >= 80% das vezes
+#      para uma conta e agora foi para outra;
+#   3. conta genérica ("Outras...", "Não dedutíveis") para um texto que já
+#      foi lançado numa conta específica antes.
+CONTAS_GENERICAS_TRECHOS = ("outras despesas", "nao dedut", "não dedut", "diversos", "diversas")
+
+
+def _chave_historico(texto):
+    """Texto do histórico sem acento, caixa, números e espaços repetidos --
+    'NF 123 Aluguel Set' e 'nf 456 ALUGUEL out' viram a mesma chave."""
+    t = str(texto or "").strip().lower()
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
+    t = re.sub(r"[0-9]+", " ", t)
+    t = re.sub(r"[^a-z ]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
+    """DataFrame só com os lançamentos da competência (Period 'M') que pedem
+    ação, com Situação e Motivo. Colunas esperadas: Competência, Número,
+    Histórico, Plano de Contas, Valor Bruto (+ Cliente / Fornecedor)."""
+    colunas_saida = ["Competência", "Número", "Cliente / Fornecedor", "Histórico", "Plano de Contas",
+                     "Valor Bruto", "Situação", "Motivo"]
+    if df is None or df.empty or "Histórico" not in df.columns or "Plano de Contas" not in df.columns:
+        return pd.DataFrame(columns=colunas_saida)
+    base = df.copy()
+    base["_per"] = pd.to_datetime(base["Competência"], errors="coerce").dt.to_period("M")
+    base["_chave"] = base["Histórico"].map(_chave_historico)
+    base["_plano"] = base["Plano de Contas"].astype(str).str.strip()
+    base = base[(base["_chave"] != "") & (base["_plano"] != "") & (base["_plano"].str.lower() != "nan")]
+    periodo = pd.Period(competencia, "M")
+    atual = base[base["_per"] == periodo]
+    anteriores = base[base["_per"] < periodo]
+    if atual.empty:
+        return pd.DataFrame(columns=colunas_saida)
+    # Padrão dos meses anteriores: conta dominante por texto.
+    padrao = {}
+    if not anteriores.empty:
+        contagem = anteriores.groupby(["_chave", "_plano"]).size()
+        for chave, grupo in contagem.groupby(level=0):
+            total = int(grupo.sum())
+            plano_dom, n_dom = grupo.idxmax()[1], int(grupo.max())
+            padrao[chave] = {"plano": plano_dom, "n": n_dom, "total": total,
+                             "planos": set(grupo.index.get_level_values(1))}
+    # Rateio da mesma nota: um número de título dividido em contas diferentes é OK.
+    numero = atual["Número"].astype(str).str.strip() if "Número" in atual.columns else pd.Series("", index=atual.index)
+    planos_por_numero = atual.assign(_num=numero).groupby("_num")["_plano"].nunique()
+    eh_rateio = numero.map(lambda n: bool(n) and n.lower() != "nan" and planos_por_numero.get(n, 0) > 1)
+    # Regra 1: mesmo texto em contas diferentes no mês, em títulos diferentes.
+    sem_rateio = atual[~eh_rateio].assign(_num=numero[~eh_rateio])
+    planos_por_chave = sem_rateio.groupby("_chave")["_plano"].nunique()
+    titulos_por_chave = sem_rateio.groupby("_chave")["_num"].nunique()
+    saida = []
+    for idx, ln in atual.iterrows():
+        chave, plano = ln["_chave"], ln["_plano"]
+        situacao = motivo = None
+        p = padrao.get(chave)
+        if (not eh_rateio.get(idx, False) and planos_por_chave.get(chave, 0) > 1
+                and titulos_por_chave.get(chave, 0) > 1):
+            outras = sorted(set(sem_rateio.loc[sem_rateio["_chave"] == chave, "_plano"]) - {plano})
+            situacao, motivo = "CONFERIR", f"Mesmo texto também em: {', '.join(outras[:3])} (neste mês)"
+        elif p and p["total"] >= minimo_historico and p["n"] / p["total"] >= dominancia and plano != p["plano"]:
+            situacao, motivo = "VERIFICAR", f"Fugiu do padrão: antes foi {p['n']} de {p['total']} vezes para {p['plano']}"
+        elif any(t in _chave_historico(plano) for t in CONTAS_GENERICAS_TRECHOS) and p and (p["planos"] - {plano}):
+            especifica = sorted(p["planos"] - {plano})[0]
+            situacao, motivo = "VERIFICAR", f"Conta genérica: este texto já foi lançado em {especifica}"
+        if situacao:
+            saida.append({
+                "Competência": ln.get("Competência"), "Número": ln.get("Número", ""),
+                "Cliente / Fornecedor": ln.get("Cliente / Fornecedor", ""), "Histórico": ln.get("Histórico", ""),
+                "Plano de Contas": plano, "Valor Bruto": ln.get("Valor Bruto", 0.0),
+                "Situação": situacao, "Motivo": motivo,
+            })
+    resultado = pd.DataFrame(saida, columns=colunas_saida)
+    if not resultado.empty:
+        resultado["_abs"] = pd.to_numeric(resultado["Valor Bruto"], errors="coerce").abs().fillna(0)
+        resultado = resultado.sort_values(["Situação", "_abs"], ascending=[False, False]).drop(columns="_abs")
+    return resultado.reset_index(drop=True)
 
 
 def _fator_proporcional_mes_corrente(colunas_periodo, meses_cols_ref, data_hoje):
@@ -15801,6 +15891,7 @@ if departamento_ativo:
     tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
     tab_fech = None  # Checklist de fechamento é operação da Controladoria
     tab_orc = None   # O orçamento é montado pela Controladoria, visão inteira
+    tab_rev = None   # Revisão de lançamentos é operação da Controladoria
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -15811,12 +15902,13 @@ else:
         "📤 Emitir Relatório",
         "✅ Fechamento Mensal",
         "🎯 Orçamento",
+        "🔎 Revisão de Lançamentos",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -19454,6 +19546,54 @@ if tab_fech is not None:
 # ABA: ORÇAMENTO 2027 (por plano de contas)
 # ---------------------------------------------------------------------------
 if tab_orc is not None:
+    with tab_rev:
+        st.markdown('<div class="section-title">🔎 Revisão de Lançamentos — plano de contas x histórico</div>',
+                    unsafe_allow_html=True)
+        st.caption("Lê a aba DIÁRIO do Realizado e mostra só o que pede ação na competência corrente: mesmo texto em "
+                   "contas diferentes no mês, lançamento que fugiu do padrão dos meses anteriores e conta genérica para um "
+                   "texto que já teve conta específica. Rateio da mesma nota é OK e não aparece.")
+        try:
+            _df_rev = carregar_diario(path_real)
+        except Exception as _erro_rev:   # noqa: BLE001 -- planilha sem DIÁRIO vira mensagem
+            _df_rev, _erro_rev_txt = None, str(_erro_rev)
+        else:
+            _erro_rev_txt = ""
+        if _df_rev is None or _df_rev.empty:
+            st.info("Não encontrei a aba DIÁRIO no Realizado." + (f" ({_erro_rev_txt})" if _erro_rev_txt else ""))
+        else:
+            _pers_rev = pd.to_datetime(_df_rev["Competência"], errors="coerce").dt.to_period("M").dropna()
+            _hoje_rev = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
+            _disponiveis = sorted(p for p in _pers_rev.unique() if p <= _hoje_rev)
+            if not _disponiveis:
+                st.info("O DIÁRIO ainda não tem lançamentos na competência corrente.")
+            else:
+                _comp_rev = _disponiveis[-1]
+                _n_total = int((_pers_rev == _comp_rev).sum())
+                _rev = revisar_lancamentos(_df_rev, _comp_rev)
+                _valor_rev = float(pd.to_numeric(_rev["Valor Bruto"], errors="coerce").abs().sum()) if not _rev.empty else 0.0
+                st.markdown(render_kpi_row([
+                    dict(label="COMPETÊNCIA MONITORADA", value=_comp_rev.strftime("%m/%Y"), value_color=COLORS["primary"],
+                         subtext=f"{_n_total:,} lançamentos no mês".replace(",", "."), icon="📅"),
+                    dict(label="PEDEM AÇÃO", value=str(len(_rev)),
+                         value_color=COLORS["negative"] if len(_rev) else COLORS["positive"],
+                         subtext=f"{int((_rev['Situação'] == 'VERIFICAR').sum()) if not _rev.empty else 0} verificar · "
+                                 f"{int((_rev['Situação'] == 'CONFERIR').sum()) if not _rev.empty else 0} conferir", icon="🔎"),
+                    dict(label="VALOR EM REVISÃO", value=formata_valor_curto(_valor_rev), value_color=COLORS["warning"],
+                         subtext="soma dos lançamentos apontados", icon="💰"),
+                ]), unsafe_allow_html=True)
+                if _rev.empty:
+                    st.success("Nada pede ação na competência corrente pelas três regras.")
+                else:
+                    _mostrar = _rev.copy()
+                    _mostrar["Competência"] = pd.to_datetime(_mostrar["Competência"], errors="coerce").dt.strftime("%d/%m/%Y")
+                    _mostrar["Valor Bruto"] = pd.to_numeric(_mostrar["Valor Bruto"], errors="coerce").map(
+                        lambda v: formata_brl(v) if pd.notna(v) else "")
+                    st.dataframe(_mostrar, hide_index=True, width="stretch",
+                                 height=min(38 + 35 * (len(_mostrar) + 1), 700))
+                    st.download_button("⬇️ Baixar a lista (CSV)", _rev.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                       file_name=f"revisao_lancamentos_{_comp_rev.strftime('%Y-%m')}.csv", mime="text/csv",
+                                       key="rev_baixar")
+
     with tab_orc:
         # ---- Prova de fogo do orçamento (08/09/2026) ----
         # Setembro é mês de orçamento: cada linha do ano seguinte é
