@@ -3122,13 +3122,18 @@ def simular_ebitda(base, ajustes, meta_ebitda=None):
 # os dados sustentam vira regra; o "isto está na conta errada" de última
 # instância continua sendo de quem lança. Três sinais, todos sobre a
 # COMPETÊNCIA CORRENTE e explicados na própria linha:
-#   1. mesmo texto de histórico em contas diferentes no mês (títulos
-#      diferentes -- rateio da mesma nota é OK e fica de fora);
-#   2. fugiu do padrão: nos meses anteriores esse texto foi >= 80% das vezes
+#   1. fugiu do padrão: nos meses anteriores esse texto foi >= 80% das vezes
 #      para uma conta e agora foi para outra;
-#   3. conta genérica ("Outras...", "Não dedutíveis") para um texto que já
+#   2. conta genérica ("Outras...", "Não dedutíveis") para um texto que já
 #      foi lançado numa conta específica antes.
+# A regra "mesmo texto em contas diferentes no mês" existiu e SAIU (11/09/2026):
+# no DIÁRIO real ela só apontava texto genérico legítimo ("AGUARDANDO NOTA
+# FISCAL", "REF ALIMENTACAO") -- 61 linhas de ruído para zero achado.
 CONTAS_GENERICAS_TRECHOS = ("outras despesas", "nao dedut", "não dedut", "diversos", "diversas")
+# Históricos fora do monitoramento (11/09/2026, com dados reais): MERCADORIAS
+# vai a dezenas de contas por natureza (Flaconetes, Deduções, Catálogos...) e o
+# usuário acompanha esse grupo por outro caminho -- aqui só geraria ruído.
+HISTORICOS_IGNORADOS_TRECHOS = ("mercadoria",)
 
 
 def _chave_historico(texto):
@@ -3154,6 +3159,7 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
     base["_chave"] = base["Histórico"].map(_chave_historico)
     base["_plano"] = base["Plano de Contas"].astype(str).str.strip()
     base = base[(base["_chave"] != "") & (base["_plano"] != "") & (base["_plano"].str.lower() != "nan")]
+    base = base[~base["_chave"].map(lambda c: any(t in c for t in HISTORICOS_IGNORADOS_TRECHOS))]
     periodo = pd.Period(competencia, "M")
     atual = base[base["_per"] == periodo]
     anteriores = base[base["_per"] < periodo]
@@ -3168,24 +3174,12 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
             plano_dom, n_dom = grupo.idxmax()[1], int(grupo.max())
             padrao[chave] = {"plano": plano_dom, "n": n_dom, "total": total,
                              "planos": set(grupo.index.get_level_values(1))}
-    # Rateio da mesma nota: um número de título dividido em contas diferentes é OK.
-    numero = atual["Número"].astype(str).str.strip() if "Número" in atual.columns else pd.Series("", index=atual.index)
-    planos_por_numero = atual.assign(_num=numero).groupby("_num")["_plano"].nunique()
-    eh_rateio = numero.map(lambda n: bool(n) and n.lower() != "nan" and planos_por_numero.get(n, 0) > 1)
-    # Regra 1: mesmo texto em contas diferentes no mês, em títulos diferentes.
-    sem_rateio = atual[~eh_rateio].assign(_num=numero[~eh_rateio])
-    planos_por_chave = sem_rateio.groupby("_chave")["_plano"].nunique()
-    titulos_por_chave = sem_rateio.groupby("_chave")["_num"].nunique()
     saida = []
     for idx, ln in atual.iterrows():
         chave, plano = ln["_chave"], ln["_plano"]
         situacao = motivo = None
         p = padrao.get(chave)
-        if (not eh_rateio.get(idx, False) and planos_por_chave.get(chave, 0) > 1
-                and titulos_por_chave.get(chave, 0) > 1):
-            outras = sorted(set(sem_rateio.loc[sem_rateio["_chave"] == chave, "_plano"]) - {plano})
-            situacao, motivo = "CONFERIR", f"Mesmo texto também em: {', '.join(outras[:3])} (neste mês)"
-        elif p and p["total"] >= minimo_historico and p["n"] / p["total"] >= dominancia and plano != p["plano"]:
+        if p and p["total"] >= minimo_historico and p["n"] / p["total"] >= dominancia and plano != p["plano"]:
             situacao, motivo = "VERIFICAR", f"Fugiu do padrão: antes foi {p['n']} de {p['total']} vezes para {p['plano']}"
         elif any(t in _chave_historico(plano) for t in CONTAS_GENERICAS_TRECHOS) and p and (p["planos"] - {plano}):
             especifica = sorted(p["planos"] - {plano})[0]
@@ -19549,9 +19543,9 @@ if tab_orc is not None:
     with tab_rev:
         st.markdown('<div class="section-title">🔎 Revisão de Lançamentos — plano de contas x histórico</div>',
                     unsafe_allow_html=True)
-        st.caption("Lê a aba DIÁRIO do Realizado e mostra só o que pede ação na competência corrente: mesmo texto em "
-                   "contas diferentes no mês, lançamento que fugiu do padrão dos meses anteriores e conta genérica para um "
-                   "texto que já teve conta específica. Rateio da mesma nota é OK e não aparece.")
+        st.caption("Lê a aba DIÁRIO do Realizado e mostra só o que pede ação na competência corrente: lançamento que "
+                   "fugiu do padrão dos meses anteriores e conta genérica para um texto que já teve conta específica. "
+                   "MERCADORIAS fica fora (acompanhado separadamente).")
         try:
             _df_rev = carregar_diario(path_real)
         except Exception as _erro_rev:   # noqa: BLE001 -- planilha sem DIÁRIO vira mensagem
@@ -19576,8 +19570,8 @@ if tab_orc is not None:
                          subtext=f"{_n_total:,} lançamentos no mês".replace(",", "."), icon="📅"),
                     dict(label="PEDEM AÇÃO", value=str(len(_rev)),
                          value_color=COLORS["negative"] if len(_rev) else COLORS["positive"],
-                         subtext=f"{int((_rev['Situação'] == 'VERIFICAR').sum()) if not _rev.empty else 0} verificar · "
-                                 f"{int((_rev['Situação'] == 'CONFERIR').sum()) if not _rev.empty else 0} conferir", icon="🔎"),
+                         subtext=f"{int(_rev['Motivo'].str.startswith('Fugiu').sum()) if not _rev.empty else 0} fugiram do padrão · "
+                                 f"{int(_rev['Motivo'].str.startswith('Conta gen').sum()) if not _rev.empty else 0} conta genérica", icon="🔎"),
                     dict(label="VALOR EM REVISÃO", value=formata_valor_curto(_valor_rev), value_color=COLORS["warning"],
                          subtext="soma dos lançamentos apontados", icon="💰"),
                 ]), unsafe_allow_html=True)
