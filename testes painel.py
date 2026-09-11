@@ -89,7 +89,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
-    "revisar_lancamentos": ["CONTAS_GENERICAS_TRECHOS", "HISTORICOS_IGNORADOS_TRECHOS"],
+    "revisar_lancamentos": ["CONTAS_GENERICAS_TRECHOS", "HISTORICOS_IGNORADOS_TRECHOS", "PLANOS_ACESSORIOS_TRECHOS"],
     "montar_fatos_executivos": ["IMPACTO_FECHAMENTO_EBITDA"],
     "_deltas_pendentes_do_fechamento": [
         "COL_FECH_ANO", "COL_FECH_MES", "COL_FECH_PROCESSO", "COL_FECH_STATUS",
@@ -7755,17 +7755,23 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
         linhas = []
         # meses anteriores: "mensalidade associacao comercial" sempre em Entidades de Classe (4x)
         for m in ("2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10"):
-            linhas.append([m, "T%s" % m[5:7], "Mensalidade Associação Comercial", "Entidades de Classe", 100.0, "ACR"])
-            linhas.append([m, "M%s" % m[5:7], "MERCADORIAS", "Mercadorias", 1000.0, "Ind"])
+            linhas.append([m, "K%s" % m[5:7], "KITS DE NATAL", "Mercadorias", -1000.0, "Calamo"])
+            linhas.append([m, "S%s" % m[5:7], "Mensalidade SPC", "Outras Despesas Administrativas", -361.0, "CDL"])
+            linhas.append([m, "R%s" % m[5:7], "PRESTAÇÃO SERVIÇOS RH", "Contratação Pessoa Jurídica", -3000.0, "RH"])
+            linhas.append([m, "T%s" % m[5:7], "Mensalidade Associação Comercial", "Entidades de Classe", -100.0, "ACR"])
+            linhas.append([m, "M%s" % m[5:7], "MERCADORIAS", "Mercadorias", -1000.0, "Ind"])
         # competencia corrente
         linhas += [
-            ["2026-09-05", "T901", "Mensalidade Associação Comercial", "Outras Despesas Administrativas", 120.0, "ACR"],  # regra 2/3
-            ["2026-09-06", "T902", "Aluguel NF 55", "Aluguel", 5000.0, "Shopping"],       # rateio da mesma nota: OK
-            ["2026-09-06", "T902", "Aluguel NF 55", "Condomínio", 1500.0, "Shopping"],
-            ["2026-09-07", "T903", "Lanche viagem", "Despesas com Viagens", 80.0, "Ana"],   # mesmo texto: NAO e regra
-            ["2026-09-08", "T904", "Lanche viagem", "Despesas Não Dedutíveis", 90.0, "Bia"],
-            ["2026-09-09", "T906", "MERCADORIAS", "Flaconetes", 300.0, "Ind"],                  # fora do monitoramento
-            ["2026-09-09", "T905", "Energia elétrica loja", "Energia", 700.0, "Cemig"],     # sem sinal
+            ["2026-09-05", "T901", "Mensalidade Associação Comercial", "Outras Despesas Administrativas", -120.0, "ACR"],  # regra 2/3
+            ["2026-09-06", "T902", "Aluguel NF 55", "Aluguel", -5000.0, "Shopping"],       # rateio da mesma nota: OK
+            ["2026-09-06", "T902", "Aluguel NF 55", "Condomínio", -1500.0, "Shopping"],
+            ["2026-09-07", "T903", "Lanche viagem", "Despesas com Viagens", -80.0, "Ana"],   # mesmo texto: NAO e regra
+            ["2026-09-08", "T904", "Lanche viagem", "Despesas Não Dedutíveis", -90.0, "Bia"],
+            ["2026-09-09", "T906", "MERCADORIAS", "Flaconetes", -300.0, "Ind"],                  # fora do monitoramento
+            ["2026-09-09", "T907", "KITS DE NATAL", "Juros sobre Despesas", -12.0, "Calamo"],   # conta acessoria
+            ["2026-09-09", "T908", "PRESTAÇÃO SERVIÇOS RH", "Desc. Outras Despesas - Plano de Saude", 49.0, "RH"],   # estorno (+)
+            ["2026-09-10", "T909", "Mensalidade SPC", "Assinaturas", -361.0, "CDL"],   # correcao: generica -> especifica
+            ["2026-09-09", "T905", "Energia elétrica loja", "Energia", -700.0, "Cemig"],     # sem sinal
         ]
         df = pd.DataFrame(linhas, columns=["Competência", "Número", "Histórico", "Plano de Contas", "Valor Bruto", "Cliente / Fornecedor"])
         saida = rev(df, "2026-09")
@@ -7776,6 +7782,9 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
         self.assertNotIn(("Lanche viagem", "Despesas com Viagens"), por)
         self.assertNotIn(("Lanche viagem", "Despesas Não Dedutíveis"), por)
         self.assertNotIn(("MERCADORIAS", "Flaconetes"), por, "MERCADORIAS e acompanhado por outro caminho")
+        self.assertNotIn(("KITS DE NATAL", "Juros sobre Despesas"), por, "conta acessoria nao se julga pelo texto")
+        self.assertNotIn(("PRESTAÇÃO SERVIÇOS RH", "Desc. Outras Despesas - Plano de Saude"), por, "valor positivo e estorno")
+        self.assertNotIn(("Mensalidade SPC", "Assinaturas"), por, "sair de conta generica para especifica e correcao")
         self.assertNotIn(("Aluguel NF 55", "Aluguel"), por, "rateio da mesma nota e OK")
         self.assertNotIn(("Energia elétrica loja", "Energia"), por)
         self.assertEqual(len(rev(df, "2026-10")), 0, "competencia sem lancamento nao aponta nada")

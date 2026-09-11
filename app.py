@@ -3134,6 +3134,11 @@ CONTAS_GENERICAS_TRECHOS = ("outras despesas", "nao dedut", "não dedut", "diver
 # vai a dezenas de contas por natureza (Flaconetes, Deduções, Catálogos...) e o
 # usuário acompanha esse grupo por outro caminho -- aqui só geraria ruído.
 HISTORICOS_IGNORADOS_TRECHOS = ("mercadoria",)
+# Contas ACESSÓRIAS (11/09, com dados reais): juros, descontos e multas são
+# desdobramentos da mesma nota e carregam o histórico da mercadoria -- não se
+# julgam pelo texto. E valor com o sinal invertido (positivo num diário onde a
+# despesa é negativa) é estorno/recuperação/desconto: certo por definição.
+PLANOS_ACESSORIOS_TRECHOS = ("juros", "desconto", "multa", "acrescimo", "acréscimo")
 
 
 def _chave_historico(texto):
@@ -3160,9 +3165,16 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
     base["_plano"] = base["Plano de Contas"].astype(str).str.strip()
     base = base[(base["_chave"] != "") & (base["_plano"] != "") & (base["_plano"].str.lower() != "nan")]
     base = base[~base["_chave"].map(lambda c: any(t in c for t in HISTORICOS_IGNORADOS_TRECHOS))]
+    base = base[~base["_plano"].map(_chave_historico).map(lambda p: any(t in p for t in PLANOS_ACESSORIOS_TRECHOS))]
+    base["_valor"] = pd.to_numeric(base["Valor Bruto"], errors="coerce").fillna(0.0) if "Valor Bruto" in base.columns else 0.0
     periodo = pd.Period(competencia, "M")
     atual = base[base["_per"] == periodo]
     anteriores = base[base["_per"] < periodo]
+    if atual.empty:
+        return pd.DataFrame(columns=colunas_saida)
+    # Sinal da despesa neste diário = o sinal dominante do mês; o contrário é estorno.
+    sinal_despesa = -1 if (atual["_valor"] < 0).mean() >= 0.5 else 1
+    atual = atual[atual["_valor"] * sinal_despesa >= 0]
     if atual.empty:
         return pd.DataFrame(columns=colunas_saida)
     # Padrão dos meses anteriores: conta dominante por texto.
@@ -3179,9 +3191,12 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
         chave, plano = ln["_chave"], ln["_plano"]
         situacao = motivo = None
         p = padrao.get(chave)
-        if p and p["total"] >= minimo_historico and p["n"] / p["total"] >= dominancia and plano != p["plano"]:
+        eh_generica = lambda nome: any(t in _chave_historico(nome) for t in CONTAS_GENERICAS_TRECHOS)  # noqa: E731
+        if (p and p["total"] >= minimo_historico and p["n"] / p["total"] >= dominancia and plano != p["plano"]
+                and not (eh_generica(p["plano"]) and not eh_generica(plano))):
+            # Sair de conta genérica para específica é CORREÇÃO, não desvio -- não aponta.
             situacao, motivo = "VERIFICAR", f"Fugiu do padrão: antes foi {p['n']} de {p['total']} vezes para {p['plano']}"
-        elif any(t in _chave_historico(plano) for t in CONTAS_GENERICAS_TRECHOS) and p and (p["planos"] - {plano}):
+        elif eh_generica(plano) and p and (p["planos"] - {plano}):
             especifica = sorted(p["planos"] - {plano})[0]
             situacao, motivo = "VERIFICAR", f"Conta genérica: este texto já foi lançado em {especifica}"
         if situacao:
