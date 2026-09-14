@@ -19660,6 +19660,40 @@ if tab_orc is not None:
                 st.dataframe(_tab_esc.drop(columns="Nível"), hide_index=True, width="stretch",
                              height=min(38 + 35 * (len(_tab_esc) + 1), 600))
 
+                # Quem está lá: os lançamentos do DIÁRIO do escritório nesses grupos,
+                # com o PLANO DE CONTAS -- é por ele que se corrige.
+                try:
+                    _mapa_cc_esc = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
+                    _cc_esc = [c for c in (_mapa_cc_esc.get("ESCRIT MATRIZ 6037"), "ESCRIT MATRIZ 6037") if c]
+                    _dia_esc = carregar_diario(path_real)
+                except Exception as _erro_dia_esc:   # noqa: BLE001 -- sem DIÁRIO, fica só a visão por linha
+                    _dia_esc, _cc_esc = None, []
+                if _dia_esc is not None and not _dia_esc.empty and "Centro de Custos" in _dia_esc.columns:
+                    _d = _dia_esc.copy()
+                    _d["_cc"] = _d["Centro de Custos"].astype(str).str.strip()
+                    _d = _d[_d["_cc"].isin([str(c).strip() for c in _cc_esc])]
+                    _d["_per"] = pd.to_datetime(_d["Competência"], errors="coerce")
+                    _d = _d[(_d["_per"].dt.year == _hoje_esc.year) & (_d["_per"].dt.month.isin(list(_meses_semestre)))]
+                    _d["_grupo"] = _d["Linha DRE"].astype(str).map(lambda n: (_numero_linha_dre(n) or "").split(".")[0])
+                    _d = _d[_d["_grupo"].str.isdigit() & _d["_grupo"].map(lambda g: g.isdigit() and 1 <= int(g) <= 7)]
+                    if _d.empty:
+                        st.caption("No DIÁRIO não há lançamento do escritório nesses grupos no semestre (os valores acima vêm só da DRE).")
+                    else:
+                        _por_plano = (_d.groupby(["Plano de Contas", "Linha DRE"], observed=True)   # regra da casa: categóricas
+                                       .agg(Lançamentos=("Valor Bruto", "size"),
+                                            Valor=("Valor Bruto", lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).sum())))
+                                       .reset_index().sort_values("Valor", key=lambda s: s.abs(), ascending=False))
+                        _por_plano["Valor"] = _por_plano["Valor"].map(formata_brl)
+                        st.markdown('<div style="font-size:12px; color:#9AA3B2; margin:10px 0 4px 0;">Por plano de contas (DIÁRIO do escritório, semestre corrente):</div>',
+                                    unsafe_allow_html=True)
+                        st.dataframe(_por_plano, hide_index=True, width="stretch", height=min(38 + 35 * (len(_por_plano) + 1), 500))
+                        _det_esc = _d[["Competência", "Número", "Cliente / Fornecedor", "Histórico", "Plano de Contas", "Linha DRE", "Valor Bruto"]].copy()
+                        _det_esc["Competência"] = pd.to_datetime(_det_esc["Competência"], errors="coerce").dt.strftime("%d/%m/%Y")
+                        st.download_button("⬇️ Baixar os lançamentos do escritório (CSV)",
+                                           _det_esc.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                           file_name=f"escritorio_grupos_1_a_7_{_hoje_esc:%Y}_{'S1' if _hoje_esc.month <= 6 else 'S2'}.csv",
+                                           mime="text/csv", key="esc_baixar")
+
     with tab_orc:
         # ---- Prova de fogo do orçamento (08/09/2026) ----
         # Setembro é mês de orçamento: cada linha do ano seguinte é
