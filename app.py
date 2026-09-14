@@ -19609,7 +19609,7 @@ if tab_orc is not None:
         # aparece só o que está lá, por linha e mês, para ser tirado.
         st.markdown('<div class="section-title" style="margin-top:22px;">🏢 Escritório · grupos 1 a 7 da DRE (deve estar zerado)</div>',
                     unsafe_allow_html=True)
-        st.caption("Tudo o que a aba ESCRIT MATRIZ 6037 tem lançado do grupo 1 até o fim do grupo 7, em qualquer mês do ano. "
+        st.caption("Tudo o que a aba ESCRIT MATRIZ 6037 tem lançado do grupo 1 até o fim do grupo 7 no semestre corrente. "
                    "A meta é esta lista vazia.")
         try:
             _dados_esc = carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])
@@ -19622,7 +19622,12 @@ if tab_orc is not None:
             st.info("Não encontrei a aba ESCRIT MATRIZ 6037 no Realizado." + (f" ({_erro_esc_txt})" if _erro_esc_txt else ""))
         else:
             _col_nome_esc = "Nome" if "Nome" in _df_esc.columns else _df_esc.columns[0]
-            _meses_esc = [c for c in meses_cols if c in _df_esc.columns]
+            # Só o SEMESTRE corrente (14/09/2026): o passado já foi tratado; o que
+            # interessa é o que ainda pode ser tirado antes do fechamento.
+            _hoje_esc = datetime.now(FUSO_BR).date()
+            _meses_semestre = range(1, 7) if _hoje_esc.month <= 6 else range(7, 13)
+            _meses_esc = [c for c in meses_cols if c in _df_esc.columns
+                          and int(c[:2]) in _meses_semestre and int(c[3:]) == _hoje_esc.year]
             _achados_esc = []
             for _, _ln_esc in _df_esc.iterrows():
                 _nome_esc = str(_ln_esc[_col_nome_esc])
@@ -19638,7 +19643,7 @@ if tab_orc is not None:
             st.markdown(render_kpi_row([
                 dict(label="LINHAS COM VALOR", value=str(_n_linhas_esc),
                      value_color=COLORS["negative"] if _achados_esc else COLORS["positive"],
-                     subtext="grupos 1 a 7 · aba do escritório", icon="🏢"),
+                     subtext=f"grupos 1 a 7 · {'1º' if _hoje_esc.month <= 6 else '2º'} semestre de {_hoje_esc.year}", icon="🏢"),
                 dict(label="LANÇAMENTOS (LINHA × MÊS)", value=str(len(_achados_esc)),
                      value_color=COLORS["negative"] if _achados_esc else COLORS["positive"], subtext="para tirar de lá", icon="🧹"),
                 dict(label="VALOR TOTAL", value=formata_valor_curto(_total_esc), value_color=COLORS["warning"],
