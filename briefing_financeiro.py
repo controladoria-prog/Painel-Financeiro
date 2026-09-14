@@ -26,6 +26,7 @@ SEMENTES_FIN = [
     "obter_dados_fluxo_caixa", "preparar_fluxo_caixa", "_saldo_posicao_atual_fin", "_avaliar_alertas_fluxo",
     "COL_FIN_VALOR", "META_RESERVA_PADRAO", "FUSO_BR", "LOGO_BEEA_B64", "formata_valor_curto", "_pct_br",
     "_pivot_fluxo_fin", "_aplicar_meta_como_falta", "COL_FIN_MOVIMENTO", "MOV_RECEBER_META",
+    "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_AMPLA",
 ]
 LIMITE_VENCIDO_PADRAO = 50_000
 LIMITE_CONCENTRACAO_PADRAO = 30
@@ -82,7 +83,7 @@ def fatos_do_caixa(ns, df, hoje):
         "entradas_mes": entradas, "saidas_mes": saidas, "liquido_mes": entradas - saidas,
         "alertas": [{"nivel": a.get("nivel", "atencao"), "titulo": str(a.get("titulo", "")),
                      "detalhe": str(a.get("detalhe", ""))} for a in (alertas or [])],
-        "mes": hoje.strftime("%m/%Y"), "meta": meta_do_mes(ns, df, hoje),
+        "mes": hoje.strftime("%m/%Y"), "meta": meta_do_mes(ns, df, hoje), "vencidos": vencidos_por_dia(ns, df, hoje),
     }
 
 
@@ -109,6 +110,58 @@ def meta_do_mes(ns, df, hoje):
         return None
     return {"meta": cheia, "falta": falta, "coberto": cheia - falta,
             "pct_falta": falta / cheia * 100, "pct_coberto": (cheia - falta) / cheia * 100}
+
+
+def vencidos_por_dia(ns, df, hoje):
+    """Contas a pagar vencidas e ainda em aberto, agrupadas pelo dia do
+    vencimento: valor, quantidade e há quantos dias estão em aberto. Mesmo
+    critério do motor de alertas do painel (liquidação vazia + vencimento
+    anterior a hoje)."""
+    col_valor, col_venc = ns["COL_FIN_VALOR"], ns["COL_FIN_VENCIMENTO"]
+    if "Tipo Movimento" not in df.columns or col_venc not in df.columns:
+        return []
+    saidas = df[df["Tipo Movimento"] == "saida"]
+    if saidas.empty:
+        return []
+    # Liquidação efetiva como o motor faz: a data de liquidação, ou a ampla quando existir.
+    liq = pd.to_datetime(saidas[ns["COL_FIN_DATA_LIQUIDACAO"]], errors="coerce") if ns["COL_FIN_DATA_LIQUIDACAO"] in saidas.columns else pd.Series(pd.NaT, index=saidas.index)
+    if ns.get("COL_FIN_LIQ_AMPLA") in saidas.columns:
+        liq = liq.fillna(pd.to_datetime(saidas[ns["COL_FIN_LIQ_AMPLA"]], errors="coerce"))
+    venc = pd.to_datetime(saidas[col_venc], errors="coerce")
+    hoje_ts = pd.Timestamp(hoje)
+    abertos = saidas[liq.isna() & venc.notna() & (venc < hoje_ts)].assign(_venc=venc)
+    if abertos.empty:
+        return []
+    grupos = abertos.groupby(abertos["_venc"].dt.normalize())
+    saida = [{"data": d.strftime("%d/%m"), "valor": float(g[col_valor].abs().sum()), "qtd": int(len(g)),
+              "dias": int((hoje_ts.normalize() - d).days)} for d, g in grupos]
+    saida.sort(key=lambda x: -x["dias"])
+    return saida
+
+
+def bloco_vencidos_html(vencidos, fmt):
+    if not vencidos:
+        return ""
+    total = sum(v["valor"] for v in vencidos)
+    linhas = "".join(
+        f'<tr><td style="padding:6px 8px; font-family:{FONTE}; font-size:13px; color:{CORES["texto"]};">{v["data"]}</td>'
+        f'<td align="right" style="padding:6px 8px; font-family:{FONTE}; font-size:13px; font-weight:700; color:{CORES["negativo"]};">{fmt(v["valor"])}</td>'
+        f'<td align="right" style="padding:6px 8px; font-family:{FONTE}; font-size:12px; color:{CORES["apagado"]};">{v["qtd"]} título{"s" if v["qtd"] != 1 else ""}</td>'
+        f'<td align="right" style="padding:6px 8px; font-family:{FONTE}; font-size:13px; color:{CORES["texto"]};"><b>{v["dias"]}</b> dia{"s" if v["dias"] != 1 else ""} em aberto</td></tr>'
+        for v in vencidos)
+    cab = "".join(f'<th align="{al}" style="padding:6px 8px; font-family:{FONTE}; font-size:10px; letter-spacing:1px; text-transform:uppercase; '
+                  f'color:{CORES["apagado"]}; border-bottom:2px solid {CORES["marca"]};">{t}</th>'
+                  for t, al in (("Vencimento", "left"), ("Valor", "right"), ("Títulos", "right"), ("Em aberto", "right")))
+    return (f'<div style="font-size:10px; letter-spacing:1.4px; text-transform:uppercase; color:{CORES["apagado"]}; margin:16px 0 4px 0;">'
+            f'Contas a pagar vencidas · {fmt(total)} em {len(vencidos)} dia{"s" if len(vencidos) != 1 else ""}</div>'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;"><tr>{cab}</tr>{linhas}</table>')
+
+
+def bloco_vencidos_texto(vencidos, fmt):
+    if not vencidos:
+        return ""
+    return "\n\nContas a pagar vencidas (por dia de vencimento):\n" + "\n".join(
+        f"- {v['data']}: {fmt(v['valor'])} · {v['qtd']} título(s) · {v['dias']} dia(s) em aberto" for v in vencidos)
 
 
 def narrativa_financeira(f, ns=None):
@@ -181,12 +234,14 @@ def montar_email_financeiro(f, itens, hoje, link="", logo_src="", ns=None, desde
                   + "".join(f'<div style="font-size:13px; line-height:1.5; color:{CORES["texto"]}; padding:6px 0; border-top:1px solid {CORES["borda"]};">'
                             f'<b style="color:{CORES["negativo"] if a["nivel"] == "critico" else CORES["alerta"]};">{a["titulo"]}</b> — {a["detalhe"]}</div>'
                             for a in f["alertas"][:6]))
+    corpo += bloco_vencidos_html(f.get("vencidos") or [], fmt)
     html = moldura_email("Briefing financeiro · caixa", f"{dia} · saldo de hoje (D+0)", status, cor, corpo, link, logo_src,
                          "Gerado automaticamente pelo painel financeiro a partir das planilhas de fluxo. Limites de alerta: os padrões do painel.")
     texto = (f"Briefing financeiro · {dia} · {status}\n\n" + "\n".join(f"{r}: {v} ({s})" for r, v, s in cartoes)
              + (f"\n\nDesde o último briefing: {' · '.join(desde)}" if desde else "") + "\n\n"
              + "\n".join(f"{i['rotulo']}: {i['texto'].replace('<b>', '').replace('</b>', '')}" for i in itens)
-             + ("\n\nAlertas:\n" + "\n".join(f"- [{a['nivel']}] {a['titulo']}: {a['detalhe']}" for a in f["alertas"]) if f["alertas"] else ""))
+             + ("\n\nAlertas:\n" + "\n".join(f"- [{a['nivel']}] {a['titulo']}: {a['detalhe']}" for a in f["alertas"]) if f["alertas"] else "")
+             + bloco_vencidos_texto(f.get("vencidos") or [], fmt))
     return html, texto
 
 
@@ -229,9 +284,13 @@ def main(argv):
         linhas = "".join(f'<div style="font-family:{FONTE}; padding:10px 0; border-bottom:1px solid {CORES["borda"]};">'
                          f'<div style="font-size:15px; font-weight:700; color:{CORES["texto"]};">{a["titulo"]}</div>'
                          f'<div style="font-size:13px; color:{CORES["apagado"]}; margin-top:3px;">{a["detalhe"]}</div></div>' for a in novos)
+        if any("vencido" in a["titulo"].lower() for a in novos):
+            linhas += bloco_vencidos_html(f.get("vencidos") or [], fmt)
         html = moldura_email(f"{len(novos)} ponto(s) de atenção no caixa", f"{hoje.strftime('%d/%m/%Y')}", "ALERTA", CORES["negativo"],
                              linhas, link, logo_src, "Cada ponto é avisado uma vez por mês. Limites: os padrões do painel financeiro.")
         texto = "\n".join(f"- {a['titulo']}: {a['detalhe']}" for a in novos)
+        if any("vencido" in a["titulo"].lower() for a in novos):
+            texto += bloco_vencidos_texto(f.get("vencidos") or [], fmt)
         if "--teste" in argv:
             print(texto)
             return

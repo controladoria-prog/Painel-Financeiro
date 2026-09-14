@@ -19603,6 +19603,58 @@ if tab_orc is not None:
                                        file_name=f"revisao_lancamentos_{_comp_rev.strftime('%Y-%m')}.csv", mime="text/csv",
                                        key="rev_baixar")
 
+        # ---- Escritório: grupos 1 a 7 da DRE devem estar ZERADOS (14/09/2026) ----
+        # O escritório não vende nem tem custo variável: qualquer valor entre o
+        # grupo 1 e o fim do 7 na aba dele é lançamento na loja errada. Aqui
+        # aparece só o que está lá, por linha e mês, para ser tirado.
+        st.markdown('<div class="section-title" style="margin-top:22px;">🏢 Escritório · grupos 1 a 7 da DRE (deve estar zerado)</div>',
+                    unsafe_allow_html=True)
+        st.caption("Tudo o que a aba ESCRIT MATRIZ 6037 tem lançado do grupo 1 até o fim do grupo 7, em qualquer mês do ano. "
+                   "A meta é esta lista vazia.")
+        try:
+            _dados_esc = carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])
+            _df_esc = _dados_esc.get("ESCRIT MATRIZ 6037", (None, None))[1]
+        except Exception as _erro_esc:   # noqa: BLE001 -- aba ausente vira mensagem
+            _df_esc, _erro_esc_txt = None, str(_erro_esc)
+        else:
+            _erro_esc_txt = ""
+        if _df_esc is None or _df_esc.empty:
+            st.info("Não encontrei a aba ESCRIT MATRIZ 6037 no Realizado." + (f" ({_erro_esc_txt})" if _erro_esc_txt else ""))
+        else:
+            _col_nome_esc = "Nome" if "Nome" in _df_esc.columns else _df_esc.columns[0]
+            _meses_esc = [c for c in meses_cols if c in _df_esc.columns]
+            _achados_esc = []
+            for _, _ln_esc in _df_esc.iterrows():
+                _nome_esc = str(_ln_esc[_col_nome_esc])
+                _num_esc = _numero_linha_dre(_nome_esc) or ""
+                if not _num_esc or not _num_esc.split(".")[0].isdigit() or not (1 <= int(_num_esc.split(".")[0]) <= 7):
+                    continue
+                for _c in _meses_esc:
+                    _v = pd.to_numeric(_ln_esc[_c], errors="coerce")
+                    if pd.notna(_v) and abs(float(_v)) >= 0.005:
+                        _achados_esc.append({"Linha da DRE": _nome_esc, "Mês": _c, "Valor": float(_v)})
+            _n_linhas_esc = len({a["Linha da DRE"] for a in _achados_esc})
+            _total_esc = sum(abs(a["Valor"]) for a in _achados_esc)
+            st.markdown(render_kpi_row([
+                dict(label="LINHAS COM VALOR", value=str(_n_linhas_esc),
+                     value_color=COLORS["negative"] if _achados_esc else COLORS["positive"],
+                     subtext="grupos 1 a 7 · aba do escritório", icon="🏢"),
+                dict(label="LANÇAMENTOS (LINHA × MÊS)", value=str(len(_achados_esc)),
+                     value_color=COLORS["negative"] if _achados_esc else COLORS["positive"], subtext="para tirar de lá", icon="🧹"),
+                dict(label="VALOR TOTAL", value=formata_valor_curto(_total_esc), value_color=COLORS["warning"],
+                     subtext="soma em módulo", icon="💰"),
+            ]), unsafe_allow_html=True)
+            if not _achados_esc:
+                st.success("Escritório limpo: nada lançado do grupo 1 ao 7.")
+            else:
+                _tab_esc = pd.DataFrame(_achados_esc)
+                # Só as linhas de detalhe interessam: se um grupo aparece, é porque uma filha tem valor.
+                _tab_esc["Nível"] = _tab_esc["Linha da DRE"].map(lambda n: len((_numero_linha_dre(n) or "").split(".")))
+                _tab_esc = _tab_esc.sort_values(["Mês", "Nível", "Linha da DRE"], ascending=[False, False, True])
+                _tab_esc["Valor"] = _tab_esc["Valor"].map(formata_brl)
+                st.dataframe(_tab_esc.drop(columns="Nível"), hide_index=True, width="stretch",
+                             height=min(38 + 35 * (len(_tab_esc) + 1), 600))
+
     with tab_orc:
         # ---- Prova de fogo do orçamento (08/09/2026) ----
         # Setembro é mês de orçamento: cada linha do ano seguinte é

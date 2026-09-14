@@ -7738,6 +7738,14 @@ class TesteBriefingFinanceiro(unittest.TestCase):
         self.assertIn("Desde o briefing de 08/09", html)
         self.assertIn("Briefing financeiro", texto)
         self.assertEqual(self.bf.desde_ontem_fin(f, None, str), [])
+        # Vencidos por dia (14/09/2026): valor, titulos e dias em aberto, mesmo criterio do motor.
+        venc = [{"data": "10/09", "valor": 12_000.0, "qtd": 2, "dias": 4}, {"data": "12/09", "valor": 3_000.0, "qtd": 1, "dias": 2}]
+        html_v = self.bf.bloco_vencidos_html(venc, self.ns["formata_valor_curto"])
+        self.assertIn("R$ 15 mil em 2 dias", html_v)
+        self.assertIn("<b>4</b> dias em aberto", html_v)
+        self.assertIn("2 títulos", html_v)
+        self.assertIn("- 12/09: R$ 3 mil · 1 título(s) · 2 dia(s) em aberto", self.bf.bloco_vencidos_texto(venc, self.ns["formata_valor_curto"]))
+        self.assertEqual(self.bf.bloco_vencidos_html([], str), "")
 
 
 class TesteRevisaoDeLancamentos(unittest.TestCase):
@@ -7794,6 +7802,8 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
         self.assertIn('"🔎 Revisão de Lançamentos",', FONTE)
         self.assertIn("tab_rev = None   # Revisão de lançamentos é operação da Controladoria", FONTE)
         self.assertIn("revisar_lancamentos(_df_rev, _comp_rev)", FONTE)
+        self.assertIn('carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])', FONTE,
+                      "o monitor do escritorio (grupos 1-7) mora na aba de revisao")
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
