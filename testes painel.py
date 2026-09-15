@@ -7832,6 +7832,13 @@ class TesteIntegridade(unittest.TestCase):
         self.assertIn(("6.24 - Marketing", "DIÁRIO ≠ DRE"), por)
         self.assertAlmostEqual(por[("6.24 - Marketing", "DIÁRIO ≠ DRE")]["Diferença"], -50.0)
         self.assertIn(("9.9 - Inexistente", "SEM LINHA NA DRE"), por)
+        # 15/09: sem substring -- "Consultoria" (sem numero) nao pode cair em 8.8.3 por acaso.
+        d2 = pd.DataFrame({"Competência": ["2026-08-01"], "Linha DRE": ["Consultoria"], "Valor Bruto": [-10_508_726.49]})
+        dre2 = pd.DataFrame({"Nome": ["8.8.3 - Consultoria Financeira"], "08/2026": [0.0]})
+        r2 = self.ns["conciliar_diario_dre"](d2, dre2, ["08/2026"], normalizar=self.ns["_normalizar_texto"])
+        self.assertEqual(r2["Situação"].tolist(), ["SEM LINHA NA DRE"])
+        self.assertIn("Consultoria (1)", r2["Origem no DIÁRIO"].iloc[0])
+        self.assertIn("Origem no DIÁRIO", res.columns)
         self.assertTrue(self.ns["conciliar_diario_dre"](pd.DataFrame(), dre, ["08/2026"]).empty)
 
     def test_ponte_fecha_sem_residuo(self):

@@ -3227,7 +3227,7 @@ def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0, normaliz
     - o mês é a coluna Mês do DIÁRIO quando existe (é o que a planilha usa),
       senão o mês da Competência; a comparação é em módulo.
     Devolve só as diferenças acima da tolerância e as linhas sem par na DRE."""
-    cols = ["Linha DRE", "Mês", "DIÁRIO", "DRE", "Diferença", "Situação"]
+    cols = ["Linha DRE", "Mês", "DIÁRIO", "DRE", "Diferença", "Situação", "Origem no DIÁRIO"]
     if df_diario is None or df_diario.empty or df_dre is None or df_dre.empty:
         return pd.DataFrame(columns=cols)
     _base_norm = normalizar or (lambda s: str(s).strip().lower())
@@ -3251,20 +3251,31 @@ def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0, normaliz
     por_norm = {norm(n): n for n in nomes_dre}
     dre = df_dre.set_index(df_dre[col_nome].astype(str).str.strip())
 
+    por_numero = {}
+    for n in nomes_dre:
+        por_numero.setdefault(_numero_linha_dre(n) or "", n)
+
     def _linha_da_dre(nome):
-        chave = norm(nome)
-        if chave in por_norm:
-            return por_norm[chave]
-        for k, original in por_norm.items():
-            if chave and (chave in k or k in chave):
-                return original
-        return None
+        # Pelo NÚMERO da linha (8.8.3 casa com 8.8.3, ponto); sem número, pelo nome
+        # normalizado exato. Substring foi retirada (15/09): um rótulo curto no DIÁRIO
+        # caía em "8.8.3 - Consultoria Financeira" e arrastava R$ 10,5M para lá.
+        numero = _numero_linha_dre(nome) or ""
+        if numero and numero in por_numero:
+            return por_numero[numero]
+        if numero:
+            return None
+        return por_norm.get(norm(nome))
 
     d["_dre"] = d["_linha"].map(_linha_da_dre)
     sem_par = d[d["_dre"].isna()].groupby(["_linha", "_mes"], observed=True)["_valor"].sum()
     com_par = d[d["_dre"].notna()]
     d_num = com_par["_dre"].map(lambda n: _numero_linha_dre(n) or "")
-    saida = [{"Linha DRE": linha, "Mês": mes, "DIÁRIO": v, "DRE": None, "Diferença": None, "Situação": "SEM LINHA NA DRE"}
+    def _origem(bloco):
+        rotulos = bloco["_linha"].value_counts()
+        return "; ".join(f"{r} ({n})" for r, n in rotulos.head(3).items()) + (f" e mais {len(rotulos) - 3}" if len(rotulos) > 3 else "")
+
+    saida = [{"Linha DRE": linha, "Mês": mes, "DIÁRIO": v, "DRE": None, "Diferença": None, "Situação": "SEM LINHA NA DRE",
+              "Origem no DIÁRIO": _origem(d[(d["_dre"].isna()) & (d["_linha"] == linha) & (d["_mes"] == mes)])}
              for (linha, mes), v in sem_par.items()]
     for linha in sorted(set(com_par["_dre"])):
         numero = _numero_linha_dre(linha) or ""
@@ -3275,10 +3286,11 @@ def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0, normaliz
             dif = abs(v_diario) - abs(v_dre)
             if abs(dif) > tolerancia:
                 saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": v_dre,
-                              "Diferença": dif, "Situação": "DIÁRIO ≠ DRE"})
+                              "Diferença": dif, "Situação": "DIÁRIO ≠ DRE",
+                              "Origem no DIÁRIO": _origem(alvo[alvo["_mes"] == mes])})
     res = pd.DataFrame(saida, columns=cols)
     if not res.empty:
-        res["_abs"] = res["Diferença"].abs().fillna(res["DIÁRIO"].abs())
+        res["_abs"] = pd.to_numeric(res["Diferença"], errors="coerce").abs().fillna(pd.to_numeric(res["DIÁRIO"], errors="coerce").abs())
         res = res.sort_values(["Situação", "_abs"], ascending=[True, False]).drop(columns="_abs")
     return res.reset_index(drop=True)
 
@@ -19859,6 +19871,16 @@ if tab_orc is not None:
                 for _c in ("DIÁRIO", "DRE", "Diferença"):
                     _m[_c] = _m[_c].map(lambda v: formata_brl(v) if pd.notna(v) else "—")
                 st.dataframe(_m, hide_index=True, width="stretch", height=min(38 + 35 * (len(_m) + 1), 500))
+                _pares = {(str(r["Linha DRE"]), str(r["Mês"])) for _, r in _conc.iterrows()}
+                _dl = _dia_int.copy()
+                _dl["_mes"] = pd.to_datetime(_dl["Competência"], errors="coerce").dt.strftime("%m/%Y")
+                _dl["_num"] = _dl["Linha DRE"].astype(str).map(lambda n: _numero_linha_dre(n) or "")
+                _nums = {(_numero_linha_dre(l) or l, m) for l, m in _pares}
+                _dl = _dl[[(n, m) in _nums or any(n.startswith(k + ".") and m == mm for k, mm in _nums) for n, m in zip(_dl["_num"], _dl["_mes"])]]
+                if not _dl.empty:
+                    st.download_button("⬇️ Baixar os lançamentos por trás das diferenças (CSV)",
+                                       _dl.drop(columns=["_mes", "_num"]).to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                       file_name=f"conciliacao_diario_dre_{_hoje_int:%Y-%m-%d}.csv", mime="text/csv", key="conc_baixar")
         # 2) Ponte EBITDA -> caixa
         st.markdown('<div class="section-title" style="margin-top:22px;">2 · Ponte EBITDA → caixa (por mês)</div>', unsafe_allow_html=True)
         st.caption("Se deu EBITDA, cadê o dinheiro? caixa = EBITDA − receita não recebida − pagamentos além do custo (custos e despesas = "
