@@ -3217,34 +3217,65 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
 # Integridade (15/09/2026): conciliação DIÁRIO x DRE, ponte EBITDA -> caixa e
 # saúde do orçamento. Funções puras; a aba só encaixa.
 # ---------------------------------------------------------------------------
-def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0):
-    """Soma o DIÁRIO por Linha DRE x mês e compara com a DRE (em módulo: o
-    DIÁRIO guarda despesa negativa e a DRE ora positiva, ora negativa). Devolve
-    só as diferenças acima da tolerância e os lançamentos cuja Linha DRE não
-    existe na DRE ("sem linha")."""
+def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0, normalizar=None):
+    """Compara o DIÁRIO com a DRE do jeito que a consolidação é feita:
+    - o nome da linha casa NORMALIZADO (mesma regra do relatório: _normalizar_texto);
+    - a DRE é hierárquica, então o valor de uma linha é a soma do que o DIÁRIO
+      aponta para ela E para as filhas (número com o prefixo dela);
+    - só linhas que o DIÁRIO alimenta entram (CMV/Mercadorias e receita vêm
+      de outra fonte e não são comparáveis);
+    - o mês é a coluna Mês do DIÁRIO quando existe (é o que a planilha usa),
+      senão o mês da Competência; a comparação é em módulo.
+    Devolve só as diferenças acima da tolerância e as linhas sem par na DRE."""
     cols = ["Linha DRE", "Mês", "DIÁRIO", "DRE", "Diferença", "Situação"]
     if df_diario is None or df_diario.empty or df_dre is None or df_dre.empty:
         return pd.DataFrame(columns=cols)
+    _base_norm = normalizar or (lambda s: str(s).strip().lower())
+
+    def norm(s):
+        # Por cima da normalização do app, tira acento: 'Salários' e 'salarios' são a mesma linha.
+        return "".join(c for c in unicodedata.normalize("NFKD", str(_base_norm(s))) if not unicodedata.combining(c))
     d = df_diario.copy()
-    d["_mes"] = pd.to_datetime(d["Competência"], errors="coerce").dt.strftime("%m/%Y")
+    mes_col = pd.to_datetime(d["Mês"], errors="coerce") if "Mês" in d.columns else pd.Series(pd.NaT, index=d.index)
+    if "Mês" in d.columns and mes_col.isna().all():
+        mes_txt = d["Mês"].astype(str).str.strip()
+        d["_mes"] = mes_txt.where(mes_txt.str.match(r"^\d{2}/\d{4}$"), None)
+    else:
+        d["_mes"] = mes_col.dt.strftime("%m/%Y")
+    d["_mes"] = d["_mes"].fillna(pd.to_datetime(d["Competência"], errors="coerce").dt.strftime("%m/%Y"))
     d["_linha"] = d["Linha DRE"].astype(str).str.strip()
     d["_valor"] = pd.to_numeric(d["Valor Bruto"], errors="coerce").fillna(0.0)
     d = d[d["_mes"].isin(list(meses_cols)) & (d["_linha"] != "") & (d["_linha"].str.lower() != "nan")]
     col_nome = "Nome" if "Nome" in df_dre.columns else df_dre.columns[0]
+    nomes_dre = [str(n).strip() for n in df_dre[col_nome].dropna()]
+    por_norm = {norm(n): n for n in nomes_dre}
     dre = df_dre.set_index(df_dre[col_nome].astype(str).str.strip())
-    soma = d.groupby(["_linha", "_mes"], observed=True)["_valor"].sum()
-    saida = []
-    for (linha, mes), v_diario in soma.items():
-        if linha not in dre.index:
-            saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": None,
-                          "Diferença": None, "Situação": "SEM LINHA NA DRE"})
-            continue
-        v_dre = pd.to_numeric(dre.loc[linha, mes], errors="coerce") if mes in dre.columns else 0.0
-        v_dre = float(v_dre.iloc[0] if hasattr(v_dre, "iloc") else (v_dre or 0.0))
-        dif = abs(v_diario) - abs(v_dre)
-        if abs(dif) > tolerancia:
-            saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": v_dre,
-                          "Diferença": dif, "Situação": "DIÁRIO ≠ DRE"})
+
+    def _linha_da_dre(nome):
+        chave = norm(nome)
+        if chave in por_norm:
+            return por_norm[chave]
+        for k, original in por_norm.items():
+            if chave and (chave in k or k in chave):
+                return original
+        return None
+
+    d["_dre"] = d["_linha"].map(_linha_da_dre)
+    sem_par = d[d["_dre"].isna()].groupby(["_linha", "_mes"], observed=True)["_valor"].sum()
+    com_par = d[d["_dre"].notna()]
+    d_num = com_par["_dre"].map(lambda n: _numero_linha_dre(n) or "")
+    saida = [{"Linha DRE": linha, "Mês": mes, "DIÁRIO": v, "DRE": None, "Diferença": None, "Situação": "SEM LINHA NA DRE"}
+             for (linha, mes), v in sem_par.items()]
+    for linha in sorted(set(com_par["_dre"])):
+        numero = _numero_linha_dre(linha) or ""
+        alvo = com_par[(com_par["_dre"] == linha) | (d_num.str.startswith(numero + ".") if numero else False)]
+        for mes, v_diario in alvo.groupby("_mes", observed=True)["_valor"].sum().items():
+            v_dre = pd.to_numeric(dre.loc[linha, mes], errors="coerce") if mes in dre.columns else 0.0
+            v_dre = float(v_dre.iloc[0] if hasattr(v_dre, "iloc") else (v_dre or 0.0))
+            dif = abs(v_diario) - abs(v_dre)
+            if abs(dif) > tolerancia:
+                saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": v_dre,
+                              "Diferença": dif, "Situação": "DIÁRIO ≠ DRE"})
     res = pd.DataFrame(saida, columns=cols)
     if not res.empty:
         res["_abs"] = res["Diferença"].abs().fillna(res["DIÁRIO"].abs())
@@ -19797,8 +19828,9 @@ if tab_orc is not None:
         _df_dre_int = next((d for d in list_df_real if d is not None and not d.empty), None)
         # 1) Conciliação DIÁRIO x DRE
         st.markdown('<div class="section-title" style="margin-top:14px;">1 · Conciliação DIÁRIO x DRE (ano corrente)</div>', unsafe_allow_html=True)
-        st.caption("O DIÁRIO somado por linha da DRE e mês tem de bater com a DRE da visão. Aparecem só as diferenças acima de R$ 1 "
-                   "e os lançamentos cuja linha não existe na DRE. Numa visão parcial, o DIÁRIO é recortado pelos centros de custo das lojas dela.")
+        st.caption("O DIÁRIO somado por linha da DRE (com as filhas) e mês tem de bater com a DRE da visão, como a consolidação faz. "
+                   "Só linhas que o DIÁRIO alimenta entram; CMV/Mercadorias e receita vêm de outra fonte. Aparecem só as diferenças "
+                   "acima de R$ 1 e as linhas sem par na DRE. Numa visão parcial, o DIÁRIO é recortado pelos centros de custo das lojas dela.")
         try:
             _dia_int = carregar_diario(path_real)
             if abas_para_carregar and "DRE CONSOLIDADO" not in [str(a).upper() for a in abas_para_carregar]:
@@ -19806,7 +19838,7 @@ if tab_orc is not None:
                 _lojas_int = _lojas_individuais_das_abas(abas_para_carregar)
                 _centros_int = {str(c).strip() for l in _lojas_int for c in (_mapa_int.get(l), l) if c}
                 _dia_int = _dia_int[_dia_int["Centro de Custos"].astype(str).str.strip().isin(_centros_int)]
-            _conc = conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int)
+            _conc = conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int, normalizar=_normalizar_texto)
         except Exception as _erro_int:   # noqa: BLE001
             _conc = None
             st.info(f"Não consegui conciliar: {_erro_int}")

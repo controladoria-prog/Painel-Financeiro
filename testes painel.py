@@ -50,6 +50,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
     "saude_do_orcamento": ["_numero_linha_dre"],
+    "conciliar_diario_dre": ["_numero_linha_dre"],
     "revisar_lancamentos": ["_chave_historico"],
     "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto", "_lista_pt"],
     "montar_fatos_executivos": ["_subgrupos_nivel2", "_nome_sem_numero_dre",
@@ -7813,17 +7814,21 @@ class TesteIntegridade(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.ns = carregar(["conciliar_diario_dre", "ponte_ebitda_caixa", "saude_do_orcamento"])
+        import unicodedata as _u
+        cls.ns = carregar(["conciliar_diario_dre", "ponte_ebitda_caixa", "saude_do_orcamento", "_normalizar_texto"],
+                          extras={"unicodedata": _u})
 
     def test_conciliacao_aponta_diferenca_e_sem_linha(self):
+        # A DRE e hierarquica: 8.3 - Pessoal = o que aponta para ela + o que aponta para 8.3.1.
         diario = pd.DataFrame({
-            "Competência": ["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08"],
-            "Linha DRE": ["8.3 - Pessoal", "8.3 - Pessoal", "6.24 - Marketing", "9.9 - Inexistente"],
-            "Valor Bruto": [-600.0, -400.0, -250.0, -10.0]})
-        dre = pd.DataFrame({"Nome": ["8.3 - Pessoal", "6.24 - Marketing"], "08/2026": [1000.0, -300.0]})
-        res = self.ns["conciliar_diario_dre"](diario, dre, ["08/2026"])
+            "Competência": ["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08", "2026-08-09"],
+            "Linha DRE": ["8.3 - Pessoal", "8.3.1 - Salários", "6.24 - Marketing", "9.9 - Inexistente", "8.3.1 - salarios "],
+            "Valor Bruto": [-600.0, -300.0, -250.0, -10.0, -100.0]})
+        dre = pd.DataFrame({"Nome": ["8.3 - Pessoal", "8.3.1 - Salários", "6.24 - Marketing"], "08/2026": [1000.0, 400.0, -300.0]})
+        res = self.ns["conciliar_diario_dre"](diario, dre, ["08/2026"], normalizar=self.ns["_normalizar_texto"])
         por = {(r["Linha DRE"], r["Situação"]): r for _, r in res.iterrows()}
-        self.assertNotIn(("8.3 - Pessoal", "DIÁRIO ≠ DRE"), por, "bate em modulo: 1000 x -1000")
+        self.assertNotIn(("8.3 - Pessoal", "DIÁRIO ≠ DRE"), por, "pai = proprio + filhas: 600 + 300 + 100 = 1000")
+        self.assertNotIn(("8.3.1 - Salários", "DIÁRIO ≠ DRE"), por, "nome casa normalizado (caixa/acentos/espacos)")
         self.assertIn(("6.24 - Marketing", "DIÁRIO ≠ DRE"), por)
         self.assertAlmostEqual(por[("6.24 - Marketing", "DIÁRIO ≠ DRE")]["Diferença"], -50.0)
         self.assertIn(("9.9 - Inexistente", "SEM LINHA NA DRE"), por)
@@ -7852,7 +7857,7 @@ class TesteIntegridade(unittest.TestCase):
     def test_a_aba_existe_so_na_controladoria(self):
         self.assertIn('"🧾 Integridade",', FONTE)
         self.assertIn("tab_int = None   # Integridade idem", FONTE)
-        self.assertIn("conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int)", FONTE)
+        self.assertIn("conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int, normalizar=_normalizar_texto)", FONTE)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
