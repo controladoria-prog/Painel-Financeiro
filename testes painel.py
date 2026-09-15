@@ -49,6 +49,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    "saude_do_orcamento": ["_numero_linha_dre"],
     "revisar_lancamentos": ["_chave_historico"],
     "montar_narrativa_executiva": ["_pct_br", "formata_valor_curto", "_lista_pt"],
     "montar_fatos_executivos": ["_subgrupos_nivel2", "_nome_sem_numero_dre",
@@ -7804,6 +7805,54 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
         self.assertIn("revisar_lancamentos(_df_rev, _comp_rev)", FONTE)
         self.assertIn('carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])', FONTE,
                       "o monitor do escritorio (grupos 1-7) mora na aba de revisao")
+
+
+class TesteIntegridade(unittest.TestCase):
+    """15/09/2026: conciliacao DIARIO x DRE, ponte EBITDA -> caixa sem residuo
+    e saude do orcamento -- so na Controladoria."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["conciliar_diario_dre", "ponte_ebitda_caixa", "saude_do_orcamento"])
+
+    def test_conciliacao_aponta_diferenca_e_sem_linha(self):
+        diario = pd.DataFrame({
+            "Competência": ["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08"],
+            "Linha DRE": ["8.3 - Pessoal", "8.3 - Pessoal", "6.24 - Marketing", "9.9 - Inexistente"],
+            "Valor Bruto": [-600.0, -400.0, -250.0, -10.0]})
+        dre = pd.DataFrame({"Nome": ["8.3 - Pessoal", "6.24 - Marketing"], "08/2026": [1000.0, -300.0]})
+        res = self.ns["conciliar_diario_dre"](diario, dre, ["08/2026"])
+        por = {(r["Linha DRE"], r["Situação"]): r for _, r in res.iterrows()}
+        self.assertNotIn(("8.3 - Pessoal", "DIÁRIO ≠ DRE"), por, "bate em modulo: 1000 x -1000")
+        self.assertIn(("6.24 - Marketing", "DIÁRIO ≠ DRE"), por)
+        self.assertAlmostEqual(por[("6.24 - Marketing", "DIÁRIO ≠ DRE")]["Diferença"], -50.0)
+        self.assertIn(("9.9 - Inexistente", "SEM LINHA NA DRE"), por)
+        self.assertTrue(self.ns["conciliar_diario_dre"](pd.DataFrame(), dre, ["08/2026"]).empty)
+
+    def test_ponte_fecha_sem_residuo(self):
+        ponte = self.ns["ponte_ebitda_caixa"](
+            {"08/2026": {"receita": 12_000.0, "ebitda": 2_900.0}},
+            {"08/2026": {"entradas": 11_000.0, "saidas": 9_500.0}})
+        r = ponte.iloc[0]
+        self.assertAlmostEqual(r["Receita não recebida (−)"], 1_000.0)
+        self.assertAlmostEqual(r["Pagamentos além do custo (−)"], 400.0)   # 9.500 - (12.000 - 2.900)
+        self.assertAlmostEqual(r["Variação de caixa"], 1_500.0)             # = entradas - saidas
+        self.assertTrue(self.ns["ponte_ebitda_caixa"]({"09/2026": {"receita": 1, "ebitda": 1}}, {}).empty)
+
+    def test_saude_do_orcamento(self):
+        tabela = {("real", "8.3 - Pessoal"): 500.0, ("orc", "8.3 - Pessoal"): 0.0,
+                  ("real", "6.24 - Marketing"): 0.0, ("orc", "6.24 - Marketing"): 300.0,
+                  ("real", "8 - Despesas"): 500.0, ("orc", "8 - Despesas"): 0.0}
+        valor = lambda lado, linha, cols, exato=False: tabela.get((lado, linha), 0.0)  # noqa: E731
+        saida = self.ns["saude_do_orcamento"](["8 - Despesas", "8.3 - Pessoal", "6.24 - Marketing"], valor, ["08/2026"], ["06/2026", "07/2026", "08/2026"])
+        self.assertEqual([(s["Linha da DRE"], s["Sinal"]) for s in saida],
+                         [("8.3 - Pessoal", "GASTO SEM ORÇAMENTO"), ("6.24 - Marketing", "ORÇAMENTO PARADO")],
+                         "linha de grupo (nivel 1) fica fora")
+
+    def test_a_aba_existe_so_na_controladoria(self):
+        self.assertIn('"🧾 Integridade",', FONTE)
+        self.assertIn("tab_int = None   # Integridade idem", FONTE)
+        self.assertIn("conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int)", FONTE)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):

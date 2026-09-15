@@ -3213,6 +3213,90 @@ def revisar_lancamentos(df, competencia, minimo_historico=3, dominancia=0.8):
     return resultado.reset_index(drop=True)
 
 
+# ---------------------------------------------------------------------------
+# Integridade (15/09/2026): conciliação DIÁRIO x DRE, ponte EBITDA -> caixa e
+# saúde do orçamento. Funções puras; a aba só encaixa.
+# ---------------------------------------------------------------------------
+def conciliar_diario_dre(df_diario, df_dre, meses_cols, tolerancia=1.0):
+    """Soma o DIÁRIO por Linha DRE x mês e compara com a DRE (em módulo: o
+    DIÁRIO guarda despesa negativa e a DRE ora positiva, ora negativa). Devolve
+    só as diferenças acima da tolerância e os lançamentos cuja Linha DRE não
+    existe na DRE ("sem linha")."""
+    cols = ["Linha DRE", "Mês", "DIÁRIO", "DRE", "Diferença", "Situação"]
+    if df_diario is None or df_diario.empty or df_dre is None or df_dre.empty:
+        return pd.DataFrame(columns=cols)
+    d = df_diario.copy()
+    d["_mes"] = pd.to_datetime(d["Competência"], errors="coerce").dt.strftime("%m/%Y")
+    d["_linha"] = d["Linha DRE"].astype(str).str.strip()
+    d["_valor"] = pd.to_numeric(d["Valor Bruto"], errors="coerce").fillna(0.0)
+    d = d[d["_mes"].isin(list(meses_cols)) & (d["_linha"] != "") & (d["_linha"].str.lower() != "nan")]
+    col_nome = "Nome" if "Nome" in df_dre.columns else df_dre.columns[0]
+    dre = df_dre.set_index(df_dre[col_nome].astype(str).str.strip())
+    soma = d.groupby(["_linha", "_mes"], observed=True)["_valor"].sum()
+    saida = []
+    for (linha, mes), v_diario in soma.items():
+        if linha not in dre.index:
+            saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": None,
+                          "Diferença": None, "Situação": "SEM LINHA NA DRE"})
+            continue
+        v_dre = pd.to_numeric(dre.loc[linha, mes], errors="coerce") if mes in dre.columns else 0.0
+        v_dre = float(v_dre.iloc[0] if hasattr(v_dre, "iloc") else (v_dre or 0.0))
+        dif = abs(v_diario) - abs(v_dre)
+        if abs(dif) > tolerancia:
+            saida.append({"Linha DRE": linha, "Mês": mes, "DIÁRIO": v_diario, "DRE": v_dre,
+                          "Diferença": dif, "Situação": "DIÁRIO ≠ DRE"})
+    res = pd.DataFrame(saida, columns=cols)
+    if not res.empty:
+        res["_abs"] = res["Diferença"].abs().fillna(res["DIÁRIO"].abs())
+        res = res.sort_values(["Situação", "_abs"], ascending=[True, False]).drop(columns="_abs")
+    return res.reset_index(drop=True)
+
+
+def ponte_ebitda_caixa(dre_por_mes, fluxo_por_mes):
+    """Por mês: EBITDA (competência) -> variação de caixa (fluxo), sem resíduo:
+    caixa = recebimentos - pagamentos = (receita - receita não recebida) -
+    (custos e despesas + pagamentos além do custo) = EBITDA - Δrecebíveis -
+    Δfornecedores, com custos e despesas = receita bruta - EBITDA."""
+    linhas = []
+    for mes, dre in dre_por_mes.items():
+        fx = fluxo_por_mes.get(mes)
+        if not fx:
+            continue
+        rec, eb = float(dre.get("receita", 0.0)), float(dre.get("ebitda", 0.0))
+        entradas, saidas = float(fx.get("entradas", 0.0)), float(fx.get("saidas", 0.0))
+        gastos = rec - eb
+        d_receb = rec - entradas
+        d_forn = saidas - gastos
+        linhas.append({"Mês": mes, "EBITDA": eb, "Receita não recebida (−)": d_receb,
+                       "Pagamentos além do custo (−)": d_forn, "Variação de caixa": eb - d_receb - d_forn,
+                       "Recebimentos": entradas, "Pagamentos": saidas})
+    return pd.DataFrame(linhas)
+
+
+def saude_do_orcamento(linhas, valor, cols_ytd, cols_recentes, minimo=1.0):
+    """Linhas de detalhe (nível >= 2) com gasto e sem orçamento no acumulado, e
+    linhas com orçamento nos meses recentes e nenhum realizado."""
+    saida = []
+    for linha in linhas:
+        numero = _numero_linha_dre(linha) or ""
+        if len(numero.split(".")) < 2:
+            continue
+        real_ytd = abs(float(valor("real", linha, cols_ytd, True) or 0.0))
+        orc_ytd = abs(float(valor("orc", linha, cols_ytd, True) or 0.0))
+        if real_ytd >= minimo and orc_ytd < minimo:
+            saida.append({"Linha da DRE": linha, "Sinal": "GASTO SEM ORÇAMENTO", "Realizado": real_ytd, "Orçado": orc_ytd,
+                          "Detalhe": "há gasto no acumulado e nenhum orçamento previsto"})
+            continue
+        if cols_recentes:
+            real_rec = abs(float(valor("real", linha, cols_recentes, True) or 0.0))
+            orc_rec = abs(float(valor("orc", linha, cols_recentes, True) or 0.0))
+            if orc_rec >= minimo and real_rec < minimo:
+                saida.append({"Linha da DRE": linha, "Sinal": "ORÇAMENTO PARADO", "Realizado": real_rec, "Orçado": orc_rec,
+                              "Detalhe": f"orçado nos últimos {len(cols_recentes)} meses fechados e nada realizado"})
+    saida.sort(key=lambda s: -max(s["Realizado"], s["Orçado"]))
+    return saida
+
+
 def _fator_proporcional_mes_corrente(colunas_periodo, meses_cols_ref, data_hoje):
     """Quando o período analisado inclui o MÊS CORRENTE, ele ainda não
     terminou -- comparar o realizado parcial contra o orçamento inteiro do
@@ -15901,6 +15985,7 @@ if departamento_ativo:
     tab_fech = None  # Checklist de fechamento é operação da Controladoria
     tab_orc = None   # O orçamento é montado pela Controladoria, visão inteira
     tab_rev = None   # Revisão de lançamentos é operação da Controladoria
+    tab_int = None   # Integridade idem
 else:
     _nomes_abas = [
         "📊 Visão Geral & Charts",
@@ -15912,12 +15997,13 @@ else:
         "✅ Fechamento Mensal",
         "🎯 Orçamento",
         "🔎 Revisão de Lançamentos",
+        "🧾 Integridade",
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -19701,6 +19787,96 @@ if tab_orc is not None:
                                        _det_esc.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"escritorio_grupos_1_a_7_{_hoje_esc:%Y}_{'S1' if _hoje_esc.month <= 6 else 'S2'}.csv",
                                        mime="text/csv", key="esc_baixar")
+
+    with tab_int:
+        st.markdown('<div class="section-title">🧾 Integridade — DIÁRIO x DRE, EBITDA → caixa e saúde do orçamento</div>',
+                    unsafe_allow_html=True)
+        _hoje_int = datetime.now(FUSO_BR).date()
+        _cols_int = [c for c in meses_cols if int(c[3:]) == _hoje_int.year and int(c[:2]) <= _hoje_int.month]
+        _cols_fech_int = [c for c in _cols_int if int(c[:2]) < _hoje_int.month]
+        _df_dre_int = next((d for d in list_df_real if d is not None and not d.empty), None)
+        # 1) Conciliação DIÁRIO x DRE
+        st.markdown('<div class="section-title" style="margin-top:14px;">1 · Conciliação DIÁRIO x DRE (ano corrente)</div>', unsafe_allow_html=True)
+        st.caption("O DIÁRIO somado por linha da DRE e mês tem de bater com a DRE da visão. Aparecem só as diferenças acima de R$ 1 "
+                   "e os lançamentos cuja linha não existe na DRE. Numa visão parcial, o DIÁRIO é recortado pelos centros de custo das lojas dela.")
+        try:
+            _dia_int = carregar_diario(path_real)
+            if abas_para_carregar and "DRE CONSOLIDADO" not in [str(a).upper() for a in abas_para_carregar]:
+                _mapa_int = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
+                _lojas_int = _lojas_individuais_das_abas(abas_para_carregar)
+                _centros_int = {str(c).strip() for l in _lojas_int for c in (_mapa_int.get(l), l) if c}
+                _dia_int = _dia_int[_dia_int["Centro de Custos"].astype(str).str.strip().isin(_centros_int)]
+            _conc = conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int)
+        except Exception as _erro_int:   # noqa: BLE001
+            _conc = None
+            st.info(f"Não consegui conciliar: {_erro_int}")
+        if _conc is not None:
+            _n_dif = int((_conc["Situação"] == "DIÁRIO ≠ DRE").sum()) if not _conc.empty else 0
+            _n_sem = int((_conc["Situação"] == "SEM LINHA NA DRE").sum()) if not _conc.empty else 0
+            st.markdown(render_kpi_row([
+                dict(label="LINHA × MÊS COM DIFERENÇA", value=str(_n_dif), value_color=COLORS["negative"] if _n_dif else COLORS["positive"],
+                     subtext="DIÁRIO ≠ DRE acima de R$ 1", icon="🧾"),
+                dict(label="SEM LINHA NA DRE", value=str(_n_sem), value_color=COLORS["negative"] if _n_sem else COLORS["positive"],
+                     subtext="lançamento com Linha DRE que a DRE não tem", icon="❓"),
+                dict(label="MESES CONFERIDOS", value=str(len(_cols_int)), value_color=COLORS["primary"], subtext=f"{_hoje_int.year}", icon="📅"),
+            ]), unsafe_allow_html=True)
+            if _conc.empty:
+                st.success("DIÁRIO e DRE batem em todas as linhas e meses conferidos.")
+            else:
+                _m = _conc.copy()
+                for _c in ("DIÁRIO", "DRE", "Diferença"):
+                    _m[_c] = _m[_c].map(lambda v: formata_brl(v) if pd.notna(v) else "—")
+                st.dataframe(_m, hide_index=True, width="stretch", height=min(38 + 35 * (len(_m) + 1), 500))
+        # 2) Ponte EBITDA -> caixa
+        st.markdown('<div class="section-title" style="margin-top:22px;">2 · Ponte EBITDA → caixa (por mês)</div>', unsafe_allow_html=True)
+        st.caption("Se deu EBITDA, cadê o dinheiro? caixa = EBITDA − receita não recebida − pagamentos além do custo (custos e despesas = "
+                   "receita bruta − EBITDA). Recebimentos e pagamentos vêm do fluxo de caixa por data efetiva; a receita e o EBITDA, da DRE da visão.")
+        try:
+            _base_fx, _erro_fx, _ = obter_dados_fluxo_caixa()
+            _df_fx = preparar_fluxo_caixa(_base_fx)[0] if _base_fx is not None else None
+        except Exception as _erro_fx2:   # noqa: BLE001
+            _df_fx, _erro_fx = None, str(_erro_fx2)
+        if _df_fx is None or _df_fx.empty or "Data Efetiva" not in _df_fx.columns:
+            st.info(f"Fluxo de caixa indisponível para a ponte. {_erro_fx or ''}")
+        else:
+            _fx = _df_fx.copy()
+            _fx["_mes"] = pd.to_datetime(_fx["Data Efetiva"], errors="coerce").dt.strftime("%m/%Y")
+            _fluxo_mes = {}
+            for _c in _cols_fech_int:
+                _bloco = _fx[_fx["_mes"] == _c]
+                _fluxo_mes[_c] = {"entradas": float(_bloco.loc[_bloco["Tipo Movimento"] == "entrada", COL_FIN_VALOR].abs().sum()),
+                                  "saidas": float(_bloco.loc[_bloco["Tipo Movimento"] == "saida", COL_FIN_VALOR].abs().sum())}
+            _dre_mes = {_c: {"receita": get_valor_consolidado_multi(list_df_real, "1 - Receita Operacional Bruta", [_c]),
+                             "ebitda": get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [_c])} for _c in _cols_fech_int}
+            _ponte = ponte_ebitda_caixa(_dre_mes, _fluxo_mes)
+            if _ponte.empty:
+                st.info("Sem mês fechado com DRE e fluxo ao mesmo tempo.")
+            else:
+                _pm = _ponte.copy()
+                for _c in [c for c in _pm.columns if c != "Mês"]:
+                    _pm[_c] = _pm[_c].map(formata_brl)
+                st.dataframe(_pm, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pm) + 1), 420))
+                _tot = _ponte[["EBITDA", "Variação de caixa"]].sum()
+                st.caption(f"No acumulado dos meses fechados: EBITDA {formata_brl(_tot['EBITDA'])} → variação de caixa "
+                           f"{formata_brl(_tot['Variação de caixa'])}. A diferença é capital de giro (receita ainda não recebida e "
+                           "pagamentos além do custo do período), não resultado.")
+        # 3) Saúde do orçamento
+        st.markdown('<div class="section-title" style="margin-top:22px;">3 · Saúde do orçamento</div>', unsafe_allow_html=True)
+        st.caption("Gasto sem orçamento (o desvio vira 's/ orç.' em vez de comparação) e orçamento parado (previsto nos últimos três "
+                   "meses fechados e nada realizado). Só linhas de detalhe.")
+        _linhas_int = list(_df_dre_int["Nome"].dropna().unique().astype(str)) if _df_dre_int is not None and "Nome" in _df_dre_int.columns else []
+
+        def _valor_int(lado, linha, cols, exato=False):
+            return get_valor_consolidado_multi(list_df_orc if lado == "orc" else list_df_real, linha, cols, exato_linha_sintetica=exato)
+
+        _saude = saude_do_orcamento(_linhas_int, _valor_int, _cols_int, _cols_fech_int[-3:])
+        if not _saude:
+            st.success("Nenhuma linha com gasto sem orçamento nem orçamento parado.")
+        else:
+            _sd = pd.DataFrame(_saude)
+            for _c in ("Realizado", "Orçado"):
+                _sd[_c] = _sd[_c].map(formata_brl)
+            st.dataframe(_sd, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sd) + 1), 500))
 
     with tab_orc:
         # ---- Prova de fogo do orçamento (08/09/2026) ----
