@@ -9666,7 +9666,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 unsafe_allow_html=True,
             )
 
-            LINHA_PCT_SOBRA = "% de sobra"
+            LINHA_PCT_SOBRA = "Liquidez Corrente"   # era "% de sobra" (renomeado a pedido em 15/09/2026)
             LINHA_LIQUIDEZ = "Índice de liquidez imediata"
             LINHA_HERANCA = "↳ sobra herdada do mês anterior"
             LINHA_META_RESERVA = "↳ meta ainda a realizar (previsão)"
@@ -9736,7 +9736,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.caption(
                 "**Disponível** = o saldo de caixa e banco com que o mês **começou** + tudo que se recebeu e "
                 "ainda há para receber **dentro do mês**. **A pagar** = o total de contas a pagar do mês. "
-                "**% de sobra** = (disponível − a pagar) ÷ disponível: de tudo que passou pelo mês, quanto "
+                "**Liquidez Corrente** = (disponível − a pagar) ÷ disponível: de tudo que passou pelo mês, quanto "
                 "sobrou depois de pagar tudo. É esse número que deve ficar em 30% ou mais. "
                 "**Índice de liquidez imediata** = disponível ÷ a pagar, escrito como o que **excede** a "
                 "dívida: 30% quer dizer R$ 1,30 disponível para cada R$ 1,00 devido. As duas linhas batem "
@@ -9799,13 +9799,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # acrescentava leitura -- só puxava a escala da esquerda para
                 # baixo (ela vai a -10 milhões) e achatava as barras contra o
                 # topo do quadro, que é onde estão os números que importam.
-                # % de sobra x meta de 30%, no eixo da direita
+                # Liquidez Corrente (ex-% de sobra) x meta de 30%, no eixo da direita
                 cores_pontos_sobra = [
                     COLORS["negative"] if (pd.isna(v) or v < 30) else COLORS["positive"]
                     for v in pct_sobra_grafico
                 ]
                 fig_es.add_trace(go.Scatter(
-                    name="% de sobra", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
+                    name="Liquidez Corrente", x=rotulos_x_m, y=pct_sobra_grafico, yaxis="y2",
                     mode="lines+markers", line=dict(color=COLORS["warning"], width=2.5),
                     marker=dict(size=10, color=cores_pontos_sobra,
                                 line=dict(color=COLORS["bg"], width=2)),
@@ -9813,7 +9813,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # ANOTAÇÕES com fundo, montadas depois. Texto de trace não
                     # aceita cor de fundo, e sem fundo o número sumia sempre
                     # que a linha passava por cima de uma barra.
-                    hovertemplate="Sobra: %{y:.1f}%<extra></extra>",
+                    hovertemplate="Liquidez Corrente: %{y:.1f}%<extra></extra>",
                 ))
                 # ÍNDICE DE LIQUIDEZ IMEDIATA, no mesmo eixo da direita.
                 # Tracejado de propósito, e não linha cheia: ele divide pela
@@ -9902,7 +9902,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         range=[0, teto_barras * 1.20],
                     ),
                     yaxis2=dict(
-                        title=dict(text="% de sobra", font=dict(size=10, color=COLORS["warning"])),
+                        title=dict(text="Liquidez Corrente", font=dict(size=10, color=COLORS["warning"])),
                         overlaying="y", side="right", showgrid=False, fixedrange=True,
                         ticksuffix="%", tickfont=dict(size=9, color=COLORS["warning"]),
                         range=faixa_pct,
@@ -9915,7 +9915,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.plotly_chart(fig_es, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
                 st.caption(
                     "Barras = entradas e saídas do mês (eixo da esquerda, em R$). Linha azul = resultado do mês "
-                    "(entradas − saídas). Linha laranja = % de sobra, no eixo da direita, com os pontos em verde "
+                    "(entradas − saídas). Linha laranja = Liquidez Corrente, no eixo da direita, com os pontos em verde "
                     "quando atingem a meta de 30% (tracejado cinza) e em vermelho quando ficam abaixo."
                 )
 
