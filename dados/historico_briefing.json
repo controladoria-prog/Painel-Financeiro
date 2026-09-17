@@ -151,5 +151,22 @@
    "Serviços de Terceiros",
    "Despesas Administrativas"
   ]
+ },
+ {
+  "data": "2026-09-17",
+  "mes_col": "09/2026",
+  "mes": "SETEMBRO",
+  "dia": 15,
+  "rec_mes": 5110969.21,
+  "ritmo_pct": 79.3650262148592,
+  "chance": 0.01,
+  "rec_ytd": 86083920.8,
+  "ebitda_ytd": 21203312.060000002,
+  "margem_proj": 23.209162303146485,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Serviços de Terceiros",
+   "Despesas Administrativas"
+  ]
  }
 ]
