@@ -9080,11 +9080,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "lugar. Para o Google é uma aba nova, com outro `gid` — a publicação antiga fica "
                 "apontando para algo que não existe mais (e a tela *Publicar na web* passa a dizer "
                 "que não está publicado).\n\n"
-                "**Solução definitiva:** cole nos Secrets do app o ID do arquivo, em "
-                "`FLUXO_CAIXA_FILE_ID`. Ele está na barra de endereço da planilha aberta, entre "
-                "`/d/` e `/edit`. Com isso o painel busca a aba pelo NOME e para de depender do gid.\n\n"
+                "**Solução definitiva:** publique o **documento inteiro** (não só a aba) em "
+                "*Arquivo > Compartilhar > Publicar na web > Documento inteiro*, e deixe a aba "
+                "\"Fluxo de Caixa 2026\" como a **primeira** da planilha. A publicação do documento não "
+                "depende do gid, e o painel já lê a primeira aba do link sem gid -- quando a aba for "
+                "recriada, ele continua encontrando. Melhor ainda: o processo que atualiza a base pode "
+                "LIMPAR e COLAR na mesma aba em vez de apagar e criar outra (o gid não muda).\n\n"
                 "**Solução rápida:** republique a aba em *Arquivo > Compartilhar > Publicar na web* "
-                "(formato CSV) e cole o link novo em `FLUXO_CAIXA_CSV_URL`."
+                "(formato CSV) e cole o link novo em `FLUXO_CAIXA_CSV_URL` (nos Secrets do Streamlit E do GitHub). "
+                "A rota por ID do arquivo (`FLUXO_CAIXA_FILE_ID`) não serve para esta planilha: ela é grande "
+                "demais para os endpoints de exportação do Google, que devolvem erro 500."
             )
         elif "400" in _texto_erro or "404" in _texto_erro:
             st.error(
