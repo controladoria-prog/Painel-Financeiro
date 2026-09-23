@@ -1882,8 +1882,14 @@ def _segredo_com_origem(nome):
     try:
         achado = _procurar(st.secrets, "")
     except Exception:                                            # noqa: BLE001
-        return "", ""
-    return achado if achado else ("", "")
+        achado = None
+    if achado:
+        return achado
+    # Último recurso: variável de ambiente (23/09/2026). É assim que os robôs do
+    # GitHub Actions -- que não têm Secrets do Streamlit -- recebem o mesmo
+    # FLUXO_CAIXA_CSV_URL / FLUXO_CAIXA_FILE_ID que o painel usa.
+    valor_env = str(os.environ.get(nome, "") or "").strip()
+    return (valor_env, "variável de ambiente") if valor_env else ("", "")
 
 
 def _segredo(nome):

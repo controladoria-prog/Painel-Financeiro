@@ -4553,7 +4553,7 @@ class TesteBuscaDeSegredo(unittest.TestCase):
 
     def _buscar(self, dados, nome="FECHAMENTO_CSV_URL"):
         ns = carregar(["_segredo_com_origem", "_segredo"],
-                      extras={"st": type("St", (), {"secrets": self._SecretsFalso(dados)})})
+                      extras={"os": __import__("os"), "st": type("St", (), {"secrets": self._SecretsFalso(dados)})})
         return ns["_segredo_com_origem"](nome), ns["_segredo"](nome)
 
     def test_acha_no_topo(self):
@@ -4612,7 +4612,8 @@ class TesteBuscaDeSegredo(unittest.TestCase):
             @property
             def secrets(self):
                 raise RuntimeError("sem Secrets aqui")
-        ns = carregar(["_segredo_com_origem", "_segredo"], extras={"st": Explode()})
+        import os as _os
+        ns = carregar(["_segredo_com_origem", "_segredo"], extras={"st": Explode(), "os": _os})
         self.assertEqual(ns["_segredo"]("QUALQUER"), "")
 
     def test_a_tela_distingue_ausente_de_nao_reconhecido(self):

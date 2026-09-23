@@ -34,6 +34,8 @@ jobs:
           SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
           LINK_PAINEL: ${{ secrets.LINK_PAINEL }}
+          FLUXO_CAIXA_CSV_URL: ${{ secrets.FLUXO_CAIXA_CSV_URL }}
+          FLUXO_CAIXA_FILE_ID: ${{ secrets.FLUXO_CAIXA_FILE_ID }}
         run: python briefing_financeiro.py ${{ github.event.inputs.forcar == 'true' && '--forcar' || '' }}
       - name: Guardar o histórico do dia
         run: |
