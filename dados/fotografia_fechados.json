@@ -1,5 +1,5 @@
 {
- "data": "2026-09-22",
+ "data": "2026-09-23",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.19,
@@ -275,10 +275,10 @@
    "8.8 - Serviços de Terceiros": -190501.29
   },
   "08/2026": {
-   "3 - Receita Operacional Liquida": 11160069.850000001,
-   "2 - Deduções da Receita Operacional Bruta": 0.0,
+   "3 - Receita Operacional Liquida": 10512647.629999999,
+   "2 - Deduções da Receita Operacional Bruta": -647422.2200000001,
    "4 - Custo das Vendas": -4573362.59,
-   "11 - EBITDA": 3426504.0100000002,
+   "11 - EBITDA": 2779081.79,
    "6.1 - Comissões sobre Vendas": -151494.7,
    "6.2 - Taxa com Cartão de Crédito / Débito": -71253.84,
    "6.3 - POS Cartões": -73455.54000000001,
