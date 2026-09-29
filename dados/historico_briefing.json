@@ -287,5 +287,22 @@
    "Pessoal",
    "Serviços de Terceiros"
   ]
+ },
+ {
+  "data": "2026-09-29",
+  "mes_col": "09/2026",
+  "mes": "SETEMBRO",
+  "dia": 27,
+  "rec_mes": 10009331.45,
+  "ritmo_pct": 86.34922917557381,
+  "chance": 0.01,
+  "rec_ytd": 90325135.03,
+  "ebitda_ytd": 20987561.89,
+  "margem_proj": null,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Pessoal",
+   "Serviços de Terceiros"
+  ]
  }
 ]
