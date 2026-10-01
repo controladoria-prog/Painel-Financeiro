@@ -3346,6 +3346,120 @@ def saude_do_orcamento(linhas, valor, cols_ytd, cols_recentes, minimo=1.0):
     return saida
 
 
+# O custo do escritório é o TOTAL da aba dele: a última linha da DRE (17 -
+# Resultado Gerencial), que já soma tudo que está lançado lá. Se a aba não
+# tiver a 17, cai para a 15 e depois para a 11 -- sempre a linha mais
+# abrangente disponível. Pedido de 01/10/2026: "o total da aba em si", e não
+# um grupo escolhido.
+LINHAS_TOTAL_ESCRITORIO = ("17", "15", "11")
+GRUPO_DESPESAS_OPERACIONAIS = "8"       # abertura "onde está o custo" (8.1, 8.2, ...)
+
+
+def _valor_por_numero_de_linha(df, numero, colunas):
+    """Soma, nas `colunas`, a linha da DRE cujo NÚMERO é exatamente `numero`
+    ("8", "8.3", "12"). Casa pelo número e não pelo texto porque o número é a
+    identidade da linha; o nome pode ter acento ou espaço diferente entre
+    abas."""
+    if df is None or df.empty or not colunas:
+        return 0.0
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    mask = df[col_nome].astype(str).map(lambda n: _numero_linha_dre(n) == numero)
+    sub = df[mask]
+    if sub.empty:
+        return 0.0
+    existentes = [c for c in colunas if c in sub.columns]
+    if not existentes:
+        return 0.0
+    return float(sub[existentes].apply(pd.to_numeric, errors="coerce").fillna(0).sum().sum())
+
+
+def _linha_total_da_aba(df):
+    """Número da linha que representa o TOTAL da aba: a 17 se existir, senão
+    a 15, senão a 11. None se a aba não tiver nenhuma."""
+    if df is None or df.empty:
+        return None
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    numeros = set(df[col_nome].astype(str).map(_numero_linha_dre).dropna())
+    return next((n for n in LINHAS_TOTAL_ESCRITORIO if n in numeros), None)
+
+
+def custo_do_escritorio_sobre_receita(df_esc_real, df_esc_orc, dfs_grupo_real, dfs_grupo_orc, colunas):
+    """Quanto o escritório custa em relação à receita do GRUPO INTEIRO
+    (pedido da Controladoria, 01/10/2026).
+
+    CUSTO DO ESCRITÓRIO = o TOTAL da aba do escritório (ESCRIT MATRIZ), em
+    módulo: a linha "17 - Resultado Gerencial do Período", que já soma tudo
+    que está lançado lá -- despesas operacionais, financeiro, depreciação,
+    impostos e também o que estiver lançado por engano do grupo 1 ao 7. O
+    usuário pediu assim de propósito ("o total da aba em si", 01/10/2026),
+    e não um grupo escolhido. Sem a 17, usa a 15; sem as duas, a 11.
+
+    RECEITA DO GRUPO = "3 - Receita Operacional Liquida" do DRE CONSOLIDADO
+    (as 21 unidades), a mesma régua da margem EBITDA % do painel; a bruta vai
+    junto para quem pensa em faturamento.
+
+    Devolve um dicionário com os totais do período, a abertura mês a mês e
+    "onde está o custo": os subgrupos do 8 (8.1, 8.2, ...) e o que sobra
+    fora do 8 (total menos o grupo 8). Percentuais em % (0-100); None quando
+    a receita é zero -- dividir por zero não é "0%"."""
+    def pct(parte, todo):
+        return (abs(parte) / abs(todo) * 100.0) if todo else None
+
+    linha_total = _linha_total_da_aba(df_esc_real)
+    linha_total_orc = _linha_total_da_aba(df_esc_orc) or linha_total
+
+    def bloco(cols):
+        custo = abs(_valor_por_numero_de_linha(df_esc_real, linha_total, cols)) if linha_total else 0.0
+        custo_orc = abs(_valor_por_numero_de_linha(df_esc_orc, linha_total_orc, cols)) if linha_total_orc else 0.0
+        grupo_8 = abs(_valor_por_numero_de_linha(df_esc_real, GRUPO_DESPESAS_OPERACIONAIS, cols))
+        rec_liq = abs(sum(_valor_por_numero_de_linha(d, "3", cols) for d in (dfs_grupo_real or [])))
+        rec_bru = abs(sum(_valor_por_numero_de_linha(d, "1", cols) for d in (dfs_grupo_real or [])))
+        rec_liq_orc = abs(sum(_valor_por_numero_de_linha(d, "3", cols) for d in (dfs_grupo_orc or [])))
+        return {
+            "custo": custo, "custo_orc": custo_orc, "grupo_8": grupo_8, "fora_do_8": custo - grupo_8,
+            "receita_liquida": rec_liq, "receita_bruta": rec_bru, "receita_liquida_orc": rec_liq_orc,
+            "pct_liquida": pct(custo, rec_liq), "pct_bruta": pct(custo, rec_bru),
+            "pct_orc": pct(custo_orc, rec_liq_orc),
+        }
+
+    total = bloco(list(colunas))
+    total["linha_total"] = linha_total
+    por_mes = []
+    for c in colunas:
+        b = bloco([c])
+        b["mes"] = c
+        por_mes.append(b)
+
+    subgrupos = []
+    if df_esc_real is not None and not df_esc_real.empty:
+        col_nome = "Nome" if "Nome" in df_esc_real.columns else df_esc_real.columns[0]
+        for nome in df_esc_real[col_nome].astype(str):
+            numero = _numero_linha_dre(nome) or ""
+            partes = numero.split(".")
+            if len(partes) != 2 or partes[0] != GRUPO_DESPESAS_OPERACIONAIS:
+                continue
+            valor = abs(_valor_por_numero_de_linha(df_esc_real, numero, list(colunas)))
+            valor_orc = abs(_valor_por_numero_de_linha(df_esc_orc, numero, list(colunas)))
+            if valor < 0.005 and valor_orc < 0.005:
+                continue
+            subgrupos.append({
+                "linha": nome.strip(), "numero": numero, "valor": valor, "orcado": valor_orc,
+                "pct_do_escritorio": pct(valor, total["custo"]),
+                "pct_da_receita": pct(valor, total["receita_liquida"]),
+            })
+        subgrupos.sort(key=lambda s: -s["valor"])
+        # O que sobra fora do 8 fecha a conta com o total da aba: financeiro,
+        # depreciação, não operacional, impostos e eventuais erros do 1 ao 7.
+        if abs(total["fora_do_8"]) >= 0.005:
+            subgrupos.append({
+                "linha": "Fora do grupo 8 (financeiro, depreciação, impostos, outros)", "numero": "",
+                "valor": total["fora_do_8"], "orcado": None,
+                "pct_do_escritorio": pct(total["fora_do_8"], total["custo"]),
+                "pct_da_receita": pct(total["fora_do_8"], total["receita_liquida"]),
+            })
+    return {"total": total, "por_mes": por_mes, "subgrupos": subgrupos}
+
+
 def _fator_proporcional_mes_corrente(colunas_periodo, meses_cols_ref, data_hoje):
     """Quando o período analisado inclui o MÊS CORRENTE, ele ainda não
     terminou -- comparar o realizado parcial contra o orçamento inteiro do
@@ -19810,11 +19924,14 @@ if tab_orc is not None:
                     unsafe_allow_html=True)
         st.caption("Tudo o que a aba ESCRIT MATRIZ 6037 tem lançado do grupo 1 até o fim do grupo 7 no semestre corrente. "
                    "A meta é esta lista vazia.")
+        # A aba do escritório e o DRE CONSOLIDADO vêm numa chamada só: o cache
+        # deste carregador guarda UMA entrada, e a seção "custo do escritório
+        # sobre a receita", logo abaixo, precisa das duas abas ao mesmo tempo.
         try:
-            _dados_esc = carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])
-            _df_esc = _dados_esc.get("ESCRIT MATRIZ 6037", (None, None))[1]
+            _dados_esc = carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037", "DRE CONSOLIDADO"])
+            _df_esc_orc, _df_esc = _dados_esc.get("ESCRIT MATRIZ 6037", (None, None))
         except Exception as _erro_esc:   # noqa: BLE001 -- aba ausente vira mensagem
-            _df_esc, _erro_esc_txt = None, str(_erro_esc)
+            _dados_esc, _df_esc_orc, _df_esc, _erro_esc_txt = {}, None, None, str(_erro_esc)
         else:
             _erro_esc_txt = ""
         if _df_esc is None or _df_esc.empty:
@@ -19900,6 +20017,76 @@ if tab_orc is not None:
                                        _det_esc.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"escritorio_grupos_1_a_7_{_hoje_esc:%Y}_{'S1' if _hoje_esc.month <= 6 else 'S2'}.csv",
                                        mime="text/csv", key="esc_baixar")
+
+        # ---- Custo do escritório sobre a receita do grupo (01/10/2026) ----
+        # Pergunta da Controladoria: quanto custa manter o escritório e que
+        # fatia da receita do grupo inteiro isso representa. Custo = TOTAL da
+        # aba ESCRIT MATRIZ (linha 17, tudo que está lançado lá); receita =
+        # DRE CONSOLIDADO (as 21 unidades), sempre, independentemente da
+        # visão escolhida na barra lateral. O período é o mesmo do filtro.
+        st.markdown('<div class="section-title" style="margin-top:22px;">🏢 Custo do escritório sobre a receita do grupo</div>',
+                    unsafe_allow_html=True)
+        _df_grp_orc, _df_grp_real = _dados_esc.get("DRE CONSOLIDADO", (None, None)) if _dados_esc else (None, None)
+        if _df_esc is None or _df_esc.empty or _df_grp_real is None or _df_grp_real.empty:
+            st.info("Preciso das abas ESCRIT MATRIZ 6037 e DRE CONSOLIDADO no Realizado para esta conta.")
+        elif not cols_kpi:
+            st.info("Escolha um período na barra lateral.")
+        else:
+            # Orçado do mês corrente proporcional aos dias decorridos, a mesma
+            # régua dos departamentos -- nos dois lados (escritório e grupo),
+            # senão o % orçado compararia um mês cheio com outro parcial.
+            _orcs_cer, _aviso_cer = _escalar_orcado_mes_corrente(
+                [_df_esc_orc, _df_grp_orc], cols_kpi, meses_cols, datetime.now(FUSO_BR).date())
+            _cer = custo_do_escritorio_sobre_receita(_df_esc, _orcs_cer[0], [_df_grp_real], [_orcs_cer[1]], cols_kpi)
+            _t = _cer["total"]
+            _fmt_pct_cer = lambda v: ("—" if v is None else f"{v:.2f}%".replace(".", ","))
+            _cor_pct_cer = COLORS["primary"]
+            if _t["pct_liquida"] is not None and _t["pct_orc"] is not None:
+                _cor_pct_cer = COLORS["negative"] if _t["pct_liquida"] > _t["pct_orc"] + 0.05 else COLORS["positive"]
+            _nome_total_cer = {"17": "17 - Resultado Gerencial", "15": "15 - Resultado antes do imposto", "11": "11 - EBITDA"}.get(
+                _t["linha_total"], "total")
+            st.markdown(render_kpi_row([
+                dict(label="CUSTO TOTAL DO ESCRITÓRIO", value=formata_valor_curto(_t["custo"]), value_color=COLORS["negative"],
+                     subtext=f"total da aba ESCRIT MATRIZ (linha {_nome_total_cer}) · orçado {formata_valor_curto(_t['custo_orc'])}",
+                     icon="🏢"),
+                dict(label="RECEITA DO GRUPO (21 UNIDADES)", value=formata_valor_curto(_t["receita_liquida"]), value_color=COLORS["positive"],
+                     subtext=f"receita líquida · bruta {formata_valor_curto(_t['receita_bruta'])}", icon="💵"),
+                dict(label="ESCRITÓRIO ÷ RECEITA", value=_fmt_pct_cer(_t["pct_liquida"]), value_color=_cor_pct_cer,
+                     subtext=f"da receita líquida · {_fmt_pct_cer(_t['pct_bruta'])} da bruta · orçado {_fmt_pct_cer(_t['pct_orc'])}",
+                     icon="📐"),
+                dict(label="DO TOTAL, DESPESAS OPERACIONAIS (8)", value=formata_valor_curto(_t["grupo_8"]), value_color=COLORS["warning"],
+                     subtext=f"o resto ({formata_valor_curto(_t['fora_do_8'])}) é financeiro, depreciação, impostos e outros", icon="📎"),
+            ]), unsafe_allow_html=True)
+            st.caption(
+                f"Período: **{label_periodo_kpi}**. O custo do escritório é o **total da aba ESCRIT MATRIZ 6037** — a última linha "
+                "da DRE dela, que soma tudo que está lançado lá (inclusive o que estiver do grupo 1 ao 7 por engano, apontado na seção "
+                "acima). A receita é a do **DRE CONSOLIDADO**, as 21 unidades, qualquer que seja a visão escolhida na barra lateral. "
+                "O % orçado é o que o orçamento previa para a mesma relação."
+                + (f" {_aviso_cer}" if _aviso_cer else "")
+            )
+            _c_mes, _c_sub = st.columns([3, 2])
+            with _c_mes:
+                st.markdown("**Mês a mês**")
+                _tab_mes = pd.DataFrame([{
+                    "Mês": b["mes"],
+                    "Receita líquida do grupo": formata_brl(b["receita_liquida"]),
+                    "Custo do escritório": formata_brl(b["custo"]),
+                    "% da receita": _fmt_pct_cer(b["pct_liquida"]),
+                    "% orçado": _fmt_pct_cer(b["pct_orc"]),
+                } for b in _cer["por_mes"]])
+                st.dataframe(_tab_mes, hide_index=True, width="stretch", height=38 + 35 * (len(_tab_mes) + 1))
+            with _c_sub:
+                st.markdown("**Onde está o custo (subgrupos do 8 e o que fica fora dele)**")
+                if _cer["subgrupos"]:
+                    _tab_sub = pd.DataFrame([{
+                        "Linha": s_["linha"],
+                        "Valor": formata_brl(s_["valor"]),
+                        "% do escritório": _fmt_pct_cer(s_["pct_do_escritorio"]),
+                        "% da receita": _fmt_pct_cer(s_["pct_da_receita"]),
+                    } for s_ in _cer["subgrupos"]])
+                    st.dataframe(_tab_sub, hide_index=True, width="stretch", height=min(38 + 35 * (len(_tab_sub) + 1), 600))
+                else:
+                    st.info("Sem linhas com valor na aba do escritório no período.")
 
     with tab_int:
         st.markdown('<div class="section-title">🧾 Integridade — DIÁRIO x DRE, EBITDA → caixa e saúde do orçamento</div>',

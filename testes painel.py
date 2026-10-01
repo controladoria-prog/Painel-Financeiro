@@ -7867,8 +7867,109 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
         self.assertIn('"🔎 Revisão de Lançamentos",', FONTE)
         self.assertIn("tab_rev = None   # Revisão de lançamentos é operação da Controladoria", FONTE)
         self.assertIn("revisar_lancamentos(_df_rev, _comp_rev)", FONTE)
-        self.assertIn('carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037"])', FONTE,
-                      "o monitor do escritorio (grupos 1-7) mora na aba de revisao")
+        self.assertIn('carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037", "DRE CONSOLIDADO"])', FONTE,
+                      "o monitor do escritorio (grupos 1-7) mora na aba de revisao; o DRE CONSOLIDADO vem "
+                      "na mesma chamada porque o cache guarda uma entrada so")
+
+
+class TesteCustoDoEscritorio(unittest.TestCase):
+    """01/10/2026: quanto o escritorio custa em relacao a receita do GRUPO
+    INTEIRO -- so na Controladoria, na aba de revisao, abaixo do monitor. O
+    custo e o TOTAL da aba (linha 17), por pedido expresso do usuario, e nao
+    um grupo escolhido."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["custo_do_escritorio_sobre_receita", "_valor_por_numero_de_linha", "_numero_linha_dre",
+                           "_linha_total_da_aba"],
+                          ["LINHAS_TOTAL_ESCRITORIO", "GRUPO_DESPESAS_OPERACIONAIS"])
+
+    def _escritorio(self, com_17=True):
+        nomes = ["1 - Receita Operacional Bruta", "6 - Despesas Variáveis", "8 - Despesas Operacionais",
+                 "8.3 - Pessoal", "8.3.1 - Salários", "8.4 - Ocupação", "11 - EBITDA",
+                 "12 - Resultado Financeiro", "13 - Depreciação e Amortização", "16 - Impostos sobre o Lucro",
+                 "17 - Resultado Gerencial do Período"]
+        ago = [0.0, 0.0, -400_000.0, -300_000.0, -250_000.0, -100_000.0, -400_000.0, -5_000.0, -20_000.0, 0.0, -425_000.0]
+        set_ = [0.0, -1_000.0, -500_000.0, -350_000.0, -300_000.0, -150_000.0, -501_000.0, -5_000.0, -20_000.0, -1_000.0, -527_000.0]
+        df = pd.DataFrame({"Nome": nomes, "08/2026": ago, "09/2026": set_})
+        return df if com_17 else df.iloc[:-1]
+
+    def _grupo(self, fator=1.0):
+        return pd.DataFrame({"Nome": ["1 - Receita Operacional Bruta", "2 - Deduções", "3 - Receita Operacional Liquida", "8 - Despesas Operacionais"],
+                             "08/2026": [12_000_000.0 * fator, -2_000_000.0, 10_000_000.0 * fator, -3_000_000.0],
+                             "09/2026": [9_600_000.0 * fator, -1_600_000.0, 8_000_000.0 * fator, -3_000_000.0]})
+
+    def test_casa_pelo_numero_da_linha_e_nao_pelo_texto(self):
+        v = self.ns["_valor_por_numero_de_linha"]
+        esc = self._escritorio()
+        self.assertAlmostEqual(v(esc, "8", ["08/2026"]), -400_000.0)
+        # "8" nao arrasta "8.3" nem "8.3.1"; "8.3" nao arrasta "8.3.1"; "1" nao arrasta "11"/"12"/"17".
+        self.assertAlmostEqual(v(esc, "8.3", ["08/2026", "09/2026"]), -650_000.0)
+        self.assertEqual(v(esc, "1", ["08/2026", "09/2026"]), 0.0)
+        self.assertEqual(v(esc, "99", ["08/2026"]), 0.0)
+        self.assertEqual(v(None, "8", ["08/2026"]), 0.0)
+        self.assertEqual(v(esc, "8", []), 0.0)
+
+    def test_o_custo_e_o_total_da_aba_e_nao_um_grupo(self):
+        """Total = linha 17 = 400 + 5 + 20 (+0) em agosto e 501 + 5 + 20 + 1 em
+        setembro: entra o grupo 8, o que esta abaixo do EBITDA e ate o erro
+        do grupo 6. E o pedido: 'o total da aba em si'."""
+        r = self.ns["custo_do_escritorio_sobre_receita"](self._escritorio(), None, [self._grupo()], [], ["08/2026", "09/2026"])
+        t = r["total"]
+        self.assertEqual(t["linha_total"], "17")
+        self.assertAlmostEqual(t["custo"], 952_000.0)
+        self.assertAlmostEqual(t["grupo_8"], 900_000.0)
+        self.assertAlmostEqual(t["fora_do_8"], 52_000.0)
+        self.assertAlmostEqual(t["receita_liquida"], 18_000_000.0)
+        self.assertAlmostEqual(t["receita_bruta"], 21_600_000.0)
+        self.assertAlmostEqual(t["pct_liquida"], 952_000.0 / 18_000_000.0 * 100, places=6)
+        self.assertAlmostEqual(t["pct_bruta"], 952_000.0 / 21_600_000.0 * 100, places=6)
+        # Sem orcado nao ha % orcado -- e nao 0%.
+        self.assertIsNone(t["pct_orc"])
+        self.assertEqual(t["custo_orc"], 0.0)
+
+    def test_sem_a_linha_17_cai_para_a_mais_abrangente_que_houver(self):
+        self.assertEqual(self.ns["_linha_total_da_aba"](self._escritorio(com_17=False)), "11")
+        self.assertIsNone(self.ns["_linha_total_da_aba"](pd.DataFrame({"Nome": ["8 - Despesas"], "08/2026": [1.0]})))
+        self.assertIsNone(self.ns["_linha_total_da_aba"](None))
+        r = self.ns["custo_do_escritorio_sobre_receita"](self._escritorio(com_17=False), None, [self._grupo()], [], ["08/2026"])
+        self.assertEqual(r["total"]["linha_total"], "11")
+        self.assertAlmostEqual(r["total"]["custo"], 400_000.0)
+
+    def test_mes_a_mes_e_onde_esta_o_custo(self):
+        r = self.ns["custo_do_escritorio_sobre_receita"](self._escritorio(), self._escritorio(), [self._grupo()], [self._grupo(0.5)],
+                                                          ["08/2026", "09/2026"])
+        meses = {b["mes"]: b for b in r["por_mes"]}
+        self.assertAlmostEqual(meses["08/2026"]["pct_liquida"], 4.25)
+        self.assertAlmostEqual(meses["09/2026"]["pct_liquida"], 6.5875)
+        # Orcado: mesmo custo sobre metade da receita = o dobro do %.
+        self.assertAlmostEqual(meses["08/2026"]["pct_orc"], 8.5)
+        # Onde esta: subgrupos do 8 do maior para o menor, e por ultimo o que fica fora do 8.
+        self.assertEqual([s_["numero"] for s_ in r["subgrupos"]], ["8.3", "8.4", ""])
+        self.assertAlmostEqual(r["subgrupos"][0]["valor"], 650_000.0)
+        self.assertAlmostEqual(r["subgrupos"][0]["pct_do_escritorio"], 650_000.0 / 952_000.0 * 100, places=6)
+        self.assertAlmostEqual(r["subgrupos"][-1]["valor"], 52_000.0)
+        self.assertIn("Fora do grupo 8", r["subgrupos"][-1]["linha"])
+        # As partes fecham com o total.
+        self.assertAlmostEqual(sum(s_["valor"] for s_ in r["subgrupos"]), r["total"]["custo"])
+
+    def test_receita_zero_nao_vira_divisao_por_zero(self):
+        vazio = pd.DataFrame({"Nome": ["3 - Receita Operacional Liquida"], "08/2026": [0.0]})
+        r = self.ns["custo_do_escritorio_sobre_receita"](self._escritorio(), None, [vazio], [], ["08/2026"])
+        self.assertIsNone(r["total"]["pct_liquida"])
+        self.assertIsNone(r["total"]["pct_bruta"])
+        self.assertAlmostEqual(r["total"]["custo"], 425_000.0)
+
+    def test_a_secao_mora_na_controladoria_e_usa_o_consolidado(self):
+        i = FONTE.index("🏢 Custo do escritório sobre a receita do grupo")
+        trecho = FONTE[i:i + 6500]
+        self.assertIn('_dados_esc.get("DRE CONSOLIDADO"', trecho, "a receita e SEMPRE a do grupo inteiro, nao a da visao")
+        self.assertIn("custo_do_escritorio_sobre_receita(_df_esc, _orcs_cer[0], [_df_grp_real], [_orcs_cer[1]], cols_kpi)", trecho)
+        self.assertIn("_escalar_orcado_mes_corrente(", trecho, "orcado do mes corrente proporcional, como nos departamentos")
+        self.assertIn("CUSTO TOTAL DO ESCRITÓRIO", trecho)
+        # Fica na aba de revisao (so Controladoria), antes da aba Integridade.
+        self.assertLess(FONTE.index("with tab_rev:"), i)
+        self.assertLess(i, FONTE.index("with tab_int:"))
 
 
 class TesteIntegridade(unittest.TestCase):
