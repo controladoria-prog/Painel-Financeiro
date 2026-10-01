@@ -1883,17 +1883,27 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         """A soma dos dias tem de devolver a meta do mes -- os centavos do
         arredondamento vao no ultimo dia, entao nada se perde."""
         metas = self.ns["METAS_RECEBER"]
-        # Valores de 21/08/2026, conferidos contra a linha de Total de cada
-        # canal na planilha de faturamento.
-        esperado = {("HUB LOGISTICO", 7): 868_869.98, ("HUB LOGISTICO", 9): 2_731_272.77,
-                    ("HUB LOGISTICO", 12): 3_577_081.73,
-                    ("LOJA", 7): 1_731_735.90, ("LOJA", 9): 2_634_495.90,
-                    ("LOJA", 12): 4_253_680.96,
-                    ("VENDA DIRETA", 7): 1_699_876.38, ("VENDA DIRETA", 9): 5_096_452.91,
-                    ("VENDA DIRETA", 12): 6_854_279.96}
+        # 01/10/2026: a direcao passou os TOTAIS fechados do mes; a soma de
+        # todos os canais tem de bater com eles ao centavo.
+        total_mes = {7: 11_417_695.71, 8: 12_113_978.70, 9: 12_743_250.83,
+                     10: 13_010_359.23, 11: 13_538_629.92, 12: 14_960_376.17}
+        for mes, alvo in total_mes.items():
+            soma = sum(v.get((2026, mes), 0.0) for canal in metas.values() for v in canal.values())
+            self.assertAlmostEqual(soma, alvo, places=2, msg=f"total do mes {mes}")
+        # A abertura por canal segue a PROPORCAO da meta anterior (21/08/2026):
+        # o total de cada canal e o antigo vezes o fator do mes.
+        esperado = {("HUB LOGISTICO", 7): 2_306_832.66, ("HUB LOGISTICO", 9): 3_326_759.42,
+                    ("HUB LOGISTICO", 12): 3_644_149.32,
+                    ("LOJA", 7): 4_597_724.70, ("LOJA", 9): 3_208_882.73,
+                    ("LOJA", 12): 4_333_434.29,
+                    ("VENDA DIRETA", 7): 4_513_138.35, ("VENDA DIRETA", 9): 6_207_608.68,
+                    ("VENDA DIRETA", 12): 6_982_792.56}
         for (canal, mes), alvo in esperado.items():
             soma = sum(v.get((2026, mes), 0.0) for v in metas[canal].values())
             self.assertAlmostEqual(soma, alvo, delta=0.02, msg=f"{canal} mes {mes}")
+        # Proporcao preservada: a fatia da Venda Direta em setembro e a mesma de antes.
+        vd_set = sum(v.get((2026, 9), 0.0) for v in metas["VENDA DIRETA"].values())
+        self.assertAlmostEqual(vd_set / total_mes[9], 5_096_452.91 / 10_462_221.58, places=4)
 
     def test_soma_dos_dias_devolve_o_mes(self):
         colunas = [self.ns["COL_FIN_MOVIMENTO"], self.ns["COL_FIN_CANAL"],
@@ -1902,7 +1912,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
                    self.ns["COL_FIN_LIQ_EFETIVA"], "Liquidado", "Tipo Movimento"]
         diarias = self.ns["montar_linhas_de_meta"](colunas)
         setembro = diarias[diarias["Data Efetiva"].dt.to_period("M") == pd.Period("2026-09")]
-        self.assertAlmostEqual(setembro[self.ns["COL_FIN_VALOR"]].sum(), 10_462_221.58, delta=0.05)
+        self.assertAlmostEqual(setembro[self.ns["COL_FIN_VALOR"]].sum(), 12_743_250.83, delta=0.05)
 
     def test_boleto_garantido_so_cai_em_terca_e_quinta(self):
         dias = self.ns["_dias_da_meta_no_mes"](2026, 9, "Boleto Garantido")
