@@ -8560,8 +8560,11 @@ def conferir_contas_a_pagar(df, periodo, col_valor=None, col_venc=None, col_liq=
 
     Identidades que têm de fechar: painel = por_liquidacao + venc_mes_em_aberto
     e painel − por_vencimento = venc_fora_pago_mes − venc_mes_pago_fora.
-    `detalhes` traz os títulos que mudam de mês (os dois primeiros grupos),
-    para conferir um a um contra a planilha."""
+    `detalhes` traz os títulos que explicam qualquer diferença: os que mudam
+    de mês (os dois primeiros grupos) e os que vencem no mês SEM data de
+    liquidação -- é este último grupo que separa o painel de uma planilha
+    somada pela liquidação (caso real de 01/10/2026: 67 títulos de GPS/IRRF
+    de setembro sem baixa, R$ 199 mil)."""
     col_valor = col_valor or COL_FIN_VALOR
     col_venc = col_venc or COL_FIN_VENCIMENTO
     col_liq = col_liq or (COL_FIN_LIQ_EFETIVA if COL_FIN_LIQ_EFETIVA in df.columns else COL_FIN_DATA_LIQUIDACAO)
@@ -8592,11 +8595,13 @@ def conferir_contas_a_pagar(df, periodo, col_valor=None, col_venc=None, col_liq=
         "n_venc_fora_pago_mes": int((~venc_mes & liq_mes).sum()),
         "n_venc_mes_em_aberto": int((venc_mes & ~pago).sum()),
     }
-    muda = (venc_mes & pago & ~liq_mes) | (~venc_mes & liq_mes)
+    g_fora, g_neste, g_aberto = (venc_mes & pago & ~liq_mes), (~venc_mes & liq_mes), (venc_mes & ~pago)
+    muda = g_fora | g_neste | g_aberto
     det = pagar.loc[muda].copy()
     if not det.empty:
-        det["Situação"] = ["vence no mês, pago em outro" if v else "vence em outro mês, pago neste"
-                           for v in (venc_mes & pago & ~liq_mes)[muda]]
+        det["Situação"] = [
+            "vence no mês, pago em outro" if f else ("vence em outro mês, pago neste" if n else "vence no mês, sem data de liquidação")
+            for f, n in zip(g_fora[muda], g_neste[muda])]
         colunas = [c for c in (COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_CANAL, col_venc, col_liq, col_valor, "Situação")
                    if c in det.columns]
         det = det[colunas].copy()
@@ -9874,31 +9879,37 @@ if st.session_state["painel_escolhido"] == "financeiro":
                          value_color=COLORS["primary"], subtext="dinheiro que saiu no mês, vencendo quando for", icon="💸"),
                     dict(label="PAINEL (MOVIMENTOS POR MÊS)", value=formata_valor_curto(_conf["painel"]), value_color=COLORS["negative"],
                          subtext=f"pago no mês + em aberto vencendo no mês ({formata_valor_curto(_conf['venc_mes_em_aberto'])})", icon="📊"),
-                    dict(label="PAINEL − PLANILHA", value=formata_valor_curto(_dif_conf),
-                         value_color=COLORS["warning"] if abs(_dif_conf) >= 1 else COLORS["positive"],
-                         subtext="explicada pelos títulos que mudam de mês, abaixo", icon="🧮"),
+                    dict(label="EM ABERTO VENCENDO NO MÊS", value=formata_valor_curto(_conf["venc_mes_em_aberto"]),
+                         value_color=COLORS["warning"] if _conf["venc_mes_em_aberto"] >= 1 else COLORS["positive"],
+                         subtext=f"{_conf['n_venc_mes_em_aberto']} títulos sem data de liquidação · é o que separa o painel do pago no mês",
+                         icon="⏳"),
                 ]), unsafe_allow_html=True)
                 st.markdown(
-                    f"**Ponte:** planilha {formata_brl(_conf['por_vencimento'])} "
+                    f"**Se a planilha soma pela liquidação:** pago no mês {formata_brl(_conf['por_liquidacao'])} "
+                    f"**+** em aberto vencendo no mês {formata_brl(_conf['venc_mes_em_aberto'])} "
+                    f"({_conf['n_venc_mes_em_aberto']} títulos) **=** painel {formata_brl(_conf['painel'])}.  "
+                    f"\n\n**Se a planilha soma pelo vencimento:** {formata_brl(_conf['por_vencimento'])} "
                     f"**−** vence no mês mas foi pago em outro {formata_brl(_conf['venc_mes_pago_fora'])} "
                     f"({_conf['n_venc_mes_pago_fora']} títulos) "
                     f"**+** vence em outro mês (ou sem vencimento) e foi pago neste {formata_brl(_conf['venc_fora_pago_mes'])} "
-                    f"({_conf['n_venc_fora_pago_mes']} títulos) **=** painel {formata_brl(_conf['painel'])}."
+                    f"({_conf['n_venc_fora_pago_mes']} títulos) **=** painel {formata_brl(_conf['painel'])} "
+                    f"(diferença {formata_brl(_dif_conf)})."
                 )
                 st.caption(
                     "O painel segue a regra da aba: título **pago** entra no mês em que o dinheiro saiu (Data Liquidação); "
-                    "título **em aberto** fica no mês do vencimento. A planilha, somando pelo vencimento, conta o título pago "
-                    "antecipado ou atrasado no mês em que ele vencia. Os títulos abaixo são exatamente os que trocam de mês entre "
-                    "as duas leituras; se algum deles estiver com a data de liquidação errada na planilha, é ali que se corrige. "
+                    "título **em aberto** fica no mês do vencimento. Uma planilha somada pela liquidação deixa de fora os títulos "
+                    "do mês ainda sem baixa; somada pelo vencimento, conta o título pago antecipado ou atrasado no mês em que ele "
+                    "vencia. Os títulos abaixo são exatamente os que separam as leituras: os que trocam de mês e os que vencem no "
+                    "mês sem data de liquidação. Se algum estiver pago mas sem a baixa lançada, é na planilha que se corrige. "
                     "Os filtros de canal e modalidade da barra lateral valem aqui; o período, não."
                 )
                 if _conf["detalhes"].empty:
-                    st.success("Nenhum título muda de mês: planilha e painel têm de bater.")
+                    st.success("Nenhum título muda de mês nem está em aberto: planilha e painel têm de bater.")
                 else:
                     _det_conf = _conf["detalhes"].copy()
                     _det_conf["Valor"] = _det_conf["Valor"].map(formata_brl)
                     st.dataframe(_det_conf, hide_index=True, width="stretch", height=min(38 + 35 * (len(_det_conf) + 1), 520))
-                    st.download_button("⬇️ Baixar os títulos que mudam de mês (CSV)",
+                    st.download_button("⬇️ Baixar os títulos que explicam a diferença (CSV)",
                                        _conf["detalhes"].to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"conferencia_contas_a_pagar_{_mes_conf}.csv", mime="text/csv",
                                        key="fin_conf_pagar_csv")

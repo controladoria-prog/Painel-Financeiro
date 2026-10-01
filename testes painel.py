@@ -2961,8 +2961,11 @@ class TesteConferenciaContasAPagar(unittest.TestCase):
         self.assertEqual(r["n_venc_mes_pago_fora"], 1)
         self.assertEqual(r["n_venc_fora_pago_mes"], 2)
         det = r["detalhes"]
-        self.assertEqual(sorted(det[self.ns["COL_FIN_NUMERO"]].tolist()), ["B", "C", "E"])
-        self.assertEqual(set(det["Situação"]), {"vence no mês, pago em outro", "vence em outro mês, pago neste"})
+        # B e C/E trocam de mes; D vence no mes sem baixa -- e o caso real de 01/10 (GPS/IRRF).
+        self.assertEqual(sorted(det[self.ns["COL_FIN_NUMERO"]].tolist()), ["B", "C", "D", "E"])
+        self.assertEqual(set(det["Situação"]), {"vence no mês, pago em outro", "vence em outro mês, pago neste",
+                                                "vence no mês, sem data de liquidação"})
+        self.assertEqual(det.loc[det[self.ns["COL_FIN_NUMERO"]] == "D", "Situação"].iloc[0], "vence no mês, sem data de liquidação")
         self.assertIn("Vencimento", det.columns); self.assertIn("Liquidação", det.columns)
         self.assertEqual(det.loc[det[self.ns["COL_FIN_NUMERO"]] == "B", "Liquidação"].iloc[0], "02/10/2026")
 
