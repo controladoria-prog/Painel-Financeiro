@@ -50,6 +50,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
+    "conferir_contas_a_pagar": ["_periodo_mensal"],
     "custo_do_escritorio_sobre_receita": ["_valor_por_numero_de_linha", "_linha_total_da_aba", "_numero_linha_dre"],
     "saude_do_orcamento": ["_numero_linha_dre"],
     "conciliar_diario_dre": ["_numero_linha_dre"],
@@ -93,6 +94,8 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "conferir_contas_a_pagar": ["COL_FIN_VALOR", "COL_FIN_VENCIMENTO", "COL_FIN_LIQ_EFETIVA", "COL_FIN_DATA_LIQUIDACAO",
+                                "COL_FIN_NUMERO", "COL_FIN_HISTORICO", "COL_FIN_CANAL"],
     "revisar_lancamentos": ["CONTAS_GENERICAS_TRECHOS", "HISTORICOS_IGNORADOS_TRECHOS", "PLANOS_ACESSORIOS_TRECHOS"],
     "montar_fatos_executivos": ["IMPACTO_FECHAMENTO_EBITDA"],
     "_deltas_pendentes_do_fechamento": [
@@ -2907,6 +2910,94 @@ class TesteNomeDasColunas(unittest.TestCase):
 # ============================================================================
 # 5j. CONTAS A PAGAR — PROGRAMADO NO FUTURO, EFETIVO NO PASSADO
 # ============================================================================
+class TesteConferenciaContasAPagar(unittest.TestCase):
+    """01/10/2026: a planilha soma o mes pelo vencimento, o painel pelo dia em
+    que o dinheiro saiu. A conferencia mostra a ponte entre os dois e os
+    titulos que mudam de mes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["conferir_contas_a_pagar"])
+
+    def _base(self):
+        ns = self.ns
+        linhas = [
+            # numero, vencimento, liquidacao, valor
+            ("A", "2026-09-10", "2026-09-10", -100.0),   # vence e paga em setembro
+            ("B", "2026-09-20", "2026-10-02", -200.0),   # vence em setembro, pago em outubro -> sai do painel de set
+            ("C", "2026-08-30", "2026-09-03", -300.0),   # venceu em agosto, pago em setembro -> entra no painel de set
+            ("D", "2026-09-25", None,         -400.0),   # vence em setembro, em aberto -> fica em setembro
+            ("E", None,         "2026-09-15", -50.0),    # sem vencimento, pago em setembro -> entra
+            ("F", "2026-10-05", None,         -999.0),   # outubro em aberto: nada a ver com setembro
+        ]
+        df = pd.DataFrame({
+            ns["COL_FIN_NUMERO"]: [l[0] for l in linhas],
+            ns["COL_FIN_HISTORICO"]: ["forn " + l[0] for l in linhas],
+            ns["COL_FIN_CANAL"]: ["LOJA"] * len(linhas),
+            ns["COL_FIN_VENCIMENTO"]: pd.to_datetime([l[1] for l in linhas]),
+            ns["COL_FIN_LIQ_EFETIVA"]: pd.to_datetime([l[2] for l in linhas]),
+            ns["COL_FIN_VALOR"]: [l[3] for l in linhas],
+            "Tipo Movimento": ["saida"] * len(linhas),
+        })
+        # Data Efetiva pela regra da aba: pago -> liquidacao; aberto -> vencimento.
+        df["Data Efetiva"] = df[ns["COL_FIN_LIQ_EFETIVA"]].fillna(df[ns["COL_FIN_VENCIMENTO"]])
+        # Uma entrada no meio nao pode contaminar.
+        df.loc[len(df)] = {ns["COL_FIN_NUMERO"]: "R", ns["COL_FIN_HISTORICO"]: "cliente", ns["COL_FIN_CANAL"]: "LOJA",
+                           ns["COL_FIN_VENCIMENTO"]: pd.Timestamp("2026-09-10"), ns["COL_FIN_LIQ_EFETIVA"]: pd.NaT,
+                           ns["COL_FIN_VALOR"]: 5_000.0, "Tipo Movimento": "entrada", "Data Efetiva": pd.Timestamp("2026-09-10")}
+        return df
+
+    def test_ponte_fecha_dos_dois_lados(self):
+        r = self.ns["conferir_contas_a_pagar"](self._base(), pd.Period("2026-09", "M"))
+        self.assertAlmostEqual(r["por_vencimento"], 700.0)      # A + B + D
+        self.assertAlmostEqual(r["por_liquidacao"], 450.0)      # A + C + E
+        self.assertAlmostEqual(r["painel"], 850.0)              # A + C + D + E
+        self.assertAlmostEqual(r["venc_mes_pago_fora"], 200.0)  # B
+        self.assertAlmostEqual(r["venc_fora_pago_mes"], 350.0)  # C + E
+        self.assertAlmostEqual(r["venc_mes_em_aberto"], 400.0)  # D
+        self.assertAlmostEqual(r["venc_mes_pago_mes"], 100.0)   # A
+        self.assertAlmostEqual(r["painel"], r["por_liquidacao"] + r["venc_mes_em_aberto"])
+        self.assertAlmostEqual(r["painel"] - r["por_vencimento"], r["venc_fora_pago_mes"] - r["venc_mes_pago_fora"])
+        self.assertEqual(r["n_venc_mes_pago_fora"], 1)
+        self.assertEqual(r["n_venc_fora_pago_mes"], 2)
+        det = r["detalhes"]
+        self.assertEqual(sorted(det[self.ns["COL_FIN_NUMERO"]].tolist()), ["B", "C", "E"])
+        self.assertEqual(set(det["Situação"]), {"vence no mês, pago em outro", "vence em outro mês, pago neste"})
+        self.assertIn("Vencimento", det.columns); self.assertIn("Liquidação", det.columns)
+        self.assertEqual(det.loc[det[self.ns["COL_FIN_NUMERO"]] == "B", "Liquidação"].iloc[0], "02/10/2026")
+
+    def test_coluna_que_mistura_dia_mes_com_mes_dia_e_denunciada(self):
+        """Nenhuma leitura unica acerta uma coluna misturada: as datas ambiguas
+        de um dos lados saem trocadas e o titulo muda de mes. O painel nao
+        conserta -- denuncia, com exemplos, para corrigir na planilha."""
+        ns = carregar(["_mistura_ordem_data_fin"])
+        f = ns["_mistura_ordem_data_fin"]
+        n_dia, n_mes, ex = f(pd.Series(["15/09/2026", "02/09/2026", "09/15/2026", "9/22/2026", "", None]))
+        self.assertEqual((n_dia, n_mes), (1, 2))
+        self.assertEqual(ex, ["15/09/2026"], "exemplos do lado MINORITARIO, que e o provavel erro")
+        self.assertEqual(f(pd.Series(["15/09/2026", "02/09/2026"])), (1, 0, []))
+        self.assertEqual(f(pd.Series([], dtype=object)), (0, 0, []))
+        # E o preparo guarda isso no diagnostico, e a tela avisa em vermelho.
+        self.assertIn('"mistura_ordem_data": mistura_datas,', FONTE)
+        self.assertGreaterEqual(FONTE.count('diag_fluxo.get("mistura_ordem_data")'), 1)
+        self.assertIn("mistura dia/mês com mês/dia", FONTE)
+
+    def test_mes_sem_titulo_e_base_vazia(self):
+        r = self.ns["conferir_contas_a_pagar"](self._base(), "11/2026")
+        self.assertEqual(r["painel"], 0.0); self.assertTrue(r["detalhes"].empty)
+        r2 = self.ns["conferir_contas_a_pagar"](pd.DataFrame(), pd.Period("2026-09", "M"))
+        self.assertEqual(r2["por_vencimento"], 0.0)
+
+    def test_expander_mora_no_fluxo_mensal_e_usa_a_base_inteira(self):
+        i = FONTE.index("🔍 Conferir o contas a pagar de um mês contra a planilha")
+        trecho = FONTE[i:i + 5000]
+        self.assertIn("_base_conf = df_fin" + chr(10), trecho.replace(chr(13), ""),
+                      "a base e a INTEIRA: o titulo pago no mes seguinte esta fora do recorte do periodo")
+        self.assertIn("conferir_contas_a_pagar(_base_conf, _mes_conf)", trecho)
+        self.assertLess(FONTE.index("📋 Movimentos por Mês"), i)
+        self.assertLess(i, FONTE.index("Reserva de caixa: o que sobra DEPOIS de pagar tudo"))
+
+
 class TesteContasAPagarEfetivo(unittest.TestCase):
     """Titulo ja pago entra no dia do pagamento; em aberto fica no
     vencimento. Sem isso, um dia com R$ 1 milhao vencendo aparecia com o

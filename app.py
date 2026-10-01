@@ -8541,6 +8541,75 @@ def _total_geral_fin(pivot, incluir_meta=False):
     return total
 
 
+def conferir_contas_a_pagar(df, periodo, col_valor=None, col_venc=None, col_liq=None):
+    """Conferência do CONTAS A PAGAR de um mês contra a planilha (01/10/2026).
+
+    A planilha costuma somar o mês pelo VENCIMENTO; o painel posiciona o
+    título pago no dia em que o dinheiro SAIU (liquidação) e o em aberto no
+    vencimento. Quando os dois não batem, a diferença é sempre feita destas
+    partes, e é isso que a função devolve, em módulo:
+
+      por_vencimento   = tudo que vence no mês (pago ou não)
+      por_liquidacao   = tudo que foi pago no mês (vencendo quando for)
+      painel           = pago no mês + vencendo no mês e ainda em aberto
+                         (é o que a tabela Movimentos por Mês mostra)
+      venc_mes_pago_fora  = vence no mês, mas foi pago em OUTRO mês (sai do painel)
+      venc_fora_pago_mes  = vence em outro mês (ou sem vencimento), pago NESTE (entra)
+      venc_mes_em_aberto  = vence no mês e ainda não foi pago
+      venc_mes_pago_mes   = vence e foi pago no mesmo mês
+
+    Identidades que têm de fechar: painel = por_liquidacao + venc_mes_em_aberto
+    e painel − por_vencimento = venc_fora_pago_mes − venc_mes_pago_fora.
+    `detalhes` traz os títulos que mudam de mês (os dois primeiros grupos),
+    para conferir um a um contra a planilha."""
+    col_valor = col_valor or COL_FIN_VALOR
+    col_venc = col_venc or COL_FIN_VENCIMENTO
+    col_liq = col_liq or (COL_FIN_LIQ_EFETIVA if COL_FIN_LIQ_EFETIVA in df.columns else COL_FIN_DATA_LIQUIDACAO)
+    periodo = _periodo_mensal(periodo)
+    vazio = {k: 0.0 for k in ("por_vencimento", "por_liquidacao", "painel", "venc_mes_pago_fora",
+                              "venc_fora_pago_mes", "venc_mes_em_aberto", "venc_mes_pago_mes")}
+    vazio.update({"n_venc_mes_pago_fora": 0, "n_venc_fora_pago_mes": 0, "n_venc_mes_em_aberto": 0,
+                  "detalhes": pd.DataFrame()})
+    if df is None or df.empty or periodo is None or "Tipo Movimento" not in df.columns:
+        return vazio
+    pagar = df[df["Tipo Movimento"] == "saida"]
+    if pagar.empty:
+        return vazio
+    valor = pd.to_numeric(pagar[col_valor], errors="coerce").fillna(0).abs()
+    venc = pd.to_datetime(pagar[col_venc], errors="coerce").dt.to_period("M") if col_venc in pagar.columns else pd.Series(pd.NaT, index=pagar.index)
+    liq = pd.to_datetime(pagar[col_liq], errors="coerce").dt.to_period("M") if col_liq in pagar.columns else pd.Series(pd.NaT, index=pagar.index)
+    efet = pd.to_datetime(pagar["Data Efetiva"], errors="coerce").dt.to_period("M") if "Data Efetiva" in pagar.columns else liq.fillna(venc)
+    venc_mes, liq_mes, pago = (venc == periodo), (liq == periodo), liq.notna()
+    r = {
+        "por_vencimento": float(valor[venc_mes].sum()),
+        "por_liquidacao": float(valor[liq_mes].sum()),
+        "painel": float(valor[efet == periodo].sum()),
+        "venc_mes_pago_fora": float(valor[venc_mes & pago & ~liq_mes].sum()),
+        "venc_fora_pago_mes": float(valor[~venc_mes & liq_mes].sum()),
+        "venc_mes_em_aberto": float(valor[venc_mes & ~pago].sum()),
+        "venc_mes_pago_mes": float(valor[venc_mes & liq_mes].sum()),
+        "n_venc_mes_pago_fora": int((venc_mes & pago & ~liq_mes).sum()),
+        "n_venc_fora_pago_mes": int((~venc_mes & liq_mes).sum()),
+        "n_venc_mes_em_aberto": int((venc_mes & ~pago).sum()),
+    }
+    muda = (venc_mes & pago & ~liq_mes) | (~venc_mes & liq_mes)
+    det = pagar.loc[muda].copy()
+    if not det.empty:
+        det["Situação"] = ["vence no mês, pago em outro" if v else "vence em outro mês, pago neste"
+                           for v in (venc_mes & pago & ~liq_mes)[muda]]
+        colunas = [c for c in (COL_FIN_NUMERO, COL_FIN_HISTORICO, COL_FIN_CANAL, col_venc, col_liq, col_valor, "Situação")
+                   if c in det.columns]
+        det = det[colunas].copy()
+        for c in (col_venc, col_liq):
+            if c in det.columns:
+                det[c] = pd.to_datetime(det[c], errors="coerce").dt.strftime("%d/%m/%Y")
+        det = det.rename(columns={col_venc: "Vencimento", col_liq: "Liquidação", col_valor: "Valor"})
+        det["Valor"] = pd.to_numeric(det["Valor"], errors="coerce").abs()
+        det = det.sort_values(["Situação", "Valor"], ascending=[True, False])
+    r["detalhes"] = det
+    return r
+
+
 def _saldo_posicao_atual_fin(df, coluna_valor):
     """Saldo disponível = posição do ÚLTIMO DIA com movimento no recorte
     filtrado (não a soma de todos os dias). Se houver mais de um canal, soma
@@ -8616,6 +8685,30 @@ def _ordem_data_fin(serie, amostra=20000):
     if (segundo > 12).any() and not (primeiro > 12).any():
         return False  # mês/dia/ano
     return True       # tudo ambíguo: mantém o comportamento antigo
+
+
+def _mistura_ordem_data_fin(serie, amostra=200000):
+    """Conta quantas datas da coluna só podem ser dia/mês (primeiro número
+    acima de 12) e quantas só podem ser mês/dia (segundo número acima de 12).
+    Se os DOIS lados tiverem linhas, a coluna mistura as duas ordens -- e
+    nenhuma leitura única acerta tudo: as datas ambíguas (até 12/12) de um
+    dos lados saem com dia e mês trocados, e o título vai parar em outro mês.
+    Devolve (n_dia_primeiro, n_mes_primeiro, exemplos_do_lado_minoritario)."""
+    texto = serie.dropna().astype(str).str.strip()
+    if texto.empty:
+        return 0, 0, []
+    texto = texto.head(amostra)
+    partes = texto.str.extract(r"^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}")
+    primeiro = pd.to_numeric(partes[0], errors="coerce")
+    segundo = pd.to_numeric(partes[1], errors="coerce")
+    dia_primeiro, mes_primeiro = (primeiro > 12), (segundo > 12)
+    n_dia, n_mes = int(dia_primeiro.sum()), int(mes_primeiro.sum())
+    if n_dia and n_mes:
+        minoritario = mes_primeiro if n_mes <= n_dia else dia_primeiro
+        exemplos = texto[minoritario].unique()[:5].tolist()
+    else:
+        exemplos = []
+    return n_dia, n_mes, exemplos
 
 
 def _parse_datas_fin(serie, dayfirst=None):
@@ -8833,6 +8926,15 @@ def preparar_fluxo_caixa(base_data):
     # começa com valor ambíguo e vinha sendo lida ao contrário.
     dayfirst_liq = _ordem_data_fin(df[COL_FIN_DATA_LIQUIDACAO])
     dayfirst_venc = _ordem_data_fin(df[COL_FIN_VENCIMENTO])
+    # Coluna que MISTURA dia/mês com mês/dia não tem leitura certa: metade
+    # das datas ambíguas sai trocada e o título muda de mês. Isso não dá
+    # para consertar aqui -- dá para denunciar, com exemplos, para ser
+    # corrigido na planilha (01/10/2026).
+    mistura_datas = {}
+    for _rotulo, _coluna in (("Vencimento", COL_FIN_VENCIMENTO), ("Data Liquidação", COL_FIN_DATA_LIQUIDACAO)):
+        _n_dia, _n_mes, _exemplos = _mistura_ordem_data_fin(df[_coluna])
+        if _n_dia and _n_mes:
+            mistura_datas[_rotulo] = {"dia_primeiro": _n_dia, "mes_primeiro": _n_mes, "exemplos": _exemplos}
     df[COL_FIN_DATA_LIQUIDACAO] = pd.to_datetime(
         df[COL_FIN_DATA_LIQUIDACAO], errors="coerce", dayfirst=dayfirst_liq
     )
@@ -8872,6 +8974,7 @@ def preparar_fluxo_caixa(base_data):
             "Vencimento": "dia/mês/ano" if dayfirst_venc else "mês/dia/ano",
             "Data Liquidação": "dia/mês/ano" if dayfirst_liq else "mês/dia/ano",
         },
+        "mistura_ordem_data": mistura_datas,
         "liq_preenchidas": int(df[COL_FIN_DATA_LIQUIDACAO].notna().sum()),
         "liq_preenchidas_ampla": int(df[COL_FIN_LIQ_AMPLA].notna().sum()),
         "liq_nao_convertidas": int(nao_convertidas.sum()),
@@ -9320,6 +9423,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "Formato de data detectado — "
                     + " · ".join(f"{c}: {v}" for c, v in _ordem.items())
                 )
+            for _col_mist, _info_mist in (diag_fluxo.get("mistura_ordem_data") or {}).items():
+                st.error(
+                    f"**{_col_mist} mistura dia/mês com mês/dia**: {_info_mist['dia_primeiro']} datas só podem ser "
+                    f"dia/mês e {_info_mist['mes_primeiro']} só podem ser mês/dia (exemplos do lado minoritário: "
+                    f"{', '.join(map(str, _info_mist['exemplos']))}). As datas ambíguas desse lado saem com dia e mês "
+                    "trocados e o título cai em outro mês. Padronize a coluna na planilha (um formato só)."
+                )
             _fontes = fontes_csv_fluxo()
             st.caption("Ordem de tentativa: " + " → ".join(d for d, _ in _fontes))
             if not _segredo("FLUXO_CAIXA_FILE_ID"):
@@ -9735,6 +9845,75 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         for mes, valor in meta_cheia_m.items() if valor
                     )
                 )
+
+            # ---- Conferência do contas a pagar contra a planilha (01/10/2026) ----
+            # A planilha soma o mês pelo vencimento; o painel põe o título
+            # pago no dia em que o dinheiro saiu. Quando não bate, a diferença
+            # é feita de títulos que mudam de mês -- e aqui eles aparecem um a
+            # um, com a ponte entre os dois números.
+            with st.expander("🔍 Conferir o contas a pagar de um mês contra a planilha", expanded=False):
+                _meses_conf = list(meses_ordenados_m)
+                _hoje_conf = pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M")
+                _idx_conf = next((i for i, p_ in enumerate(_meses_conf) if p_ == _hoje_conf - 1), len(_meses_conf) - 1)
+                _mes_conf = st.selectbox("Mês a conferir", _meses_conf, index=max(_idx_conf, 0),
+                                         format_func=lambda p_: rotulos_meses_m.get(p_, str(p_)), key="fin_conf_pagar_mes")
+                # Base INTEIRA (não o recorte do período): um título que vence
+                # em setembro e foi pago em outubro está fora do recorte de
+                # setembro, e é justamente ele que explica a diferença.
+                _base_conf = df_fin
+                if canal_sel_fin != "Todos":
+                    _base_conf = _base_conf[_base_conf[COL_FIN_CANAL].astype(str) == canal_sel_fin]
+                if modal_sel_fin != "Todas":
+                    _base_conf = _base_conf[_base_conf[COL_FIN_MODALIDADE].astype(str) == modal_sel_fin]
+                _conf = conferir_contas_a_pagar(_base_conf, _mes_conf)
+                _dif_conf = _conf["painel"] - _conf["por_vencimento"]
+                st.markdown(render_kpi_row([
+                    dict(label="PLANILHA (POR VENCIMENTO)", value=formata_valor_curto(_conf["por_vencimento"]),
+                         value_color=COLORS["primary"], subtext="tudo que vence no mês, pago ou não", icon="📄"),
+                    dict(label="PAGO NO MÊS (POR LIQUIDAÇÃO)", value=formata_valor_curto(_conf["por_liquidacao"]),
+                         value_color=COLORS["primary"], subtext="dinheiro que saiu no mês, vencendo quando for", icon="💸"),
+                    dict(label="PAINEL (MOVIMENTOS POR MÊS)", value=formata_valor_curto(_conf["painel"]), value_color=COLORS["negative"],
+                         subtext=f"pago no mês + em aberto vencendo no mês ({formata_valor_curto(_conf['venc_mes_em_aberto'])})", icon="📊"),
+                    dict(label="PAINEL − PLANILHA", value=formata_valor_curto(_dif_conf),
+                         value_color=COLORS["warning"] if abs(_dif_conf) >= 1 else COLORS["positive"],
+                         subtext="explicada pelos títulos que mudam de mês, abaixo", icon="🧮"),
+                ]), unsafe_allow_html=True)
+                st.markdown(
+                    f"**Ponte:** planilha {formata_brl(_conf['por_vencimento'])} "
+                    f"**−** vence no mês mas foi pago em outro {formata_brl(_conf['venc_mes_pago_fora'])} "
+                    f"({_conf['n_venc_mes_pago_fora']} títulos) "
+                    f"**+** vence em outro mês (ou sem vencimento) e foi pago neste {formata_brl(_conf['venc_fora_pago_mes'])} "
+                    f"({_conf['n_venc_fora_pago_mes']} títulos) **=** painel {formata_brl(_conf['painel'])}."
+                )
+                st.caption(
+                    "O painel segue a regra da aba: título **pago** entra no mês em que o dinheiro saiu (Data Liquidação); "
+                    "título **em aberto** fica no mês do vencimento. A planilha, somando pelo vencimento, conta o título pago "
+                    "antecipado ou atrasado no mês em que ele vencia. Os títulos abaixo são exatamente os que trocam de mês entre "
+                    "as duas leituras; se algum deles estiver com a data de liquidação errada na planilha, é ali que se corrige. "
+                    "Os filtros de canal e modalidade da barra lateral valem aqui; o período, não."
+                )
+                if _conf["detalhes"].empty:
+                    st.success("Nenhum título muda de mês: planilha e painel têm de bater.")
+                else:
+                    _det_conf = _conf["detalhes"].copy()
+                    _det_conf["Valor"] = _det_conf["Valor"].map(formata_brl)
+                    st.dataframe(_det_conf, hide_index=True, width="stretch", height=min(38 + 35 * (len(_det_conf) + 1), 520))
+                    st.download_button("⬇️ Baixar os títulos que mudam de mês (CSV)",
+                                       _conf["detalhes"].to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                       file_name=f"conferencia_contas_a_pagar_{_mes_conf}.csv", mime="text/csv",
+                                       key="fin_conf_pagar_csv")
+                for _col_mist, _info_mist in ((diag_fluxo or {}).get("mistura_ordem_data") or {}).items():
+                    st.error(
+                        f"**{_col_mist} mistura dia/mês com mês/dia** na planilha ({_info_mist['dia_primeiro']} × "
+                        f"{_info_mist['mes_primeiro']}; exemplos: {', '.join(map(str, _info_mist['exemplos']))}). "
+                        "Enquanto isso não for padronizado, parte dos títulos cai no mês errado — é a primeira coisa a corrigir."
+                    )
+                if (diag_fluxo or {}).get("liq_nao_convertidas"):
+                    st.warning(
+                        f"{diag_fluxo["liq_nao_convertidas"]} título(s) têm Data Liquidação preenchida num formato que "
+                        f"não virou data (exemplos: {', '.join(map(str, diag_fluxo.get("liq_amostras_nao_convertidas", [])))}). "
+                        "Eles ficam no vencimento. Corrija o formato na planilha."
+                    )
 
             # ---- Reserva de caixa: o que sobra DEPOIS de pagar tudo ----
             # A regra da área: pagando todas as contas do mês, ainda tem que
