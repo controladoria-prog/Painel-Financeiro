@@ -8369,6 +8369,33 @@ def _total_geral_sem_meta(pivot):
     return pivot.loc[linhas].sum(axis=0)
 
 
+def _total_geral_fin(pivot, incluir_meta=False):
+    """TOTAL GERAL da tabela Movimentos por Mês, com ou sem a linha de meta.
+
+    PADRÃO (incluir_meta=False): a conta de sempre, `_total_geral_sem_meta`
+    -- a meta é alvo, não dinheiro, e fica de fora.
+
+    COM META (incluir_meta=True, pedido da diretoria em 01/10/2026): soma
+    também a linha de meta, que o pivô já guarda como QUANTO AINDA FALTA
+    receber (ver `_aplicar_meta_como_falta`, com piso em zero). O total passa
+    a responder "e se a meta do mês for batida?": é o mesmo total de sempre
+    MAIS o que falta entrar para alcançar o alvo. Soma-se o que falta, e não
+    a meta cheia, porque o que já foi emitido ou liquidado já está nas
+    linhas de a receber -- somar a meta cheia contaria esse pedaço duas
+    vezes. Mês em que a meta já foi batida tem falta zero, e o total não
+    muda.
+
+    A escolha é do usuário, por um interruptor na tela, e ele nasce
+    DESLIGADO: quem não mexer em nada continua vendo o número de sempre."""
+    if not incluir_meta:
+        return _total_geral_sem_meta(pivot)
+    linhas_meta = [i for i in pivot.index if _classificar_movimento_fin(i) == "meta"]
+    total = _total_geral_sem_meta(pivot)
+    if linhas_meta:
+        total = total + pivot.loc[linhas_meta].abs().sum(axis=0)
+    return total
+
+
 def _saldo_posicao_atual_fin(df, coluna_valor):
     """Saldo disponível = posição do ÚLTIMO DIA com movimento no recorte
     filtrado (não a soma de todos os dias). Se houver mais de um canal, soma
@@ -9451,7 +9478,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # O saldo inicial do primeiro mês da tela é o fechamento do mês
             # anterior a ele; dos demais, é o TOTAL GERAL do mês anterior JÁ
             # acumulado. Por isso a conta é feita em cadeia, mês a mês.
-            movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)
+            st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
+
+            # INTERRUPTOR DA META NO TOTAL GERAL (pedido da diretoria,
+            # 01/10/2026). Nasce DESLIGADO: o padrão é o total de sempre, sem
+            # a meta. Ligado, o TOTAL GERAL soma também a linha "2 - Contas a
+            # Receber Meta" -- que já é "quanto falta" -- e passa a mostrar o
+            # mês como ficaria se a meta fosse batida. Só aparece quando a
+            # tabela tem linha de meta; sem ela não há o que ligar.
+            total_geral_com_meta_m = False
+            if meta_cheia_m is not None:
+                total_geral_com_meta_m = bool(st.toggle(
+                    "Somar a linha de meta no TOTAL GERAL",
+                    value=False, key="fin_total_geral_com_meta",
+                    help="Desligado (padrão): o TOTAL GERAL soma caixa, banco, contas a "
+                         "receber e contas a pagar — a meta fica de fora. Ligado: soma também "
+                         "a linha 2 - Contas a Receber Meta, que mostra quanto ainda falta "
+                         "para bater a meta do mês, e o total passa a responder como o mês "
+                         "fica se a meta for atingida. O SALDO INICIAL dos meses de previsão "
+                         "acompanha, porque parte do TOTAL GERAL do mês anterior.",
+                ))
+            movimentos_do_mes_m = _total_geral_fin(pivot_m, incluir_meta=total_geral_com_meta_m)
             colunas_meses_m = list(pivot_m.columns)
 
             # O saldo inicial só vale para PREVISÃO. Mês que já passou, e o
@@ -9483,13 +9530,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     float(movimentos_do_mes_m.get(_coluna, 0.0))
                     + saldos_iniciais_m[_coluna]
                 )
+            # O rótulo da linha diz o que está somado: com o interruptor ligado
+            # fica "TOTAL GERAL (com meta)", para o número não ser lido como o
+            # de sempre em print nem em conversa.
+            rotulo_total_geral_m = (
+                "TOTAL GERAL (com meta)" if total_geral_com_meta_m else "TOTAL GERAL")
             pivot_m_exibicao = pd.concat([
                 pd.DataFrame([linha_saldo_inicial_m], index=["SALDO INICIAL"]),
                 pivot_m,
-                pd.DataFrame([linha_total_geral_m], index=["TOTAL GERAL"]),
+                pd.DataFrame([linha_total_geral_m], index=[rotulo_total_geral_m]),
             ])
 
-            st.markdown('<div class="section-title">📋 Movimentos por Mês</div>', unsafe_allow_html=True)
             tabela_selecionavel(
                 pivot_m_exibicao, chave="tabela_mensal",
                 tipos_linha=[
@@ -9506,8 +9557,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 "movimentações que se acumulam). Ler assim é o que permite acompanhar a conta do mês: "
                 "entrei com este saldo, recebi isto, paguei aquilo. Na última coluna, o fluxo traz o "
                 "acumulado do período e o saldo traz a abertura do primeiro mês. **A Reserva de Caixa abaixo "
-                "lê pela mesma abertura**, e por isso a Sobra dela bate com o TOTAL GERAL desta tabela; as "
-                "demais abas seguem com a posição de fechamento."
+                "lê pela mesma abertura**, e por isso a Sobra dela bate com o TOTAL GERAL desta tabela"
+                + (" (com o interruptor da meta desligado)" if total_geral_com_meta_m else "")
+                + "; as demais abas seguem com a posição de fechamento."
             )
             st.caption(
                 "**4 - Contas a Pagar** é programado no futuro e efetivo no passado: título já pago "
@@ -9519,9 +9571,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.caption(
                     "**2 - Contas a Receber Meta** mostra **quanto ainda falta** para bater a meta do mês: "
                     "a meta menos o que está a vencer e o que já foi liquidado. Quando a linha zera, a meta "
-                    "foi atingida; o que passar dela aparece nas linhas de a receber, não aqui. Esta linha "
-                    "não entra no TOTAL GERAL nem em indicador nenhum — é balizador, não dinheiro. Meta "
-                    "cheia do período: "
+                    "foi atingida; o que passar dela aparece nas linhas de a receber, não aqui. "
+                    + (
+                        "**O interruptor acima está ligado**: o TOTAL GERAL (com meta) soma esta linha e "
+                        "mostra o mês como fica se a meta for batida; os indicadores seguem sem ela. "
+                        if total_geral_com_meta_m else
+                        "Esta linha não entra no TOTAL GERAL nem em indicador nenhum — é balizador, não "
+                        "dinheiro; o interruptor acima permite somá-la ao total quando se quiser ver o mês "
+                        "com a meta batida. "
+                    )
+                    + "Meta cheia do período: "
                     + " · ".join(
                         f"{mes} {formata_brl(abs(valor))}"
                         for mes, valor in meta_cheia_m.items() if valor

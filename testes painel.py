@@ -347,10 +347,15 @@ class TesteAlertasDoFluxo(unittest.TestCase):
             # Abertura do mes: 1 milhao.
             {"Canal.1": "LOJA", "Tipo Movimento": "saldo", "Data Efetiva": primeiro,
              "Valor.1": 1_000_000.0, "Vencimento.1": primeiro, "Data Liquidação": pd.NaT},
-            # Posicao de hoje: 5 milhoes -- ja embute os 4 recebidos.
-            self._linha("LOJA", "saldo", 0, 5_000_000.0),
             self._linha("LOJA", "entrada", max(dias_ate_o_primeiro + 1, -25), 4_000_000.0),
         ]
+        if dias_ate_o_primeiro < 0:
+            # Posicao de hoje: 5 milhoes -- ja embute os 4 recebidos. No DIA 1
+            # do mes "hoje" E a abertura: nada foi recebido ainda, a entrada
+            # cai amanha e a posicao e a propria abertura de 1 mi -- uma
+            # segunda linha de saldo na mesma data somaria 6 mi de abertura e
+            # o teste quebrava uma vez por mes (01/10/2026).
+            linhas.append(self._linha("LOJA", "saldo", 0, 5_000_000.0))
         linhas += [self._linha("LOJA", "saida", 1, -4_000_000.0)]
         reserva = [a for a in self._rodar(linhas) if "Reserva do mês" in a["titulo"]]
         self.assertEqual(len(reserva), 1, "a reserva em 20% tem de disparar o alerta")
@@ -1381,7 +1386,7 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertEqual(saldos["OUT"], 4_737.0, "e segue em cadeia")
 
         i = FONTE.index("📋 Movimentos por Mês")
-        trecho = FONTE[max(0, i - 6000):i + 3000]
+        trecho = FONTE[max(0, i - 6000):i + 5000]
         self.assertIn("if _periodo <= _mes_corrente_m:", trecho,
                       "a regra precisa distinguir passado/corrente de previsao")
         self.assertIn('index=["SALDO INICIAL"]', trecho)
@@ -1739,7 +1744,8 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertAlmostEqual(sobra_prev - total_geral_prev, falta_meta - herdado, places=2)
 
         # E o codigo tem de continuar montando as duas do mesmo pivo.
-        self.assertIn("movimentos_do_mes_m = _total_geral_sem_meta(pivot_m)", FONTE)
+        self.assertIn("movimentos_do_mes_m = _total_geral_fin(pivot_m, incluir_meta=total_geral_com_meta_m)",
+                      FONTE)
         self.assertNotIn("pivot_m_fechamento", FONTE)
 
     def test_pct_sem_disponivel_fica_vazia_e_nao_inventa_numero(self):
@@ -1862,6 +1868,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         cls.ns = carregar(
             ["_normalizar_texto", "_classificar_movimento_fin", "_dias_da_meta_no_mes",
              "montar_linhas_de_meta", "_aplicar_meta_como_falta", "_total_geral_sem_meta",
+             "_total_geral_fin",
              "_ordenar_movimentos_fin", "_peso_ordem_movimento_fin"],
             ["METAS_RECEBER", "DIAS_DA_SEMANA_POR_MODALIDADE", "MOV_RECEBER_META",
              "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO", "RENOMEAR_MOVIMENTO_FIN",
@@ -1940,6 +1947,61 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         total = self.ns["_total_geral_sem_meta"](pivo)["Setembro"]
         self.assertAlmostEqual(total, 4_000_000.0 + 6_000_000.0 - 3_500_000.0, places=2)
 
+
+    def test_interruptor_desligado_total_geral_e_o_de_sempre(self):
+        """Padrao: `_total_geral_fin` sem o interruptor devolve exatamente o
+        total sem meta. Quem nao mexe em nada ve o numero de sempre."""
+        pivo = self._pivo(4_000_000.0, 6_000_000.0)
+        de_sempre = self.ns["_total_geral_sem_meta"](pivo)["Setembro"]
+        padrao = self.ns["_total_geral_fin"](pivo)["Setembro"]
+        explicito = self.ns["_total_geral_fin"](pivo, incluir_meta=False)["Setembro"]
+        self.assertAlmostEqual(padrao, de_sempre, places=2)
+        self.assertAlmostEqual(explicito, de_sempre, places=2)
+
+    def test_interruptor_ligado_soma_o_que_falta_para_a_meta(self):
+        """Ligado, o total soma a linha de meta COMO ESTA NO PIVO -- quanto
+        falta -- e nao a meta cheia. Emitido 5 mi + 6 mi acima da meta de
+        10,46 mi: falta zero e o total nao muda. Com 1 mi + 2 mi faltam
+        7,46 mi e e isso que entra."""
+        chave = self.ns["MOV_RECEBER_META"]
+        meta_cheia = 10_462_221.58
+        batida, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(5_000_000.0, 6_000_000.0))
+        sem = self.ns["_total_geral_sem_meta"](batida)["Setembro"]
+        com = self.ns["_total_geral_fin"](batida, incluir_meta=True)["Setembro"]
+        self.assertAlmostEqual(batida.loc[chave, "Setembro"], 0.0, places=2)
+        self.assertAlmostEqual(com, sem, places=2)
+
+        aberta, _ = self.ns["_aplicar_meta_como_falta"](self._pivo(1_000_000.0, 2_000_000.0))
+        falta = float(aberta.loc[chave, "Setembro"])
+        self.assertGreater(falta, 0.0)
+        sem = self.ns["_total_geral_sem_meta"](aberta)["Setembro"]
+        com = self.ns["_total_geral_fin"](aberta, incluir_meta=True)["Setembro"]
+        self.assertAlmostEqual(com - sem, falta, places=2)
+        # Nunca a meta cheia: isso contaria o emitido duas vezes.
+        self.assertNotAlmostEqual(com - sem, meta_cheia, places=2)
+
+    def test_interruptor_sem_linha_de_meta_nao_muda_nada(self):
+        pivo = self._pivo(4_000_000.0, 6_000_000.0)
+        pivo = pivo.drop(index=self.ns["MOV_RECEBER_META"])
+        sem = self.ns["_total_geral_sem_meta"](pivo)["Setembro"]
+        com = self.ns["_total_geral_fin"](pivo, incluir_meta=True)["Setembro"]
+        self.assertAlmostEqual(com, sem, places=2)
+
+    def test_interruptor_da_tela_nasce_desligado_e_rotula_o_total(self):
+        """O pedido da diretoria (01/10/2026): um interruptor, acionavel por
+        quem olha, e DESLIGADO por padrao. E a linha muda de nome quando esta
+        ligado, para o print nao ser lido como o total de sempre."""
+        inicio = FONTE.index('"Somar a linha de meta no TOTAL GERAL"')
+        trecho = FONTE[inicio:inicio + 400]
+        self.assertIn("value=False", trecho)
+        self.assertIn('key="fin_total_geral_com_meta"', trecho)
+        self.assertIn("st.toggle(", FONTE[inicio - 200:inicio])
+        self.assertIn('"TOTAL GERAL (com meta)" if total_geral_com_meta_m else "TOTAL GERAL"', FONTE)
+        # Sem linha de meta nao ha interruptor: ele so e desenhado quando ha meta.
+        self.assertIn("if meta_cheia_m is not None:" + chr(10) + "                total_geral_com_meta_m = bool(st.toggle(",
+                      FONTE.replace(chr(13), ""))
+        # A Reserva de Caixa nao segue o interruptor: continua lendo o pivo direto.
+        self.assertNotIn("_total_geral_fin(pivot_m, incluir_meta=True)", FONTE)
     def test_ordem_de_leitura_das_linhas(self):
         """Sequencia fixa: o dinheiro que ja esta, o que deve entrar, o que
         sai. Os nomes vem da planilha como "1.1.Caixa" e "1.Banco", entao
