@@ -49,6 +49,8 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    "_aplicar_meta_como_falta": ["_periodo_mensal"],
+    "custo_do_escritorio_sobre_receita": ["_valor_por_numero_de_linha", "_linha_total_da_aba", "_numero_linha_dre"],
     "saude_do_orcamento": ["_numero_linha_dre"],
     "conciliar_diario_dre": ["_numero_linha_dre"],
     "revisar_lancamentos": ["_chave_historico"],
@@ -1947,6 +1949,40 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         total = self.ns["_total_geral_sem_meta"](pivo)["Setembro"]
         self.assertAlmostEqual(total, 4_000_000.0 + 6_000_000.0 - 3_500_000.0, places=2)
 
+
+    def test_mes_que_ja_acabou_zera_a_meta_batida_ou_nao(self):
+        """01/10/2026: virou o mes e setembro seguia pedindo R$ 133 mil. Meta e
+        alvo para frente: com `mes_corrente`, toda coluna anterior zera, e as
+        do corrente em diante continuam mostrando quanto falta."""
+        chave = self.ns["MOV_RECEBER_META"]
+        set_, out, nov = pd.Period("2026-09", "M"), pd.Period("2026-10", "M"), pd.Period("2026-11", "M")
+        pivo = pd.DataFrame({
+            set_: {chave: 10_462_221.58, self.ns["MOV_RECEBER_AVENCER"]: 1_834_870.47, self.ns["MOV_RECEBER_LIQUIDADO"]: 8_494_209.06},
+            out: {chave: 12_111_597.35, self.ns["MOV_RECEBER_AVENCER"]: 8_649_812.06, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
+            nov: {chave: 13_128_339.38, self.ns["MOV_RECEBER_AVENCER"]: 5_712_644.27, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
+        })
+        # Sem mes corrente: comportamento antigo, setembro mostra o que faltou.
+        antigo, _ = self.ns["_aplicar_meta_como_falta"](pivo)
+        self.assertAlmostEqual(antigo.loc[chave, set_], 133_142.05, places=2)
+        # Com mes corrente = outubro: setembro zera; outubro e novembro seguem.
+        novo, cheia = self.ns["_aplicar_meta_como_falta"](pivo, mes_corrente=out)
+        self.assertEqual(novo.loc[chave, set_], 0.0)
+        self.assertAlmostEqual(novo.loc[chave, out], 3_461_785.29, places=2)
+        self.assertAlmostEqual(novo.loc[chave, nov], 7_415_695.11, places=2)
+        # A meta cheia continua intacta para a legenda.
+        self.assertAlmostEqual(cheia[set_], 10_462_221.58, places=2)
+        # Tambem aceita rotulo de texto "MM/AAAA" e Timestamp como mes corrente.
+        pivo_txt = pivo.copy(); pivo_txt.columns = ["09/2026", "10/2026", "11/2026"]
+        txt, _ = self.ns["_aplicar_meta_como_falta"](pivo_txt, mes_corrente=pd.Timestamp("2026-10-01"))
+        self.assertEqual(txt.loc[chave, "09/2026"], 0.0)
+        self.assertGreater(txt.loc[chave, "10/2026"], 0.0)
+        # Rotulo que nao e mes nao e mexido (nao da para saber se passou).
+        pivo_x = pivo.copy(); pivo_x.columns = ["Total", "10/2026", "11/2026"]
+        x, _ = self.ns["_aplicar_meta_como_falta"](pivo_x, mes_corrente=out)
+        self.assertAlmostEqual(x.loc[chave, "Total"], 133_142.05, places=2)
+        # E a tela passa o mes corrente de verdade.
+        self.assertIn("_aplicar_meta_como_falta(" + chr(10) + "                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period(\"M\"))",
+                      FONTE.replace(chr(13), ""))
 
     def test_interruptor_desligado_total_geral_e_o_de_sempre(self):
         """Padrao: `_total_geral_fin` sem o interruptor devolve exatamente o

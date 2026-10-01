@@ -8450,7 +8450,24 @@ def _ordenar_movimentos_fin(indice):
     return sorted(indice, key=lambda nome: (_peso_ordem_movimento_fin(nome), str(nome)))
 
 
-def _aplicar_meta_como_falta(pivot):
+def _periodo_mensal(valor):
+    """Converte o rótulo de uma coluna em pd.Period mensal, ou None quando
+    não dá para saber o mês (aí a regra de mês passado não se aplica)."""
+    if isinstance(valor, pd.Period):
+        return valor.asfreq("M")
+    if isinstance(valor, (pd.Timestamp, datetime)):
+        return pd.Timestamp(valor).to_period("M")
+    texto = str(valor).strip()
+    m = re.fullmatch(r"(\d{2})/(\d{4})", texto)
+    if m:
+        return pd.Period(year=int(m.group(2)), month=int(m.group(1)), freq="M")
+    try:
+        return pd.Period(texto, freq="M")
+    except Exception:   # noqa: BLE001 -- rótulo que não é mês
+        return None
+
+
+def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     """Substitui a linha de META pelo que AINDA FALTA receber no período:
     meta menos o que já está a vencer e o que já foi liquidado, com piso em
     zero.
@@ -8462,6 +8479,13 @@ def _aplicar_meta_como_falta(pivot):
     visível nas linhas de a receber, e negativo aqui daria a impressão de
     dívida.
 
+    MÊS QUE JÁ ACABOU ZERA (01/10/2026): com `mes_corrente` informado, toda
+    coluna ANTERIOR a ele fica em zero, batida ou não. Meta é alvo para
+    frente; mês fechado sem bater não tem mais "quanto falta" -- o que
+    faltou virou resultado, e segurar o número na tela fazia setembro
+    continuar pedindo R$ 133 mil em pleno outubro. Fica "quanto falta" só
+    do mês corrente em diante.
+
     Devolve (pivot ajustado, série da meta cheia) -- a meta original ainda
     serve para a legenda dizer qual era o alvo."""
     if MOV_RECEBER_META not in pivot.index:
@@ -8472,7 +8496,15 @@ def _aplicar_meta_como_falta(pivot):
         if linha in pivot.index:
             realizado = realizado + pivot.loc[linha].abs()
     ajustado = pivot.copy()
-    ajustado.loc[MOV_RECEBER_META] = (meta_cheia.abs() - realizado).clip(lower=0)
+    falta = (meta_cheia.abs() - realizado).clip(lower=0)
+    if mes_corrente is not None:
+        corrente = _periodo_mensal(mes_corrente)
+        if corrente is not None:
+            for coluna in list(falta.index):
+                periodo = _periodo_mensal(coluna)
+                if periodo is not None and periodo < corrente:
+                    falta[coluna] = 0.0
+    ajustado.loc[MOV_RECEBER_META] = falta
     return ajustado, meta_cheia
 
 
@@ -9555,7 +9587,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 posicao_saldo="primeira",
             )
 
-            pivot_m, meta_cheia_m = _aplicar_meta_como_falta(pivot_m)
+            # Mês que já acabou zera a meta (batida ou não): "quanto falta" só
+            # vale do mês corrente em diante.
+            pivot_m, meta_cheia_m = _aplicar_meta_como_falta(
+                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M"))
             pivot_m = pivot_m.reindex(_ordenar_movimentos_fin(pivot_m.index))
 
             # A coluna final tem significado diferente conforme o tipo de linha:
@@ -9685,7 +9720,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 st.caption(
                     "**2 - Contas a Receber Meta** mostra **quanto ainda falta** para bater a meta do mês: "
                     "a meta menos o que está a vencer e o que já foi liquidado. Quando a linha zera, a meta "
-                    "foi atingida; o que passar dela aparece nas linhas de a receber, não aqui. "
+                    "foi atingida; o que passar dela aparece nas linhas de a receber, não aqui. Mês que já "
+                    "acabou fica zerado, batido ou não: a meta é alvo para frente, e o que faltou virou resultado. "
                     + (
                         "**O interruptor acima está ligado**: o TOTAL GERAL (com meta) soma esta linha e "
                         "mostra o mês como fica se a meta for batida; os indicadores seguem sem ela. "
