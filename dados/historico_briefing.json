@@ -406,5 +406,22 @@
    "Despesas Estruturais",
    "Flaconetes"
   ]
+ },
+ {
+  "data": "2026-10-08",
+  "mes_col": "10/2026",
+  "mes": "OUTUBRO",
+  "dia": 6,
+  "rec_mes": 1808099.33,
+  "ritmo_pct": 68.66622088757244,
+  "chance": 0.01,
+  "rec_ytd": 93550718.73,
+  "ebitda_ytd": 21994155.580000002,
+  "margem_proj": 22.230730467341463,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Flaconetes"
+  ]
  }
 ]
