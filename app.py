@@ -15338,6 +15338,681 @@ def memoria_de_calculo(itens):
 
 
 # ============================================================================
+# 7.11 RASCUNHO DO ORÇAMENTO — base realizada (pedido da diretoria, 09/10/2026)
+# ============================================================================
+# O caminho por direcionadores (7.10) pede decisão conta a conta. A diretoria
+# pediu o contrário para o rascunho: parte do que 2026 REALIZOU (meses
+# fechados + projeção do que falta), tira linha a linha o que não vai se
+# repetir, aplica premissas AUTOMÁTICAS com o percentual à vista, e devolve a
+# conta de tudo isso para explicar. Funções puras; a tela só desenha.
+PALAVRAS_PESSOAL_RASCUNHO = ("salari", "salário", "folha", "inss", "fgts", "feria", "férias", "13", "rescis",
+                             "pro labore", "pró-labore", "pessoal", "encargo", "vale", "plano de saude", "plano de saúde")
+
+
+def linhas_proprias_da_dre(df_dre):
+    """Linhas numeradas da DRE que carregam valor PRÓPRIO: todas, menos as
+    subtotais calculadas sem filhas (receita líquida, margens, EBITDA,
+    resultados). O valor próprio de uma linha é o dela MENOS o das filhas
+    diretas -- numa linha-pai isso é zero, salvo quando há lançamento do
+    DIÁRIO apontando direto para o pai (acontece, e a conciliação já trata
+    pai como próprio + filhas). Devolve [(numero, nome, filhas_diretas)]."""
+    if df_dre is None or df_dre.empty:
+        return []
+    col_nome = "Nome" if "Nome" in df_dre.columns else df_dre.columns[0]
+    nomes = [str(n).strip() for n in df_dre[col_nome].astype(str)]
+    numerados, vistos = [], set()
+    for n in nomes:
+        num = _numero_linha_dre(n)
+        if num and num not in vistos:
+            vistos.add(num)
+            numerados.append((num, n))
+    numeros = {num for num, _ in numerados}
+    saida = []
+    for num, nome in numerados:
+        # Filhas "de primeiro nível" ENTRE AS QUE EXISTEM: se a DRE pula um
+        # nível (tem 2 e 2.1.3, mas não 2.1), a 2.1.3 é filha direta da 2
+        # para fins de valor próprio -- senão a 2 ficaria com o valor da
+        # 2.1.3 repetido e o EBITDA não fecharia.
+        descendentes = [o for o in numeros if o != num and o.startswith(num + ".")]
+        filhas = sorted(d for d in descendentes if not any(o != d and d.startswith(o + ".") for o in descendentes))
+        if not filhas and _eh_linha_de_resultado(nome):
+            continue
+        saida.append((num, nome, filhas))
+    return saida
+
+
+def premissa_automatica_rascunho(numero, nome, premissas, plano=""):
+    """(nome da premissa, percentual) escolhidos pela NATUREZA da linha (e do
+    plano de contas), sem ninguém ter de clicar: receita fica na base
+    realizada (não há meta da indústria ainda); deduções, CMV e variáveis
+    acompanham a receita; pessoal segue dissídio; as demais despesas
+    operacionais seguem IPCA; o que fica abaixo do EBITDA e os impostos
+    mantêm a base. O percentual sai junto para a tela e o Excel explicarem."""
+    premissas = premissas or {}
+    grupo = str(numero or "").split(".")[0]
+    texto = _normalizar_coluna_fin(f"{nome} {plano or ''}")
+    receita = float(premissas.get("receita", 0.0) or 0.0)
+    if grupo == "1":
+        return "Base realizada (sem meta da indústria)", receita
+    if grupo in ("2", "4", "6"):
+        return "Acompanha a receita", receita
+    if grupo in ("8", "10"):
+        if numero == "8.3" or str(numero).startswith("8.3.") or any(p in texto for p in PALAVRAS_PESSOAL_RASCUNHO):
+            return "Dissídio / salário mínimo", float(premissas.get("dissidio", 0.0) or 0.0)
+        return "IPCA", float(premissas.get("ipca", 0.0) or 0.0)
+    return "Mantém a base", 0.0
+
+
+def _serie_da_linha_por_numero(df, numero, colunas):
+    """Lista de valores (um por coluna) da linha cujo número é exatamente `numero`."""
+    if df is None or df.empty:
+        return [0.0] * len(colunas)
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    sub = df[df[col_nome].astype(str).map(lambda n: _numero_linha_dre(n) == numero)]
+    if sub.empty:
+        return [0.0] * len(colunas)
+    saida = []
+    for c in colunas:
+        saida.append(float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum()) if c in sub.columns else 0.0)
+    return saida
+
+
+def diario_por_linha_e_plano(df_diario, meses_ano):
+    """{numero_da_linha: {plano: [12 valores por mês]}} a partir do DIÁRIO, de
+    uma vez só (um agrupamento, não um filtro por linha). A linha é o NÚMERO
+    da coluna "Linha DRE" do lançamento, como a conciliação faz."""
+    saida = {}
+    if df_diario is None or df_diario.empty or "Linha DRE" not in df_diario.columns:
+        return saida
+    bloco = df_diario[df_diario["Mês"].astype(str).isin(list(meses_ano))]
+    if bloco.empty:
+        return saida
+    numeros = bloco["Linha DRE"].astype(str).map(_numero_linha_dre)
+    bloco = bloco.assign(_num=numeros)[numeros.notna()]
+    agrupado = bloco.groupby(["_num", bloco["Plano de Contas"].astype(str), bloco["Mês"].astype(str)], observed=True)["Valor Bruto"].sum()
+    pos = {m: i for i, m in enumerate(meses_ano)}
+    for (num, plano, mes), valor in agrupado.items():
+        if mes not in pos:
+            continue
+        serie = saida.setdefault(str(num), {}).setdefault(str(plano).strip(), [0.0] * len(meses_ano))
+        serie[pos[mes]] += float(valor)
+    return saida
+
+
+RESIDUO_SEM_PLANO = "(valor da linha sem plano no DIÁRIO)"
+LINHA_SEM_PLANO_NO_MODELO = "(a própria linha da DRE)"
+FORA_DO_MODELO = "(linha da DRE fora do modelo)"
+
+
+def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx, linha_modelo=None):
+    """Uma linha do rascunho (linha da DRE × plano): projeção, base, orçado,
+    retirada, premissa, rascunho e os 12 meses. `ctx` carrega o que é comum
+    a todas (meses, índices fechados/abertos, retiradas, premissas)."""
+    idx_f, idx_a, n_f = ctx["idx_f"], ctx["idx_a"], ctx["n_f"]
+    soma_fech = sum(real_m[i] for i in idx_f)
+    media = soma_fech / n_f if n_f else 0.0
+    orc_ab_tem = any(abs(orc_m[i]) >= 0.005 for i in idx_a)
+    if ctx["projecao"] == "orcado" or (abs(soma_fech) < 0.005 and orc_ab_tem):
+        proj_m = {i: orc_m[i] for i in idx_a}
+        origem = "orçado do ano" if orc_ab_tem else "sem base"
+    else:
+        proj_m = {i: media for i in idx_a}
+        origem = f"média dos {n_f} meses fechados" if n_f else "sem base"
+    projecao_total = sum(proj_m.values())
+    base = soma_fech + projecao_total
+    orcado_ano = sum(orc_m)
+    chave = f"{numero}|{plano}"
+    retirado, motivo, loja_ret = 0.0, "", ""
+    r = ctx["retiradas"].get(chave)
+    if r is not None:
+        partes = list(r) if isinstance(r, (tuple, list)) else [r]
+        retirado = abs(float(partes[0] or 0.0))
+        motivo = str(partes[1]) if len(partes) > 1 and partes[1] is not None else ""
+        loja_ret = str(partes[2]) if len(partes) > 2 and partes[2] else ""
+    sinal = 1.0 if base >= 0 else -1.0
+    retirado = min(retirado, abs(base))
+    base_ajustada = sinal * (abs(base) - retirado)
+    plano_para_premissa = "" if plano in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO) else plano
+    nome_premissa, pct = premissa_automatica_rascunho(numero, nome, ctx["premissas"], plano_para_premissa)
+    rascunho = base_ajustada * (1.0 + pct)
+    base_meses = [real_m[i] if i in idx_f else proj_m.get(i, 0.0) for i in range(len(ctx["meses_ano"]))]
+    return {
+        "chave": chave, "numero": numero, "linha": nome, "plano": plano, "origem_plano": origem_plano,
+        "linha_modelo": linha_modelo, "grupo": str(numero).split(".")[0],
+        "realizado_fechado": soma_fech, "projecao_abertos": projecao_total, "origem_projecao": origem,
+        "base": base, "orcado_ano": orcado_ano, "retirado": retirado, "motivo": motivo, "loja_retirada": loja_ret,
+        "base_ajustada": base_ajustada, "premissa": nome_premissa, "pct": pct, "rascunho": rascunho,
+        "var_vs_base": (rascunho / base - 1.0) if abs(base) >= 0.005 else None,
+        "var_vs_orcado": (rascunho / orcado_ano - 1.0) if abs(orcado_ano) >= 0.005 else None,
+        "base_meses": base_meses, "orcado_meses": list(orc_m),
+        "rascunho_meses": distribuir_no_ano(rascunho, curva_do_ano(base_meses)),
+    }
+
+
+def _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao):
+    meses_ano = list(meses_ano)
+    set_fech = set(meses_fechados)
+    return {
+        "meses_ano": meses_ano, "projecao": projecao, "retiradas": retiradas or {}, "premissas": premissas or {},
+        "idx_f": [i for i, m in enumerate(meses_ano) if m in set_fech],
+        "idx_a": [i for i, m in enumerate(meses_ano) if m not in set_fech],
+        "n_f": len([m for m in meses_ano if m in set_fech]),
+    }
+
+
+def _valor_proprio_da_linha(df, numero, filhas, meses_ano):
+    """Valores mensais da linha MENOS as filhas diretas que existem na DRE."""
+    serie = _serie_da_linha_por_numero(df, numero, meses_ano)
+    for f in filhas:
+        sf = _serie_da_linha_por_numero(df, f, meses_ano)
+        serie = [a - b for a, b in zip(serie, sf)]
+    return serie
+
+
+def _ratear_orcado_entre_linhas(linhas_da_linha, orc_linha, idx_f, ctx, numero, nome, origem_residuo):
+    """Dada a lista de (plano, serie_real, origem, linha_modelo) de UMA linha da
+    DRE e o orçado mensal da linha, monta as linhas do rascunho com o orçado
+    rateado pela participação de cada plano no realizado fechado. Sem
+    realizado na linha, o orçado vai inteiro para a linha-resíduo."""
+    pesos = {pl: sum(abs(serie[i]) for i in idx_f) for pl, serie, _, _ in linhas_da_linha}
+    total_peso = sum(pesos.values())
+    saida = []
+    for plano, serie, origem, linha_modelo in linhas_da_linha:
+        fatia = (pesos[plano] / total_peso) if total_peso else (1.0 / len(linhas_da_linha) if plano == LINHA_SEM_PLANO_NO_MODELO else 0.0)
+        saida.append(_monta_linha_rascunho(numero, nome, plano, serie, [v * fatia for v in orc_linha], origem, ctx, linha_modelo))
+    return saida, total_peso
+
+
+def montar_rascunho_orcamento(df_real, df_orc, meses_ano, meses_fechados, retiradas=None, premissas=None,
+                              projecao="media", df_diario=None):
+    """O rascunho do ano seguinte, LINHA DA DRE × PLANO DE CONTAS, a partir do
+    que este ano realizou (pedido da diretoria, 09/10/2026) -- versão guiada
+    pela DRE do realizado (sem a planilha modelo).
+
+    Cada linha própria da DRE é aberta nos planos de contas que a compõem na
+    aba DIÁRIO. Para cada (linha, plano):
+      realizado_fechado = DIÁRIO do plano nos meses fechados;
+      projecao_abertos  = média dos fechados × meses abertos (projecao="media";
+                          sem realizado, o orçado rateado dos meses abertos);
+                          projecao="orcado" usa sempre o orçado rateado;
+      base              = fechado + projeção (12 meses);
+      orcado_ano        = o orçado deste ano da LINHA, rateado entre os planos
+                          pela participação de cada um no realizado fechado da
+                          linha (o orçado de 2026 só existe por linha da DRE);
+      retirado / motivo = decisão da análise linha a linha (módulo);
+      base_ajustada, premissa, pct, rascunho e os 12 meses.
+
+    O que a DRE tem na linha e o DIÁRIO não explica (receita, CMV, ICMS, ou
+    diferença de conciliação) vira a linha RESIDUO_SEM_PLANO daquela linha --
+    assim a soma dos planos fecha SEMPRE com a DRE, e a diferença fica à
+    vista em vez de sumir. Linha-pai só entra com o valor PRÓPRIO (dela menos
+    as filhas diretas): somar pai e filha contaria duas vezes.
+
+    Devolve (DataFrame com uma linha por (linha, plano), dict de totais)."""
+    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao)
+    meses_ano, idx_f = ctx["meses_ano"], ctx["idx_f"]
+    por_linha = diario_por_linha_e_plano(df_diario, meses_ano)
+    linhas = []
+    for numero, nome, filhas in linhas_proprias_da_dre(df_real):
+        real_linha = _valor_proprio_da_linha(df_real, numero, filhas, meses_ano)
+        orc_linha = _valor_proprio_da_linha(df_orc, numero, filhas, meses_ano)
+        planos = por_linha.get(numero, {})
+        soma_planos = [0.0] * len(meses_ano)
+        for serie in planos.values():
+            soma_planos = [a + b for a, b in zip(soma_planos, serie)]
+        itens = [(pl, serie, "DIÁRIO", None) for pl, serie in sorted(planos.items(), key=lambda kv: -sum(abs(v) for v in kv[1]))]
+        residuo_real = [a - b for a, b in zip(real_linha, soma_planos)]
+        tem_peso = any(sum(abs(serie[i]) for i in idx_f) for serie in planos.values())
+        residuo_orc_vai = not tem_peso
+        if any(abs(v) >= 0.005 for v in residuo_real) or (residuo_orc_vai and any(abs(v) >= 0.005 for v in orc_linha)):
+            itens.append((RESIDUO_SEM_PLANO, residuo_real, "DRE" if not planos else "DRE − DIÁRIO (diferença)", None))
+        if not itens:
+            continue
+        novas, _ = _ratear_orcado_entre_linhas(itens, orc_linha, idx_f, ctx, numero, nome, "DRE")
+        linhas.extend(novas)
+    df = pd.DataFrame(linhas)
+    return df, totais_do_rascunho(df)
+
+
+def montar_rascunho_pelo_modelo(df_real, df_orc, df_diario, estrutura, meses_ano, meses_fechados, retiradas=None,
+                                premissas=None, projecao="media"):
+    """O rascunho na ESTRUTURA DA PLANILHA MODELO do ano seguinte (09/10/2026):
+    uma linha do rascunho para cada linha de VALOR do modelo -- os planos de
+    contas (sem número, abaixo da sua linha da DRE) e as linhas da DRE que não
+    têm plano abaixo. É exatamente o que o modelo pede para preencher.
+
+    Realizado por linha do modelo:
+      plano de contas  -> DIÁRIO do plano, dentro da linha da DRE do modelo
+                          (casa por número da linha + nome do plano; se o
+                          DIÁRIO lançou o plano noutra linha, usa o plano
+                          sozinho e marca a origem);
+      linha da DRE sem plano -> valor PRÓPRIO da linha na DRE do realizado
+                          (ela menos as filhas); se a DRE do ano não tem a
+                          linha, o DIÁRIO pelo número da linha.
+    Para cada linha da DRE do modelo, o que a DRE do realizado tem a mais do
+    que os planos explicam vira RESIDUO_SEM_PLANO (ex.: receita, CMV, ICMS,
+    ou diferença de conciliação) -- a soma fecha sempre com a DRE. Linha da
+    DRE do realizado que o modelo NÃO tem entra como FORA_DO_MODELO, para o
+    EBITDA fechar e a diferença de estrutura ficar à vista.
+
+    Orçado do ano: o da linha da DRE (valor próprio), rateado entre as linhas
+    do modelo daquela linha pela participação no realizado fechado.
+
+    Devolve (DataFrame, totais, avisos)."""
+    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao)
+    meses_ano, idx_f = ctx["meses_ano"], ctx["idx_f"]
+    por_linha = diario_por_linha_e_plano(df_diario, meses_ano)
+    # Índices por chave normalizada: (numero, chave do plano) e só a chave do plano.
+    por_num_chave, por_chave = {}, {}
+    for num, planos in por_linha.items():
+        for pl, serie in planos.items():
+            ch = chave_conta_orcamento(pl)
+            por_num_chave[(num, ch)] = [a + b for a, b in zip(por_num_chave.get((num, ch), [0.0] * len(meses_ano)), serie)]
+            por_chave[ch] = [a + b for a, b in zip(por_chave.get(ch, [0.0] * len(meses_ano)), serie)]
+    proprias = {num: (nome, filhas) for num, nome, filhas in linhas_proprias_da_dre(df_real)}
+    proprias_orc = {num: filhas for num, _, filhas in linhas_proprias_da_dre(df_orc)}
+    # Agrupa as linhas de valor do modelo pela linha da DRE a que pertencem.
+    por_linha_modelo = {}
+    for item in estrutura or []:
+        if not item.get("editavel"):
+            continue
+        if item["tipo"] == "plano":
+            numero = _numero_linha_dre(item["linha_dre"]) or ""
+            nome_linha = item["linha_dre"]
+        else:
+            numero = _numero_linha_dre(item["nome"]) or ""
+            nome_linha = item["nome"]
+        if not numero:
+            continue
+        por_linha_modelo.setdefault((numero, nome_linha), []).append(item)
+    linhas, avisos, usadas = [], [], set()
+    planos_fora_da_linha, planos_sem_movimento = 0, 0
+    for (numero, nome_linha), itens_modelo in por_linha_modelo.items():
+        nome_real, filhas = proprias.get(numero, (nome_linha, []))
+        real_linha = _valor_proprio_da_linha(df_real, numero, filhas, meses_ano) if numero in proprias else [0.0] * len(meses_ano)
+        orc_linha = _valor_proprio_da_linha(df_orc, numero, proprias_orc.get(numero, []), meses_ano)
+        usadas.add(numero)
+        itens, itens_dre = [], []
+        for item in itens_modelo:
+            if item["tipo"] != "plano":
+                itens_dre.append(item)
+                continue
+            if True:
+                ch = chave_conta_orcamento(item["nome"])
+                serie = por_num_chave.get((numero, ch))
+                origem = "DIÁRIO"
+                if serie is None and ch in por_chave:
+                    serie, origem = por_chave[ch], "DIÁRIO (plano lançado noutra linha)"
+                    planos_fora_da_linha += 1
+                if serie is None:
+                    serie, origem = [0.0] * len(meses_ano), "sem movimento no DIÁRIO"
+                    planos_sem_movimento += 1
+                itens.append((item["nome"], serie, origem, item["linha"]))
+        soma_planos = [0.0] * len(meses_ano)
+        for _, serie, _, _ in itens:
+            soma_planos = [a + b for a, b in zip(soma_planos, serie)]
+        for item in itens_dre:
+            # A própria linha da DRE como linha de valor do modelo. Se a linha
+            # TAMBÉM tem planos abaixo (acontece: 2.1.4 e "ISS sobre Receita"),
+            # ela fica com o que a DRE tem a mais do que os planos explicam --
+            # é o lugar natural do resíduo, e sem isso contaria duas vezes.
+            serie = [a - b for a, b in zip(real_linha, soma_planos)] if itens else list(real_linha)
+            origem = "DRE" if not itens else "DRE − planos"
+            if not itens and not any(abs(v) >= 0.005 for v in serie) and numero in por_linha:
+                serie = [0.0] * len(meses_ano)
+                for s_ in por_linha[numero].values():
+                    serie = [a + b for a, b in zip(serie, s_)]
+                origem = "DIÁRIO (linha sem par na DRE)"
+            itens.append((LINHA_SEM_PLANO_NO_MODELO, serie, origem, item["linha"]))
+        # Resíduo só quando a linha é aberta em planos e não tem a própria linha como valor.
+        if itens and not itens_dre:
+            residuo = [a - b for a, b in zip(real_linha, soma_planos)]
+            if any(abs(v) >= 1.0 for v in residuo):
+                itens.append((RESIDUO_SEM_PLANO, residuo, "DRE − DIÁRIO (diferença)", None))
+        novas, _ = _ratear_orcado_entre_linhas(itens, orc_linha, idx_f, ctx, numero, nome_linha, "DRE")
+        linhas.extend(novas)
+    # Linhas da DRE do realizado com valor próprio que o modelo não tem.
+    for numero, (nome, filhas) in proprias.items():
+        if numero in usadas:
+            continue
+        serie = _valor_proprio_da_linha(df_real, numero, filhas, meses_ano)
+        orc_l = _valor_proprio_da_linha(df_orc, numero, proprias_orc.get(numero, []), meses_ano)
+        if any(abs(v) >= 1.0 for v in serie) or any(abs(v) >= 1.0 for v in orc_l):
+            linhas.append(_monta_linha_rascunho(numero, nome, FORA_DO_MODELO, serie, orc_l, "DRE (linha fora do modelo)", ctx, None))
+            avisos.append(f"{nome}: tem valor no realizado/orçado {meses_ano[0][3:]} e não existe no modelo.")
+    if planos_fora_da_linha:
+        avisos.append(f"{planos_fora_da_linha} plano(s) do modelo foram achados no DIÁRIO sob OUTRA linha da DRE; entraram pelo nome do plano.")
+    if planos_sem_movimento:
+        avisos.append(f"{planos_sem_movimento} plano(s) do modelo não têm movimento no DIÁRIO no ano: base zero (orçado da linha rateado só se houver).")
+    df = pd.DataFrame(linhas)
+    return df, totais_do_rascunho(df), avisos
+
+
+def rascunho_por_linha(df):
+    """Soma do rascunho por linha da DRE (os planos fecham a linha)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    agg = (df.groupby(["numero", "linha", "grupo"], sort=False)
+             .agg(planos=("plano", "count"), realizado_fechado=("realizado_fechado", "sum"),
+                  projecao_abertos=("projecao_abertos", "sum"), base=("base", "sum"), orcado_ano=("orcado_ano", "sum"),
+                  retirado=("retirado", "sum"), base_ajustada=("base_ajustada", "sum"), rascunho=("rascunho", "sum"))
+             .reset_index())
+    agg["var_vs_base"] = [(r / b - 1.0) if abs(b) >= 0.005 else None for r, b in zip(agg["rascunho"], agg["base"])]
+    agg["var_vs_orcado"] = [(r / o - 1.0) if abs(o) >= 0.005 else None for r, o in zip(agg["rascunho"], agg["orcado_ano"])]
+    return agg
+
+
+def preencher_modelo_com_rascunho(df_rasc, estrutura, abas, realizado_loja_plano, realizado_dre_por_aba,
+                                  orcado_linha_por_aba, meses_fechados_cols, meses_ano):
+    """Reparte o rascunho (empresa) entre as abas de unidade do modelo e devolve
+    {aba: {linha_da_planilha: [12 valores]}} para gerar_excel_orcamento.
+
+    Participação de cada unidade numa linha do rascunho:
+      plano de contas  -> DIÁRIO da unidade naquele plano, meses fechados (módulo);
+      linha sem plano  -> realizado da linha na aba da unidade; sem isso, o
+                          orçado do ano da linha na unidade; sem nada, o peso
+                          geral da unidade (quanto ela representa do total).
+    Resíduo "sem plano no DIÁRIO" de uma linha é somado aos planos daquela
+    linha, na proporção deles, para a linha do modelo fechar com o rascunho.
+    Retirada marcada com LOJA sai só daquela unidade (até zerar a unidade);
+    sem loja, sai na proporção.
+    Os 12 meses da unidade seguem a curva da própria unidade (DIÁRIO fechado +
+    média), ou a curva da empresa quando a unidade não tem histórico.
+    Devolve (valores_por_aba, resumo) com resumo = {aba: total}."""
+    abas = list(abas or [])
+    if df_rasc is None or df_rasc.empty or not abas:
+        return {}, {}
+    n_f = len(meses_fechados_cols)
+    chaves_aba = {aba: _normalizar_nome_aba(aba) for aba in abas}
+    # Peso geral de cada unidade (fallback): soma em módulo do DIÁRIO dela.
+    peso_geral = {aba: 0.0 for aba in abas}
+    for (loja, _plano), por_mes in (realizado_loja_plano or {}).items():
+        for aba in abas:
+            if chaves_aba[aba] == loja:
+                peso_geral[aba] += sum(abs(v) for m, v in por_mes.items() if m in meses_fechados_cols)
+    total_geral = sum(peso_geral.values()) or 1.0
+
+    def meses_da_unidade(aba, chave_plano):
+        por_mes = (realizado_loja_plano or {}).get((chaves_aba[aba], chave_plano), {})
+        fech = [float(por_mes.get(m, 0.0)) for m in meses_fechados_cols]
+        if not any(abs(v) >= 0.005 for v in fech):
+            return None
+        media = sum(fech) / n_f if n_f else 0.0
+        return fech + [media] * (len(meses_ano) - n_f)
+
+    # Resíduos somados aos planos da mesma linha.
+    df = df_rasc.copy()
+    residuos = df[df["plano"] == RESIDUO_SEM_PLANO]
+    for _, res in residuos.iterrows():
+        irmaos = df[(df["numero"] == res["numero"]) & (df["plano"] != RESIDUO_SEM_PLANO) & df["linha_modelo"].notna()]
+        if irmaos.empty:
+            continue
+        pesos = irmaos["base"].abs()
+        total = float(pesos.sum())
+        for idx, peso in pesos.items():
+            fatia = (peso / total) if total else 1.0 / len(irmaos)
+            df.at[idx, "rascunho"] = float(df.at[idx, "rascunho"]) + float(res["rascunho"]) * fatia
+            df.at[idx, "rascunho_meses"] = [a + b * fatia for a, b in zip(df.at[idx, "rascunho_meses"], res["rascunho_meses"])]
+    df = df[df["linha_modelo"].notna()]
+
+    valores_por_aba = {aba: {} for aba in abas}
+    resumo = {aba: 0.0 for aba in abas}
+    for _, linha in df.iterrows():
+        numero, plano, total = linha["numero"], linha["plano"], float(linha["rascunho"])
+        linha_modelo = int(linha["linha_modelo"])
+        # Participações por unidade.
+        if plano != LINHA_SEM_PLANO_NO_MODELO:
+            ch = chave_conta_orcamento(plano)
+            partes = {aba: sum(abs(v) for m, v in (realizado_loja_plano or {}).get((chaves_aba[aba], ch), {}).items()
+                               if m in meses_fechados_cols) for aba in abas}
+        else:
+            ch = None
+            chave_linha = chave_conta_orcamento(linha["linha"])
+            partes = {aba: abs(float((realizado_dre_por_aba or {}).get((aba, chave_linha), (0.0, ""))[0])) for aba in abas}
+            if not any(partes.values()) and orcado_linha_por_aba is not None:
+                partes = {aba: abs(float(orcado_linha_por_aba(aba, linha["linha"]))) for aba in abas}
+        if not any(partes.values()):
+            partes = {aba: peso_geral[aba] / total_geral for aba in abas}
+        soma_partes = sum(partes.values()) or 1.0
+        # Retirada por loja: tira da unidade antes de repartir o resto.
+        totais_unidade = {aba: total * partes[aba] / soma_partes for aba in abas}
+        loja_ret = str(linha.get("loja_retirada") or "")
+        if loja_ret and loja_ret in totais_unidade and float(linha["retirado"]) > 0:
+            # Desfaz o rateio da retirada e aplica só na loja: o total da linha já veio sem a retirada
+            # (proporcional); recompõe a base cheia por unidade e tira da loja marcada.
+            base_cheia = float(linha["base"]) * (1.0 + float(linha["pct"]))
+            cheios = {aba: base_cheia * partes[aba] / soma_partes for aba in abas}
+            tirar = float(linha["retirado"]) * (1.0 + float(linha["pct"]))
+            sinal = 1.0 if cheios[loja_ret] >= 0 else -1.0
+            cheios[loja_ret] = sinal * max(abs(cheios[loja_ret]) - tirar, 0.0)
+            totais_unidade = cheios
+        for aba in abas:
+            t_aba = totais_unidade[aba]
+            if abs(t_aba) < 0.005:
+                continue
+            curva_base = meses_da_unidade(aba, ch) if ch else None
+            curva = curva_do_ano(curva_base) if curva_base else curva_do_ano(linha["base_meses"])
+            valores_por_aba[aba][linha_modelo] = distribuir_no_ano(t_aba, curva)
+            resumo[aba] += t_aba
+    return valores_por_aba, resumo
+
+
+def totais_do_rascunho(df):
+    """Totais por grupo da DRE e os agregados que a diretoria lê: receita bruta
+    (grupo 1), custos e despesas até o EBITDA (2, 4, 6, 8 e o que mais houver
+    até o 10) e o EBITDA (soma de tudo até o grupo 10, com sinal). Para cada
+    um, base, orçado do ano, retirado e rascunho."""
+    chaves = ("base", "orcado_ano", "retirado", "rascunho", "realizado_fechado", "projecao_abertos", "base_ajustada")
+    vazio = {k: 0.0 for k in chaves}
+    if df is None or df.empty:
+        return {"por_grupo": {}, "receita": dict(vazio), "custos": dict(vazio), "ebitda": dict(vazio)}
+    por_grupo = {}
+    for grupo, bloco in df.groupby("grupo", sort=False):
+        por_grupo[str(grupo)] = {k: float(bloco[k].sum()) for k in chaves}
+    def soma(filtro):
+        bloco = df[df["grupo"].map(filtro)]
+        return {k: float(bloco[k].sum()) for k in chaves}
+    def _g(g):
+        try:
+            return int(g)
+        except (TypeError, ValueError):
+            return 999
+    return {
+        "por_grupo": por_grupo,
+        "receita": soma(lambda g: g == "1"),
+        "custos": soma(lambda g: 2 <= _g(g) <= 10),
+        "ebitda": soma(lambda g: _g(g) <= 10),
+        "abaixo_ebitda": soma(lambda g: _g(g) > 11),
+    }
+
+
+def colunas_relatorio_retiradas(ano_base):
+    """Nomes das colunas do relatório de retiradas para o ano-base dado."""
+    a, p = str(ano_base), str(int(ano_base) + 1)
+    return {
+        "real_com": f"Realizado {a} (com)", "orc_com": f"Orçado {a} (com)", "ret": "Retirado", "pct_ret": "% retirado da base",
+        "base_sem": f"Base {a} (sem)", "prem": "Premissa", "pct_prem": "% premissa", "rasc_sem": f"Rascunho {p} (sem)",
+        "vs_real": f"{p} vs realizado {a}", "vs_orc": f"{p} vs orçado {a}",
+    }
+
+
+def relatorio_das_retiradas(df, ano_base=2026):
+    """As linhas de onde algo foi retirado, com o que a diretoria pediu para
+    cada uma: quanto o ano-base realizou COM aquilo (base), quanto estava
+    orçado no ano-base COM aquilo, quanto foi retirado e quanto fica orçado
+    para o ano seguinte SEM aquilo -- e as variações. Última linha é o total."""
+    c = colunas_relatorio_retiradas(ano_base)
+    colunas = ["Linha da DRE", "Plano de Contas", "Motivo", c["real_com"], c["orc_com"], c["ret"], c["pct_ret"], c["base_sem"],
+               c["prem"], c["pct_prem"], c["rasc_sem"], c["vs_real"], c["vs_orc"]]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=colunas)
+    com = df[df["retirado"] > 0.005]
+    if com.empty:
+        return pd.DataFrame(columns=colunas)
+    linhas = []
+    for _, r in com.iterrows():
+        linhas.append({
+            "Linha da DRE": r["linha"], "Plano de Contas": r.get("plano", ""), "Motivo": r["motivo"],
+            c["real_com"]: r["base"], c["orc_com"]: r["orcado_ano"], c["ret"]: r["retirado"],
+            c["pct_ret"]: (r["retirado"] / abs(r["base"])) if abs(r["base"]) >= 0.005 else None,
+            c["base_sem"]: r["base_ajustada"], c["prem"]: r["premissa"], c["pct_prem"]: r["pct"],
+            c["rasc_sem"]: r["rascunho"], c["vs_real"]: r["var_vs_base"], c["vs_orc"]: r["var_vs_orcado"],
+        })
+    tot_base, tot_orc = float(com["base"].sum()), float(com["orcado_ano"].sum())
+    tot_ret, tot_adj, tot_ras = float(com["retirado"].sum()), float(com["base_ajustada"].sum()), float(com["rascunho"].sum())
+    linhas.append({
+        "Linha da DRE": "TOTAL DAS LINHAS COM RETIRADA", "Plano de Contas": "", "Motivo": f"{len(com)} linha(s)",
+        c["real_com"]: tot_base, c["orc_com"]: tot_orc, c["ret"]: tot_ret,
+        c["pct_ret"]: (tot_ret / abs(tot_base)) if abs(tot_base) >= 0.005 else None,
+        c["base_sem"]: tot_adj, c["prem"]: "", c["pct_prem"]: None, c["rasc_sem"]: tot_ras,
+        c["vs_real"]: (tot_ras / tot_base - 1.0) if abs(tot_base) >= 0.005 else None,
+        c["vs_orc"]: (tot_ras / tot_orc - 1.0) if abs(tot_orc) >= 0.005 else None,
+    })
+    return pd.DataFrame(linhas, columns=colunas)
+
+
+def planos_da_linha_no_diario(df_diario, numero, meses_ano):
+    """Abertura de uma linha da DRE por PLANO DE CONTAS, mês a mês, a partir do
+    DIÁRIO -- e a sugestão do que pode não se repetir: o quanto o maior mês
+    passou de 2,5× a mediana dos meses com valor (só quando essa sobra passa
+    de R$ 5 mil). É sugestão, não decisão: quem decide é a análise."""
+    colunas = ["Plano de Contas"] + list(meses_ano) + ["Total", "Mediana mensal", "Maior mês", "Pico acima do normal"]
+    if df_diario is None or df_diario.empty or "Linha DRE" not in df_diario.columns:
+        return pd.DataFrame(columns=colunas)
+    mask = df_diario["Linha DRE"].astype(str).map(lambda n: _numero_linha_dre(n) == numero)
+    bloco = df_diario[mask]
+    if bloco.empty:
+        return pd.DataFrame(columns=colunas)
+    tabela = (bloco.groupby([bloco["Plano de Contas"].astype(str), bloco["Mês"].astype(str)], observed=True)["Valor Bruto"]
+              .sum().unstack(fill_value=0.0))
+    for m in meses_ano:
+        if m not in tabela.columns:
+            tabela[m] = 0.0
+    tabela = tabela[list(meses_ano)]
+    linhas = []
+    for plano, valores in tabela.iterrows():
+        v = [float(x) for x in valores.tolist()]
+        com_valor = [abs(x) for x in v if abs(x) >= 0.005]
+        mediana = float(pd.Series(com_valor).median()) if com_valor else 0.0
+        maior = max(com_valor) if com_valor else 0.0
+        pico = (maior - mediana) if (com_valor and len(com_valor) >= 2 and maior > 2.5 * mediana and maior - mediana >= 5_000) else 0.0
+        linha = {"Plano de Contas": plano}
+        linha.update({m: x for m, x in zip(meses_ano, v)})
+        linha.update({"Total": sum(v), "Mediana mensal": mediana, "Maior mês": maior, "Pico acima do normal": pico})
+        linhas.append(linha)
+    saida = pd.DataFrame(linhas, columns=colunas)
+    return saida.sort_values("Total", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+
+
+def maiores_lancamentos_da_linha(df_diario, numero, limite=15, plano=None):
+    """Os maiores lançamentos individuais de uma linha da DRE (e, se pedido, de
+    um plano de contas dela) no ano -- é onde o 'não vai acontecer em 2027'
+    costuma estar com nome e sobrenome."""
+    colunas = [c for c in ("Competência", "Plano de Contas", "Cliente / Fornecedor", "Histórico", "Número", "Valor Bruto")]
+    if df_diario is None or df_diario.empty or "Linha DRE" not in df_diario.columns:
+        return pd.DataFrame(columns=colunas)
+    mask = df_diario["Linha DRE"].astype(str).map(lambda n: _numero_linha_dre(n) == numero)
+    if plano:
+        mask = mask & (df_diario["Plano de Contas"].astype(str).str.strip() == str(plano).strip())
+    bloco = df_diario.loc[mask, [c for c in colunas if c in df_diario.columns]].copy()
+    if bloco.empty:
+        return bloco
+    bloco["_abs"] = pd.to_numeric(bloco["Valor Bruto"], errors="coerce").abs()
+    bloco = bloco.sort_values("_abs", ascending=False).drop(columns="_abs").head(limite)
+    if "Competência" in bloco.columns:
+        bloco["Competência"] = pd.to_datetime(bloco["Competência"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(bloco["Competência"].astype(str))
+    return bloco.reset_index(drop=True)
+
+
+def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base, retiradas_df):
+    """Arquivo do rascunho: Resumo, Rascunho por linha (com os 12 meses do ano
+    seguinte), Retiradas e Premissas. Tudo que a tela mostra, no formato que
+    vai para a reunião."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    ano_prox = ano_base + 1
+    memoria = io.BytesIO()
+    with pd.ExcelWriter(memoria, engine="openpyxl") as escritor:
+        # Resumo
+        blocos = [("Receita bruta (grupo 1)", totais["receita"]), ("Custos e despesas até o EBITDA", totais["custos"]),
+                  ("EBITDA (até o grupo 10)", totais["ebitda"]), ("Abaixo do EBITDA (12 em diante)", totais.get("abaixo_ebitda", {}))]
+        resumo = pd.DataFrame([{
+            "Bloco": nome,
+            f"Realizado {ano_base} fechado": t.get("realizado_fechado", 0.0),
+            "Projeção dos meses abertos": t.get("projecao_abertos", 0.0),
+            f"Base {ano_base} (12 meses)": t.get("base", 0.0),
+            f"Orçado {ano_base}": t.get("orcado_ano", 0.0),
+            "Retirado (não recorrente)": t.get("retirado", 0.0),
+            f"Base {ano_base} ajustada": t.get("base_ajustada", 0.0),
+            f"Rascunho {ano_prox}": t.get("rascunho", 0.0),
+            f"{ano_prox} vs base": (t.get("rascunho", 0.0) / t["base"] - 1.0) if t.get("base") else None,
+            f"{ano_prox} vs orçado {ano_base}": (t.get("rascunho", 0.0) / t["orcado_ano"] - 1.0) if t.get("orcado_ano") else None,
+        } for nome, t in blocos if t])
+        resumo.to_excel(escritor, sheet_name="Resumo", index=False)
+        # Rascunho por linha
+        tabela = pd.DataFrame({
+            "Nº": df["numero"], "Linha da DRE": df["linha"], "Plano de Contas": df["plano"], "Origem": df["origem_plano"],
+            f"Realizado {ano_base} ({len(meses_fechados)} meses fechados)": df["realizado_fechado"],
+            "Projeção dos meses abertos": df["projecao_abertos"], "Origem da projeção": df["origem_projecao"],
+            f"Base {ano_base} (12 meses)": df["base"], f"Orçado {ano_base}": df["orcado_ano"],
+            "Retirado (não recorrente)": df["retirado"], "Motivo": df["motivo"],
+            f"Base {ano_base} ajustada": df["base_ajustada"], "Premissa": df["premissa"], "% premissa": df["pct"],
+            f"Rascunho {ano_prox}": df["rascunho"], f"{ano_prox} vs base": df["var_vs_base"],
+            f"{ano_prox} vs orçado {ano_base}": df["var_vs_orcado"],
+        })
+        for i, m in enumerate(meses_ano):
+            rotulo = f"{m[:2]}/{ano_prox}"
+            tabela[rotulo] = df["rascunho_meses"].map(lambda v, i=i: v[i] if isinstance(v, list) and len(v) > i else None)
+        tabela.to_excel(escritor, sheet_name=f"Rascunho {ano_prox} por plano", index=False)
+        por_linha = rascunho_por_linha(df)
+        if not por_linha.empty:
+            pd.DataFrame({
+                "Nº": por_linha["numero"], "Linha da DRE": por_linha["linha"], "Planos": por_linha["planos"],
+                f"Realizado {ano_base} fechado": por_linha["realizado_fechado"], "Projeção dos meses abertos": por_linha["projecao_abertos"],
+                f"Base {ano_base} (12 meses)": por_linha["base"], f"Orçado {ano_base}": por_linha["orcado_ano"],
+                "Retirado (não recorrente)": por_linha["retirado"], f"Base {ano_base} ajustada": por_linha["base_ajustada"],
+                f"Rascunho {ano_prox}": por_linha["rascunho"], f"{ano_prox} vs base": por_linha["var_vs_base"],
+                f"{ano_prox} vs orçado {ano_base}": por_linha["var_vs_orcado"],
+            }).to_excel(escritor, sheet_name=f"Rascunho {ano_prox} por linha", index=False)
+        # Base mês a mês do ano corrente (para defender a curva)
+        base_meses = pd.DataFrame({"Nº": df["numero"], "Linha da DRE": df["linha"], "Plano de Contas": df["plano"]})
+        for i, m in enumerate(meses_ano):
+            base_meses[f"{m} {'fechado' if m in set(meses_fechados) else 'projetado'}"] = df["base_meses"].map(
+                lambda v, i=i: v[i] if isinstance(v, list) and len(v) > i else None)
+        base_meses.to_excel(escritor, sheet_name=f"Base {ano_base} mes a mes", index=False)
+        (retiradas_df if retiradas_df is not None else pd.DataFrame()).to_excel(escritor, sheet_name="Retiradas", index=False)
+        pd.DataFrame([
+            {"Premissa": "Receita (grupo 1)", "Regra": "base realizada, sem crescimento — não há meta da indústria ainda", "%": premissas.get("receita", 0.0)},
+            {"Premissa": "Deduções, CMV e despesas variáveis (2, 4, 6)", "Regra": "acompanham a receita", "%": premissas.get("receita", 0.0)},
+            {"Premissa": "Pessoal (8.3 e linhas de folha)", "Regra": "dissídio / salário mínimo", "%": premissas.get("dissidio", 0.0)},
+            {"Premissa": "Demais despesas operacionais (8)", "Regra": "IPCA", "%": premissas.get("ipca", 0.0)},
+            {"Premissa": "Abaixo do EBITDA e impostos (12 em diante)", "Regra": "mantém a base", "%": 0.0},
+            {"Premissa": "Meses abertos", "Regra": f"média dos {len(meses_fechados)} meses fechados; linha sem realizado usa o orçado {ano_base}", "%": None},
+            {"Premissa": "Retiradas", "Regra": "saem da base ANTES das premissas; valor em módulo, limitado à base do plano", "%": None},
+            {"Premissa": f"Orçado {ano_base} por plano", "Regra": "o orçado existe por linha da DRE; foi rateado entre os planos pela participação de cada um no realizado fechado da linha", "%": None},
+            {"Premissa": "Linha sem plano / diferença", "Regra": f"'{RESIDUO_SEM_PLANO}' é o que a DRE tem e o DIÁRIO não explica (receita, CMV, ICMS ou diferença de conciliação); garante que os planos fechem com a DRE", "%": None},
+        ]).to_excel(escritor, sheet_name="Premissas", index=False)
+        # Formato
+        cabecalho = Font(bold=True, color="FFFFFF")
+        fundo = PatternFill("solid", fgColor="1F3864")
+        for ws in escritor.book.worksheets:
+            for celula in ws[1]:
+                celula.font, celula.fill = cabecalho, fundo
+                celula.alignment = Alignment(wrap_text=True, vertical="center")
+            ws.freeze_panes = "A2"
+            for idx, coluna in enumerate(ws.iter_cols(min_row=1, max_row=1), start=1):
+                titulo = str(coluna[0].value or "")
+                ws.column_dimensions[get_column_letter(idx)].width = min(max(14, len(titulo) + 2), 46)
+                eh_pct = titulo.startswith("%") or " vs " in titulo or titulo.endswith("premissa")
+                for celula in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
+                    c = celula[0]
+                    if isinstance(c.value, (int, float)):
+                        c.number_format = "0.00%" if eh_pct else "#,##0.00"
+    memoria.seek(0)
+    return memoria.getvalue()
+
+
+# ============================================================================
 # 8. ABAS
 # ============================================================================
 # ============================================================================
@@ -20415,6 +21090,387 @@ if tab_orc is not None:
             st.dataframe(_sd, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sd) + 1), 500))
 
     with tab_orc:
+        # ---- Rascunho do ano seguinte a partir da base realizada (09/10/2026) ----
+        # Pedido da diretoria: base = realizado dos meses fechados + projeção
+        # do que falta; análise linha a linha tirando o que não se repete;
+        # premissas automáticas com o % à vista; e o relatório do que saiu
+        # (realizado com, orçado com, orçado sem). Tudo em funções puras da
+        # seção 7.11; aqui é só a tela.
+        st.markdown('<div class="section-title">📝 Rascunho do orçamento — base realizada, linha a linha</div>',
+                    unsafe_allow_html=True)
+        # A planilha modelo do ano seguinte dá a ESTRUTURA: cada linha da DRE com
+        # os planos de contas que a compõem, 21 abas de unidade. Com ela, o
+        # rascunho sai linha a linha do modelo e pode ser despejado nele; sem
+        # ela, sai pela DRE do realizado aberta no DIÁRIO.
+        _modelo_2027 = st.file_uploader(
+            "Planilha modelo do orçamento (.xlsx) — estrutura das linhas e dos planos de contas", type=["xlsx"],
+            key="orc27_modelo",
+            help="O mesmo arquivo que você vai preencher. A estrutura é lida dele, não é fixa no código: "
+                 "cada linha da DRE com os seus planos de contas, nas 21 abas de unidade.",
+        )
+        _estrutura_rasc, _abas_rasc = [], []
+        if _modelo_2027 is not None:
+            try:
+                _modelo_2027.seek(0)
+                _estrutura_rasc, _abas_rasc = ler_estrutura_orcamento(_modelo_2027)
+            except Exception as _erro_modelo_rasc:   # noqa: BLE001
+                st.error(f"Não consegui ler a planilha modelo: {_erro_modelo_rasc}")
+        _ano_rasc = int(meses_cols[0][3:]) if meses_cols else datetime.now(FUSO_BR).year
+        _ano_rasc_prox = _ano_rasc + 1
+        st.caption(
+            f"Parte do que **{_ano_rasc} realizou** (DRE CONSOLIDADO, as 21 unidades), **descido aos planos de contas da aba DIÁRIO**"
+            + (" na estrutura da planilha modelo: cada linha da DRE com os planos que a compõem" if _estrutura_rasc else "")
+            + f": meses fechados valem o realizado; os que faltam entram pela **média dos fechados** (plano sem realizado usa o orçado "
+            f"{_ano_rasc}). O orçado {_ano_rasc}, que só existe por linha da DRE, é rateado entre os planos pela participação no realizado. "
+            f"Em seguida você tira, plano a plano, o que **não vai se repetir em {_ano_rasc_prox}**, e as premissas entram sozinhas, pela "
+            "natureza de cada linha, com o percentual à vista. O bloco final mostra o que saiu: quanto foi realizado com aquilo, quanto "
+            "estava orçado com aquilo e quanto fica orçado sem. Sem meta da indústria, a receita fica na base realizada."
+            + ("" if _estrutura_rasc else " **Envie a planilha modelo acima** para o rascunho sair na estrutura dela e poder ser despejado nela.")
+        )
+        _rc1, _rc2, _rc3, _rc4, _rc5 = st.columns([1, 1.3, 1, 1, 1])
+        with _rc1:
+            _mes_hoje_rasc = datetime.now(FUSO_BR).month
+            _n_fech_rasc = st.number_input(f"Meses de {_ano_rasc} fechados", min_value=1, max_value=12,
+                                           value=min(max(_mes_hoje_rasc - 1, 1), 12), step=1, key="rasc_meses",
+                                           help="Até qual mês o realizado já está fechado. O resto é projetado.")
+        with _rc2:
+            _proj_rasc = st.radio("Meses que faltam", ["Média dos fechados", f"Orçado {_ano_rasc}"], horizontal=True,
+                                  key="rasc_projecao", help="Como preencher os meses ainda abertos do ano.")
+        with _rc3:
+            _ipca_rasc = st.number_input(f"IPCA {_ano_rasc_prox} (%)", min_value=0.0, max_value=30.0, value=4.25, step=0.05,
+                                         format="%.2f", key="rasc_ipca", help="Mediana do Focus. Vale para as despesas operacionais fora pessoal.") / 100
+        with _rc4:
+            _diss_rasc = st.number_input("Dissídio / salário mínimo (%)", min_value=0.0, max_value=30.0, value=7.40, step=0.05,
+                                         format="%.2f", key="rasc_dissidio", help="Vale para 8.3 - Pessoal e linhas de folha.") / 100
+        with _rc5:
+            _rec_rasc = st.number_input("Receita (%)", min_value=-50.0, max_value=100.0, value=0.0, step=0.5, format="%.2f",
+                                        key="rasc_receita",
+                                        help="Crescimento da receita. Zero = base realizada, que é o pedido enquanto não há meta da indústria. "
+                                             "Deduções, CMV e variáveis acompanham.") / 100
+        _premissas_rasc = {"ipca": _ipca_rasc, "dissidio": _diss_rasc, "receita": _rec_rasc}
+        _meses_ano_rasc = [f"{m:02d}/{_ano_rasc}" for m in range(1, 13)]
+        _meses_fech_rasc = _meses_ano_rasc[:int(_n_fech_rasc)]
+
+        # DRE CONSOLIDADO sempre -- o rascunho é da empresa inteira, qualquer
+        # que seja a visão escolhida na barra lateral.
+        if [str(a).upper() for a in (abas_para_carregar or [])] == ["DRE CONSOLIDADO"] and list_df_real:
+            _real_rasc, _orc_rasc = list_df_real[0], (list_df_orc[0] if list_df_orc else pd.DataFrame())
+        else:
+            _dados_rasc = carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037", "DRE CONSOLIDADO"])
+            _orc_rasc, _real_rasc = _dados_rasc.get("DRE CONSOLIDADO", (pd.DataFrame(), pd.DataFrame()))
+
+        if "rasc_retiradas" not in st.session_state:
+            st.session_state["rasc_retiradas"] = {}
+        _retiradas_rasc = st.session_state["rasc_retiradas"]
+
+        if _real_rasc is None or _real_rasc.empty:
+            st.info("Preciso da aba DRE CONSOLIDADO do Realizado para montar o rascunho.")
+        else:
+            # O DIÁRIO abre cada linha da DRE nos planos de contas que a compõem.
+            try:
+                _diario_rasc = carregar_diario(path_real)
+            except Exception as _erro_dia_rasc:   # noqa: BLE001
+                _diario_rasc = None
+                st.warning(f"Sem a aba DIÁRIO não dá para descer aos planos de contas ({_erro_dia_rasc}); o rascunho fica por linha da DRE.")
+            _modo_proj_rasc = "orcado" if _proj_rasc.startswith("Orçado") else "media"
+            _avisos_rasc = []
+            if _estrutura_rasc:
+                _df_rasc, _tot_rasc, _avisos_rasc = montar_rascunho_pelo_modelo(
+                    _real_rasc, _orc_rasc, _diario_rasc, _estrutura_rasc, _meses_ano_rasc, _meses_fech_rasc,
+                    retiradas=_retiradas_rasc, premissas=_premissas_rasc, projecao=_modo_proj_rasc)
+            else:
+                _df_rasc, _tot_rasc = montar_rascunho_orcamento(
+                    _real_rasc, _orc_rasc, _meses_ano_rasc, _meses_fech_rasc, retiradas=_retiradas_rasc,
+                    premissas=_premissas_rasc, projecao=_modo_proj_rasc, df_diario=_diario_rasc)
+            if _df_rasc.empty:
+                st.info("Não encontrei linhas numeradas na DRE CONSOLIDADO.")
+            else:
+                # Conferência: a soma do valor próprio das linhas até o grupo 10
+                # (planos + resíduo) tem de bater com a linha 11 - EBITDA do
+                # realizado nos meses fechados.
+                _ebitda_dre_fech = sum(_serie_da_linha_por_numero(_real_rasc, "11", _meses_fech_rasc))
+                _ebitda_folhas_fech = float(_tot_rasc["ebitda"]["realizado_fechado"])
+                _bate_rasc = abs(_ebitda_dre_fech - _ebitda_folhas_fech) < 1.0
+                _n_planos_rasc = int((~_df_rasc["plano"].isin([RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO])).sum())
+                _n_linhas_rasc = int(_df_rasc["numero"].nunique())
+                for _aviso_r in _avisos_rasc:
+                    st.info(_aviso_r)
+
+                def _var_txt(novo, antigo):
+                    return ("—" if not antigo else f"{(novo / antigo - 1) * 100:+.1f}%".replace(".", ","))
+                _tr, _tc, _te = _tot_rasc["receita"], _tot_rasc["custos"], _tot_rasc["ebitda"]
+                st.markdown(render_kpi_row([
+                    dict(label=f"RECEITA BRUTA · RASCUNHO {_ano_rasc_prox}", value=formata_valor_curto(_tr["rascunho"]),
+                         value_color=COLORS["positive"],
+                         subtext=f"base {_ano_rasc} {formata_valor_curto(_tr['base'])} · orçado {_ano_rasc} {formata_valor_curto(_tr['orcado_ano'])} · "
+                                 f"{_var_txt(_tr['rascunho'], _tr['orcado_ano'])} vs orçado", icon="💵"),
+                    dict(label="CUSTOS E DESPESAS ATÉ O EBITDA", value=formata_valor_curto(abs(_tc["rascunho"])),
+                         value_color=COLORS["negative"],
+                         subtext=f"base {formata_valor_curto(abs(_tc['base']))} · retirado {formata_valor_curto(_tc['retirado'])} · "
+                                 f"{_var_txt(_tc['rascunho'], _tc['base'])} vs base", icon="📉"),
+                    dict(label=f"EBITDA · RASCUNHO {_ano_rasc_prox}", value=formata_valor_curto(_te["rascunho"]),
+                         value_color=COLORS["primary"],
+                         subtext=f"base {_ano_rasc} {formata_valor_curto(_te['base'])} ({_var_txt(_te['rascunho'], _te['base'])}) · "
+                                 f"orçado {_ano_rasc} {formata_valor_curto(_te['orcado_ano'])}", icon="⚖️"),
+                    dict(label="RETIRADO (NÃO RECORRENTE)", value=formata_valor_curto(float(_df_rasc["retirado"].sum())),
+                         value_color=COLORS["warning"] if float(_df_rasc["retirado"].sum()) else COLORS["text_muted"],
+                         subtext=f"{int((_df_rasc['retirado'] > 0.005).sum())} plano(s) · sai da base antes das premissas", icon="✂️"),
+                ]), unsafe_allow_html=True)
+                st.caption(f"{_n_linhas_rasc} linhas da DRE abertas em {_n_planos_rasc} planos de contas"
+                           + (" (estrutura da planilha modelo)" if _estrutura_rasc else " do DIÁRIO")
+                           + (f"; {int((_df_rasc['plano'] == RESIDUO_SEM_PLANO).sum())} linha(s) com valor que o DIÁRIO não explica "
+                              f"(receita, CMV, ICMS ou diferença) aparecem como '{RESIDUO_SEM_PLANO}', para a soma dos planos fechar com a DRE."
+                              if (_df_rasc['plano'] == RESIDUO_SEM_PLANO).any() else "."))
+                if _bate_rasc:
+                    st.caption(f"✅ Conferência: a soma de todos os planos e resíduos até o grupo 10 bate com a linha 11 - EBITDA do realizado "
+                               f"nos {len(_meses_fech_rasc)} meses fechados ({formata_brl(_ebitda_dre_fech)}).")
+                else:
+                    st.warning(f"A soma dos planos até o grupo 10 ({formata_brl(_ebitda_folhas_fech)}) não bate com a linha 11 - EBITDA do "
+                               f"realizado ({formata_brl(_ebitda_dre_fech)}) nos meses fechados. Confira a numeração da DRE antes de levar o rascunho.")
+
+                # ---- Linha a linha, plano a plano: a análise e as retiradas ----
+                st.markdown('<div class="section-title" style="margin-top:18px;">✂️ Linha a linha — cada linha da DRE aberta nos seus planos de contas</div>',
+                            unsafe_allow_html=True)
+                st.caption(
+                    "Cada linha da DRE aparece aberta nos planos de contas que a compõem no DIÁRIO, com o realizado fechado, a projeção, "
+                    f"a base {_ano_rasc}, o orçado {_ano_rasc} **rateado** entre os planos pela participação no realizado, a premissa e o "
+                    f"rascunho {_ano_rasc_prox}. Digite em **Retirar (R$)** o que aconteceu este ano e não vai acontecer no próximo (em módulo) "
+                    "e o **motivo**; sai da base antes da premissa e tudo recalcula. Os maiores lançamentos de cada plano estão no detalhe abaixo."
+                )
+                _f1, _f2 = st.columns([1, 2])
+                with _f1:
+                    _grupos_rasc = sorted(_df_rasc["grupo"].unique(), key=lambda g: int(g) if str(g).isdigit() else 999)
+                    _filtro_grupo_rasc = st.multiselect("Grupos da DRE", _grupos_rasc, key="rasc_filtro_grupo", format_func=lambda g: f"Grupo {g}")
+                with _f2:
+                    _busca_rasc = st.text_input("Procurar (linha ou plano de contas)", key="rasc_busca", placeholder="ex.: consultoria, aluguel, 8.8")
+                _vista_rasc = _df_rasc if not _filtro_grupo_rasc else _df_rasc[_df_rasc["grupo"].isin(_filtro_grupo_rasc)]
+                if _busca_rasc.strip():
+                    _b = _normalizar_coluna_fin(_busca_rasc)
+                    _vista_rasc = _vista_rasc[(_vista_rasc["linha"].map(_normalizar_coluna_fin).str.contains(_b, regex=False))
+                                              | (_vista_rasc["plano"].map(_normalizar_coluna_fin).str.contains(_b, regex=False))
+                                              | (_vista_rasc["numero"].astype(str).str.startswith(_busca_rasc.strip()))]
+                _rot_real = f"Realizado {_ano_rasc} ({len(_meses_fech_rasc)}m)"
+                _rot_base, _rot_orc = f"Base {_ano_rasc}", f"Orçado {_ano_rasc} (rateado)"
+                _rot_rasc = f"Rascunho {_ano_rasc_prox}"
+                _editor_rasc = pd.DataFrame({
+                    "Chave": _vista_rasc["chave"].values, "Nº": _vista_rasc["numero"].values,
+                    "Linha da DRE": _vista_rasc["linha"].values, "Plano de Contas": _vista_rasc["plano"].values,
+                    _rot_real: _vista_rasc["realizado_fechado"].values, "Projeção": _vista_rasc["projecao_abertos"].values,
+                    _rot_base: _vista_rasc["base"].values, _rot_orc: _vista_rasc["orcado_ano"].values,
+                    "Retirar (R$)": _vista_rasc["retirado"].values, "Motivo": _vista_rasc["motivo"].values,
+                    "Loja (opcional)": _vista_rasc["loja_retirada"].values,
+                    "Premissa": _vista_rasc["premissa"].values, "%": (_vista_rasc["pct"] * 100).values,
+                    _rot_rasc: _vista_rasc["rascunho"].values,
+                    "vs orçado": _vista_rasc["var_vs_orcado"].map(lambda v: None if v is None or pd.isna(v) else v * 100).values,
+                })
+                _chave_editor = "rasc_editor_" + ("_".join(str(g) for g in _filtro_grupo_rasc) or "todos") + "_" + _normalizar_coluna_fin(_busca_rasc).replace(" ", "_")
+                _editado_rasc = st.data_editor(
+                    _editor_rasc, hide_index=True, width="stretch", height=min(38 + 35 * (len(_editor_rasc) + 1), 620),
+                    key=_chave_editor, column_order=[c for c in _editor_rasc.columns if c != "Chave"],
+                    disabled=["Chave", "Nº", "Linha da DRE", "Plano de Contas", _rot_real, "Projeção", _rot_base, _rot_orc, "Premissa", "%", _rot_rasc, "vs orçado"],
+                    column_config={
+                        "Nº": st.column_config.TextColumn(width="small"),
+                        "Linha da DRE": st.column_config.TextColumn(width="medium"),
+                        "Plano de Contas": st.column_config.TextColumn(width="medium"),
+                        _rot_real: st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Projeção": st.column_config.NumberColumn(format="R$ %.2f", help="Meses que faltam: média dos fechados ou orçado."),
+                        _rot_base: st.column_config.NumberColumn(format="R$ %.2f", help="Realizado fechado + projeção = 12 meses."),
+                        _rot_orc: st.column_config.NumberColumn(format="R$ %.2f", help="Orçado da linha da DRE rateado pela participação do plano no realizado fechado."),
+                        "Retirar (R$)": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0, step=100.0,
+                                                                      help="Valor em módulo que não se repete no ano que vem."),
+                        "Motivo": st.column_config.TextColumn(width="medium"),
+                        "Loja (opcional)": st.column_config.SelectboxColumn(
+                            options=[""] + list(_abas_rasc), width="medium",
+                            help="Se o que sai aconteceu numa unidade só, marque-a: na planilha modelo a retirada sai dessa unidade. "
+                                 "Em branco, sai na proporção de todas."),
+                        "Premissa": st.column_config.TextColumn(width="medium"),
+                        "%": st.column_config.NumberColumn(format="%.2f%%"),
+                        _rot_rasc: st.column_config.NumberColumn(format="R$ %.2f"),
+                        "vs orçado": st.column_config.NumberColumn(format="%.1f%%", help=f"Rascunho contra o orçado {_ano_rasc} rateado."),
+                    },
+                )
+                _mudou_rasc = False
+                for _, _ln_r in _editado_rasc.iterrows():
+                    _ch_r = str(_ln_r["Chave"])
+                    _val_r = pd.to_numeric(_ln_r["Retirar (R$)"], errors="coerce")
+                    _val_r = 0.0 if pd.isna(_val_r) else float(_val_r)
+                    _mot_r = str(_ln_r["Motivo"] or "").strip()
+                    _loja_r = str(_ln_r.get("Loja (opcional)") or "").strip()
+                    _loja_r = "" if _loja_r.lower() in ("", "nan", "none") else _loja_r
+                    _atual_r = tuple(_retiradas_rasc.get(_ch_r, (0.0, "", ""))) + ("",)
+                    if abs(_val_r - float(_atual_r[0])) >= 0.005 or _mot_r != str(_atual_r[1]) or _loja_r != str(_atual_r[2] or ""):
+                        if _val_r < 0.005 and not _mot_r:
+                            _retiradas_rasc.pop(_ch_r, None)
+                        else:
+                            _retiradas_rasc[_ch_r] = (abs(_val_r), _mot_r, _loja_r)
+                        _mudou_rasc = True
+                if _mudou_rasc:
+                    st.rerun()
+
+                _cd1, _cd2, _cd3 = st.columns([1.2, 1.2, 2])
+                _nomes_por_chave = dict(zip(_df_rasc["chave"], zip(_df_rasc["linha"], _df_rasc["plano"])))
+                with _cd1:
+                    _csv_dec = pd.DataFrame([{"Chave": k, "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0],
+                                              "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1],
+                                              "Retirar (R$)": v[0], "Motivo": v[1], "Loja": (v[2] if len(v) > 2 else "")}
+                                             for k, v in _retiradas_rasc.items()])
+                    st.download_button("⬇️ Guardar as retiradas (CSV)", _csv_dec.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                       file_name=f"retiradas_rascunho_{_ano_rasc_prox}.csv", mime="text/csv", key="rasc_baixar_dec",
+                                       help="A sessão do painel esquece quando fecha. Guarde o arquivo e recarregue depois.")
+                with _cd2:
+                    _arq_dec = st.file_uploader("Recarregar retiradas (CSV)", type=["csv"], key="rasc_carregar_dec", label_visibility="collapsed")
+                    if _arq_dec is not None and st.button("Aplicar o arquivo", key="rasc_aplicar_dec"):
+                        try:
+                            _dec = pd.read_csv(_arq_dec, sep=";", decimal=",", dtype=str)
+                            for _, _ld in _dec.iterrows():
+                                _v = pd.to_numeric(str(_ld.get("Retirar (R$)", "")).replace(",", "."), errors="coerce")
+                                _v = 0.0 if pd.isna(_v) else abs(float(_v))
+                                if _v >= 0.005 and str(_ld.get("Chave", "")).strip():
+                                    _loja_csv = str(_ld.get("Loja", "") or "").strip()
+                                    _retiradas_rasc[str(_ld["Chave"]).strip()] = (
+                                        _v, str(_ld.get("Motivo", "") or ""), "" if _loja_csv.lower() in ("nan", "none") else _loja_csv)
+                            st.rerun()
+                        except Exception as _erro_dec:   # noqa: BLE001
+                            st.error(f"Não consegui ler o arquivo: {_erro_dec}")
+                with _cd3:
+                    if _retiradas_rasc and st.button("Limpar todas as retiradas", key="rasc_limpar_dec"):
+                        st.session_state["rasc_retiradas"] = {}
+                        st.rerun()
+
+                # ---- Detalhe: meses da linha e maiores lançamentos do plano ----
+                with st.expander("🔎 Detalhe — meses de uma linha e maiores lançamentos de um plano", expanded=False):
+                    _por_linha_rasc = rascunho_por_linha(_df_rasc)
+                    _opcoes_det = list(_por_linha_rasc["numero"])
+                    _rotulo_linha = dict(zip(_por_linha_rasc["numero"], _por_linha_rasc["linha"]))
+                    _num_det = st.selectbox("Linha da DRE", _opcoes_det, key="rasc_linha_det", format_func=lambda n: _rotulo_linha.get(n, n))
+                    _bloco_det = _df_rasc[_df_rasc["numero"] == _num_det]
+                    _meses_det = pd.DataFrame({
+                        "Mês": _meses_ano_rasc,
+                        "Situação": ["fechado" if m in set(_meses_fech_rasc) else "projetado" for m in _meses_ano_rasc],
+                        f"Base {_ano_rasc}": [formata_brl(sum(v[i] for v in _bloco_det["base_meses"])) for i in range(12)],
+                        f"Orçado {_ano_rasc}": [formata_brl(sum(v[i] for v in _bloco_det["orcado_meses"])) for i in range(12)],
+                        f"Rascunho {_ano_rasc_prox}": [formata_brl(sum(v[i] for v in _bloco_det["rascunho_meses"])) for i in range(12)],
+                    })
+                    st.dataframe(_meses_det, hide_index=True, width="stretch", height=38 + 35 * 13)
+                    _planos_opc = [p_ for p_ in _bloco_det["plano"] if p_ not in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO)]
+                    if _planos_opc:
+                        _plano_det = st.selectbox("Plano de contas", ["(todos da linha)"] + _planos_opc, key="rasc_plano_det")
+                        _lanc_det = maiores_lancamentos_da_linha(_diario_rasc, _num_det, 25, None if _plano_det.startswith("(") else _plano_det)
+                        if not _lanc_det.empty:
+                            st.markdown("**Maiores lançamentos no ano**")
+                            _lanc_mostrar = _lanc_det.copy()
+                            _lanc_mostrar["Valor Bruto"] = pd.to_numeric(_lanc_mostrar["Valor Bruto"], errors="coerce").map(formata_brl)
+                            st.dataframe(_lanc_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_lanc_mostrar) + 1), 420))
+                    else:
+                        st.caption("Esta linha não tem plano de contas no DIÁRIO (vem direto da DRE, como receita, ICMS e CMV).")
+
+                # ---- O que saiu: realizado com, orçado com, orçado sem ----
+                st.markdown('<div class="section-title" style="margin-top:18px;">📋 O que saiu do orçamento — com e sem</div>',
+                            unsafe_allow_html=True)
+                _rel_rasc = relatorio_das_retiradas(_df_rasc, _ano_rasc)
+                _col_rel = colunas_relatorio_retiradas(_ano_rasc)
+                if _rel_rasc.empty:
+                    st.info("Nenhuma retirada ainda. Quando você tirar algo na tabela acima, este bloco mostra, por plano, quanto "
+                            f"{_ano_rasc} realizou com aquilo, quanto estava orçado com aquilo e quanto fica orçado para {_ano_rasc_prox} sem.")
+                else:
+                    _tot_rel = _rel_rasc.iloc[-1]
+                    _base_custos = abs(float(_tc["base"])) or 1.0
+                    _real_com = abs(float(_tot_rel[_col_rel["real_com"]])); _orc_com = abs(float(_tot_rel[_col_rel["orc_com"]]))
+                    _rasc_sem = abs(float(_tot_rel[_col_rel["rasc_sem"]])); _ret_tot = float(_tot_rel[_col_rel["ret"]])
+                    _pct1 = lambda v: f"{v:.1f}%".replace(".", ",")
+                    st.markdown(
+                        f"- Foram retirados **{formata_brl(_ret_tot)}** em **{int((_df_rasc['retirado'] > 0.005).sum())} plano(s) de contas** — "
+                        f"**{_pct1(_ret_tot / _base_custos * 100)}** dos custos e despesas da base {_ano_rasc}."
+                        f"\n- Nesses planos, {_ano_rasc} realizou **{formata_brl(_real_com)}** contra **{formata_brl(_orc_com)}** orçados "
+                        f"({_var_txt(_real_com, _orc_com)} vs orçado)."
+                        f"\n- Sem o que saiu e com as premissas, {_ano_rasc_prox} fica em **{formata_brl(_rasc_sem)}** nesses planos: "
+                        f"**{_var_txt(_rasc_sem, _real_com)}** contra o realizado e **{_var_txt(_rasc_sem, _orc_com)}** contra o orçado {_ano_rasc}."
+                        f"\n- No EBITDA da empresa: base {formata_brl(_te['base'])} → rascunho {formata_brl(_te['rascunho'])} "
+                        f"({_var_txt(_te['rascunho'], _te['base'])}); orçado {_ano_rasc} era {formata_brl(_te['orcado_ano'])}."
+                    )
+                    _rel_mostrar = _rel_rasc.copy()
+                    for _c in _rel_mostrar.columns:
+                        if _c.startswith("Realizado") or _c.startswith("Orçado") or _c in ("Retirado",) or _c.startswith("Base") or _c.startswith("Rascunho"):
+                            _rel_mostrar[_c] = pd.to_numeric(_rel_mostrar[_c], errors="coerce").map(lambda v: formata_brl(v) if pd.notna(v) else "")
+                        elif _c.startswith("%") or " vs " in _c:
+                            _rel_mostrar[_c] = pd.to_numeric(_rel_mostrar[_c], errors="coerce").map(
+                                lambda v: ("" if pd.isna(v) else f"{v * 100:+.1f}%".replace(".", ",") if " vs " in _c else f"{v * 100:.1f}%".replace(".", ",")))
+                    st.dataframe(_rel_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_rel_mostrar) + 1), 520))
+
+                # ---- Por linha da DRE e por grupo ----
+                with st.expander("Por linha da DRE — os planos somados", expanded=False):
+                    _pl = rascunho_por_linha(_df_rasc)
+                    _pl_df = pd.DataFrame({
+                        "Nº": _pl["numero"], "Linha da DRE": _pl["linha"], "Planos": _pl["planos"],
+                        f"Realizado {_ano_rasc} fechado": _pl["realizado_fechado"].map(formata_brl), "Projeção": _pl["projecao_abertos"].map(formata_brl),
+                        f"Base {_ano_rasc}": _pl["base"].map(formata_brl), f"Orçado {_ano_rasc}": _pl["orcado_ano"].map(formata_brl),
+                        "Retirado": _pl["retirado"].map(formata_brl), f"Rascunho {_ano_rasc_prox}": _pl["rascunho"].map(formata_brl),
+                        "vs base": [_var_txt(r, b) for r, b in zip(_pl["rascunho"], _pl["base"])],
+                        f"vs orçado {_ano_rasc}": [_var_txt(r, o) for r, o in zip(_pl["rascunho"], _pl["orcado_ano"])],
+                    })
+                    st.dataframe(_pl_df, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pl_df) + 1), 600))
+                with st.expander("Por grupo da DRE — base, orçado, retirado e rascunho", expanded=False):
+                    _pg = _tot_rasc["por_grupo"]
+                    _pg_df = pd.DataFrame([{
+                        "Grupo": g, f"Realizado {_ano_rasc} fechado": formata_brl(t["realizado_fechado"]), "Projeção": formata_brl(t["projecao_abertos"]),
+                        f"Base {_ano_rasc}": formata_brl(t["base"]), f"Orçado {_ano_rasc}": formata_brl(t["orcado_ano"]),
+                        "Retirado": formata_brl(t["retirado"]), f"Rascunho {_ano_rasc_prox}": formata_brl(t["rascunho"]),
+                        "vs base": _var_txt(t["rascunho"], t["base"]), f"vs orçado {_ano_rasc}": _var_txt(t["rascunho"], t["orcado_ano"]),
+                    } for g, t in sorted(_pg.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 999)])
+                    st.dataframe(_pg_df, hide_index=True, width="stretch", height=38 + 35 * (len(_pg_df) + 1))
+
+                # ---- Excel do rascunho ----
+                _xlsx_rasc = excel_do_rascunho(_df_rasc, _tot_rasc, _meses_ano_rasc, _premissas_rasc, _meses_fech_rasc, _ano_rasc, _rel_rasc)
+                st.download_button(f"⬇️ Baixar o rascunho {_ano_rasc_prox} (Excel: resumo, por plano com os 12 meses, por linha, retiradas e premissas)",
+                                   _xlsx_rasc, file_name=f"Rascunho_Orcamento_{_ano_rasc_prox}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_xlsx")
+                _pct2 = lambda v: f"{v * 100:.2f}%".replace(".", ",")
+                st.caption(
+                    f"Premissas em vigor: receita {_pct2(_rec_rasc)} · deduções, CMV e variáveis acompanham a receita · pessoal "
+                    f"{_pct2(_diss_rasc)} · demais despesas operacionais {_pct2(_ipca_rasc)} (IPCA) · abaixo do EBITDA e impostos mantêm a base. "
+                    f"Os meses de {_ano_rasc_prox} seguem a curva dos 12 meses da base de {_ano_rasc}, plano a plano."
+                )
+
+                # ---- Despejar o rascunho na planilha modelo, por unidade ----
+                if _estrutura_rasc and _abas_rasc:
+                    st.markdown('<div class="section-title" style="margin-top:18px;">📊 Despejar o rascunho na planilha modelo (por unidade)</div>',
+                                unsafe_allow_html=True)
+                    st.caption(
+                        f"Cada linha do rascunho é repartida entre as {len(_abas_rasc)} abas de unidade pela participação de cada uma no "
+                        f"realizado {_ano_rasc} daquele plano (DIÁRIO por centro de custo); linha sem plano usa o realizado da linha na aba da "
+                        "unidade, depois o orçado da unidade, depois o peso geral dela. Retirada com loja marcada sai só daquela unidade. "
+                        "O resíduo 'sem plano no DIÁRIO' é somado aos planos da linha, para a linha do modelo fechar com o rascunho. "
+                        "As fórmulas do modelo não são tocadas; as abas consolidadas se resolvem sozinhas."
+                    )
+                    if st.button("📊 Preencher a planilha modelo com o rascunho", type="primary", key="rasc_preencher_modelo"):
+                        with st.spinner("Repartindo o rascunho entre as unidades e escrevendo a planilha..."):
+                            _real_lp = realizado_por_conta_e_loja(_diario_rasc, _meses_fech_rasc)
+                            _dados_un = carregar_dados_por_loja(path_orc, path_real, _abas_rasc)
+                            _dre_mensal_r = _ler_aba_ou_vazio(path_real, "DRE MENSAL")
+                            _nomes_sem_plano = sorted({r_["linha"] for _, r_ in _df_rasc[_df_rasc["plano"] == LINHA_SEM_PLANO_NO_MODELO].iterrows()})
+                            _real_dre_un = realizado_da_dre_por_aba(_dados_un, _dre_mensal_r, _nomes_sem_plano, _meses_fech_rasc)
+                            _orc_un = lambda aba, linha: sum(base_e_curva_da_linha(
+                                _dados_un.get(aba, (pd.DataFrame(), pd.DataFrame()))[0], linha, _meses_ano_rasc))
+                            _valores_un, _resumo_un = preencher_modelo_com_rascunho(
+                                _df_rasc, _estrutura_rasc, _abas_rasc, _real_lp, _real_dre_un, _orc_un, _meses_fech_rasc, _meses_ano_rasc)
+                            _modelo_2027.seek(0)
+                            _bytes_rasc_modelo, _escritas_rasc = gerar_excel_orcamento(_modelo_2027, _valores_un)
+                        _soma_un = sum(_resumo_un.values())
+                        _soma_rasc = float(_df_rasc.loc[_df_rasc["linha_modelo"].notna() | (_df_rasc["plano"] == RESIDUO_SEM_PLANO), "rascunho"].sum())
+                        st.success(f"Planilha gerada: **{_escritas_rasc:,} células** em **{len(_abas_rasc)} abas**, sem tocar em fórmula. "
+                                   f"Soma das unidades {formata_brl(_soma_un)} · rascunho {formata_brl(_soma_rasc)}.".replace(",", "."))
+                        if abs(_soma_un - _soma_rasc) >= 1.0:
+                            st.warning("A soma das unidades não bateu com o rascunho da empresa: alguma linha do modelo ficou sem unidade "
+                                       "com participação (confira os avisos acima).")
+                        st.download_button(f"⬇️ Baixar ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx", data=_bytes_rasc_modelo,
+                                           file_name=f"ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_modelo")
+                        st.dataframe(pd.DataFrame({"Unidade": list(_resumo_un.keys()),
+                                                   f"Rascunho {_ano_rasc_prox}": [formata_brl(v) for v in _resumo_un.values()]}),
+                                     hide_index=True, width="stretch", height=38 + 35 * (len(_resumo_un) + 1))
+
+        st.markdown("<hr style='margin:26px 0 10px 0; opacity:0.25;'>", unsafe_allow_html=True)
+
         # ---- Prova de fogo do orçamento (08/09/2026) ----
         # Setembro é mês de orçamento: cada linha do ano seguinte é
         # confrontada com o ritmo real deste ano (média × 12 e últimos 3
@@ -20464,21 +21520,15 @@ if tab_orc is not None:
             "aba serve para 2027, 2028 e os que vierem."
         )
 
-        _modelo_2027 = st.file_uploader(
-            "Planilha modelo do orçamento 2027 (.xlsx)", type=["xlsx"],
-            key="orc27_modelo",
-            help="O mesmo arquivo que você vai preencher. A estrutura é lida dele, "
-                 "não é fixa no código — se a lista de planos mudar, a aba acompanha.",
-        )
-
         if _modelo_2027 is None:
             st.info(
-                "**Envie a planilha modelo para começar.** A aba lê dela a lista de planos de "
+                "**Envie a planilha modelo no topo da aba para usar os direcionadores.** A aba lê dela a lista de planos de "
                 "contas, a linha da DRE de cada um e quais linhas são fórmula — e é por isso que "
                 "ela continua funcionando quando você mudar a estrutura no ano que vem."
             )
         else:
             try:
+                _modelo_2027.seek(0)
                 _estrutura_orc, _abas_orc = ler_estrutura_orcamento(_modelo_2027)
             except Exception as _erro_modelo:                    # noqa: BLE001
                 _estrutura_orc, _abas_orc = [], []
