@@ -169,5 +169,76 @@
    "48% do desembolso do mês em 3 dias",
    "LOJA sem recurso próprio em 01/10"
   ]
+ },
+ {
+  "data": "2026-10-02",
+  "saldo": 6147902.050000001,
+  "titulos": [
+   "Caixa fica negativo na semana de 28/12",
+   "R$ 509.378,90 vencidos e ainda não pagos",
+   "Reserva do mês em 14% (meta: 30%)",
+   "44% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 02/10"
+  ]
+ },
+ {
+  "data": "2026-10-05",
+  "saldo": 6055480.3100000005,
+  "titulos": [
+   "Caixa fica negativo na semana de 21/12",
+   "R$ 554.265,95 vencidos e ainda não pagos",
+   "Reserva do mês em 18% (meta: 30%)",
+   "44% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 05/10",
+   "VENDA DIRETA sem recurso próprio em 31/10"
+  ]
+ },
+ {
+  "data": "2026-10-06",
+  "saldo": 6820897.64,
+  "titulos": [
+   "Caixa fica negativo na semana de 21/12",
+   "R$ 330.526,10 vencidos e ainda não pagos",
+   "Reserva do mês em 17% (meta: 30%)",
+   "43% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 06/10",
+   "VENDA DIRETA sem recurso próprio em 02/11"
+  ]
+ },
+ {
+  "data": "2026-10-07",
+  "saldo": 6927741.240000001,
+  "titulos": [
+   "Caixa fica negativo na semana de 21/12",
+   "R$ 460.893,00 vencidos e ainda não pagos",
+   "Reserva do mês em 25% (meta: 30%)",
+   "49% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 07/10",
+   "VENDA DIRETA sem recurso próprio em 05/11"
+  ]
+ },
+ {
+  "data": "2026-10-08",
+  "saldo": 6864473.84,
+  "titulos": [
+   "Caixa fica negativo na semana de 21/12",
+   "R$ 602.070,31 vencidos e ainda não pagos",
+   "Reserva do mês em 25% (meta: 30%)",
+   "49% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 08/10",
+   "VENDA DIRETA sem recurso próprio em 05/11"
+  ]
+ },
+ {
+  "data": "2026-10-09",
+  "saldo": 7632682.590000001,
+  "titulos": [
+   "Caixa fica negativo na semana de 21/12",
+   "R$ 635.079,05 vencidos e ainda não pagos",
+   "Reserva do mês em 25% (meta: 30%)",
+   "49% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 09/10",
+   "VENDA DIRETA sem recurso próprio em 05/11"
+  ]
  }
 ]
