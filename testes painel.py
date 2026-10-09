@@ -58,9 +58,9 @@ DEPENDENCIAS = {
                                     "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                     "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
                                     "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas",
-                                    "chave_conta_orcamento"],
+                                    "chave_conta_orcamento", "_chave_frouxa"],
     "preencher_modelo_com_rascunho": ["_normalizar_nome_aba", "chave_conta_orcamento", "curva_do_ano", "distribuir_no_ano",
-                                      "_normalizar_coluna_fin", "_normalizar_texto"],
+                                      "_normalizar_coluna_fin", "_normalizar_texto", "_chave_frouxa"],
     "linhas_proprias_da_dre": ["_numero_linha_dre", "_eh_linha_de_resultado", "_normalizar_texto"],
     "diario_por_linha_e_plano": ["_numero_linha_dre"],
     "premissa_automatica_rascunho": ["_normalizar_coluna_fin"],
@@ -8404,6 +8404,27 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         # Residuo da 8.4 (sem linha no modelo) foi somado ao Aluguel: a linha 232 soma rascunho do plano + residuo.
         total_84 = float(df[df["numero"] == "8.4"]["rascunho"].sum())
         self.assertAlmostEqual(sum(valores["LJ MARECHAL 6039"][232]) + sum(valores["LJ SETE 6052"][232]), total_84, places=1)
+
+    def test_plano_com_nome_parecido_casa_com_o_diario(self):
+        """'Taxa com Cartão de Crédito / Débito' no modelo e 'Taxa com Cartao de
+        Credito/Debito' no DIARIO sao o mesmo plano: so pontuacao e espaco."""
+        real, orc = self._dre(1.0, 9), self._dre(1.1)
+        d = self._diario_lojas()
+        d.loc[d["Plano de Contas"] == "Consultoria X", "Plano de Contas"] = "Consultoria  X / Financeira"
+        estrutura = self._estrutura()
+        for e in estrutura:
+            if e["nome"] == "Consultoria X":
+                e["nome"] = "Consultoria X/Financeira"
+        df, _, avisos = self.ns2["montar_rascunho_pelo_modelo"](real, orc, d, estrutura, self.meses, self.meses[:9])
+        x = df[df["chave"] == "8.8.3|Consultoria X/Financeira"].iloc[0]
+        self.assertEqual(x["origem_plano"], "DIÁRIO (nome parecido)")
+        self.assertAlmostEqual(x["realizado_fechado"], -235.0)
+        self.assertTrue(any("2 plano(s)" in a and "não têm movimento" in a for a in avisos), "so o ICMS e o plano novo ficam sem movimento")
+        # E a participacao por unidade tambem casa pelo nome parecido.
+        real_lp = self.ns2["realizado_por_conta_e_loja"](d, self.meses[:9])
+        valores, _ = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, ["LJ MARECHAL 6039", "LJ SETE 6052"], real_lp, {}, lambda a, l: 0.0,
+                                                               self.meses[:9], self.meses)
+        self.assertIn(302, valores["LJ MARECHAL 6039"]); self.assertNotIn(302, valores["LJ SETE 6052"])
 
     def test_a_tela_le_o_modelo_no_topo_e_despeja_por_unidade(self):
         i = FONTE.index("📝 Rascunho do orçamento — base realizada, linha a linha")

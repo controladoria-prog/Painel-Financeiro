@@ -15441,6 +15441,14 @@ def diario_por_linha_e_plano(df_diario, meses_ano):
 
 RESIDUO_SEM_PLANO = "(valor da linha sem plano no DIÁRIO)"
 LINHA_SEM_PLANO_NO_MODELO = "(a própria linha da DRE)"
+
+
+def _chave_frouxa(nome):
+    """Chave de plano de contas SEM pontuação nem espaço: "Taxa com Cartão de
+    Crédito / Débito" e "Taxa com Cartao de Credito/Debito" viram a mesma. É o
+    segundo passo do casamento modelo × DIÁRIO -- o primeiro é a chave normal,
+    para um nome exato nunca perder para um parecido."""
+    return re.sub(r"[^a-z0-9]", "", chave_conta_orcamento(nome))
 FORA_DO_MODELO = "(linha da DRE fora do modelo)"
 
 
@@ -15613,12 +15621,15 @@ def montar_rascunho_pelo_modelo(df_real, df_orc, df_diario, estrutura, meses_ano
     meses_ano, idx_f = ctx["meses_ano"], ctx["idx_f"]
     por_linha = diario_por_linha_e_plano(df_diario, meses_ano)
     # Índices por chave normalizada: (numero, chave do plano) e só a chave do plano.
-    por_num_chave, por_chave = {}, {}
+    por_num_chave, por_chave, por_num_frouxa, por_frouxa = {}, {}, {}, {}
+    zero = [0.0] * len(meses_ano)
     for num, planos in por_linha.items():
         for pl, serie in planos.items():
-            ch = chave_conta_orcamento(pl)
-            por_num_chave[(num, ch)] = [a + b for a, b in zip(por_num_chave.get((num, ch), [0.0] * len(meses_ano)), serie)]
-            por_chave[ch] = [a + b for a, b in zip(por_chave.get(ch, [0.0] * len(meses_ano)), serie)]
+            ch, fr = chave_conta_orcamento(pl), _chave_frouxa(pl)
+            por_num_chave[(num, ch)] = [a + b for a, b in zip(por_num_chave.get((num, ch), zero), serie)]
+            por_chave[ch] = [a + b for a, b in zip(por_chave.get(ch, zero), serie)]
+            por_num_frouxa[(num, fr)] = [a + b for a, b in zip(por_num_frouxa.get((num, fr), zero), serie)]
+            por_frouxa[fr] = [a + b for a, b in zip(por_frouxa.get(fr, zero), serie)]
     proprias = {num: (nome, filhas) for num, nome, filhas in linhas_proprias_da_dre(df_real)}
     proprias_orc = {num: filhas for num, _, filhas in linhas_proprias_da_dre(df_orc)}
     # Agrupa as linhas de valor do modelo pela linha da DRE a que pertencem.
@@ -15648,11 +15659,15 @@ def montar_rascunho_pelo_modelo(df_real, df_orc, df_diario, estrutura, meses_ano
                 itens_dre.append(item)
                 continue
             if True:
-                ch = chave_conta_orcamento(item["nome"])
-                serie = por_num_chave.get((numero, ch))
-                origem = "DIÁRIO"
+                ch, fr = chave_conta_orcamento(item["nome"]), _chave_frouxa(item["nome"])
+                serie, origem = por_num_chave.get((numero, ch)), "DIÁRIO"
+                if serie is None and (numero, fr) in por_num_frouxa:
+                    serie, origem = por_num_frouxa[(numero, fr)], "DIÁRIO (nome parecido)"
                 if serie is None and ch in por_chave:
                     serie, origem = por_chave[ch], "DIÁRIO (plano lançado noutra linha)"
+                    planos_fora_da_linha += 1
+                if serie is None and fr in por_frouxa:
+                    serie, origem = por_frouxa[fr], "DIÁRIO (nome parecido, noutra linha)"
                     planos_fora_da_linha += 1
                 if serie is None:
                     serie, origem = [0.0] * len(meses_ano), "sem movimento no DIÁRIO"
@@ -15742,8 +15757,22 @@ def preencher_modelo_com_rascunho(df_rasc, estrutura, abas, realizado_loja_plano
                 peso_geral[aba] += sum(abs(v) for m, v in por_mes.items() if m in meses_fechados_cols)
     total_geral = sum(peso_geral.values()) or 1.0
 
-    def meses_da_unidade(aba, chave_plano):
-        por_mes = (realizado_loja_plano or {}).get((chaves_aba[aba], chave_plano), {})
+    # Índice frouxo do DIÁRIO por loja: {(loja, chave_frouxa): {mês: valor}} -- o mesmo
+    # casamento tolerante do rascunho, senão o plano casa na empresa e some na unidade.
+    por_loja_frouxa = {}
+    for (loja, chave), por_mes in (realizado_loja_plano or {}).items():
+        alvo = por_loja_frouxa.setdefault((loja, re.sub(r"[^a-z0-9]", "", str(chave))), {})
+        for m, v in por_mes.items():
+            alvo[m] = alvo.get(m, 0.0) + float(v)
+
+    def diario_da_unidade(aba, plano):
+        exato = (realizado_loja_plano or {}).get((chaves_aba[aba], chave_conta_orcamento(plano)))
+        if exato:
+            return exato
+        return por_loja_frouxa.get((chaves_aba[aba], _chave_frouxa(plano)), {})
+
+    def meses_da_unidade(aba, plano):
+        por_mes = diario_da_unidade(aba, plano)
         fech = [float(por_mes.get(m, 0.0)) for m in meses_fechados_cols]
         if not any(abs(v) >= 0.005 for v in fech):
             return None
@@ -15772,9 +15801,8 @@ def preencher_modelo_com_rascunho(df_rasc, estrutura, abas, realizado_loja_plano
         linha_modelo = int(linha["linha_modelo"])
         # Participações por unidade.
         if plano != LINHA_SEM_PLANO_NO_MODELO:
-            ch = chave_conta_orcamento(plano)
-            partes = {aba: sum(abs(v) for m, v in (realizado_loja_plano or {}).get((chaves_aba[aba], ch), {}).items()
-                               if m in meses_fechados_cols) for aba in abas}
+            ch = plano
+            partes = {aba: sum(abs(v) for m, v in diario_da_unidade(aba, plano).items() if m in meses_fechados_cols) for aba in abas}
         else:
             ch = None
             chave_linha = chave_conta_orcamento(linha["linha"])
@@ -21435,11 +21463,6 @@ if tab_orc is not None:
                     } for g, t in sorted(_pg.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 999)])
                     st.dataframe(_pg_df, hide_index=True, width="stretch", height=38 + 35 * (len(_pg_df) + 1))
 
-                # ---- Excel do rascunho ----
-                _xlsx_rasc = excel_do_rascunho(_df_rasc, _tot_rasc, _meses_ano_rasc, _premissas_rasc, _meses_fech_rasc, _ano_rasc, _rel_rasc)
-                st.download_button(f"⬇️ Baixar o rascunho {_ano_rasc_prox} (Excel: resumo, por plano com os 12 meses, por linha, retiradas e premissas)",
-                                   _xlsx_rasc, file_name=f"Rascunho_Orcamento_{_ano_rasc_prox}.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_xlsx")
                 _pct2 = lambda v: f"{v * 100:.2f}%".replace(".", ",")
                 st.caption(
                     f"Premissas em vigor: receita {_pct2(_rec_rasc)} · deduções, CMV e variáveis acompanham a receita · pessoal "
@@ -21447,18 +21470,23 @@ if tab_orc is not None:
                     f"Os meses de {_ano_rasc_prox} seguem a curva dos 12 meses da base de {_ano_rasc}, plano a plano."
                 )
 
-                # ---- Despejar o rascunho na planilha modelo, por unidade ----
+                # ---- Saídas: a planilha modelo preenchida (principal) e a memória do rascunho (apoio) ----
+                st.markdown('<div class="section-title" style="margin-top:18px;">📥 Saídas do rascunho</div>', unsafe_allow_html=True)
+                _xlsx_rasc = excel_do_rascunho(_df_rasc, _tot_rasc, _meses_ano_rasc, _premissas_rasc, _meses_fech_rasc, _ano_rasc, _rel_rasc)
+                # ---- 1) A PRÓPRIA planilha modelo, preenchida: abas, linhas e meses dela ----
                 if _estrutura_rasc and _abas_rasc:
-                    st.markdown('<div class="section-title" style="margin-top:18px;">📊 Despejar o rascunho na planilha modelo (por unidade)</div>',
-                                unsafe_allow_html=True)
-                    st.caption(
-                        f"Cada linha do rascunho é repartida entre as {len(_abas_rasc)} abas de unidade pela participação de cada uma no "
-                        f"realizado {_ano_rasc} daquele plano (DIÁRIO por centro de custo); linha sem plano usa o realizado da linha na aba da "
-                        "unidade, depois o orçado da unidade, depois o peso geral dela. Retirada com loja marcada sai só daquela unidade. "
-                        "O resíduo 'sem plano no DIÁRIO' é somado aos planos da linha, para a linha do modelo fechar com o rascunho. "
-                        "As fórmulas do modelo não são tocadas; as abas consolidadas se resolvem sozinhas."
+                    st.markdown(
+                        f"**1 · A planilha modelo preenchida com o rascunho** — o seu `ORCAMENTO_{_ano_rasc_prox}.xlsx` como está, "
+                        f"com os valores escritos nas {len(_abas_rasc)} abas de unidade, nas linhas de valor e nos meses de {_ano_rasc_prox}. "
+                        "Nada mais é alterado: fórmulas, abas consolidadas, formatação, larguras e totais ficam como no arquivo que você enviou."
                     )
-                    if st.button("📊 Preencher a planilha modelo com o rascunho", type="primary", key="rasc_preencher_modelo"):
+                    st.caption(
+                        f"Cada linha do rascunho é repartida entre as unidades pela participação de cada uma no realizado {_ano_rasc} daquele "
+                        "plano (DIÁRIO por centro de custo); linha sem plano usa o realizado da linha na aba da unidade, depois o orçado da "
+                        "unidade, depois o peso geral dela. Retirada com loja marcada sai só daquela unidade. O que a DRE tem e o DIÁRIO não "
+                        "explica é somado aos planos da linha, para a linha do modelo fechar com o rascunho."
+                    )
+                    if st.button(f"📊 Gerar ORCAMENTO_{_ano_rasc_prox} preenchido com o rascunho", type="primary", key="rasc_preencher_modelo"):
                         with st.spinner("Repartindo o rascunho entre as unidades e escrevendo a planilha..."):
                             _real_lp = realizado_por_conta_e_loja(_diario_rasc, _meses_fech_rasc)
                             _dados_un = carregar_dados_por_loja(path_orc, path_real, _abas_rasc)
@@ -21480,10 +21508,20 @@ if tab_orc is not None:
                                        "com participação (confira os avisos acima).")
                         st.download_button(f"⬇️ Baixar ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx", data=_bytes_rasc_modelo,
                                            file_name=f"ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx",
-                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_modelo")
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_modelo",
+                                           type="primary")
                         st.dataframe(pd.DataFrame({"Unidade": list(_resumo_un.keys()),
                                                    f"Rascunho {_ano_rasc_prox}": [formata_brl(v) for v in _resumo_un.values()]}),
                                      hide_index=True, width="stretch", height=38 + 35 * (len(_resumo_un) + 1))
+                else:
+                    st.info(f"Envie a planilha modelo no topo da aba para receber o próprio ORCAMENTO_{_ano_rasc_prox}.xlsx preenchido "
+                            "(abas, linhas e meses dele).")
+                # ---- 2) A memória do rascunho (apoio) ----
+                st.markdown(f"**2 · Memória do rascunho (Excel de apoio)** — resumo, linha a linha por plano com os 12 meses, por linha da "
+                            "DRE, retiradas e premissas. É o documento para explicar os números; não é o arquivo do orçamento.")
+                st.download_button(f"⬇️ Baixar a memória do rascunho {_ano_rasc_prox} (Rascunho_Orcamento_{_ano_rasc_prox}.xlsx)",
+                                   _xlsx_rasc, file_name=f"Rascunho_Orcamento_{_ano_rasc_prox}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_xlsx")
 
         st.markdown("<hr style='margin:26px 0 10px 0; opacity:0.25;'>", unsafe_allow_html=True)
 
