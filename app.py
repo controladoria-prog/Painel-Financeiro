@@ -15462,30 +15462,40 @@ def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx,
     base = soma_fech + projecao_total
     orcado_ano = sum(orc_m)
     chave = f"{numero}|{plano}"
-    retirado, motivo, loja_ret = 0.0, "", ""
+    # RETIRADA É POR MÊS (pedido de 09/10/2026): "o fornecedor que não vamos
+    # manter tem NF de R$ 6.000" -- digita-se 6.000, e sai 6.000 de CADA mês
+    # da base, até onde o mês tem. O retirado do ano é a soma do que de fato
+    # saiu (num mês com menos de 6.000, sai só o que havia).
+    retirada_mensal, motivo, loja_ret = 0.0, "", ""
     r = ctx["retiradas"].get(chave)
     if r is not None:
         partes = list(r) if isinstance(r, (tuple, list)) else [r]
-        retirado = abs(float(partes[0] or 0.0))
+        retirada_mensal = abs(float(partes[0] or 0.0))
         motivo = str(partes[1]) if len(partes) > 1 and partes[1] is not None else ""
         loja_ret = str(partes[2]) if len(partes) > 2 and partes[2] else ""
-    sinal = 1.0 if base >= 0 else -1.0
-    retirado = min(retirado, abs(base))
-    base_ajustada = sinal * (abs(base) - retirado)
+    base_meses = [real_m[i] if i in idx_f else proj_m.get(i, 0.0) for i in range(len(ctx["meses_ano"]))]
+    base_meses_ajustados = [
+        (1.0 if v >= 0 else -1.0) * max(abs(v) - retirada_mensal, 0.0) if retirada_mensal else v
+        for v in base_meses
+    ]
+    base_ajustada = sum(base_meses_ajustados)
+    retirado = abs(base) - abs(base_ajustada) if retirada_mensal else 0.0
     plano_para_premissa = "" if plano in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO) else plano
     nome_premissa, pct = premissa_automatica_rascunho(numero, nome, ctx["premissas"], plano_para_premissa)
     rascunho = base_ajustada * (1.0 + pct)
-    base_meses = [real_m[i] if i in idx_f else proj_m.get(i, 0.0) for i in range(len(ctx["meses_ano"]))]
+    # Meses do rascunho: a curva da base JÁ SEM a retirada (um fornecedor que
+    # sai, sai de todos os meses; a curva antiga o espalharia de volta).
+    rascunho_meses = distribuir_no_ano(rascunho, curva_do_ano(base_meses_ajustados))
     return {
         "chave": chave, "numero": numero, "linha": nome, "plano": plano, "origem_plano": origem_plano,
         "linha_modelo": linha_modelo, "grupo": str(numero).split(".")[0],
         "realizado_fechado": soma_fech, "projecao_abertos": projecao_total, "origem_projecao": origem,
-        "base": base, "orcado_ano": orcado_ano, "retirado": retirado, "motivo": motivo, "loja_retirada": loja_ret,
+        "base": base, "orcado_ano": orcado_ano, "retirada_mensal": retirada_mensal, "retirado": retirado,
+        "motivo": motivo, "loja_retirada": loja_ret,
         "base_ajustada": base_ajustada, "premissa": nome_premissa, "pct": pct, "rascunho": rascunho,
         "var_vs_base": (rascunho / base - 1.0) if abs(base) >= 0.005 else None,
         "var_vs_orcado": (rascunho / orcado_ano - 1.0) if abs(orcado_ano) >= 0.005 else None,
-        "base_meses": base_meses, "orcado_meses": list(orc_m),
-        "rascunho_meses": distribuir_no_ano(rascunho, curva_do_ano(base_meses)),
+        "base_meses": base_meses, "orcado_meses": list(orc_m), "rascunho_meses": rascunho_meses,
     }
 
 
@@ -15842,8 +15852,8 @@ def relatorio_das_retiradas(df, ano_base=2026):
     orçado no ano-base COM aquilo, quanto foi retirado e quanto fica orçado
     para o ano seguinte SEM aquilo -- e as variações. Última linha é o total."""
     c = colunas_relatorio_retiradas(ano_base)
-    colunas = ["Linha da DRE", "Plano de Contas", "Motivo", c["real_com"], c["orc_com"], c["ret"], c["pct_ret"], c["base_sem"],
-               c["prem"], c["pct_prem"], c["rasc_sem"], c["vs_real"], c["vs_orc"]]
+    colunas = ["Linha da DRE", "Plano de Contas", "Motivo", "Retirado por mês", c["real_com"], c["orc_com"], c["ret"], c["pct_ret"],
+               c["base_sem"], c["prem"], c["pct_prem"], c["rasc_sem"], c["vs_real"], c["vs_orc"]]
     if df is None or df.empty:
         return pd.DataFrame(columns=colunas)
     com = df[df["retirado"] > 0.005]
@@ -15853,6 +15863,7 @@ def relatorio_das_retiradas(df, ano_base=2026):
     for _, r in com.iterrows():
         linhas.append({
             "Linha da DRE": r["linha"], "Plano de Contas": r.get("plano", ""), "Motivo": r["motivo"],
+            "Retirado por mês": r.get("retirada_mensal", 0.0),
             c["real_com"]: r["base"], c["orc_com"]: r["orcado_ano"], c["ret"]: r["retirado"],
             c["pct_ret"]: (r["retirado"] / abs(r["base"])) if abs(r["base"]) >= 0.005 else None,
             c["base_sem"]: r["base_ajustada"], c["prem"]: r["premissa"], c["pct_prem"]: r["pct"],
@@ -15862,6 +15873,7 @@ def relatorio_das_retiradas(df, ano_base=2026):
     tot_ret, tot_adj, tot_ras = float(com["retirado"].sum()), float(com["base_ajustada"].sum()), float(com["rascunho"].sum())
     linhas.append({
         "Linha da DRE": "TOTAL DAS LINHAS COM RETIRADA", "Plano de Contas": "", "Motivo": f"{len(com)} linha(s)",
+        "Retirado por mês": float(com["retirada_mensal"].sum()) if "retirada_mensal" in com.columns else None,
         c["real_com"]: tot_base, c["orc_com"]: tot_orc, c["ret"]: tot_ret,
         c["pct_ret"]: (tot_ret / abs(tot_base)) if abs(tot_base) >= 0.005 else None,
         c["base_sem"]: tot_adj, c["prem"]: "", c["pct_prem"]: None, c["rasc_sem"]: tot_ras,
@@ -15955,7 +15967,7 @@ def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base
             f"Realizado {ano_base} ({len(meses_fechados)} meses fechados)": df["realizado_fechado"],
             "Projeção dos meses abertos": df["projecao_abertos"], "Origem da projeção": df["origem_projecao"],
             f"Base {ano_base} (12 meses)": df["base"], f"Orçado {ano_base}": df["orcado_ano"],
-            "Retirado (não recorrente)": df["retirado"], "Motivo": df["motivo"],
+            "Retirado por mês": df["retirada_mensal"], "Retirado no ano (não recorrente)": df["retirado"], "Motivo": df["motivo"],
             f"Base {ano_base} ajustada": df["base_ajustada"], "Premissa": df["premissa"], "% premissa": df["pct"],
             f"Rascunho {ano_prox}": df["rascunho"], f"{ano_prox} vs base": df["var_vs_base"],
             f"{ano_prox} vs orçado {ano_base}": df["var_vs_orcado"],
@@ -15988,7 +16000,7 @@ def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base
             {"Premissa": "Demais despesas operacionais (8)", "Regra": "IPCA", "%": premissas.get("ipca", 0.0)},
             {"Premissa": "Abaixo do EBITDA e impostos (12 em diante)", "Regra": "mantém a base", "%": 0.0},
             {"Premissa": "Meses abertos", "Regra": f"média dos {len(meses_fechados)} meses fechados; linha sem realizado usa o orçado {ano_base}", "%": None},
-            {"Premissa": "Retiradas", "Regra": "saem da base ANTES das premissas; valor em módulo, limitado à base do plano", "%": None},
+            {"Premissa": "Retiradas", "Regra": "valor POR MÊS, em módulo; sai de cada mês da base até onde o mês tem, ANTES das premissas; o retirado do ano é a soma do que saiu", "%": None},
             {"Premissa": f"Orçado {ano_base} por plano", "Regra": "o orçado existe por linha da DRE; foi rateado entre os planos pela participação de cada um no realizado fechado da linha", "%": None},
             {"Premissa": "Linha sem plano / diferença", "Regra": f"'{RESIDUO_SEM_PLANO}' é o que a DRE tem e o DIÁRIO não explica (receita, CMV, ICMS ou diferença de conciliação); garante que os planos fechem com a DRE", "%": None},
         ]).to_excel(escritor, sheet_name="Premissas", index=False)
@@ -21229,13 +21241,14 @@ if tab_orc is not None:
                                f"realizado ({formata_brl(_ebitda_dre_fech)}) nos meses fechados. Confira a numeração da DRE antes de levar o rascunho.")
 
                 # ---- Linha a linha, plano a plano: a análise e as retiradas ----
-                st.markdown('<div class="section-title" style="margin-top:18px;">✂️ Linha a linha — cada linha da DRE aberta nos seus planos de contas</div>',
+                st.markdown('<div class="section-title" style="margin-top:18px;">✂️ Linha a linha — cada linha da DRE aberta nos seus planos de contas (retirada por mês)</div>',
                             unsafe_allow_html=True)
                 st.caption(
                     "Cada linha da DRE aparece aberta nos planos de contas que a compõem no DIÁRIO, com o realizado fechado, a projeção, "
                     f"a base {_ano_rasc}, o orçado {_ano_rasc} **rateado** entre os planos pela participação no realizado, a premissa e o "
-                    f"rascunho {_ano_rasc_prox}. Digite em **Retirar (R$)** o que aconteceu este ano e não vai acontecer no próximo (em módulo) "
-                    "e o **motivo**; sai da base antes da premissa e tudo recalcula. Os maiores lançamentos de cada plano estão no detalhe abaixo."
+                    f"rascunho {_ano_rasc_prox}. Digite em **Retirar por mês (R$)** o valor **mensal** que não vai se repetir (a NF de R$ 6.000 "
+                    "do fornecedor que não vamos manter: digite 6.000) e o **motivo**; sai de cada mês da base, antes da premissa, e tudo "
+                    "recalcula — a coluna *Retirado no ano* mostra quanto saiu nos 12 meses. Os maiores lançamentos de cada plano estão no detalhe abaixo."
                 )
                 _f1, _f2 = st.columns([1, 2])
                 with _f1:
@@ -21257,8 +21270,8 @@ if tab_orc is not None:
                     "Linha da DRE": _vista_rasc["linha"].values, "Plano de Contas": _vista_rasc["plano"].values,
                     _rot_real: _vista_rasc["realizado_fechado"].values, "Projeção": _vista_rasc["projecao_abertos"].values,
                     _rot_base: _vista_rasc["base"].values, _rot_orc: _vista_rasc["orcado_ano"].values,
-                    "Retirar (R$)": _vista_rasc["retirado"].values, "Motivo": _vista_rasc["motivo"].values,
-                    "Loja (opcional)": _vista_rasc["loja_retirada"].values,
+                    "Retirar por mês (R$)": _vista_rasc["retirada_mensal"].values, "Retirado no ano": _vista_rasc["retirado"].values,
+                    "Motivo": _vista_rasc["motivo"].values, "Loja (opcional)": _vista_rasc["loja_retirada"].values,
                     "Premissa": _vista_rasc["premissa"].values, "%": (_vista_rasc["pct"] * 100).values,
                     _rot_rasc: _vista_rasc["rascunho"].values,
                     "vs orçado": _vista_rasc["var_vs_orcado"].map(lambda v: None if v is None or pd.isna(v) else v * 100).values,
@@ -21267,7 +21280,7 @@ if tab_orc is not None:
                 _editado_rasc = st.data_editor(
                     _editor_rasc, hide_index=True, width="stretch", height=min(38 + 35 * (len(_editor_rasc) + 1), 620),
                     key=_chave_editor, column_order=[c for c in _editor_rasc.columns if c != "Chave"],
-                    disabled=["Chave", "Nº", "Linha da DRE", "Plano de Contas", _rot_real, "Projeção", _rot_base, _rot_orc, "Premissa", "%", _rot_rasc, "vs orçado"],
+                    disabled=["Chave", "Nº", "Linha da DRE", "Plano de Contas", _rot_real, "Projeção", _rot_base, _rot_orc, "Retirado no ano", "Premissa", "%", _rot_rasc, "vs orçado"],
                     column_config={
                         "Nº": st.column_config.TextColumn(width="small"),
                         "Linha da DRE": st.column_config.TextColumn(width="medium"),
@@ -21276,8 +21289,11 @@ if tab_orc is not None:
                         "Projeção": st.column_config.NumberColumn(format="R$ %.2f", help="Meses que faltam: média dos fechados ou orçado."),
                         _rot_base: st.column_config.NumberColumn(format="R$ %.2f", help="Realizado fechado + projeção = 12 meses."),
                         _rot_orc: st.column_config.NumberColumn(format="R$ %.2f", help="Orçado da linha da DRE rateado pela participação do plano no realizado fechado."),
-                        "Retirar (R$)": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0, step=100.0,
-                                                                      help="Valor em módulo que não se repete no ano que vem."),
+                        "Retirar por mês (R$)": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.0, step=100.0,
+                                                                              help="Valor MENSAL, em módulo, que não se repete no ano que vem "
+                                                                                   "(ex.: a NF de R$ 6.000 do fornecedor que não vamos manter). "
+                                                                                   "Sai de cada mês da base até onde o mês tem."),
+                        "Retirado no ano": st.column_config.NumberColumn(format="R$ %.2f", help="Soma do que de fato saiu nos 12 meses."),
                         "Motivo": st.column_config.TextColumn(width="medium"),
                         "Loja (opcional)": st.column_config.SelectboxColumn(
                             options=[""] + list(_abas_rasc), width="medium",
@@ -21292,7 +21308,7 @@ if tab_orc is not None:
                 _mudou_rasc = False
                 for _, _ln_r in _editado_rasc.iterrows():
                     _ch_r = str(_ln_r["Chave"])
-                    _val_r = pd.to_numeric(_ln_r["Retirar (R$)"], errors="coerce")
+                    _val_r = pd.to_numeric(_ln_r["Retirar por mês (R$)"], errors="coerce")
                     _val_r = 0.0 if pd.isna(_val_r) else float(_val_r)
                     _mot_r = str(_ln_r["Motivo"] or "").strip()
                     _loja_r = str(_ln_r.get("Loja (opcional)") or "").strip()
@@ -21312,7 +21328,7 @@ if tab_orc is not None:
                 with _cd1:
                     _csv_dec = pd.DataFrame([{"Chave": k, "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0],
                                               "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1],
-                                              "Retirar (R$)": v[0], "Motivo": v[1], "Loja": (v[2] if len(v) > 2 else "")}
+                                              "Retirar por mês (R$)": v[0], "Motivo": v[1], "Loja": (v[2] if len(v) > 2 else "")}
                                              for k, v in _retiradas_rasc.items()])
                     st.download_button("⬇️ Guardar as retiradas (CSV)", _csv_dec.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"retiradas_rascunho_{_ano_rasc_prox}.csv", mime="text/csv", key="rasc_baixar_dec",
@@ -21323,7 +21339,7 @@ if tab_orc is not None:
                         try:
                             _dec = pd.read_csv(_arq_dec, sep=";", decimal=",", dtype=str)
                             for _, _ld in _dec.iterrows():
-                                _v = pd.to_numeric(str(_ld.get("Retirar (R$)", "")).replace(",", "."), errors="coerce")
+                                _v = pd.to_numeric(str(_ld.get("Retirar por mês (R$)", _ld.get("Retirar (R$)", ""))).replace(",", "."), errors="coerce")
                                 _v = 0.0 if pd.isna(_v) else abs(float(_v))
                                 if _v >= 0.005 and str(_ld.get("Chave", "")).strip():
                                     _loja_csv = str(_ld.get("Loja", "") or "").strip()
@@ -21390,7 +21406,7 @@ if tab_orc is not None:
                     )
                     _rel_mostrar = _rel_rasc.copy()
                     for _c in _rel_mostrar.columns:
-                        if _c.startswith("Realizado") or _c.startswith("Orçado") or _c in ("Retirado",) or _c.startswith("Base") or _c.startswith("Rascunho"):
+                        if _c.startswith("Realizado") or _c.startswith("Orçado") or _c.startswith("Retirado") or _c.startswith("Base") or _c.startswith("Rascunho"):
                             _rel_mostrar[_c] = pd.to_numeric(_rel_mostrar[_c], errors="coerce").map(lambda v: formata_brl(v) if pd.notna(v) else "")
                         elif _c.startswith("%") or " vs " in _c:
                             _rel_mostrar[_c] = pd.to_numeric(_rel_mostrar[_c], errors="coerce").map(

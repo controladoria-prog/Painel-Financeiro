@@ -8255,25 +8255,39 @@ class TesteRascunhoOrcamento(unittest.TestCase):
         self.assertEqual(df2.set_index("chave").loc["1.1|" + self.ns["RESIDUO_SEM_PLANO"], "origem_projecao"], "orçado do ano")
         self.assertAlmostEqual(df2.set_index("chave").loc["1.1|" + self.ns["RESIDUO_SEM_PLANO"], "projecao_abertos"], 3_300.0)
 
-    def test_retirada_por_plano_sai_antes_da_premissa_e_nao_troca_o_sinal(self):
+    def test_retirada_e_por_mes_sai_de_cada_mes_antes_da_premissa_e_nao_troca_o_sinal(self):
+        """09/10/2026: 'a NF do fornecedor e de 6.000 por mes' -- digita-se o
+        valor MENSAL e ele sai de cada mes da base ate onde o mes tem."""
         real, orc = self._dre(1.0, 9), self._dre(1.1)
         df, tot = self.ns["montar_rascunho_orcamento"](real, orc, self.meses, self.meses[:9], df_diario=self._diario(),
-                                                        retiradas={"8.8.3|Consultoria X": (100.0, "consultoria pontual de maio"),
+                                                        retiradas={"8.8.3|Consultoria X": (10.0, "fornecedor que nao vamos manter"),
                                                                    "8.4|Aluguel": (999_999.0, "exagero")},
                                                         premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0})
         por = {r["chave"]: r for _, r in df.iterrows()}
-        base = por["8.8.3|Consultoria X"]["base"]
-        self.assertAlmostEqual(por["8.8.3|Consultoria X"]["base_ajustada"], base + 100.0)
-        self.assertAlmostEqual(por["8.8.3|Consultoria X"]["rascunho"], (base + 100.0) * 1.0425, places=6)
+        x = por["8.8.3|Consultoria X"]
+        # Consultoria X: 15/mes (115 em maio) nos 9 fechados e 26,11 projetados: todo mes tem mais de 10 -> saem 120 no ano.
+        self.assertEqual(x["retirada_mensal"], 10.0)
+        self.assertAlmostEqual(x["retirado"], 120.0)
+        self.assertAlmostEqual(x["base_ajustada"], x["base"] + 120.0)
+        self.assertAlmostEqual(x["rascunho"], (x["base"] + 120.0) * 1.0425, places=6)
+        # A curva dos meses do rascunho e a da base JA sem a retirada (maio continua maior, mas 10 a menos em cada mes).
+        self.assertAlmostEqual(sum(x["rascunho_meses"]), round(x["rascunho"], 2), places=2)
+        self.assertGreater(abs(x["rascunho_meses"][4]), abs(x["rascunho_meses"][0]))
         self.assertEqual(por["8.8.3|Consultoria Y"]["retirado"], 0.0, "a retirada e do plano, nao da linha")
+        # Mensal maior que o mes: sai so o que o mes tem; nunca vira receita.
         self.assertAlmostEqual(por["8.4|Aluguel"]["retirado"], 660.0); self.assertEqual(por["8.4|Aluguel"]["base_ajustada"], 0.0)
-        self.assertAlmostEqual(tot["custos"]["retirado"], 760.0)
+        self.assertAlmostEqual(tot["custos"]["retirado"], 780.0)
+        # Mes com menos do que a retirada: 20/mes num plano de 15/mes tira 15 nos meses normais e 20 em maio.
+        df2, _ = self.ns["montar_rascunho_orcamento"](real, orc, self.meses, self.meses[:9], df_diario=self._diario(),
+                                                       retiradas={"8.8.3|Consultoria X": (20.0, "")})
+        x2 = df2.set_index("chave").loc["8.8.3|Consultoria X"]
+        self.assertAlmostEqual(x2["retirado"], 8 * 15.0 + 20.0 + 3 * 20.0, places=6)
         rel = self.ns["relatorio_das_retiradas"](df, 2026)
         c = self.ns["colunas_relatorio_retiradas"](2026)
-        self.assertEqual(len(rel), 3); self.assertIn("Plano de Contas", rel.columns)
+        self.assertEqual(len(rel), 3); self.assertIn("Plano de Contas", rel.columns); self.assertIn("Retirado por mês", rel.columns)
         self.assertEqual(sorted(rel["Plano de Contas"].iloc[:-1]), ["Aluguel", "Consultoria X"])
         self.assertEqual(rel.iloc[-1]["Linha da DRE"], "TOTAL DAS LINHAS COM RETIRADA")
-        self.assertAlmostEqual(rel.iloc[-1][c["ret"]], 760.0)
+        self.assertAlmostEqual(rel.iloc[-1][c["ret"]], 780.0)
         self.assertIn("2028 vs orçado 2027", self.ns["colunas_relatorio_retiradas"](2027).values())
         self.assertTrue(self.ns["relatorio_das_retiradas"](df.assign(retirado=0.0)).empty)
 
@@ -8371,7 +8385,7 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         real, orc = self._dre(1.0, 9), self._dre(1.1)
         diario = self._diario_lojas()
         df, _, _ = self.ns2["montar_rascunho_pelo_modelo"](real, orc, diario, self._estrutura(), self.meses, self.meses[:9],
-                                                           retiradas={"8.8.3|Consultoria X": (100.0, "pontual", "LJ MARECHAL 6039")},
+                                                           retiradas={"8.8.3|Consultoria X": (10.0, "fornecedor que sai", "LJ MARECHAL 6039")},
                                                            premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0})
         abas = ["LJ MARECHAL 6039", "LJ SETE 6052"]
         real_lp = self.ns2["realizado_por_conta_e_loja"](diario, self.meses[:9])
@@ -8399,6 +8413,8 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         self.assertIn("montar_rascunho_pelo_modelo(", trecho)
         self.assertIn("preencher_modelo_com_rascunho(", trecho)
         self.assertIn('"Loja (opcional)"', trecho)
+        self.assertIn('"Retirar por mês (R$)"', trecho, "a retirada e digitada por MES")
+        self.assertNotIn('"Retirar (R$)": _vista_rasc', trecho)
 
 
 class TesteIntegridade(unittest.TestCase):
