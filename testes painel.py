@@ -58,7 +58,7 @@ DEPENDENCIAS = {
                                     "_mask_loja_por_centro_custo", "_normalizar_texto", "_numero_linha_dre", "_series_por_aba_e_numero",
                                     "_filhas_diretas", "_serie_da_linha_por_numero", "premissa_automatica_rascunho", "_plano_mais_parecido",
                                     "_eh_linha_de_resultado", "totais_do_rascunho", "formata_brl", "aplicar_ajustes_por_unidade",
-                                    "descrever_ajustes_por_unidade"],
+                                    "descrever_ajustes_por_unidade", "regra_do_grupo_no_rascunho"],
     "aplicar_ajustes_por_unidade": ["formata_brl"],
     "descrever_ajustes_por_unidade": ["formata_brl"],
     "valores_do_modelo_por_unidade": ["_plano_mais_parecido", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
@@ -125,7 +125,8 @@ CONSTANTES_DE_DEPENDENCIA = {
                                     "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"],
     "montar_rascunho_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN",
                                     "PALAVRAS_PESSOAL_RASCUNHO", "PALAVRAS_LINHA_DE_RESULTADO", "LIGACOES_NOME_COLUNA",
-                                    "GRUPOS_SEM_FALLBACK_DE_MEDIA", "TIPOS_AJUSTE_UNIDADE"],
+                                    "GRUPOS_SEMPRE_ZERADOS", "GRUPOS_SO_REALIZADO", "TIPOS_AJUSTE_UNIDADE"],
+    "regra_do_grupo_no_rascunho": ["GRUPOS_SEMPRE_ZERADOS", "GRUPOS_SO_REALIZADO"],
     "aplicar_ajustes_por_unidade": ["TIPOS_AJUSTE_UNIDADE"],
     "descrever_ajustes_por_unidade": ["TIPOS_AJUSTE_UNIDADE"],
     "valores_do_modelo_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN", "LIGACOES_NOME_COLUNA"],
@@ -8254,7 +8255,8 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
     def setUpClass(cls):
         super().setUpClass()
         cls.ns2 = carregar(["montar_rascunho_por_unidade", "valores_do_modelo_por_unidade", "planos_do_diario_sem_par_no_modelo",
-                            "carregar_dre_mensal", "dre_mensal_das_abas", "diferencas_unidades_vs_consolidado", "_plano_mais_parecido"],
+                            "carregar_dre_mensal", "dre_mensal_das_abas", "diferencas_unidades_vs_consolidado", "_plano_mais_parecido",
+                            "regra_do_grupo_no_rascunho"],
                            ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"])
 
     def _estrutura(self):
@@ -8378,10 +8380,12 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         rel = self.ns["relatorio_das_retiradas"](df2, 2026)
         self.assertEqual(len(rel), 2); self.assertAlmostEqual(rel.iloc[0]["Retirado por mês"], 50.0)
 
-    def test_grupos_10_e_16_nao_caem_na_media_quando_o_orcado_nao_tem_a_linha(self):
-        """12/10/2026: 10 - Despesas com Escritório e 16 - Impostos sobre o Lucro
-        ficam EXATAMENTE como antes: mês aberto = orçado da unidade, mesmo
-        zerado. O fallback para a média continua valendo para os demais grupos."""
+    def test_grupo_10_sempre_zerado_e_grupo_16_so_o_realizado(self):
+        """12/10/2026: "é para seguir como está no realizado" -- 10 - Despesas
+        com Escritório SEMPRE zerado (12 meses, todas as unidades); 16 -
+        Impostos sobre o Lucro só com o realizado: mês que falta zerado, nem
+        orçado nem média, qualquer que seja a projeção. O fallback para a
+        média continua valendo para os demais grupos."""
         dm = self._dre_mensal()
         extra = []
         for m in self.meses[:9]:
@@ -8396,25 +8400,48 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         estrutura = self._estrutura() + [
             {"linha": 350, "nome": "10.1 - Escritório Central", "nome_bruto": "10.1 - Escritório Central", "tipo": "dre", "linha_dre": "10.1 - Escritório Central", "editavel": True},
             {"linha": 360, "nome": "8.9 - Outras Despesas", "nome_bruto": "8.9 - Outras Despesas", "tipo": "dre", "linha_dre": "8.9 - Outras Despesas", "editavel": True}]
-        # O orçado NAO tem 10.1, 16.1 nem 8.9 em nenhuma unidade.
-        df, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, self._orc_por_aba(), self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
+        # O orçado TEM 16.1 (para provar que ele é ignorado) e não tem 10.1 nem 8.9.
+        orc = self._orc_por_aba()
+        for aba in self.ABAS:
+            o = orc[aba]
+            orc[aba] = pd.concat([o, pd.DataFrame([{"Nome": "16.1 - IRPJ", **{m: -99.0 for m in self.meses}}])], ignore_index=True)
+        propria, fora = self.ns2["LINHA_SEM_PLANO_NO_MODELO"], self.ns2["FORA_DO_MODELO"]
+        for projecao in ("orcado", "media"):
+            df, tot, _ = self.ns2["montar_rascunho_por_unidade"](dm, orc, self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
+                                                                  premissas={"ipca": 0.0425, "dissidio": 0.0, "receita": 0.0}, projecao=projecao)
+            por = {r["chave"]: r for _, r in df.iterrows()}
+            esc = por["10.1|" + propria]
+            for aba in self.ABAS:
+                self.assertEqual(esc["unidades"][aba]["base"], [0.0] * 12, f"grupo 10 sempre zerado ({projecao}, {aba})")
+                self.assertEqual(esc["unidades"][aba]["rascunho"], [0.0] * 12)
+            self.assertIn("sempre zerado", esc["unidades"]["LJ MARECHAL 6039"]["origem"])
+            self.assertAlmostEqual(tot["por_grupo"].get("10", {}).get("rascunho", 0.0), 0.0)
+            irpj = por["16.1|" + fora]["unidades"]["LJ SETE 6052"]
+            self.assertEqual(irpj["base"][:8], [-16.0] * 8, "grupo 16: meses fechados = realizado da unidade")
+            self.assertEqual(irpj["base"][8:], [0.0] * 4, f"grupo 16: mês que falta zerado, mesmo com orçado ({projecao})")
+            self.assertEqual(irpj["rascunho"][8:], [0.0] * 4)
+            self.assertNotIn("8.3|" + fora + "x", por)
+        # A regra geral segue: grupo 8 sem orçado cai na média dos fechados (projeção pelo orçado).
+        df, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, orc, self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
                                                             premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="orcado")
         por = {r["chave"]: r for _, r in df.iterrows()}
-        propria, fora = self.ns2["LINHA_SEM_PLANO_NO_MODELO"], self.ns2["FORA_DO_MODELO"]
-        esc = por["10.1|" + propria]["unidades"]["LJ MARECHAL 6039"]
-        self.assertEqual(esc["base"][:8], [-60.0] * 8, "meses fechados vêm da DRE_MENSAL da unidade")
-        self.assertEqual(esc["base"][8:], [0.0] * 4, "grupo 10: mês aberto = orçado da unidade (zero), sem média")
-        self.assertIn("orçado da unidade", esc["origem"]); self.assertNotIn("média", esc["origem"])
-        irpj = por["16.1|" + fora]["unidades"]["LJ SETE 6052"]
-        self.assertEqual(irpj["base"][8:], [0.0] * 4, "grupo 16 (linha fora do modelo): também sem média")
         outras = por["8.9|" + propria]["unidades"]["LJ MARECHAL 6039"]
         self.assertEqual(outras["base"][8:], [-6.0] * 4, "grupo 8 sem orçado: continua caindo na média dos fechados")
         self.assertIn("média dos 8 fechados (linha sem orçado nesta unidade)", outras["origem"])
-        # Com projeção pela média, os grupos 10 e 16 usam a média como todo mundo (não há orçado envolvido).
-        df2, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, self._orc_por_aba(), self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
-                                                             premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="media")
-        por2 = {r["chave"]: r for _, r in df2.iterrows()}
-        self.assertEqual(por2["10.1|" + propria]["unidades"]["LJ MARECHAL 6039"]["base"][8:], [-60.0] * 4)
+        # Grupo 16 com PLANO no modelo (IRPJ como plano): mesma regra, e nada escrito nos meses que faltam.
+        estrutura2 = estrutura + [{"linha": 500, "nome": "IRPJ", "nome_bruto": "  IRPJ", "tipo": "plano", "linha_dre": "16.1 - IRPJ", "editavel": True}]
+        diario = self._diario_abas()
+        diario = pd.concat([diario, pd.DataFrame([{"Competência": pd.Timestamp("2026-03-10"), "Plano de Contas": "IRPJ", "Linha DRE": "16.1 - IRPJ", "Valor Bruto": -40.0,
+                                                   "Mês": "03/2026", "Nome Aba": "LJ SETE 6052", "Centro de Custos": "x", "Cliente / Fornecedor": "F", "Histórico": "h", "Número": "z"}])], ignore_index=True)
+        df3, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, orc, diario, estrutura2, self.ABAS, self.meses, self.meses[:8],
+                                                             premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="orcado")
+        por3 = {r["chave"]: r for _, r in df3.iterrows()}
+        self.assertEqual(por3["16.1|IRPJ"]["unidades"]["LJ SETE 6052"]["base"], [0.0, 0.0, -40.0] + [0.0] * 9)
+        valores, _ = self.ns2["valores_do_modelo_por_unidade"](df3, self.ABAS, self.meses, 2027)
+        self.assertEqual(valores["LJ SETE 6052"][500][8:], [0.0] * 4)
+        self.assertNotIn(350, valores["LJ MARECHAL 6039"], "grupo 10 zerado não é escrito na planilha")
+        f = self.ns2["regra_do_grupo_no_rascunho"]
+        self.assertEqual((f("10.1"), f("16.2"), f("8.3.1"), f("")), ("zero", "so_realizado", "", ""))
 
     def test_ajustes_por_unidade_zerar_fixar_e_retirar(self):
         """12/10/2026: o que a diretoria fazia na mão depois de gerar a planilha

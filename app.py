@@ -15456,12 +15456,25 @@ def _chave_frouxa(nome):
     para um nome exato nunca perder para um parecido."""
     return re.sub(r"[^a-z0-9]", "", chave_conta_orcamento(nome))
 FORA_DO_MODELO = "(linha da DRE fora do modelo)"
-# Grupos da DRE em que o rascunho NÃO completa os meses abertos pela média
-# quando o orçado da unidade não tem a linha (12/10/2026, pedido da
-# diretoria): 10 - Despesas com Escritório (rateio, que o orçado não previu)
-# e 16 - Impostos sobre o Lucro. Neles, mês aberto = orçado da unidade,
-# mesmo que seja zero -- exatamente como estava antes do fallback.
-GRUPOS_SEM_FALLBACK_DE_MEDIA = ("10", "16")
+# Grupos da DRE com regra própria no rascunho (12/10/2026, pedido da
+# diretoria -- "é para seguir como está no realizado"):
+#   10 - Despesas com Escritório: SEMPRE zerado, nos 12 meses, em todas as
+#        unidades (no DRE CONSOLIDADO o rateio do escritório é zero);
+#   16 - Impostos sobre o Lucro: SÓ o realizado -- mês fechado = realizado da
+#        unidade; mês que falta = zero (nem orçado, nem média).
+GRUPOS_SEMPRE_ZERADOS = ("10",)
+GRUPOS_SO_REALIZADO = ("16",)
+
+
+def regra_do_grupo_no_rascunho(numero):
+    """"zero" (grupo sempre zerado), "so_realizado" (meses que faltam
+    zerados) ou "" (regra geral), pelo grupo da linha da DRE."""
+    g = str(numero or "").split(".")[0]
+    if g in GRUPOS_SEMPRE_ZERADOS:
+        return "zero"
+    if g in GRUPOS_SO_REALIZADO:
+        return "so_realizado"
+    return ""
 
 # Ajustes por UNIDADE no rascunho (12/10/2026): o que a diretoria faz hoje
 # na mão depois de gerar a planilha. Chave = tipo; valor = rótulo da tela.
@@ -15877,9 +15890,11 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                                própria, senão o plano homônimo);
                                projecao="media": a média dos meses fechados.
                                Linha SEM orçado nos meses abertos na unidade
-                               cai na média dos fechados -- EXCETO nos grupos
-                               GRUPOS_SEM_FALLBACK_DE_MEDIA (10 e 16), em que
-                               o mês aberto é o orçado mesmo zerado;
+                               cai na média dos fechados.
+      regras por grupo (regra_do_grupo_no_rascunho): grupo 10 SEMPRE zerado,
+                               12 meses, todas as unidades; grupo 16 SÓ o
+                               realizado (meses que faltam zerados), qualquer
+                               que seja a projeção;
       linha da DRE_MENSAL que o modelo não tem -> FORA_DO_MODELO (só na soma).
 
     Retirada é POR MÊS: com loja marcada sai só daquela unidade; sem loja,
@@ -16055,6 +16070,7 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
 
     for (numero, nome_linha), itens in por_linha_modelo.items():
         usadas.add(numero)
+        regra_grupo = regra_do_grupo_no_rascunho(numero)
         planos_modelo = [it for it in itens if it["tipo"] == "plano"]
         proprias = [it for it in itens if it["tipo"] != "plano"]
         nomes_planos = [it["nome"] for it in planos_modelo]
@@ -16099,12 +16115,14 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             total_peso = sum(pesos.values()) or 1.0
             # Linha SEM orçado nos meses abertos nesta unidade: cai na média dos
             # fechados, senão setembro a dezembro sairiam zerados numa linha que
-            # tem realizado todo mês. Fica registrado na origem. NÃO vale para os
-            # grupos 10 e 16 (GRUPOS_SEM_FALLBACK_DE_MEDIA): neles o mês aberto
-            # é o orçado da unidade, mesmo zerado -- pedido da diretoria.
-            orc_abertos_zerado = (projecao == "orcado" and str(numero).split(".")[0] not in GRUPOS_SEM_FALLBACK_DE_MEDIA
-                                  and not any(abs(orc_u[i]) >= 0.005 for i in idx_a))
+            # tem realizado todo mês. Fica registrado na origem.
+            orc_abertos_zerado = projecao == "orcado" and not any(abs(orc_u[i]) >= 0.005 for i in idx_a)
             def projetar(real_m, fatia):
+                # Regras por grupo (pedido da diretoria): 10 sempre zerado; 16 só o realizado.
+                if regra_grupo == "zero":
+                    return list(zero), "grupo 10 sempre zerado no rascunho (como no realizado consolidado)"
+                if regra_grupo == "so_realizado":
+                    return [real_m[i] if i in set(idx_f) else 0.0 for i in range(n_m)], "só o realizado (meses que faltam zerados)"
                 media = sum(real_m[i] for i in idx_f) / n_f if n_f else 0.0
                 if projecao == "orcado" and not (orc_abertos_zerado and abs(media) >= 0.005):
                     return [real_m[i] if i in set(idx_f) else orc_u[i] * fatia for i in range(n_m)], f"orçado da unidade ({fatia * 100:.0f}% da linha)"
@@ -16120,7 +16138,7 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                 base_propria[aba], como = projetar(propria_real, fatia)
                 orig_propria[aba] = "DRE_MENSAL da unidade" + (" − planos" if planos_modelo else "") + f" · meses abertos: {como}"
                 orc_propria_emp = [a + b * fatia for a, b in zip(orc_propria_emp, orc_u)]
-            elif planos_modelo and any(abs(v) >= 0.005 for v in [propria_real[i] for i in idx_f]):
+            elif planos_modelo and regra_grupo != "zero" and any(abs(v) >= 0.005 for v in [propria_real[i] for i in idx_f]):
                 base_residuo[aba] = [propria_real[i] if i in set(idx_f) else 0.0 for i in range(n_m)]
         # Linhas da empresa.
         for it in planos_modelo:
@@ -16155,11 +16173,15 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             continue
         if _filhas_diretas(num, numeros_dre) and all(abs(sum(v)) < 1.0 for v in por_aba.values()):
             continue
+        regra_fora = regra_do_grupo_no_rascunho(num)
+        if regra_fora == "zero":
+            continue
         def _proj_fora(aba, v):
+            if regra_fora == "so_realizado":
+                return [v[i] if i in set(idx_f) else 0.0 for i in range(n_m)]
             o = orc_propria(aba, num)
             media = sum(v[j] for j in idx_f) / n_f if n_f else 0.0
-            usa_orc = projecao == "orcado" and (str(num).split(".")[0] in GRUPOS_SEM_FALLBACK_DE_MEDIA
-                                                or any(abs(o[i]) >= 0.005 for i in idx_a))
+            usa_orc = projecao == "orcado" and any(abs(o[i]) >= 0.005 for i in idx_a)
             return [v[i] if i in set(idx_f) else (o[i] if usa_orc else media) for i in range(n_m)]
         base_fora = {aba: _proj_fora(aba, v) for aba, v in por_aba.items()}
         linha = fecha_linha(num, nome, FORA_DO_MODELO, "DRE_MENSAL (linha fora do modelo)", None, base_fora, {a: "DRE_MENSAL da unidade" for a in base_fora})
@@ -21668,11 +21690,9 @@ if tab_orc is not None:
                 # realizado nos meses fechados.
                 _ebitda_dre_fech = sum(_serie_da_linha_por_numero(_real_rasc, "11", _meses_fech_rasc))
                 _ebitda_folhas_fech = float(_tot_rasc["ebitda"]["realizado_fechado"])
-                # Na base por unidade (DRE_MENSAL) o grupo 10 (rateio do escritório) existe nas
-                # unidades e é eliminado no DRE CONSOLIDADO: a diferença esperada é ele.
-                _grupo10_fech = float(_tot_rasc["por_grupo"].get("10", {}).get("realizado_fechado", 0.0))
+                # O grupo 10 (rateio do escritório) sai zerado no rascunho, como no DRE
+                # CONSOLIDADO; o que sobra de diferença são ajustes de consolidação.
                 _dif_ebitda_rasc = _ebitda_folhas_fech - _ebitda_dre_fech
-                _bate_rasc = abs(_dif_ebitda_rasc) < 1.0 or (_estrutura_rasc and abs(_dif_ebitda_rasc - _grupo10_fech) < 1_000.0)
                 _n_planos_rasc = int((~_df_rasc["plano"].isin([RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO])).sum())
                 _n_linhas_rasc = int(_df_rasc["numero"].nunique())
                 for _aviso_r in _avisos_rasc:
@@ -21723,9 +21743,9 @@ if tab_orc is not None:
                     _ajustes_cons = float(_difs_cons[(_difs_cons["Grupo"] != "10") & (_difs_cons["Grupo"].map(lambda g: g.isdigit() and int(g) <= 10))]["Diferença"].sum()) if not _difs_cons.empty else 0.0
                     st.caption(f"ℹ️ Conferência: a soma das unidades (DRE_MENSAL) até o grupo 10 nos {len(_meses_fech_rasc)} meses fechados é "
                                f"{formata_brl(_ebitda_folhas_fech)}; a linha 11 - EBITDA do DRE CONSOLIDADO é {formata_brl(_ebitda_dre_fech)}. "
-                               f"Diferença {formata_brl(_dif_ebitda_rasc)}: {formata_brl(_grupo10_fech)} é o grupo 10 (rateio do escritório, que "
-                               f"existe nas unidades e é eliminado no consolidado) e {formata_brl(_ajustes_cons)} são ajustes de consolidação "
-                               "linha a linha. O rascunho segue as UNIDADES, que é o que a planilha modelo soma.")
+                               f"Diferença {formata_brl(_dif_ebitda_rasc)}: são ajustes de consolidação linha a linha ({formata_brl(_ajustes_cons)} "
+                               "até o grupo 10); o grupo 10 (rateio do escritório) sai zerado no rascunho, como no consolidado. "
+                               "O rascunho segue as UNIDADES, que é o que a planilha modelo soma.")
                     if not _difs_cons.empty:
                         with st.expander("Soma das unidades × DRE CONSOLIDADO — diferenças por linha (meses fechados)", expanded=False):
                             _dc = _difs_cons.copy()
@@ -22039,7 +22059,7 @@ if tab_orc is not None:
                         f"Cada célula é calculada na própria unidade: meses fechados = realizado {_ano_rasc} da unidade (DIÁRIO para plano de "
                         f"contas, DRE_MENSAL para linha sem plano); meses que faltam = orçado {_ano_rasc} da aba da unidade; tudo corrigido pela "
                         "premissa da linha. Retirada com loja marcada e ajustes por unidade valem só na unidade marcada (valor fixado é final). "
-                        "Nos grupos 10 e 16 o mês que falta é o orçado da unidade, mesmo zerado. O que a DRE_MENSAL tem e o DIÁRIO não explica vai "
+                        "O grupo 10 sai sempre zerado e o grupo 16 leva só o realizado (meses que faltam zerados), como no realizado. O que a DRE_MENSAL tem e o DIÁRIO não explica vai "
                         "para o plano homônimo (ou mais parecido) da linha, para a linha do modelo fechar com a DRE."
                     )
                     if st.button(f"📊 Gerar ORCAMENTO_{_ano_rasc_prox} preenchido com o rascunho", type="primary", key="rasc_preencher_modelo"):
