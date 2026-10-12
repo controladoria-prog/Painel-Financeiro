@@ -54,15 +54,15 @@ DEPENDENCIAS = {
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
                                   "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas"],
-    "montar_rascunho_pelo_modelo": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
-                                    "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
-                                    "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
-                                    "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas",
-                                    "chave_conta_orcamento", "_chave_frouxa"],
-    "preencher_modelo_com_rascunho": ["chave_conta_orcamento", "curva_do_ano", "distribuir_no_ano", "_distribuir_entre_unidades",
-                                      "_normalizar_coluna_fin", "_normalizar_texto", "_chave_frouxa"],
-    "diario_por_unidade_e_plano": ["_mask_loja_por_centro_custo", "_normalizar_texto", "_chave_frouxa", "chave_conta_orcamento",
-                                   "_normalizar_coluna_fin"],
+    "montar_rascunho_por_unidade": ["_contexto_rascunho", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin",
+                                    "_mask_loja_por_centro_custo", "_normalizar_texto", "_numero_linha_dre", "_series_por_aba_e_numero",
+                                    "_filhas_diretas", "_serie_da_linha_por_numero", "premissa_automatica_rascunho", "_plano_mais_parecido",
+                                    "_eh_linha_de_resultado", "totais_do_rascunho", "formata_brl"],
+    "valores_do_modelo_por_unidade": ["_plano_mais_parecido", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
+    "_plano_mais_parecido": ["_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
+    "diferencas_unidades_vs_consolidado": ["linhas_proprias_da_dre", "_valor_proprio_da_linha", "_serie_da_linha_por_numero",
+                                           "_numero_linha_dre", "_eh_linha_de_resultado", "_normalizar_texto"],
+    "dre_mensal_das_abas": ["_numero_linha_dre"],
     "planos_do_diario_sem_par_no_modelo": ["_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
     "linhas_proprias_da_dre": ["_numero_linha_dre", "_eh_linha_de_resultado", "_normalizar_texto"],
     "diario_por_linha_e_plano": ["_numero_linha_dre"],
@@ -120,7 +120,11 @@ CONSTANTES_DE_DEPENDENCIA = {
                                   "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"],
     "montar_rascunho_pelo_modelo": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
                                     "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"],
-    "preencher_modelo_com_rascunho": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN"],
+    "montar_rascunho_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN",
+                                    "PALAVRAS_PESSOAL_RASCUNHO", "PALAVRAS_LINHA_DE_RESULTADO", "LIGACOES_NOME_COLUNA"],
+    "valores_do_modelo_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN", "LIGACOES_NOME_COLUNA"],
+    "_plano_mais_parecido": ["_ACENTOS_FIN", "LIGACOES_NOME_COLUNA"],
+    "diferencas_unidades_vs_consolidado": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "conferir_contas_a_pagar": ["COL_FIN_VALOR", "COL_FIN_VENCIMENTO", "COL_FIN_LIQ_EFETIVA", "COL_FIN_DATA_LIQUIDACAO",
                                 "COL_FIN_NUMERO", "COL_FIN_HISTORICO", "COL_FIN_CANAL"],
     "revisar_lancamentos": ["CONTAS_GENERICAS_TRECHOS", "HISTORICOS_IGNORADOS_TRECHOS", "PLANOS_ACESSORIOS_TRECHOS"],
@@ -8318,176 +8322,217 @@ class TesteRascunhoOrcamento(unittest.TestCase):
         self.assertIn("rascunho_por_linha(_df_rasc)", trecho)
 
 
-class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
-    """09/10/2026, 2a rodada: o rascunho na ESTRUTURA DA PLANILHA MODELO (cada
-    linha da DRE com os planos de contas abaixo; 21 abas de unidade) e o
-    despejo do rascunho no modelo, por unidade."""
+class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
+    """12/10/2026: o rascunho calculado UNIDADE a UNIDADE, MES a MES, na
+    estrutura da planilha modelo -- replica o realizado de cada unidade nos
+    meses fechados e o orcado de cada unidade nos que faltam, corrigidos
+    pela premissa. Fontes: DIARIO (planos, coluna Nome Aba) e DRE_MENSAL
+    (linhas sem plano)."""
+
+    ABAS = ["LJ MARECHAL 6039", "LJ SETE 6052"]
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.ns2 = carregar(["montar_rascunho_pelo_modelo", "preencher_modelo_com_rascunho", "diario_por_unidade_e_plano",
-                            "planos_do_diario_sem_par_no_modelo"],
+        cls.ns2 = carregar(["montar_rascunho_por_unidade", "valores_do_modelo_por_unidade", "planos_do_diario_sem_par_no_modelo",
+                            "carregar_dre_mensal", "dre_mensal_das_abas", "diferencas_unidades_vs_consolidado", "_plano_mais_parecido"],
                            ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"])
-        cls.cc = {"LJ MARECHAL 6039": "6039 - LOJA MARECHAL", "LJ SETE 6052": "6052 - LOJA SETE"}
 
     def _estrutura(self):
-        """Modelo: 1.1 e 4.1 sao linhas de valor; 8.3.1 abre em Salários; 8.4 abre
-        em Aluguel; 8.8.3 abre em Consultoria X e Y; 2.1.3 tem a PROPRIA linha
-        como valor E um plano 'ICMS' abaixo (caso real da 2.1.4 do modelo); e
-        o modelo tem um plano novo sem movimento."""
         def dre(n, linha, editavel=False):
             return {"linha": n, "nome": linha, "nome_bruto": linha, "tipo": "dre" if editavel else "formula", "linha_dre": linha, "editavel": editavel}
         def plano(n, nome, linha):
             return {"linha": n, "nome": nome, "nome_bruto": "  " + nome, "tipo": "plano", "linha_dre": linha, "editavel": True}
-        return [dre(2, self.nomes["1"]), dre(3, self.nomes["1.1"], True), dre(5, self.nomes["2"]), dre(6, self.nomes["2.1.3"], True),
-                plano(7, "ICMS", self.nomes["2.1.3"]), dre(17, self.nomes["4"]), dre(18, self.nomes["4.1"], True),
-                dre(22, self.nomes["6"]), dre(23, self.nomes["6.1"], True), dre(138, self.nomes["8"]), dre(153, self.nomes["8.3"]),
-                dre(154, self.nomes["8.3.1"]), plano(155, "Salários", self.nomes["8.3.1"]), plano(156, "Plano novo sem movimento", self.nomes["8.3.1"]),
-                dre(231, self.nomes["8.4"]), plano(232, "Aluguel", self.nomes["8.4"]), dre(300, self.nomes["8.8"]),
-                dre(301, self.nomes["8.8.3"]), plano(302, "Consultoria X", self.nomes["8.8.3"]), plano(303, "Consultoria Y", self.nomes["8.8.3"]),
-                dre(400, self.nomes["13"], True)]
+        N = self.nomes
+        return [dre(2, N["1"]), dre(3, N["1.1"], True), dre(5, N["2"]), dre(6, N["2.1.3"], True), plano(7, "ICMS", N["2.1.3"]),
+                dre(17, N["4"]), dre(18, N["4.1"], True), dre(22, N["6"]), dre(23, N["6.1"], True), dre(138, N["8"]), dre(153, N["8.3"]),
+                dre(154, N["8.3.1"]), plano(155, "Salários", N["8.3.1"]), plano(156, "Plano novo sem movimento", N["8.3.1"]),
+                dre(231, N["8.4"]), plano(232, "Ocupação", N["8.4"]), plano(233, "Condomínio", N["8.4"]), dre(300, N["8.8"]),
+                dre(301, N["8.8.3"]), plano(302, "Consultoria X", N["8.8.3"]), plano(303, "Consultoria Y", N["8.8.3"]),
+                dre(400, N["13"], True)]
 
-    def _diario_lojas(self):
-        """Centro de custos com CODIGO, diferente do nome da aba -- como na
-        planilha real; o casamento e pela Tabela_Lojas (DE_PARA)."""
-        d = self._diario()
-        d["Centro de Custos"] = ["6039 - LOJA MARECHAL" if i % 2 == 0 else "6052 - LOJA SETE" for i in range(len(d))]
-        d.loc[d["Plano de Contas"] == "Consultoria X", "Centro de Custos"] = "6039 - LOJA MARECHAL"
-        return d
+    def _dre_mensal(self):
+        """DRE_MENSAL longa: 2 unidades, meses 01..09 (setembro so para
+        conferir que o mes aberto NAO e lido do realizado). Valores por
+        unidade: MARECHAL = 60% da empresa do _dre(), SETE = 40%."""
+        real = self._dre(1.0, zero_apos=9)
+        linhas = []
+        for _, r in real.iterrows():
+            for m in self.meses[:9]:
+                v = float(r[m])
+                if abs(v) < 0.005:
+                    continue
+                linhas.append({"Mês": m, "Linha": r["Nome"], "Aba": "LJ MARECHAL 6039", "Valor": round(v * 0.6, 2)})
+                linhas.append({"Mês": m, "Linha": r["Nome"], "Aba": "LJ SETE 6052", "Valor": round(v * 0.4, 2)})
+        return pd.DataFrame(linhas)
 
-    def test_rascunho_sai_na_estrutura_do_modelo(self):
-        real, orc = self._dre(1.0, 9), self._dre(1.1)
-        df, tot, avisos = self.ns2["montar_rascunho_pelo_modelo"](real, orc, self._diario_lojas(), self._estrutura(), self.meses, self.meses[:9],
-                                                                   premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0})
+    def _orc_por_aba(self):
+        orc = self._dre(1.1)
+        return {"LJ MARECHAL 6039": orc.assign(**{m: orc[m] * 0.6 for m in self.meses}),
+                "LJ SETE 6052": orc.assign(**{m: orc[m] * 0.4 for m in self.meses})}
+
+    def _diario_abas(self):
+        """DIARIO com 'Nome Aba': salarios 90/60 por mes; Consultoria X so na
+        MARECHAL (15/mes, 115 em maio); Y 5/mes nas duas (3/2); 'Encargos no
+        pai' em 8.3 (que o modelo nao tem como valor)."""
+        rows = []
+        for i, m in enumerate(self.meses[:8]):
+            rows += [("Salários", "8.3.1 - Salários", -90.0, m, "LJ MARECHAL 6039"), ("Salários", "8.3.1 - Salários", -60.0, m, "LJ SETE 6052"),
+                     ("Consultoria X", "8.8.3 - Consultoria Financeira", -15.0 if i != 4 else -115.0, m, "LJ MARECHAL 6039"),
+                     ("Consultoria Y", "8.8.3 - Consultoria Financeira", -3.0, m, "LJ MARECHAL 6039"),
+                     ("Consultoria Y", "8.8.3 - Consultoria Financeira", -2.0, m, "LJ SETE 6052"),
+                     ("Encargos no pai", "8.3 - Pessoal", -18.0, m, "LJ MARECHAL 6039"), ("Encargos no pai", "8.3 - Pessoal", -12.0, m, "LJ SETE 6052")]
+        return pd.DataFrame([{"Competência": pd.Timestamp(f"2026-{m[:2]}-10"), "Plano de Contas": p, "Linha DRE": l, "Valor Bruto": v, "Mês": m,
+                              "Nome Aba": aba, "Centro de Custos": "x", "Cliente / Fornecedor": "F", "Histórico": "h", "Número": str(k)}
+                             for k, (p, l, v, m, aba) in enumerate(rows)])
+
+    def _roda(self, retiradas=None, projecao="orcado", receita=0.0):
+        return self.ns2["montar_rascunho_por_unidade"](self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS,
+                                                       self.meses, self.meses[:8], retiradas=retiradas or {},
+                                                       premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": receita}, projecao=projecao)
+
+    def test_cada_celula_replica_a_unidade_no_mes(self):
+        df, tot, avisos = self._roda(receita=0.05)
+        por = {r["chave"]: r for _, r in df.iterrows()}
         res, propria, fora = self.ns2["RESIDUO_SEM_PLANO"], self.ns2["LINHA_SEM_PLANO_NO_MODELO"], self.ns2["FORA_DO_MODELO"]
-        por = {(r["numero"], r["plano"]): r for _, r in df.iterrows()}
-        # Toda linha de valor do modelo virou uma linha do rascunho, com o numero da linha da planilha.
-        self.assertEqual(por[("8.8.3", "Consultoria X")]["linha_modelo"], 302)
-        self.assertEqual(por[("1.1", propria)]["linha_modelo"], 3)
-        self.assertAlmostEqual(por[("1.1", propria)]["base"], 12_000.0)
-        self.assertEqual(por[("1.1", propria)]["origem_plano"], "DRE")
-        # Plano do modelo sem movimento: base zero, e aviso.
-        self.assertEqual(por[("8.3.1", "Plano novo sem movimento")]["realizado_fechado"], 0.0)
+        # Plano: mes fechado = DIARIO da unidade x (1 + premissa); mes aberto = orcado da unidade x participacao x (1 + premissa).
+        sal = por["8.3.1|Salários"]["unidades"]
+        self.assertAlmostEqual(sal["LJ MARECHAL 6039"]["rascunho"][0], round(-90.0 * 1.074, 2))
+        self.assertAlmostEqual(sal["LJ SETE 6052"]["rascunho"][3], round(-60.0 * 1.074, 2))
+        orc_m = self._orc_por_aba()["LJ MARECHAL 6039"]
+        orc_831_set = float(orc_m.loc[orc_m["Nome"] == "8.3.1 - Salários", "09/2026"].iloc[0])
+        self.assertAlmostEqual(sal["LJ MARECHAL 6039"]["rascunho"][8], round(orc_831_set * 1.074, 2), places=2,
+                               msg="setembro replica o ORCADO da unidade (Salarios e o unico plano com realizado na linha)")
+        self.assertEqual(sal["LJ MARECHAL 6039"]["base"][8], orc_831_set)
+        self.assertTrue(all(v == 0.0 for v in por["8.3.1|Plano novo sem movimento"]["unidades"]["LJ MARECHAL 6039"]["rascunho"]))
+        # Linha sem plano: mes fechado = DRE_MENSAL da unidade x (1 + receita).
+        rec = por["1.1|" + propria]["unidades"]
+        self.assertAlmostEqual(rec["LJ MARECHAL 6039"]["rascunho"][0], round(600.0 * 1.05, 2))
+        self.assertAlmostEqual(rec["LJ SETE 6052"]["rascunho"][8], round(1000.0 * 1.1 * 0.4 * 1.05, 2), places=2, msg="setembro = orcado da unidade")
+        # Empresa = soma das unidades, e os meses somam o total.
+        self.assertAlmostEqual(por["1.1|" + propria]["rascunho"], sum(rec[a]["rascunho"][i] for a in self.ABAS for i in range(12)), places=2)
+        for _, r in df.iterrows():
+            self.assertAlmostEqual(sum(r["rascunho_meses"]), r["rascunho"], places=2)
+        self.assertAlmostEqual(tot["receita"]["realizado_fechado"], 8_000.0)
+        # Consultoria X e so da MARECHAL: SETE fica zerada nela, inclusive nos meses abertos.
+        cx = por["8.8.3|Consultoria X"]["unidades"]
+        self.assertTrue(all(v == 0.0 for v in cx["LJ SETE 6052"]["rascunho"]))
+        self.assertEqual(cx["LJ MARECHAL 6039"]["rascunho"][4], round(-115.0 * 1.0425, 2))
+        # 8.4: a DRE_MENSAL tem 60/mes (36/24) e o DIARIO nada -> residuo da linha, com a origem dizendo de onde.
+        self.assertIn("8.4|" + res, por)
+        self.assertAlmostEqual(por["8.4|" + res]["unidades"]["LJ MARECHAL 6039"]["base"][0], -36.0)
+        # 8.3 (pai com lancamento direto) nao e linha de valor do modelo: entra como FORA DO MODELO.
+        self.assertIn("8.3|" + fora, por)
+        self.assertAlmostEqual(por["8.3|" + fora]["realizado_fechado"], -240.0)
         self.assertTrue(any("não têm movimento" in a for a in avisos))
-        # 2.1.3: a propria linha como valor E um plano abaixo -- a linha fica com DRE - planos (aqui o DIARIO nao tem ICMS: tudo na linha).
-        self.assertEqual(por[("2.1.3", propria)]["origem_plano"], "DRE − planos")
-        self.assertAlmostEqual(por[("2.1.3", propria)]["realizado_fechado"], -900.0)
-        self.assertNotIn(("2.1.3", res), por)
-        # 8.4: DIARIO 55 x DRE 60 -> residuo de 5 por mes, sem linha propria no modelo.
-        self.assertAlmostEqual(por[("8.4", res)]["realizado_fechado"], -45.0)
-        # 8.3 (pai com R$ 30 lancados direto nele) nao esta no modelo como valor: entra como FORA DO MODELO para o EBITDA fechar.
-        self.assertAlmostEqual(por[("8.3", fora)]["realizado_fechado"], -270.0)
-        self.assertTrue(any("8.3 - Pessoal" in a for a in avisos))
-        # 12.1 nao esta no modelo (nem a 12): fora do modelo tambem.
-        self.assertIn(("12.1", fora), por)
-        ebitda_11 = float(real.loc[real["Nome"] == "11 - EBITDA", self.meses[:9]].sum(axis=1).iloc[0])
-        self.assertAlmostEqual(tot["ebitda"]["realizado_fechado"], ebitda_11, places=6)
-        # Orcado da linha rateado pelos planos.
-        orc_883 = float(orc.loc[orc["Nome"] == "8.8.3 - Consultoria Financeira", self.meses].sum(axis=1).iloc[0])
-        self.assertAlmostEqual(por[("8.8.3", "Consultoria X")]["orcado_ano"] + por[("8.8.3", "Consultoria Y")]["orcado_ano"], orc_883, places=6)
 
-    def test_despejo_no_modelo_por_unidade_fecha_com_o_rascunho(self):
-        real, orc = self._dre(1.0, 9), self._dre(1.1)
-        diario = self._diario_lojas()
-        df, _, _ = self.ns2["montar_rascunho_pelo_modelo"](real, orc, diario, self._estrutura(), self.meses, self.meses[:9],
-                                                           retiradas={"8.8.3|Consultoria X": (10.0, "fornecedor que sai", "LJ MARECHAL 6039")},
-                                                           premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0})
-        abas = ["LJ MARECHAL 6039", "LJ SETE 6052"]
-        diario_un, sem_aba = self.ns2["diario_por_unidade_e_plano"](diario, abas, self.cc, self.meses)
-        self.assertEqual(sem_aba, 0.0, "todo lancamento casou com uma aba pelo DE_PARA")
-        self.assertIn(("LJ MARECHAL 6039", "consultoriax"), diario_un)
-        valores, resumo, memoria = self.ns2["preencher_modelo_com_rascunho"](df, self._estrutura(), abas, diario_un, {}, lambda a, l: 0.0, {},
-                                                                             self.meses[:9], self.meses)
-        # So linhas do modelo sao escritas; 12 meses cada; soma das unidades = rascunho das linhas do modelo (+ residuo somado aos planos).
-        self.assertTrue(all(len(v) == 12 for aba in valores.values() for v in aba.values()))
+    def test_projecao_pela_media_e_orcado_rateado_pela_participacao(self):
+        df, _, _ = self._roda(projecao="media")
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        sal = por["8.3.1|Salários"]["unidades"]["LJ MARECHAL 6039"]
+        self.assertAlmostEqual(sal["base"][8], -90.0, msg="media dos 8 fechados")
+        self.assertEqual(por["8.3.1|Salários"]["origem_projecao"], "média dos 8 meses fechados")
+        # Com orcado: na 8.8.3 a MARECHAL tem X (7x15 + 115 = 220) e Y (24): o orcado da unidade se reparte 220/244 e 24/244.
+        df2, _, _ = self._roda()
+        por2 = {r["chave"]: r for _, r in df2.iterrows()}
+        orc_m = self._orc_por_aba()["LJ MARECHAL 6039"]
+        orc_883_set = float(orc_m.loc[orc_m["Nome"] == "8.8.3 - Consultoria Financeira", "09/2026"].iloc[0])
+        self.assertAlmostEqual(por2["8.8.3|Consultoria X"]["unidades"]["LJ MARECHAL 6039"]["base"][8], orc_883_set * 220 / 244, places=6)
+        self.assertAlmostEqual(por2["8.8.3|Consultoria Y"]["unidades"]["LJ SETE 6052"]["base"][8],
+                               float(self._orc_por_aba()["LJ SETE 6052"].loc[orc_m["Nome"] == "8.8.3 - Consultoria Financeira", "09/2026"].iloc[0]),
+                               places=6, msg="na SETE so o Y tem realizado: leva o orcado inteiro")
+
+    def test_retirada_por_mes_por_loja_e_na_proporcao(self):
+        # Por loja: 10/mes so da MARECHAL em Consultoria X.
+        df, _, _ = self._roda(retiradas={"8.8.3|Consultoria X": (10.0, "fornecedor que sai", "LJ MARECHAL 6039")})
+        x = df[df["chave"] == "8.8.3|Consultoria X"].iloc[0]
+        self.assertAlmostEqual(x["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(-5.0 * 1.0425, 2))
+        self.assertAlmostEqual(x["unidades"]["LJ MARECHAL 6039"]["rascunho"][4], round(-105.0 * 1.0425, 2))
+        self.assertEqual(x["retirada_mensal"], 10.0)
+        self.assertGreater(x["retirado"], 0.0)
+        # Na proporcao: 50/mes em Salarios sai 30 da MARECHAL (90) e 20 da SETE (60).
+        df2, _, _ = self._roda(retiradas={"8.3.1|Salários": (50.0, "quadro menor")})
+        s_ = df2[df2["chave"] == "8.3.1|Salários"].iloc[0]
+        self.assertAlmostEqual(s_["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(-60.0 * 1.074, 2))
+        self.assertAlmostEqual(s_["unidades"]["LJ SETE 6052"]["rascunho"][0], round(-40.0 * 1.074, 2))
+        self.assertAlmostEqual(s_["retirado"], 50.0 * 8 + sum(min(50.0, abs(v)) for v in s_["base_meses"][8:]), places=2)
+        rel = self.ns["relatorio_das_retiradas"](df2, 2026)
+        self.assertEqual(len(rel), 2); self.assertAlmostEqual(rel.iloc[0]["Retirado por mês"], 50.0)
+
+    def test_valores_do_modelo_sao_as_celulas_das_unidades(self):
+        df, _, _ = self._roda()
+        valores, memoria = self.ns2["valores_do_modelo_por_unidade"](df, self.ABAS, self.meses, 2027)
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        # Cada celula escrita e exatamente o rascunho da unidade no mes.
+        self.assertEqual(valores["LJ MARECHAL 6039"][155], por["8.3.1|Salários"]["unidades"]["LJ MARECHAL 6039"]["rascunho"])
+        self.assertEqual(valores["LJ SETE 6052"][3], por["1.1|" + self.ns2["LINHA_SEM_PLANO_NO_MODELO"]]["unidades"]["LJ SETE 6052"]["rascunho"])
+        # Na SETE o DIARIO nao tem Consultoria X, mas a DRE_MENSAL da 8.8.3 (8/mes, 48 em maio) tem mais do que o Y
+        # explica (2/mes): a diferenca (6/mes, 46 em maio) e o residuo da linha, que vai para o plano mais parecido
+        # (empate entre X e Y: o primeiro). Nos meses abertos nao ha residuo.
+        self.assertEqual(valores["LJ SETE 6052"][302][:2], [round(-6.0 * 1.0425, 2)] * 2)
+        self.assertEqual(valores["LJ SETE 6052"][302][4], round(-46.0 * 1.0425, 2))
+        self.assertEqual(valores["LJ SETE 6052"][302][8:], [0.0] * 4)
+        self.assertNotIn(156, valores["LJ MARECHAL 6039"], "plano sem movimento e sem orcado fica em branco")
+        # Residuo da 8.4 (36/24 por mes) vai para o plano homonimo da linha ('Ocupação'), unidade a unidade.
+        self.assertAlmostEqual(valores["LJ MARECHAL 6039"][232][0], round(-36.0 * 1.0425, 2))
+        self.assertNotIn(233, valores["LJ MARECHAL 6039"])
+        mem_oc = memoria[(memoria["Plano de Contas"] == "Ocupação") & (memoria["Unidade"] == "LJ MARECHAL 6039")].iloc[0]
+        self.assertIn("resíduo da linha (plano homônimo)", mem_oc["De onde veio"])
+        self.assertIn("01/2027", memoria.columns)
+        # A soma das celulas escritas = rascunho das linhas do modelo + residuos.
+        soma = sum(sum(v) for aba in valores.values() for v in aba.values())
         esperado = float(df.loc[df["linha_modelo"].notna() | (df["plano"] == self.ns2["RESIDUO_SEM_PLANO"]), "rascunho"].sum())
-        self.assertAlmostEqual(sum(resumo.values()), esperado, places=1)
-        # NENHUMA linha de valor com rascunho fica em branco: a cadeia de criterios sempre acha unidade.
-        com_valor = df[df["linha_modelo"].notna() & (df["rascunho"].abs() >= 0.005)]
-        escritas = {int(l) for aba in valores.values() for l in aba}
-        self.assertTrue(set(com_valor["linha_modelo"].astype(int)) <= escritas)
-        criterios = set(memoria["Critério do rateio"].str.split(" · ").str[0])
-        self.assertIn("DIÁRIO da unidade", criterios)
-        self.assertIn("peso da unidade", criterios, "linha sem plano sem DRE/orcado por unidade cai no peso geral (aqui o DIARIO)")
-        self.assertNotIn("rateio igual", criterios)
-        # Consultoria X e toda da MARECHAL: SETE nao recebe nada dela; a retirada com loja saiu da MARECHAL.
-        self.assertNotIn(302, valores["LJ SETE 6052"])
-        linha_x = df[df["chave"] == "8.8.3|Consultoria X"].iloc[0]
-        self.assertAlmostEqual(sum(valores["LJ MARECHAL 6039"][302]), round(linha_x["rascunho"], 2), places=1)
-        # Linha sem plano (1.1) sem realizado por unidade nem orcado: cai no peso geral, e as duas somam a linha.
-        self.assertAlmostEqual(sum(valores["LJ MARECHAL 6039"][3]) + sum(valores["LJ SETE 6052"][3]),
-                               float(df[df["chave"].str.startswith("1.1|")]["rascunho"].sum()), places=1)
-        # Residuo da 8.4 (sem linha no modelo) foi somado ao Aluguel: a linha 232 soma rascunho do plano + residuo.
-        total_84 = float(df[df["numero"] == "8.4"]["rascunho"].sum())
-        self.assertAlmostEqual(sum(valores["LJ MARECHAL 6039"][232]) + sum(valores["LJ SETE 6052"][232]), total_84, places=1)
-        # Sem DE_PARA e com centro de custos em codigo, nada casa por unidade -- e MESMO ASSIM nenhuma linha fica em branco.
-        diario_sem, sem_aba2 = self.ns2["diario_por_unidade_e_plano"](diario, abas, {}, self.meses)
-        self.assertGreater(sem_aba2, 0.0)
-        v2, r2, m2 = self.ns2["preencher_modelo_com_rascunho"](df, self._estrutura(), abas, diario_sem, {}, lambda a, l: 0.0, {}, self.meses[:9], self.meses)
-        self.assertAlmostEqual(sum(r2.values()), esperado, places=1)
-        self.assertIn("rateio igual", set(m2["Critério do rateio"].str.split(" · ").str[0]))
-        self.assertEqual(set(m2["Critério do rateio"].str.split(" · ").str[0]), {"rateio igual"}, "sem historico nenhum, so resta partes iguais")
+        self.assertAlmostEqual(soma, esperado, places=1)
 
-    def test_residuo_vai_para_o_plano_homonimo_da_linha(self):
-        """'6.2 - Taxa com Cartão' tem o plano 'Taxa com Cartão' abaixo: se o
-        DIARIO nao casou o plano, o valor da linha vai para ele, nao para um
-        rateio cego -- e o modelo preenchido sai com o numero no lugar certo."""
-        real, orc = self._dre(1.0, 9), self._dre(1.1)
-        estrutura = self._estrutura()
-        for e in estrutura:
-            if e["nome"] == "Aluguel":
-                e["nome"] = "Ocupação"   # homonimo da linha "8.4 - Ocupação"
-        d = self._diario_lojas()
-        d = d[d["Plano de Contas"] != "Aluguel"]   # DIARIO nao explica a 8.4: residuo = linha inteira
-        df, _, _ = self.ns2["montar_rascunho_pelo_modelo"](real, orc, d, estrutura, self.meses, self.meses[:9])
-        self.assertIn(("8.4", self.ns2["RESIDUO_SEM_PLANO"]), {(r["numero"], r["plano"]) for _, r in df.iterrows()})
-        self.assertEqual(df[df["chave"] == "8.4|Ocupação"].iloc[0]["origem_plano"], "sem movimento no DIÁRIO")
-        abas = ["LJ MARECHAL 6039", "LJ SETE 6052"]
-        diario_un, _ = self.ns2["diario_por_unidade_e_plano"](d, abas, self.cc, self.meses)
-        valores, _, memoria = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, abas, diario_un, {}, lambda a, l: 0.0, {}, self.meses[:9], self.meses)
-        total_84 = float(df[df["numero"] == "8.4"]["rascunho"].sum())
-        self.assertAlmostEqual(sum(valores[a].get(232, [0])[i] for a in abas for i in range(12)), total_84, places=1)
-        # E a lista do que o DIARIO tem e o modelo nao: 'Aluguel' nao esta mais no modelo, mas estava no DIARIO original.
-        sem_par = self.ns2["planos_do_diario_sem_par_no_modelo"](self._diario_lojas(), estrutura, self.meses)
-        self.assertIn("Aluguel", set(sem_par["Plano de Contas (DIÁRIO)"]))
-        self.assertAlmostEqual(float(sem_par[sem_par["Plano de Contas (DIÁRIO)"] == "Aluguel"]["Total no ano"].iloc[0]), -495.0)
+    def test_plano_mais_parecido(self):
+        f = self.ns2["_plano_mais_parecido"]
+        self.assertEqual(f("6.2 - Taxa com Cartão de Crédito / Débito", ["Taxa com Cartão de Crédito / Débito"]), ("Taxa com Cartão de Crédito / Débito", "homônimo"))
+        self.assertEqual(f("6.5 - Taxa de Emissão de Boleto / Boleto Garantido", ["Tarifa de Emissão de Boleto", "Serviços de Cobrança - Mooz", "Taxa Mooz Boletos"])[0],
+                         "Tarifa de Emissão de Boleto")
+        self.assertEqual(f("6.3 - POS Cartões", ["Aluguel de POS / Outras Taxas", "POS (Cartões)"]), ("POS (Cartões)", "homônimo"))
+        self.assertEqual(f("8.9 - Qualquer", ["Alfa", "Beta"]), ("Alfa", "primeiro"))
+        self.assertEqual(f("x", []), (None, ""))
 
-    def test_plano_com_nome_parecido_casa_com_o_diario(self):
-        """'Taxa com Cartão de Crédito / Débito' no modelo e 'Taxa com Cartao de
-        Credito/Debito' no DIARIO sao o mesmo plano: so pontuacao e espaco."""
-        real, orc = self._dre(1.0, 9), self._dre(1.1)
-        d = self._diario_lojas()
-        d.loc[d["Plano de Contas"] == "Consultoria X", "Plano de Contas"] = "Consultoria  X / Financeira"
-        estrutura = self._estrutura()
-        for e in estrutura:
-            if e["nome"] == "Consultoria X":
-                e["nome"] = "Consultoria X/Financeira"
-        df, _, avisos = self.ns2["montar_rascunho_pelo_modelo"](real, orc, d, estrutura, self.meses, self.meses[:9])
-        x = df[df["chave"] == "8.8.3|Consultoria X/Financeira"].iloc[0]
-        self.assertEqual(x["origem_plano"], "DIÁRIO (nome parecido)")
-        self.assertAlmostEqual(x["realizado_fechado"], -235.0)
-        self.assertTrue(any("2 plano(s)" in a and "não têm movimento" in a for a in avisos), "so o ICMS e o plano novo ficam sem movimento")
-        # E a participacao por unidade tambem casa pelo nome parecido.
-        diario_un, _ = self.ns2["diario_por_unidade_e_plano"](d, ["LJ MARECHAL 6039", "LJ SETE 6052"], self.cc, self.meses)
-        valores, _, _ = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, ["LJ MARECHAL 6039", "LJ SETE 6052"], diario_un, {}, lambda a, l: 0.0, {},
-                                                                  self.meses[:9], self.meses)
-        self.assertIn(302, valores["LJ MARECHAL 6039"]); self.assertNotIn(302, valores["LJ SETE 6052"])
+    def test_carregar_dre_mensal_le_o_formato_longo(self):
+        import tempfile, os
+        caminho = os.path.join(tempfile.gettempdir(), "dre_mensal_teste.xlsx")
+        longa = pd.DataFrame({"ARQUIVO": ["01/2026", "01/2026", "02/2026"], "NATUREZA": ["  1.1 - Vendas de mercadorias", "8.3.1.1 - Salário", "  1.1 - Vendas de mercadorias"],
+                              "LOJA": ["6039 - MARECHAL - LOJA"] * 3, "VALOR": [100.0, -50.0, 120.0], "Nome Aba": ["LJ MARECHAL 6039"] * 3})
+        with pd.ExcelWriter(caminho) as w:
+            longa.to_excel(w, sheet_name="DRE_MENSAL", index=False)
+        dm = self.ns2["carregar_dre_mensal"](caminho)
+        self.assertEqual(list(dm.columns), ["Mês", "Linha", "Aba", "Valor"])
+        self.assertEqual(len(dm), 3); self.assertEqual(str(dm["Linha"].iloc[0]), "1.1 - Vendas de mercadorias")
+        self.assertTrue(self.ns2["carregar_dre_mensal"](os.path.join(tempfile.gettempdir(), "nao_existe.xlsx")).empty)
+        # Plano B: das abas de unidade (wide) para o mesmo formato.
+        dados = {"LJ SETE 6052": (pd.DataFrame(), pd.DataFrame({"Nome": ["1.1 - Vendas", "3 - Receita Liquida"], "01/2026": [10.0, 9.0], "02/2026": [0.0, 0.0]}))}
+        fb = self.ns2["dre_mensal_das_abas"](dados, self.meses)
+        self.assertEqual(len(fb), 2); self.assertEqual(set(fb["Aba"]), {"LJ SETE 6052"})
+
+    def test_diferencas_entre_soma_das_unidades_e_consolidado(self):
+        df, _, _ = self._roda()
+        cons = self._dre(1.0, zero_apos=9)
+        cons.loc[cons["Nome"] == "8.3.1 - Salários", self.meses] = cons.loc[cons["Nome"] == "8.3.1 - Salários", self.meses] + 5.0   # ajuste de consolidacao
+        difs = self.ns2["diferencas_unidades_vs_consolidado"](df, cons, self.meses[:8])
+        self.assertIn("8.3.1", set(difs["Nº"]))
+        d = difs[difs["Nº"] == "8.3.1"].iloc[0]
+        self.assertAlmostEqual(d["Diferença"], -40.0, places=2)
+        self.assertNotIn("1.1", set(difs["Nº"]), "linha igual nas duas nao aparece")
 
     def test_a_tela_le_o_modelo_no_topo_e_despeja_por_unidade(self):
         i = FONTE.index("📝 Rascunho do orçamento — base realizada, linha a linha")
-        trecho = FONTE[i:i + 60000]
+        trecho = FONTE[i:i + 70000]
         self.assertIn('key="orc27_modelo"', trecho, "um uploader so, no topo, para o rascunho e os direcionadores")
         self.assertEqual(FONTE.count('key="orc27_modelo"'), 1)
-        self.assertIn("montar_rascunho_pelo_modelo(", trecho)
-        self.assertIn("preencher_modelo_com_rascunho(", trecho)
-        self.assertIn("diario_por_unidade_e_plano(_diario_rasc, _abas_rasc, _mapa_cc_rasc, _meses_ano_rasc)", trecho,
-                      "o rateio por unidade casa o centro de custos pela Tabela_Lojas")
-        self.assertIn("planos_do_diario_sem_par_no_modelo(", trecho)
-        self.assertIn("Memória do rateio por unidade", trecho)
+        self.assertIn("montar_rascunho_por_unidade(", trecho)
+        self.assertIn("carregar_dre_mensal(path_real)", trecho, "linhas sem plano vem da DRE_MENSAL")
+        self.assertIn("carregar_orcado_das_unidades(path_orc, tuple(_abas_rasc))", trecho)
+        self.assertIn("valores_do_modelo_por_unidade(_df_rasc, _abas_rasc, _meses_ano_rasc, _ano_rasc_prox)", trecho)
+        self.assertIn("diferencas_unidades_vs_consolidado(", trecho)
         self.assertIn('"Loja (opcional)"', trecho)
-        self.assertIn('"Retirar por mês (R$)"', trecho, "a retirada e digitada por MES")
-        self.assertNotIn('"Retirar (R$)": _vista_rasc', trecho)
+        self.assertIn('"Retirar por mês (R$)"', trecho)
+        self.assertIn("Memória por unidade", trecho)
+        self.assertNotIn("preencher_modelo_com_rascunho", FONTE); self.assertNotIn("montar_rascunho_pelo_modelo", FONTE)
 
 
 class TesteIntegridade(unittest.TestCase):
