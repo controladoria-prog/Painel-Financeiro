@@ -57,7 +57,10 @@ DEPENDENCIAS = {
     "montar_rascunho_por_unidade": ["_contexto_rascunho", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin",
                                     "_mask_loja_por_centro_custo", "_normalizar_texto", "_numero_linha_dre", "_series_por_aba_e_numero",
                                     "_filhas_diretas", "_serie_da_linha_por_numero", "premissa_automatica_rascunho", "_plano_mais_parecido",
-                                    "_eh_linha_de_resultado", "totais_do_rascunho", "formata_brl"],
+                                    "_eh_linha_de_resultado", "totais_do_rascunho", "formata_brl", "aplicar_ajustes_por_unidade",
+                                    "descrever_ajustes_por_unidade"],
+    "aplicar_ajustes_por_unidade": ["formata_brl"],
+    "descrever_ajustes_por_unidade": ["formata_brl"],
     "valores_do_modelo_por_unidade": ["_plano_mais_parecido", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
     "_plano_mais_parecido": ["_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
     "diferencas_unidades_vs_consolidado": ["linhas_proprias_da_dre", "_valor_proprio_da_linha", "_serie_da_linha_por_numero",
@@ -121,7 +124,10 @@ CONSTANTES_DE_DEPENDENCIA = {
     "montar_rascunho_pelo_modelo": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
                                     "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"],
     "montar_rascunho_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN",
-                                    "PALAVRAS_PESSOAL_RASCUNHO", "PALAVRAS_LINHA_DE_RESULTADO", "LIGACOES_NOME_COLUNA"],
+                                    "PALAVRAS_PESSOAL_RASCUNHO", "PALAVRAS_LINHA_DE_RESULTADO", "LIGACOES_NOME_COLUNA",
+                                    "GRUPOS_SEM_FALLBACK_DE_MEDIA", "TIPOS_AJUSTE_UNIDADE"],
+    "aplicar_ajustes_por_unidade": ["TIPOS_AJUSTE_UNIDADE"],
+    "descrever_ajustes_por_unidade": ["TIPOS_AJUSTE_UNIDADE"],
     "valores_do_modelo_por_unidade": ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO", "_ACENTOS_FIN", "LIGACOES_NOME_COLUNA"],
     "_plano_mais_parecido": ["_ACENTOS_FIN", "LIGACOES_NOME_COLUNA"],
     "diferencas_unidades_vs_consolidado": ["PALAVRAS_LINHA_DE_RESULTADO"],
@@ -5119,77 +5125,6 @@ class TesteGeradorDoOrcamento2027(unittest.TestCase):
 
 
 
-class TesteTelaDoOrcamento(unittest.TestCase):
-    """Travas da aba: o que a tela tem de fazer antes de mostrar numero."""
-
-    def _bloco(self):
-        i = FONTE.index("Orçamento — por plano de contas")
-        return FONTE[i:FONTE.index("# ABA 6: GESTÃO DE USUÁRIOS", i)]
-
-    def test_o_casamento_dos_nomes_vem_antes_dos_numeros(self):
-        """Nome que nao casa vira base zero, e a tela mostraria "R$ 0,00"
-        igualzinho a uma conta que de fato nao teve gasto -- quem olha nao tem
-        como distinguir. Por isso a conferencia aparece ANTES, e nao escondida
-        num expander fechado."""
-        bloco = self._bloco()
-        self.assertIn("conferir_casamento_dos_planos(", bloco)
-        posicao_conferencia = bloco.index("conferir_casamento_dos_planos(")
-        posicao_editor = bloco.index("st.data_editor(")
-        self.assertLess(posicao_conferencia, posicao_editor,
-                        "o casamento tem de ser conferido antes da tabela de valores")
-        self.assertIn("não tiveram", bloco)
-
-    def test_a_estrutura_e_lida_do_arquivo_e_nao_cravada(self):
-        """A lista de planos muda de um ano para o outro. Cravada no codigo,
-        ela viraria mentira em silencio na primeira mudanca -- escrevendo
-        valores na linha errada da planilha do usuario."""
-        bloco = self._bloco()
-        self.assertIn("st.file_uploader(", bloco)
-        self.assertIn("ler_estrutura_orcamento(", bloco)
-
-    def test_o_ano_sai_do_modelo_e_nao_do_codigo(self):
-        """A aba serve para 2027, 2028 e os que vierem. Ano cravado faria a
-        tela buscar o realizado do ano errado, sem nada avisando."""
-        bloco = self._bloco()
-        self.assertIn("anos_do_modelo_orcamento(", bloco)
-        self.assertIn("_ano_base_orc", bloco)
-        self.assertNotIn('f"{m:02d}/2026"', bloco, "o ano voltou a ser cravado")
-
-    def test_o_realizado_das_linhas_da_dre_e_buscado(self):
-        """Elas nao estao no DIARIO -- ele tem plano de contas, nao linha. Sem
-        esta busca apareciam TODAS zeradas, e o zero se confundia com "nao teve
-        gasto". A cascata cai na aba DRE MENSAL para as linhas que a planilha
-        de Realizado guarda so la."""
-        bloco = self._bloco()
-        self.assertIn("realizado_da_dre_por_aba(", bloco)
-        self.assertIn("DRE MENSAL", bloco)
-        self.assertIn('"Origem"', bloco,
-                      "a tela precisa dizer de onde veio a base de cada linha")
-
-    def test_plano_sem_movimento_nao_e_tratado_como_erro(self):
-        """Plano sem lancamento no DIARIO simplesmente nao foi usado no ano. O
-        aviso vermelho tratava fato normal como defeito e mandava conferir nome
-        que estava certo."""
-        bloco = self._bloco()
-        # A frase quebra entre duas linhas do codigo -- procurar o texto
-        # inteiro falharia por formatacao, nao por defeito.
-        self.assertIn("não tiveram ", bloco)
-        self.assertIn("movimento no ano anterior", bloco)
-        self.assertNotIn("não foram encontrados no DIÁRIO", bloco,
-                         "o aviso de erro voltou para um fato normal")
-        self.assertIn("Valor fixo (ano)", bloco,
-                      "a tela precisa dizer COMO orcar uma conta de base zero")
-
-    def test_a_tela_avisa_das_contas_sem_direcionador(self):
-        """Conta em branco nao e conta zerada, e conta esquecida. Num
-        orcamento de 219 planos ninguem percebe uma faltando olhando a tela."""
-        bloco = self._bloco()
-        self.assertIn("resumo_da_proposta(", bloco)
-        self.assertIn("SEM DIRECIONADOR", bloco)
-        self.assertIn("Não orçar", bloco)
-
-
-
 class TesteRealizadoDaDreNoOrcamento(unittest.TestCase):
     """A cascata que busca o realizado das LINHAS DA DRE.
 
@@ -5346,41 +5281,25 @@ class TesteDirecionadorPorLoja(unittest.TestCase):
         self.assertEqual(self.ns["resumo_das_excecoes"]({}), (0, 0))
 
 
-class TesteTelaDasExcecoesPorLoja(unittest.TestCase):
-    """Travas da tela de excecoes."""
+class TesteAbaOrcamentoSoRascunhoEProvaDeFogo(unittest.TestCase):
+    """12/10/2026: a diretoria pediu para tirar o resto da aba Orçamento
+    (direcionadores, exceções por loja, confronto com a meta, memória de
+    cálculo e gerar planilha) e deixar só o rascunho e a prova de fogo. As
+    funções puras continuam (são testadas e os robôs podem usá-las); a tela
+    não."""
 
-    def _bloco(self):
-        i = FONTE.index("🏪 Exceções por loja")
-        return FONTE[i:FONTE.index("# ---- Resumo do que já foi decidido", i)]
-
-    def test_a_tela_mostra_o_que_esta_valendo_e_de_onde_vem(self):
-        bloco = self._bloco()
-        self.assertIn("direcionador_efetivo(", bloco)
-        self.assertIn("Valendo hoje", bloco)
-
-    def test_a_lista_e_so_do_que_foge_do_padrao(self):
-        """Listar as 219 contas de cada loja nao pouparia trabalho nenhum."""
-        bloco = self._bloco()
-        self.assertIn("contas_fora_do_padrao(", bloco)
-        self.assertIn("peso_da_loja_no_total(", bloco)
-
-    def test_a_proposta_e_calculada_UMA_vez_e_reusada(self):
-        """A memoria de calculo, o confronto com a meta e o gerador do Excel
-        precisam do MESMO numero. Calcular em tres lugares seriam tres chances
-        de eles discordarem -- e a discordancia entre a tela e o arquivo so
-        apareceria depois de o Excel ja estar colado."""
-        i = FONTE.index("_proposta_por_loja, _memoria_itens = {}, []")
-        trecho = FONTE[i:i + 3000]
-        self.assertIn("direcionador_efetivo(", trecho,
-                      "o calculo unico tem de respeitar a excecao da loja")
-        self.assertIn("_excecoes_orc", trecho)
-        # O gerador NAO pode refazer a conta: ele le a proposta pronta.
-        j = FONTE.index("Gerar a planilha preenchida")
-        gerador = FONTE[j:FONTE.index("gerar_excel_orcamento(", j)]
-        self.assertIn("_proposta_por_loja.get(", gerador)
-        self.assertNotIn("aplicar_direcionador_2027(", gerador,
-                         "o gerador voltou a refazer a conta por conta propria")
-
+    def test_a_aba_orcamento_e_so_rascunho_e_prova_de_fogo(self):
+        i = FONTE.index("    with tab_orc:")
+        aba = FONTE[i:FONTE.index("# ABA 6: GESTÃO DE USUÁRIOS", i)]
+        self.assertIn("📝 Rascunho do orçamento — base realizada, linha a linha", aba)
+        self.assertIn("🔥 Prova de fogo — o orçamento proposto contra o ritmo real deste ano", aba)
+        for sumiu in ("🎯 Orçamento — por plano de contas", "🏪 Exceções por loja", "Gerar a planilha preenchida",
+                      'key="orc27_gerar"', "_excecoes_orc", "confrontar_com_a_meta(", "memoria_de_calculo(",
+                      "aplicar_direcionador_2027(", "direcionador_efetivo(", "ler_meta_da_industria("):
+            self.assertNotIn(sumiu, aba, f"a seção antiga voltou para a aba: {sumiu}")
+        # A prova de fogo vem DEPOIS do rascunho e fecha a aba.
+        self.assertLess(aba.index("📝 Rascunho do orçamento"), aba.index("🔥 Prova de fogo"))
+        self.assertNotIn("section-title", aba[aba.index("🔥 Prova de fogo"):])
 
 
 class TesteConfrontoComAMeta(unittest.TestCase):
@@ -8293,7 +8212,7 @@ class TesteRascunhoOrcamento(unittest.TestCase):
         c = self.ns["colunas_relatorio_retiradas"](2026)
         self.assertEqual(len(rel), 3); self.assertIn("Plano de Contas", rel.columns); self.assertIn("Retirado por mês", rel.columns)
         self.assertEqual(sorted(rel["Plano de Contas"].iloc[:-1]), ["Aluguel", "Consultoria X"])
-        self.assertEqual(rel.iloc[-1]["Linha da DRE"], "TOTAL DAS LINHAS COM RETIRADA")
+        self.assertEqual(rel.iloc[-1]["Linha da DRE"], "TOTAL DAS LINHAS COM RETIRADA OU AJUSTE")
         self.assertAlmostEqual(rel.iloc[-1][c["ret"]], 780.0)
         self.assertIn("2028 vs orçado 2027", self.ns["colunas_relatorio_retiradas"](2027).values())
         self.assertTrue(self.ns["relatorio_das_retiradas"](df.assign(retirado=0.0)).empty)
@@ -8313,11 +8232,11 @@ class TesteRascunhoOrcamento(unittest.TestCase):
         i = FONTE.index("📝 Rascunho do orçamento — base realizada, linha a linha")
         self.assertLess(FONTE.index("with tab_orc:"), i)
         self.assertLess(i, FONTE.index("Prova de fogo — o orçamento proposto contra o ritmo real deste ano"))
-        trecho = FONTE[i:i + 40000]
+        trecho = FONTE[i:i + 60000]
         self.assertIn('== ["DRE CONSOLIDADO"] and list_df_real', trecho)
         self.assertIn("df_diario=_diario_rasc)", trecho, "a base desce aos planos de contas do DIARIO")
         self.assertIn('"rasc_retiradas"', trecho, "as retiradas vivem na sessao e saem/entram por CSV")
-        self.assertIn("Guardar as retiradas (CSV)", trecho)
+        self.assertIn("Guardar retiradas e ajustes (CSV)", trecho)
         self.assertIn("excel_do_rascunho(", trecho)
         self.assertIn("rascunho_por_linha(_df_rasc)", trecho)
 
@@ -8459,6 +8378,111 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         rel = self.ns["relatorio_das_retiradas"](df2, 2026)
         self.assertEqual(len(rel), 2); self.assertAlmostEqual(rel.iloc[0]["Retirado por mês"], 50.0)
 
+    def test_grupos_10_e_16_nao_caem_na_media_quando_o_orcado_nao_tem_a_linha(self):
+        """12/10/2026: 10 - Despesas com Escritório e 16 - Impostos sobre o Lucro
+        ficam EXATAMENTE como antes: mês aberto = orçado da unidade, mesmo
+        zerado. O fallback para a média continua valendo para os demais grupos."""
+        dm = self._dre_mensal()
+        extra = []
+        for m in self.meses[:9]:
+            for aba, f in (("LJ MARECHAL 6039", 0.6), ("LJ SETE 6052", 0.4)):
+                extra += [{"Mês": m, "Linha": "10 - Despesas com Escritório", "Aba": aba, "Valor": -100.0 * f},
+                          {"Mês": m, "Linha": "10.1 - Escritório Central", "Aba": aba, "Valor": -100.0 * f},
+                          {"Mês": m, "Linha": "16 - Impostos sobre o Lucro", "Aba": aba, "Valor": -40.0 * f},
+                          {"Mês": m, "Linha": "16.1 - IRPJ", "Aba": aba, "Valor": -40.0 * f},
+                          {"Mês": m, "Linha": "8.9 - Outras Despesas", "Aba": aba, "Valor": -10.0 * f},
+                          {"Mês": m, "Linha": "8 - Despesas Operacionais", "Aba": aba, "Valor": -10.0 * f}]
+        dm = pd.concat([dm, pd.DataFrame(extra)], ignore_index=True)
+        estrutura = self._estrutura() + [
+            {"linha": 350, "nome": "10.1 - Escritório Central", "nome_bruto": "10.1 - Escritório Central", "tipo": "dre", "linha_dre": "10.1 - Escritório Central", "editavel": True},
+            {"linha": 360, "nome": "8.9 - Outras Despesas", "nome_bruto": "8.9 - Outras Despesas", "tipo": "dre", "linha_dre": "8.9 - Outras Despesas", "editavel": True}]
+        # O orçado NAO tem 10.1, 16.1 nem 8.9 em nenhuma unidade.
+        df, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, self._orc_por_aba(), self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
+                                                            premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="orcado")
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        propria, fora = self.ns2["LINHA_SEM_PLANO_NO_MODELO"], self.ns2["FORA_DO_MODELO"]
+        esc = por["10.1|" + propria]["unidades"]["LJ MARECHAL 6039"]
+        self.assertEqual(esc["base"][:8], [-60.0] * 8, "meses fechados vêm da DRE_MENSAL da unidade")
+        self.assertEqual(esc["base"][8:], [0.0] * 4, "grupo 10: mês aberto = orçado da unidade (zero), sem média")
+        self.assertIn("orçado da unidade", esc["origem"]); self.assertNotIn("média", esc["origem"])
+        irpj = por["16.1|" + fora]["unidades"]["LJ SETE 6052"]
+        self.assertEqual(irpj["base"][8:], [0.0] * 4, "grupo 16 (linha fora do modelo): também sem média")
+        outras = por["8.9|" + propria]["unidades"]["LJ MARECHAL 6039"]
+        self.assertEqual(outras["base"][8:], [-6.0] * 4, "grupo 8 sem orçado: continua caindo na média dos fechados")
+        self.assertIn("média dos 8 fechados (linha sem orçado nesta unidade)", outras["origem"])
+        # Com projeção pela média, os grupos 10 e 16 usam a média como todo mundo (não há orçado envolvido).
+        df2, _, _ = self.ns2["montar_rascunho_por_unidade"](dm, self._orc_por_aba(), self._diario_abas(), estrutura, self.ABAS, self.meses, self.meses[:8],
+                                                             premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="media")
+        por2 = {r["chave"]: r for _, r in df2.iterrows()}
+        self.assertEqual(por2["10.1|" + propria]["unidades"]["LJ MARECHAL 6039"]["base"][8:], [-60.0] * 4)
+
+    def test_ajustes_por_unidade_zerar_fixar_e_retirar(self):
+        """12/10/2026: o que a diretoria fazia na mão depois de gerar a planilha
+        -- 'Manutenção e Reparos zerado em todas e R$ 10.000 só no escritório;
+        R$ 6.800/mês a menos em Auditoria do escritório' -- agora é ajuste."""
+        f = self.ns2["montar_rascunho_por_unidade"]
+        args = (self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS, self.meses, self.meses[:8])
+        prem = {"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0}
+        # 1) Zerar em todas e deixar só a SETE com 100/mês (valor FINAL, sem premissa).
+        df, tot, _ = f(*args, premissas=prem, ajustes={"8.3.1|Salários": [{"tipo": "zerar_exceto", "loja": "LJ SETE 6052", "mensal": 100.0, "motivo": "só a SETE mantém"}]})
+        s_ = df[df["chave"] == "8.3.1|Salários"].iloc[0]
+        self.assertEqual(s_["unidades"]["LJ MARECHAL 6039"]["rascunho"], [0.0] * 12)
+        self.assertEqual(s_["unidades"]["LJ SETE 6052"]["rascunho"], [-100.0] * 12, "sinal da linha (despesa), sem dissídio em cima")
+        self.assertAlmostEqual(s_["rascunho"], -1200.0, places=2)
+        self.assertIn("zerado em todas", s_["ajustes"]); self.assertIn("LJ SETE 6052", s_["ajustes"])
+        self.assertIn("ajuste: zerado", s_["unidades"]["LJ MARECHAL 6039"]["origem"])
+        self.assertIn("fixado em R$ 100,00 por mês", s_["unidades"]["LJ SETE 6052"]["origem"])
+        self.assertAlmostEqual(s_["retirado"], abs(s_["base"]) - 1200.0, places=2)
+        # Outras linhas não mudam.
+        self.assertAlmostEqual(df[df["chave"] == "8.8.3|Consultoria X"].iloc[0]["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(-15.0 * 1.0425, 2))
+        # 2) Fixar numa unidade que NÃO tinha o plano: a SETE passa a ter Consultoria X de 10/mês; a MARECHAL segue igual.
+        df2, _, _ = f(*args, premissas=prem, ajustes={"8.8.3|Consultoria X": [{"tipo": "fixar", "loja": "LJ SETE 6052", "mensal": 10.0, "motivo": ""}]})
+        x = df2[df2["chave"] == "8.8.3|Consultoria X"].iloc[0]
+        self.assertEqual(x["unidades"]["LJ SETE 6052"]["rascunho"], [-10.0] * 12)
+        self.assertEqual(x["unidades"]["LJ MARECHAL 6039"]["rascunho"][4], round(-115.0 * 1.0425, 2))
+        valores, memoria = self.ns2["valores_do_modelo_por_unidade"](df2, self.ABAS, self.meses, 2027)
+        self.assertEqual(valores["LJ SETE 6052"][302][:1], [-10.0 + round(-6.0 * 1.0425, 2)], "célula da planilha = fixo + resíduo da linha que já ia para X")
+        mem = memoria[(memoria["Plano de Contas"] == "Consultoria X") & (memoria["Unidade"] == "LJ SETE 6052")].iloc[0]
+        self.assertIn("fixado em R$ 10,00 por mês", mem["De onde veio"])
+        # 3) Retirar 10/mês só da MARECHAL = a retirada por loja de sempre.
+        df3, _, _ = f(*args, premissas=prem, ajustes={"8.8.3|Consultoria X": [{"tipo": "retirar", "loja": "LJ MARECHAL 6039", "mensal": 10.0, "motivo": "NF que sai"}]})
+        x3 = df3[df3["chave"] == "8.8.3|Consultoria X"].iloc[0]
+        self.assertAlmostEqual(x3["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(-5.0 * 1.0425, 2))
+        self.assertAlmostEqual(x3["unidades"]["LJ MARECHAL 6039"]["rascunho"][4], round(-105.0 * 1.0425, 2))
+        self.assertEqual(x3["unidades"]["LJ SETE 6052"]["rascunho"], [0.0] * 12)
+        # 4) Zerar em todas: some da planilha (célula em branco) e entra no relatório 'com e sem'.
+        df4, _, _ = f(*args, premissas=prem, ajustes={"8.3.1|Salários": [{"tipo": "zerar_todas", "loja": "", "mensal": 0.0, "motivo": "acabou"}]})
+        s4 = df4[df4["chave"] == "8.3.1|Salários"].iloc[0]
+        self.assertAlmostEqual(s4["rascunho"], 0.0); self.assertAlmostEqual(s4["retirado"], abs(s4["base"]), places=2)
+        v4, _ = self.ns2["valores_do_modelo_por_unidade"](df4, self.ABAS, self.meses, 2027)
+        self.assertNotIn(155, v4["LJ MARECHAL 6039"])
+        rel = self.ns["relatorio_das_retiradas"](df4, 2026)
+        self.assertEqual(len(rel), 2); self.assertEqual(rel.iloc[0]["Ajuste por unidade"], "zerado em todas as unidades")
+        self.assertEqual(rel.iloc[-1]["Linha da DRE"], "TOTAL DAS LINHAS COM RETIRADA OU AJUSTE")
+        # 5) Retirada e ajuste juntos: a retirada entra antes; o fixo manda por cima.
+        df5, _, _ = f(*args, retiradas={"8.3.1|Salários": (50.0, "quadro menor")}, premissas=prem,
+                      ajustes={"8.3.1|Salários": [{"tipo": "fixar", "loja": "LJ SETE 6052", "mensal": 7.0, "motivo": ""}]})
+        s5 = df5[df5["chave"] == "8.3.1|Salários"].iloc[0]
+        self.assertAlmostEqual(s5["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(-60.0 * 1.074, 2))
+        self.assertEqual(s5["unidades"]["LJ SETE 6052"]["rascunho"], [-7.0] * 12)
+
+    def test_aplicar_ajustes_por_unidade_e_puro_e_acerta_o_sinal(self):
+        ns = carregar(["aplicar_ajustes_por_unidade", "descrever_ajustes_por_unidade", "formata_brl"], ["TIPOS_AJUSTE_UNIDADE"])
+        f = ns["aplicar_ajustes_por_unidade"]
+        bases = {"A": [-10.0] * 3, "B": [-4.0] * 3}
+        novo, fixas, textos = f(bases, [{"tipo": "zerar_exceto", "loja": "C", "mensal": 5.0}], 3)
+        self.assertEqual(novo, {"A": [0.0] * 3, "B": [0.0] * 3, "C": [-5.0] * 3}, "unidade nova entra; sinal da LINHA (negativa)")
+        self.assertEqual(fixas, {"A", "B", "C"}); self.assertIn("fixado em R$ 5,00 por mês", textos["C"])
+        novo, fixas, _ = f({"A": [20.0, 20.0]}, [{"tipo": "fixar", "loja": "B", "mensal": 3.0}], 2, sinal_padrao=-1.0)
+        self.assertEqual(novo["B"], [3.0, 3.0], "linha positiva (receita): o fixo é positivo")
+        novo, fixas, _ = f({}, [{"tipo": "fixar", "loja": "B", "mensal": 3.0}], 2, sinal_padrao=1.0)
+        self.assertEqual(novo["B"], [3.0, 3.0], "sem base nenhuma: sinal_padrao")
+        novo, fixas, _ = f({"A": [-10.0, -2.0]}, [{"tipo": "retirar", "loja": "A", "mensal": 5.0}], 2)
+        self.assertEqual(novo["A"], [-5.0, 0.0]); self.assertEqual(fixas, set(), "retirar não fixa: a premissa ainda corrige")
+        self.assertEqual(f({"A": [1.0]}, [{"tipo": "inventado", "loja": "A", "mensal": 1.0}], 1)[0], {"A": [1.0]})
+        self.assertEqual(ns["descrever_ajustes_por_unidade"]([{"tipo": "retirar", "loja": "ESC", "mensal": 6800.0}]), "−R$ 6.800,00/mês em ESC")
+        self.assertEqual(ns["descrever_ajustes_por_unidade"]([]), "")
+
     def test_valores_do_modelo_sao_as_celulas_das_unidades(self):
         df, _, _ = self._roda()
         valores, memoria = self.ns2["valores_do_modelo_por_unidade"](df, self.ABAS, self.meses, 2027)
@@ -8521,10 +8545,18 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
 
     def test_a_tela_le_o_modelo_no_topo_e_despeja_por_unidade(self):
         i = FONTE.index("📝 Rascunho do orçamento — base realizada, linha a linha")
-        trecho = FONTE[i:i + 70000]
-        self.assertIn('key="orc27_modelo"', trecho, "um uploader so, no topo, para o rascunho e os direcionadores")
+        trecho = FONTE[i:i + 90000]
+        self.assertIn('key="orc27_modelo"', trecho, "um uploader so, no topo, para o rascunho")
         self.assertEqual(FONTE.count('key="orc27_modelo"'), 1)
         self.assertIn("montar_rascunho_por_unidade(", trecho)
+        # Ajustes por unidade (12/10/2026): formulário, sessão própria, vão ao motor e ao CSV.
+        self.assertIn("ajustes=_ajustes_rasc", trecho)
+        self.assertIn('st.form("rasc_form_ajuste"', trecho)
+        self.assertIn('st.session_state["rasc_ajustes"]', trecho)
+        self.assertIn("TIPOS_AJUSTE_UNIDADE", trecho)
+        self.assertIn('"Ajuste por unidade"', trecho)
+        self.assertIn("Guardar retiradas e ajustes (CSV)", trecho)
+        self.assertIn('key="rasc_aj_remover"', trecho)
         self.assertIn("carregar_dre_mensal(path_real)", trecho, "linhas sem plano vem da DRE_MENSAL")
         self.assertIn("carregar_orcado_das_unidades(path_orc, tuple(_abas_rasc))", trecho)
         self.assertIn("valores_do_modelo_por_unidade(_df_rasc, _abas_rasc, _meses_ano_rasc, _ano_rasc_prox)", trecho)

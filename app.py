@@ -15456,6 +15456,97 @@ def _chave_frouxa(nome):
     para um nome exato nunca perder para um parecido."""
     return re.sub(r"[^a-z0-9]", "", chave_conta_orcamento(nome))
 FORA_DO_MODELO = "(linha da DRE fora do modelo)"
+# Grupos da DRE em que o rascunho NÃO completa os meses abertos pela média
+# quando o orçado da unidade não tem a linha (12/10/2026, pedido da
+# diretoria): 10 - Despesas com Escritório (rateio, que o orçado não previu)
+# e 16 - Impostos sobre o Lucro. Neles, mês aberto = orçado da unidade,
+# mesmo que seja zero -- exatamente como estava antes do fallback.
+GRUPOS_SEM_FALLBACK_DE_MEDIA = ("10", "16")
+
+# Ajustes por UNIDADE no rascunho (12/10/2026): o que a diretoria faz hoje
+# na mão depois de gerar a planilha. Chave = tipo; valor = rótulo da tela.
+TIPOS_AJUSTE_UNIDADE = {
+    "zerar_todas": "Zerar em todas as unidades",
+    "zerar_exceto": "Zerar em todas e deixar só nesta unidade (valor por mês)",
+    "fixar": "Fixar um valor por mês nesta unidade",
+    "retirar": "Retirar um valor por mês desta unidade",
+}
+
+
+def aplicar_ajustes_por_unidade(bases, ajustes, n_meses, sinal_padrao=-1.0):
+    """Aplica, na ordem, os ajustes por unidade de UMA linha/plano do rascunho.
+
+    bases: {aba: [n_meses valores]} já ajustados pelas retiradas (é alterado
+    e devolvido). ajustes: lista de dicts {"tipo", "loja", "mensal", "motivo"}
+    com tipo em TIPOS_AJUSTE_UNIDADE. O valor é digitado em módulo; o sinal
+    é o da própria unidade na base (senão o da linha, senão sinal_padrao).
+
+      zerar_todas   -> todas as unidades ficam zero nos 12 meses;
+      zerar_exceto  -> todas zero e a unidade escolhida fica com o valor FIXO
+                       por mês (o valor é final: a premissa não corrige);
+      fixar         -> só a unidade escolhida fica com o valor fixo por mês;
+      retirar       -> sai o valor de cada mês da unidade, até onde o mês tem.
+
+    Devolve (bases, abas_fixadas, textos): abas_fixadas são as unidades cujo
+    valor é final (não recebem a premissa); textos descrevem cada ajuste, por
+    unidade, para a memória de cálculo."""
+    zero = [0.0] * n_meses
+    originais = {aba: list(v) for aba, v in bases.items()}
+    total_linha = sum(sum(v) for v in originais.values())
+    fixadas, textos = set(), {}
+
+    def sinal(aba):
+        s_u = sum(originais.get(aba, zero))
+        if abs(s_u) >= 0.005:
+            return 1.0 if s_u > 0 else -1.0
+        if abs(total_linha) >= 0.005:
+            return 1.0 if total_linha > 0 else -1.0
+        return 1.0 if sinal_padrao >= 0 else -1.0
+
+    def anota(aba, texto):
+        textos[aba] = (textos.get(aba, "") + " · " if textos.get(aba) else "") + texto
+
+    for aj in ajustes or []:
+        tipo = str((aj or {}).get("tipo") or "")
+        loja = str((aj or {}).get("loja") or "").strip()
+        mensal = abs(float((aj or {}).get("mensal") or 0.0))
+        if tipo not in TIPOS_AJUSTE_UNIDADE:
+            continue
+        if tipo in ("zerar_todas", "zerar_exceto"):
+            for aba in list(bases):
+                bases[aba] = list(zero)
+                fixadas.add(aba)
+                anota(aba, "zerado (ajuste por unidade)")
+        if tipo in ("zerar_exceto", "fixar") and loja:
+            bases[loja] = [sinal(loja) * mensal] * n_meses
+            fixadas.add(loja)
+            anota(loja, f"fixado em {formata_brl(mensal)} por mês (valor final, sem premissa)")
+        elif tipo == "retirar" and loja:
+            v = bases.get(loja)
+            if v is not None:
+                bases[loja] = [(1.0 if x >= 0 else -1.0) * max(abs(x) - mensal, 0.0) for x in v]
+                anota(loja, f"retirado {formata_brl(mensal)} por mês")
+    return bases, fixadas, textos
+
+
+def descrever_ajustes_por_unidade(ajustes):
+    """Texto curto, um ajuste por frase, para a tela e o relatório."""
+    partes = []
+    for aj in ajustes or []:
+        tipo = str((aj or {}).get("tipo") or "")
+        if tipo not in TIPOS_AJUSTE_UNIDADE:
+            continue
+        loja = str((aj or {}).get("loja") or "").strip()
+        mensal = abs(float((aj or {}).get("mensal") or 0.0))
+        if tipo == "zerar_todas":
+            partes.append("zerado em todas as unidades")
+        elif tipo == "zerar_exceto":
+            partes.append(f"zerado em todas, só {loja} com {formata_brl(mensal)}/mês")
+        elif tipo == "fixar":
+            partes.append(f"{loja} fixado em {formata_brl(mensal)}/mês")
+        elif tipo == "retirar":
+            partes.append(f"−{formata_brl(mensal)}/mês em {loja}")
+    return "; ".join(partes)
 
 
 def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx, linha_modelo=None):
@@ -15759,7 +15850,7 @@ def _plano_mais_parecido(nome_linha, planos):
 
 
 def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura, abas, meses_ano, meses_fechados,
-                                retiradas=None, premissas=None, projecao="orcado", mapa_loja_cc=None):
+                                retiradas=None, premissas=None, projecao="orcado", mapa_loja_cc=None, ajustes=None):
     """O rascunho do ano seguinte calculado UNIDADE a UNIDADE, MÊS a MÊS, na
     estrutura da planilha modelo (12/10/2026). É o que a diretoria pediu:
     "replicar o realizado de 2026 nos meses fechados e o orçado de 2026 nos
@@ -15785,12 +15876,20 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                                realizado: pela da empresa; sem nada: a linha
                                própria, senão o plano homônimo);
                                projecao="media": a média dos meses fechados.
+                               Linha SEM orçado nos meses abertos na unidade
+                               cai na média dos fechados -- EXCETO nos grupos
+                               GRUPOS_SEM_FALLBACK_DE_MEDIA (10 e 16), em que
+                               o mês aberto é o orçado mesmo zerado;
       linha da DRE_MENSAL que o modelo não tem -> FORA_DO_MODELO (só na soma).
 
     Retirada é POR MÊS: com loja marcada sai só daquela unidade; sem loja,
-    sai de cada unidade na proporção do que ela tem naquele mês. Premissa
-    automática por natureza da linha/plano. rascunho_mes = base_ajustada ×
-    (1 + %), unidade a unidade -- a empresa é a soma.
+    sai de cada unidade na proporção do que ela tem naquele mês. Depois dela
+    entram os AJUSTES POR UNIDADE (ajustes = {chave: [dicts]}, ver
+    aplicar_ajustes_por_unidade): zerar em todas, zerar em todas e deixar um
+    valor fixo numa, fixar um valor numa, retirar um valor mensal de uma.
+    Valor fixado é final (não recebe premissa). Premissa automática por
+    natureza da linha/plano. rascunho_mes = base_ajustada × (1 + %), unidade
+    a unidade -- a empresa é a soma.
 
     Devolve (DataFrame de linhas da empresa, com a coluna "unidades" trazendo
     {aba: {"base": [12], "rascunho": [12], "origem": texto}}, totais, avisos)."""
@@ -15921,12 +16020,21 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                     for aba in ajust:
                         v = ajust[aba][i]
                         ajust[aba][i] = (1.0 if v >= 0 else -1.0) * max(abs(v) - tirar * abs(v) / pool, 0.0)
+        lista_aj = list((ajustes or {}).get(chave) or [])
+        fixadas, textos_aj = set(), {}
+        if lista_aj:
+            ajust, fixadas, textos_aj = aplicar_ajustes_por_unidade(
+                ajust, lista_aj, n_m, sinal_padrao=(1.0 if str(numero).split(".")[0] == "1" else -1.0))
         plano_prem = "" if plano in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO) else plano
         nome_premissa, pct = premissa_automatica_rascunho(numero, nome_linha, ctx["premissas"], plano_prem)
         unidades = {}
-        for aba, base_u in por_aba_base.items():
-            rasc_u = [round(v * (1.0 + pct), 2) for v in ajust[aba]]
-            unidades[aba] = {"base": base_u, "rascunho": rasc_u, "origem": por_aba_origem.get(aba, "")}
+        for aba in ajust:
+            base_u = list(por_aba_base.get(aba, zero))
+            rasc_u = [round(v * (1.0 if aba in fixadas else 1.0 + pct), 2) for v in ajust[aba]]
+            origem_u = por_aba_origem.get(aba, "") or ("sem base na unidade" if aba in fixadas else "")
+            if textos_aj.get(aba):
+                origem_u = (origem_u + " · " if origem_u else "") + "ajuste: " + textos_aj[aba]
+            unidades[aba] = {"base": base_u, "rascunho": rasc_u, "origem": origem_u}
         base_meses = [sum(v["base"][i] for v in unidades.values()) for i in range(n_m)]
         rasc_meses = [round(sum(v["rascunho"][i] for v in unidades.values()), 2) for i in range(n_m)]
         base = sum(base_meses)
@@ -15937,8 +16045,9 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             "linha_modelo": linha_modelo, "grupo": str(numero).split(".")[0],
             "realizado_fechado": soma(base_meses, idx_f), "projecao_abertos": soma(base_meses, idx_a),
             "origem_projecao": ("orçado do ano" if projecao == "orcado" else f"média dos {n_f} meses fechados"),
-            "base": base, "orcado_ano": None, "retirada_mensal": mensal, "retirado": abs(base) - abs(base_aj) if mensal else 0.0,
+            "base": base, "orcado_ano": None, "retirada_mensal": mensal, "retirado": abs(base) - abs(base_aj) if (mensal or lista_aj) else 0.0,
             "motivo": motivo, "loja_retirada": loja_ret, "base_ajustada": base_aj, "premissa": nome_premissa, "pct": pct,
+            "ajustes": descrever_ajustes_por_unidade(lista_aj), "n_ajustes": len(lista_aj),
             "rascunho": rascunho, "var_vs_base": (rascunho / base - 1.0) if abs(base) >= 0.005 else None,
             "var_vs_orcado": None, "base_meses": base_meses, "orcado_meses": None, "rascunho_meses": rasc_meses,
             "unidades": unidades,
@@ -15988,11 +16097,13 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                     melhor, _como = _plano_mais_parecido(nome_linha, nomes_planos)
                     pesos = {melhor: 1.0}
             total_peso = sum(pesos.values()) or 1.0
-            # Linha SEM orçado nos meses abertos nesta unidade (o orçado do ano não
-            # previu a linha -- caso do rateio do escritório): cai na média dos
+            # Linha SEM orçado nos meses abertos nesta unidade: cai na média dos
             # fechados, senão setembro a dezembro sairiam zerados numa linha que
-            # tem realizado todo mês. Fica registrado na origem.
-            orc_abertos_zerado = projecao == "orcado" and not any(abs(orc_u[i]) >= 0.005 for i in idx_a)
+            # tem realizado todo mês. Fica registrado na origem. NÃO vale para os
+            # grupos 10 e 16 (GRUPOS_SEM_FALLBACK_DE_MEDIA): neles o mês aberto
+            # é o orçado da unidade, mesmo zerado -- pedido da diretoria.
+            orc_abertos_zerado = (projecao == "orcado" and str(numero).split(".")[0] not in GRUPOS_SEM_FALLBACK_DE_MEDIA
+                                  and not any(abs(orc_u[i]) >= 0.005 for i in idx_a))
             def projetar(real_m, fatia):
                 media = sum(real_m[i] for i in idx_f) / n_f if n_f else 0.0
                 if projecao == "orcado" and not (orc_abertos_zerado and abs(media) >= 0.005):
@@ -16047,7 +16158,8 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
         def _proj_fora(aba, v):
             o = orc_propria(aba, num)
             media = sum(v[j] for j in idx_f) / n_f if n_f else 0.0
-            usa_orc = projecao == "orcado" and any(abs(o[i]) >= 0.005 for i in idx_a)
+            usa_orc = projecao == "orcado" and (str(num).split(".")[0] in GRUPOS_SEM_FALLBACK_DE_MEDIA
+                                                or any(abs(o[i]) >= 0.005 for i in idx_a))
             return [v[i] if i in set(idx_f) else (o[i] if usa_orc else media) for i in range(n_m)]
         base_fora = {aba: _proj_fora(aba, v) for aba, v in por_aba.items()}
         linha = fecha_linha(num, nome, FORA_DO_MODELO, "DRE_MENSAL (linha fora do modelo)", None, base_fora, {a: "DRE_MENSAL da unidade" for a in base_fora})
@@ -16184,18 +16296,19 @@ def relatorio_das_retiradas(df, ano_base=2026):
     orçado no ano-base COM aquilo, quanto foi retirado e quanto fica orçado
     para o ano seguinte SEM aquilo -- e as variações. Última linha é o total."""
     c = colunas_relatorio_retiradas(ano_base)
-    colunas = ["Linha da DRE", "Plano de Contas", "Motivo", "Retirado por mês", c["real_com"], c["orc_com"], c["ret"], c["pct_ret"],
+    colunas = ["Linha da DRE", "Plano de Contas", "Motivo", "Retirado por mês", "Ajuste por unidade", c["real_com"], c["orc_com"], c["ret"], c["pct_ret"],
                c["base_sem"], c["prem"], c["pct_prem"], c["rasc_sem"], c["vs_real"], c["vs_orc"]]
     if df is None or df.empty:
         return pd.DataFrame(columns=colunas)
-    com = df[df["retirado"] > 0.005]
+    tem_ajuste = df["ajustes"].astype(str).ne("") if "ajustes" in df.columns else pd.Series(False, index=df.index)
+    com = df[(df["retirado"].abs() > 0.005) | tem_ajuste]
     if com.empty:
         return pd.DataFrame(columns=colunas)
     linhas = []
     for _, r in com.iterrows():
         linhas.append({
             "Linha da DRE": r["linha"], "Plano de Contas": r.get("plano", ""), "Motivo": r["motivo"],
-            "Retirado por mês": r.get("retirada_mensal", 0.0),
+            "Retirado por mês": r.get("retirada_mensal", 0.0), "Ajuste por unidade": r.get("ajustes", "") or "",
             c["real_com"]: r["base"], c["orc_com"]: r["orcado_ano"], c["ret"]: r["retirado"],
             c["pct_ret"]: (r["retirado"] / abs(r["base"])) if abs(r["base"]) >= 0.005 else None,
             c["base_sem"]: r["base_ajustada"], c["prem"]: r["premissa"], c["pct_prem"]: r["pct"],
@@ -16204,8 +16317,8 @@ def relatorio_das_retiradas(df, ano_base=2026):
     tot_base, tot_orc = float(com["base"].sum()), float(com["orcado_ano"].sum())
     tot_ret, tot_adj, tot_ras = float(com["retirado"].sum()), float(com["base_ajustada"].sum()), float(com["rascunho"].sum())
     linhas.append({
-        "Linha da DRE": "TOTAL DAS LINHAS COM RETIRADA", "Plano de Contas": "", "Motivo": f"{len(com)} linha(s)",
-        "Retirado por mês": float(com["retirada_mensal"].sum()) if "retirada_mensal" in com.columns else None,
+        "Linha da DRE": "TOTAL DAS LINHAS COM RETIRADA OU AJUSTE", "Plano de Contas": "", "Motivo": f"{len(com)} linha(s)",
+        "Retirado por mês": float(com["retirada_mensal"].sum()) if "retirada_mensal" in com.columns else None, "Ajuste por unidade": "",
         c["real_com"]: tot_base, c["orc_com"]: tot_orc, c["ret"]: tot_ret,
         c["pct_ret"]: (tot_ret / abs(tot_base)) if abs(tot_base) >= 0.005 else None,
         c["base_sem"]: tot_adj, c["prem"]: "", c["pct_prem"]: None, c["rasc_sem"]: tot_ras,
@@ -21466,7 +21579,8 @@ if tab_orc is not None:
             + (" na estrutura da planilha modelo: cada linha da DRE com os planos que a compõem" if _estrutura_rasc else "")
             + f": meses fechados valem o realizado; os que faltam entram pela **média dos fechados** (plano sem realizado usa o orçado "
             f"{_ano_rasc}). O orçado {_ano_rasc}, que só existe por linha da DRE, é rateado entre os planos pela participação no realizado. "
-            f"Em seguida você tira, plano a plano, o que **não vai se repetir em {_ano_rasc_prox}**, e as premissas entram sozinhas, pela "
+            f"Em seguida você tira, plano a plano, o que **não vai se repetir em {_ano_rasc_prox}**, ajusta por unidade o que precisar "
+            "(zerar um plano em todas as unidades, deixar um valor só numa, tirar um valor mensal de uma), e as premissas entram sozinhas, pela "
             "natureza de cada linha, com o percentual à vista. O bloco final mostra o que saiu: quanto foi realizado com aquilo, quanto "
             "estava orçado com aquilo e quanto fica orçado sem. Sem meta da indústria, a receita fica na base realizada."
             + ("" if _estrutura_rasc else " **Envie a planilha modelo acima** para o rascunho sair na estrutura dela e poder ser despejado nela.")
@@ -21506,6 +21620,10 @@ if tab_orc is not None:
         if "rasc_retiradas" not in st.session_state:
             st.session_state["rasc_retiradas"] = {}
         _retiradas_rasc = st.session_state["rasc_retiradas"]
+        # Ajustes por unidade: {chave: [{"tipo", "loja", "mensal", "motivo"}]}
+        if "rasc_ajustes" not in st.session_state:
+            st.session_state["rasc_ajustes"] = {}
+        _ajustes_rasc = st.session_state["rasc_ajustes"]
 
         if _real_rasc is None or _real_rasc.empty:
             st.info("Preciso da aba DRE CONSOLIDADO do Realizado para montar o rascunho.")
@@ -21536,7 +21654,8 @@ if tab_orc is not None:
                     _mapa_cc_rasc = {}
                 _df_rasc, _tot_rasc, _avisos_rasc = montar_rascunho_por_unidade(
                     _dre_mensal_rasc, _orc_un_rasc, _diario_rasc, _estrutura_rasc, _abas_rasc, _meses_ano_rasc, _meses_fech_rasc,
-                    retiradas=_retiradas_rasc, premissas=_premissas_rasc, projecao=_modo_proj_rasc, mapa_loja_cc=_mapa_cc_rasc)
+                    retiradas=_retiradas_rasc, premissas=_premissas_rasc, projecao=_modo_proj_rasc, mapa_loja_cc=_mapa_cc_rasc,
+                    ajustes=_ajustes_rasc)
             else:
                 _df_rasc, _tot_rasc = montar_rascunho_orcamento(
                     _real_rasc, _orc_rasc, _meses_ano_rasc, _meses_fech_rasc, retiradas=_retiradas_rasc,
@@ -21649,6 +21768,7 @@ if tab_orc is not None:
                     _rot_base: _vista_rasc["base"].values, _rot_orc: _vista_rasc["orcado_ano"].values,
                     "Retirar por mês (R$)": _vista_rasc["retirada_mensal"].values, "Retirado no ano": _vista_rasc["retirado"].values,
                     "Motivo": _vista_rasc["motivo"].values, "Loja (opcional)": _vista_rasc["loja_retirada"].values,
+                    "Ajuste por unidade": (_vista_rasc["ajustes"].values if "ajustes" in _vista_rasc.columns else [""] * len(_vista_rasc)),
                     "Premissa": _vista_rasc["premissa"].values, "%": (_vista_rasc["pct"] * 100).values,
                     _rot_rasc: _vista_rasc["rascunho"].values,
                     "vs orçado": _vista_rasc["var_vs_orcado"].map(lambda v: None if v is None or pd.isna(v) else v * 100).values,
@@ -21657,7 +21777,7 @@ if tab_orc is not None:
                 _editado_rasc = st.data_editor(
                     _editor_rasc, hide_index=True, width="stretch", height=min(38 + 35 * (len(_editor_rasc) + 1), 620),
                     key=_chave_editor, column_order=[c for c in _editor_rasc.columns if c != "Chave"],
-                    disabled=["Chave", "Nº", "Linha da DRE", "Plano de Contas", _rot_real, "Projeção", _rot_base, _rot_orc, "Retirado no ano", "Premissa", "%", _rot_rasc, "vs orçado"],
+                    disabled=["Chave", "Nº", "Linha da DRE", "Plano de Contas", _rot_real, "Projeção", _rot_base, _rot_orc, "Retirado no ano", "Ajuste por unidade", "Premissa", "%", _rot_rasc, "vs orçado"],
                     column_config={
                         "Nº": st.column_config.TextColumn(width="small"),
                         "Linha da DRE": st.column_config.TextColumn(width="medium"),
@@ -21676,6 +21796,7 @@ if tab_orc is not None:
                             options=[""] + list(_abas_rasc), width="medium",
                             help="Se o que sai aconteceu numa unidade só, marque-a: na planilha modelo a retirada sai dessa unidade. "
                                  "Em branco, sai na proporção de todas."),
+                        "Ajuste por unidade": st.column_config.TextColumn(width="medium", help="O que foi feito por unidade no bloco 🏪 abaixo."),
                         "Premissa": st.column_config.TextColumn(width="medium"),
                         "%": st.column_config.NumberColumn(format="%.2f%%"),
                         _rot_rasc: st.column_config.NumberColumn(format="R$ %.2f"),
@@ -21700,34 +21821,119 @@ if tab_orc is not None:
                 if _mudou_rasc:
                     st.rerun()
 
-                _cd1, _cd2, _cd3 = st.columns([1.2, 1.2, 2])
                 _nomes_por_chave = dict(zip(_df_rasc["chave"], zip(_df_rasc["linha"], _df_rasc["plano"])))
+
+                # ---- Ajustes por unidade (12/10/2026): o que antes era feito na mão na planilha ----
+                if _estrutura_rasc and _abas_rasc:
+                    st.markdown('<div class="section-title" style="margin-top:18px;">🏪 Ajustes por unidade — zerar em todas, deixar só numa, fixar ou retirar um valor mensal</div>',
+                                unsafe_allow_html=True)
+                    st.caption(
+                        "Para um plano de contas (ou linha): **zerar em todas as unidades**; **zerar em todas e deixar só uma unidade** com um "
+                        "valor por mês (ex.: Manutenção e Reparos zerado em todas e R$ 10.000 só no escritório); **fixar** um valor por mês numa "
+                        "unidade; ou **retirar** um valor por mês de uma unidade (ex.: R$ 6.800/mês de Auditoria / Consultoria do escritório). "
+                        "Valor fixado é final (a premissa não corrige); o valor retirado sai de cada mês antes da premissa. Entra na memória por unidade."
+                    )
+                    _chaves_aj = [k for k, p in zip(_df_rasc["chave"], _df_rasc["plano"]) if p != FORA_DO_MODELO]
+                    _rotulo_aj = {k: f"{_df_rasc.loc[_df_rasc['chave'] == k, 'numero'].iloc[0]} · {_nomes_por_chave[k][0]} › {_nomes_por_chave[k][1]}" for k in _chaves_aj}
+                    with st.form("rasc_form_ajuste", clear_on_submit=False):
+                        _fa1, _fa2 = st.columns([2, 1.4])
+                        with _fa1:
+                            _aj_chave = st.selectbox("Linha / plano de contas", _chaves_aj, key="rasc_aj_chave", format_func=lambda k: _rotulo_aj.get(k, k))
+                        with _fa2:
+                            _aj_tipo = st.selectbox("Ajuste", list(TIPOS_AJUSTE_UNIDADE.keys()), key="rasc_aj_tipo", format_func=lambda t: TIPOS_AJUSTE_UNIDADE[t])
+                        _fa3, _fa4, _fa5 = st.columns([1.4, 1, 2])
+                        with _fa3:
+                            _aj_loja = st.selectbox("Unidade", list(_abas_rasc), key="rasc_aj_loja",
+                                                    help="Ignorada em 'Zerar em todas as unidades'.")
+                        with _fa4:
+                            _aj_valor = st.number_input("Valor por mês (R$)", min_value=0.0, step=100.0, format="%.2f", key="rasc_aj_valor",
+                                                        help="Em módulo; o sinal segue o da linha. Ignorado em 'Zerar em todas as unidades'.")
+                        with _fa5:
+                            _aj_motivo = st.text_input("Motivo", key="rasc_aj_motivo", placeholder="ex.: contrato encerrado; só o escritório mantém")
+                        _aj_enviar = st.form_submit_button("➕ Adicionar o ajuste", type="primary")
+                    if _aj_enviar and _aj_chave:
+                        _novo_aj = {"tipo": _aj_tipo, "loja": ("" if _aj_tipo == "zerar_todas" else str(_aj_loja)),
+                                    "mensal": (0.0 if _aj_tipo == "zerar_todas" else abs(float(_aj_valor or 0.0))), "motivo": str(_aj_motivo or "").strip()}
+                        if _aj_tipo in ("fixar", "retirar") and _novo_aj["mensal"] < 0.005:
+                            st.warning("Informe o valor por mês.")
+                        else:
+                            _lista_aj = [a for a in _ajustes_rasc.get(_aj_chave, []) if not (a.get("tipo") == _novo_aj["tipo"] and a.get("loja") == _novo_aj["loja"])]
+                            _lista_aj.append(_novo_aj)
+                            _ajustes_rasc[_aj_chave] = _lista_aj
+                            st.rerun()
+                    _linhas_aj = [{"Chave": k, "Nº": _df_rasc.loc[_df_rasc["chave"] == k, "numero"].iloc[0] if (_df_rasc["chave"] == k).any() else "",
+                                   "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0], "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1],
+                                   "Ajuste": TIPOS_AJUSTE_UNIDADE.get(a.get("tipo"), a.get("tipo")), "Unidade": a.get("loja", ""),
+                                   "Valor por mês": float(a.get("mensal") or 0.0), "Motivo": a.get("motivo", ""), "_pos": i}
+                                  for k, lst in _ajustes_rasc.items() for i, a in enumerate(lst)]
+                    if _linhas_aj:
+                        _aj_df = pd.DataFrame(_linhas_aj)
+                        _aj_mostrar = _aj_df.drop(columns=["Chave", "_pos"]).copy()
+                        _aj_mostrar["Valor por mês"] = _aj_mostrar["Valor por mês"].map(lambda v: formata_brl(v) if v else "")
+                        st.dataframe(_aj_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_aj_mostrar) + 1), 400))
+                        _ra1, _ra2 = st.columns([3, 1])
+                        with _ra1:
+                            _opcoes_rem = list(range(len(_linhas_aj)))
+                            _rem_idx = st.selectbox("Remover um ajuste", _opcoes_rem, key="rasc_aj_remover_sel",
+                                                    format_func=lambda i: f"{_linhas_aj[i]['Plano de Contas']} — {_linhas_aj[i]['Ajuste']}"
+                                                                          + (f" ({_linhas_aj[i]['Unidade']})" if _linhas_aj[i]["Unidade"] else ""))
+                        with _ra2:
+                            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                            if st.button("🗑️ Remover", key="rasc_aj_remover"):
+                                _k_rem, _p_rem = _linhas_aj[_rem_idx]["Chave"], _linhas_aj[_rem_idx]["_pos"]
+                                _ajustes_rasc[_k_rem] = [a for i, a in enumerate(_ajustes_rasc.get(_k_rem, [])) if i != _p_rem]
+                                if not _ajustes_rasc[_k_rem]:
+                                    _ajustes_rasc.pop(_k_rem, None)
+                                st.rerun()
+                    else:
+                        st.caption("Nenhum ajuste por unidade ainda.")
+
+                # ---- Guardar / recarregar retiradas e ajustes (a sessão esquece quando fecha) ----
+                _cd1, _cd2, _cd3 = st.columns([1.2, 1.2, 2])
                 with _cd1:
-                    _csv_dec = pd.DataFrame([{"Chave": k, "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0],
-                                              "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1],
-                                              "Retirar por mês (R$)": v[0], "Motivo": v[1], "Loja": (v[2] if len(v) > 2 else "")}
-                                             for k, v in _retiradas_rasc.items()])
-                    st.download_button("⬇️ Guardar as retiradas (CSV)", _csv_dec.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                    _csv_dec = pd.DataFrame(
+                        [{"Tipo": "retirada", "Chave": k, "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0],
+                          "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1], "Unidade": (v[2] if len(v) > 2 else ""),
+                          "Valor por mês (R$)": v[0], "Motivo": v[1]} for k, v in _retiradas_rasc.items()]
+                        + [{"Tipo": a.get("tipo", ""), "Chave": k, "Linha da DRE": _nomes_por_chave.get(k, ("", ""))[0],
+                            "Plano de Contas": _nomes_por_chave.get(k, ("", ""))[1], "Unidade": a.get("loja", ""),
+                            "Valor por mês (R$)": float(a.get("mensal") or 0.0), "Motivo": a.get("motivo", "")}
+                           for k, lst in _ajustes_rasc.items() for a in lst],
+                        columns=["Tipo", "Chave", "Linha da DRE", "Plano de Contas", "Unidade", "Valor por mês (R$)", "Motivo"])
+                    st.download_button("⬇️ Guardar retiradas e ajustes (CSV)", _csv_dec.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"retiradas_rascunho_{_ano_rasc_prox}.csv", mime="text/csv", key="rasc_baixar_dec",
                                        help="A sessão do painel esquece quando fecha. Guarde o arquivo e recarregue depois.")
                 with _cd2:
-                    _arq_dec = st.file_uploader("Recarregar retiradas (CSV)", type=["csv"], key="rasc_carregar_dec", label_visibility="collapsed")
+                    _arq_dec = st.file_uploader("Recarregar retiradas e ajustes (CSV)", type=["csv"], key="rasc_carregar_dec", label_visibility="collapsed")
                     if _arq_dec is not None and st.button("Aplicar o arquivo", key="rasc_aplicar_dec"):
                         try:
                             _dec = pd.read_csv(_arq_dec, sep=";", decimal=",", dtype=str)
                             for _, _ld in _dec.iterrows():
-                                _v = pd.to_numeric(str(_ld.get("Retirar por mês (R$)", _ld.get("Retirar (R$)", ""))).replace(",", "."), errors="coerce")
+                                _ch_csv = str(_ld.get("Chave", "") or "").strip()
+                                if not _ch_csv or _ch_csv.lower() == "nan":
+                                    continue
+                                _tipo_csv = str(_ld.get("Tipo", "retirada") or "retirada").strip()
+                                _tipo_csv = "retirada" if _tipo_csv.lower() in ("", "nan", "none") else _tipo_csv
+                                _v = pd.to_numeric(str(_ld.get("Valor por mês (R$)", _ld.get("Retirar por mês (R$)", _ld.get("Retirar (R$)", "")))).replace(",", "."), errors="coerce")
                                 _v = 0.0 if pd.isna(_v) else abs(float(_v))
-                                if _v >= 0.005 and str(_ld.get("Chave", "")).strip():
-                                    _loja_csv = str(_ld.get("Loja", "") or "").strip()
-                                    _retiradas_rasc[str(_ld["Chave"]).strip()] = (
-                                        _v, str(_ld.get("Motivo", "") or ""), "" if _loja_csv.lower() in ("nan", "none") else _loja_csv)
+                                _loja_csv = str(_ld.get("Unidade", _ld.get("Loja", "")) or "").strip()
+                                _loja_csv = "" if _loja_csv.lower() in ("nan", "none") else _loja_csv
+                                _mot_csv = str(_ld.get("Motivo", "") or "")
+                                _mot_csv = "" if _mot_csv.lower() == "nan" else _mot_csv
+                                if _tipo_csv == "retirada":
+                                    if _v >= 0.005:
+                                        _retiradas_rasc[_ch_csv] = (_v, _mot_csv, _loja_csv)
+                                elif _tipo_csv in TIPOS_AJUSTE_UNIDADE:
+                                    _lst = [a for a in _ajustes_rasc.get(_ch_csv, []) if not (a.get("tipo") == _tipo_csv and a.get("loja") == _loja_csv)]
+                                    _lst.append({"tipo": _tipo_csv, "loja": _loja_csv, "mensal": _v, "motivo": _mot_csv})
+                                    _ajustes_rasc[_ch_csv] = _lst
                             st.rerun()
                         except Exception as _erro_dec:   # noqa: BLE001
                             st.error(f"Não consegui ler o arquivo: {_erro_dec}")
                 with _cd3:
-                    if _retiradas_rasc and st.button("Limpar todas as retiradas", key="rasc_limpar_dec"):
+                    if (_retiradas_rasc or _ajustes_rasc) and st.button("Limpar todas as retiradas e ajustes", key="rasc_limpar_dec"):
                         st.session_state["rasc_retiradas"] = {}
+                        st.session_state["rasc_ajustes"] = {}
                         st.rerun()
 
                 # ---- Detalhe: meses da linha e maiores lançamentos do plano ----
@@ -21758,12 +21964,12 @@ if tab_orc is not None:
                         st.caption("Esta linha não tem plano de contas no DIÁRIO (vem direto da DRE, como receita, ICMS e CMV).")
 
                 # ---- O que saiu: realizado com, orçado com, orçado sem ----
-                st.markdown('<div class="section-title" style="margin-top:18px;">📋 O que saiu do orçamento — com e sem</div>',
+                st.markdown('<div class="section-title" style="margin-top:18px;">📋 O que saiu ou foi ajustado no orçamento — com e sem</div>',
                             unsafe_allow_html=True)
                 _rel_rasc = relatorio_das_retiradas(_df_rasc, _ano_rasc)
                 _col_rel = colunas_relatorio_retiradas(_ano_rasc)
                 if _rel_rasc.empty:
-                    st.info("Nenhuma retirada ainda. Quando você tirar algo na tabela acima, este bloco mostra, por plano, quanto "
+                    st.info("Nenhuma retirada nem ajuste ainda. Quando você tirar ou ajustar algo acima, este bloco mostra, por plano, quanto "
                             f"{_ano_rasc} realizou com aquilo, quanto estava orçado com aquilo e quanto fica orçado para {_ano_rasc_prox} sem.")
                 else:
                     _tot_rel = _rel_rasc.iloc[-1]
@@ -21772,7 +21978,7 @@ if tab_orc is not None:
                     _rasc_sem = abs(float(_tot_rel[_col_rel["rasc_sem"]])); _ret_tot = float(_tot_rel[_col_rel["ret"]])
                     _pct1 = lambda v: f"{v:.1f}%".replace(".", ",")
                     st.markdown(
-                        f"- Foram retirados **{formata_brl(_ret_tot)}** em **{int((_df_rasc['retirado'] > 0.005).sum())} plano(s) de contas** — "
+                        f"- Saíram **{formata_brl(_ret_tot)}** da base em **{len(_rel_rasc) - 1} plano(s) de contas** (retiradas e ajustes por unidade) — "
                         f"**{_pct1(_ret_tot / _base_custos * 100)}** dos custos e despesas da base {_ano_rasc}."
                         f"\n- Nesses planos, {_ano_rasc} realizou **{formata_brl(_real_com)}** contra **{formata_brl(_orc_com)}** orçados "
                         f"({_var_txt(_real_com, _orc_com)} vs orçado)."
@@ -21832,7 +22038,8 @@ if tab_orc is not None:
                     st.caption(
                         f"Cada célula é calculada na própria unidade: meses fechados = realizado {_ano_rasc} da unidade (DIÁRIO para plano de "
                         f"contas, DRE_MENSAL para linha sem plano); meses que faltam = orçado {_ano_rasc} da aba da unidade; tudo corrigido pela "
-                        "premissa da linha. Retirada com loja marcada sai só daquela unidade. O que a DRE_MENSAL tem e o DIÁRIO não explica vai "
+                        "premissa da linha. Retirada com loja marcada e ajustes por unidade valem só na unidade marcada (valor fixado é final). "
+                        "Nos grupos 10 e 16 o mês que falta é o orçado da unidade, mesmo zerado. O que a DRE_MENSAL tem e o DIÁRIO não explica vai "
                         "para o plano homônimo (ou mais parecido) da linha, para a linha do modelo fechar com a DRE."
                     )
                     if st.button(f"📊 Gerar ORCAMENTO_{_ano_rasc_prox} preenchido com o rascunho", type="primary", key="rasc_preencher_modelo"):
@@ -21923,622 +22130,6 @@ if tab_orc is not None:
                         st.success("Nenhuma linha fora da tolerância: a proposta está alinhada ao ritmo deste ano.")
                 except Exception as _erro_pf:   # noqa: BLE001 -- arquivo estranho vira mensagem
                     st.error(f"Não consegui ler a proposta: {_erro_pf}")
-        st.markdown(
-            '<div class="section-title">🎯 Orçamento — por plano de contas</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            "Propõe um valor **por plano de contas** a partir do que o ano anterior realizou, e "
-            "devolve a sua planilha modelo preenchida — as fórmulas dela ficam intactas. O ano "
-            "não está fixo no código: sai das colunas do modelo que você enviar, então a mesma "
-            "aba serve para 2027, 2028 e os que vierem."
-        )
-
-        if _modelo_2027 is None:
-            st.info(
-                "**Envie a planilha modelo no topo da aba para usar os direcionadores.** A aba lê dela a lista de planos de "
-                "contas, a linha da DRE de cada um e quais linhas são fórmula — e é por isso que "
-                "ela continua funcionando quando você mudar a estrutura no ano que vem."
-            )
-        else:
-            try:
-                _modelo_2027.seek(0)
-                _estrutura_orc, _abas_orc = ler_estrutura_orcamento(_modelo_2027)
-            except Exception as _erro_modelo:                    # noqa: BLE001
-                _estrutura_orc, _abas_orc = [], []
-                st.error(f"Não consegui ler a planilha modelo: {_erro_modelo}")
-
-            if not _estrutura_orc:
-                st.warning("A planilha modelo veio sem linhas reconhecíveis.")
-            else:
-                _editaveis_orc = [e for e in _estrutura_orc if e["editavel"]]
-                _planos_orc = [e for e in _estrutura_orc if e["tipo"] == "plano"]
-                _formulas_orc = [e for e in _estrutura_orc if e["tipo"] == "formula"]
-
-                st.markdown(
-                    render_kpi_row([
-                        dict(label="ABAS A PREENCHER", value=str(len(_abas_orc)),
-                             value_color=COLORS["text"],
-                             subtext="as consolidadas ficam de fora — são calculadas", icon="📑"),
-                        dict(label="PLANOS DE CONTAS", value=str(len(_planos_orc)),
-                             value_color=COLORS["primary"],
-                             subtext=f"+ {len(_editaveis_orc) - len(_planos_orc)} linhas da DRE sem plano abaixo",
-                             icon="🧾"),
-                        dict(label="LINHAS DE FÓRMULA", value=str(len(_formulas_orc)),
-                             value_color=COLORS["warning"],
-                             subtext="intocáveis: somam os planos e não podem ser sobrescritas",
-                             icon="🔒"),
-                    ]),
-                    unsafe_allow_html=True,
-                )
-
-                # ---- Casamento dos nomes, ANTES de qualquer número ----------
-                # Nome que não casa vira base zero, e a tela mostraria
-                # "R$ 0,00" igualzinho a uma conta que de fato não teve gasto.
-                # Quem olha não tem como distinguir -- por isso a conferência
-                # vem primeiro, e não escondida num expander fechado.
-                # O DIÁRIO não está carregado neste ponto do arquivo -- cada
-                # painel carrega o seu sob demanda. Aqui é carregado uma vez
-                # só, e reaproveitado no casamento e no cálculo das bases.
-                _diario_orc = carregar_diario(path_real)
-                _casaram_orc, _faltaram_orc = conferir_casamento_dos_planos(
-                    _estrutura_orc, _diario_orc)
-                if _faltaram_orc:
-                    # NAO e erro: plano sem lancamento no DIARIO simplesmente
-                    # nao foi usado no ano. O aviso vermelho tratava isso como
-                    # defeito e mandava conferir nome que estava certo.
-                    st.info(
-                        f"**{len(_faltaram_orc)} de {len(_planos_orc)} planos de contas não tiveram "
-                        "movimento no ano anterior** — a base deles é zero, e por isso os "
-                        "direcionadores que multiplicam a base (IPCA, crescimento) devolvem zero "
-                        "também. Para orçar um deles, use **Valor fixo (ano)** ou **% da receita**. "
-                        "Se algum da lista devia ter tido movimento, aí sim vale conferir o nome."
-                    )
-                    with st.expander(f"Ver os {len(_faltaram_orc)} planos sem movimento"):
-                        st.dataframe(
-                            pd.DataFrame({"Plano de contas na planilha modelo": _faltaram_orc}),
-                            width="stretch", hide_index=True,
-                        )
-                else:
-                    st.success(
-                        f"Os {len(_planos_orc)} planos de contas da planilha modelo têm "
-                        "correspondência no DIÁRIO."
-                    )
-
-                # ---- Premissas ---------------------------------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown('<div class="section-title">⚙️ Premissas</div>', unsafe_allow_html=True)
-                _c1, _c2, _c3, _c4 = st.columns(4)
-                with _c1:
-                    _meses_fech_orc = st.number_input(
-                        "Meses de 2026 fechados", min_value=1, max_value=12,
-                        value=min(max(datetime.now(FUSO_BR).month - 1, 1), 12),
-                        step=1, key="orc27_meses",
-                        help="É o que transforma o realizado parcial em base anual.",
-                    )
-                with _c2:
-                    _ipca_orc = st.number_input(
-                        "IPCA 2027 (%)", min_value=0.0, max_value=30.0, value=4.25,
-                        step=0.05, format="%.2f", key="orc27_ipca",
-                        help="Mediana do Boletim Focus — muda toda segunda-feira.",
-                    ) / 100
-                with _c3:
-                    _reaj_sm_orc = st.number_input(
-                        "Reajuste do salário mínimo (%)", min_value=0.0, max_value=30.0,
-                        value=7.40, step=0.05, format="%.2f", key="orc27_sm",
-                        help="PLOA de 2027. Só se confirma em dezembro, com o INPC até novembro.",
-                    ) / 100
-                with _c4:
-                    _receita_orc = st.number_input(
-                        "Receita bruta projetada 2027 (R$)", min_value=0.0,
-                        value=0.0, step=100000.0, format="%.2f", key="orc27_receita",
-                        help="Base do direcionador '% da receita'.",
-                    )
-                _premissas_orc = {"ipca": _ipca_orc, "reajuste_sm": _reaj_sm_orc,
-                                  "receita_2027": _receita_orc}
-
-                # ---- Base 2026 por conta (empresa inteira, para a tela) -----
-                _ano_modelo, _meses_modelo = anos_do_modelo_orcamento(_modelo_2027)
-                _ano_base_orc = (_ano_modelo - 1) if _ano_modelo else datetime.now(FUSO_BR).year
-                _rotulo_base_orc = f"Realizado {_ano_base_orc} anualizado"
-                _meses_2026 = [f"{m:02d}/{_ano_base_orc}" for m in range(1, 13)]
-                _meses_fechados_cols = _meses_2026[:int(_meses_fech_orc)]
-                _realizado_por_conta = realizado_por_conta_e_loja(
-                    _diario_orc, _meses_fechados_cols)
-
-                _base_empresa = {}
-                for _chave, _por_mes in _realizado_por_conta.items():
-                    _base_empresa[_chave[1]] = _base_empresa.get(_chave[1], 0.0) + sum(_por_mes.values())
-
-                # As linhas da DRE nao estao no DIARIO -- ele tem plano de
-                # contas, nao linha. Sem esta busca elas apareciam TODAS
-                # zeradas na tela, e o zero se confundia com "nao teve gasto".
-                _dados_abas_tela = carregar_dados_por_loja(path_orc, path_real, _abas_orc)
-                _dre_mensal = _ler_aba_ou_vazio(path_real, "DRE MENSAL")
-                _nomes_dre_folha = [e["nome"] for e in _editaveis_orc if e["tipo"] == "dre"]
-                _realizado_dre = realizado_da_dre_por_aba(
-                    _dados_abas_tela, _dre_mensal, _nomes_dre_folha, _meses_fechados_cols)
-                _base_dre_empresa, _origem_dre = {}, {}
-                for (_aba_k, _chave_k), (_valor_k, _origem_k) in _realizado_dre.items():
-                    _base_dre_empresa[_chave_k] = _base_dre_empresa.get(_chave_k, 0.0) + _valor_k
-                    if _origem_k != "sem movimento":
-                        _origem_dre[_chave_k] = _origem_k
-
-                _linhas_editor = []
-                for _item in _editaveis_orc:
-                    _chave_item = chave_conta_orcamento(_item["nome"])
-                    if _item["tipo"] == "dre":
-                        _bruto = _base_dre_empresa.get(_chave_item, 0.0)
-                    else:
-                        _bruto = _base_empresa.get(_chave_item, 0.0)
-                    _linhas_editor.append({
-                        "Linha DRE": _item["linha_dre"],
-                        "Conta": _item["nome"],
-                        _rotulo_base_orc: anualizar_realizado(
-                            [_bruto / max(int(_meses_fech_orc), 1)] * 12, int(_meses_fech_orc)),
-                        "Origem": ("DIÁRIO" if _item["tipo"] == "plano"
-                                   else _origem_dre.get(_chave_item, "sem movimento")),
-                        "Direcionador": "",
-                        "Parâmetro %": 0.0,
-                    })
-                _df_editor_orc = pd.DataFrame(_linhas_editor)
-
-                # ---- Aplicação em massa por linha da DRE -------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown('<div class="section-title">🧭 Direcionadores</div>', unsafe_allow_html=True)
-                st.caption(
-                    "Aplicar IPCA em tudo é o erro clássico do orçamento incremental: repete as "
-                    "ineficiências de 2026 corrigidas pela inflação, e ninguém pergunta se o gasto "
-                    "ainda faz sentido. Escolha o que de fato move cada conta — aluguel segue "
-                    "índice, comissão segue receita, folha segue dissídio, software segue contrato."
-                )
-                if "orc27_escolhas" not in st.session_state:
-                    st.session_state["orc27_escolhas"] = {}
-
-                _m1, _m2, _m3, _m4 = st.columns([2, 1.4, 1, 1])
-                with _m1:
-                    _linhas_dre_orc = sorted({e["linha_dre"] for e in _editaveis_orc})
-                    _alvo_massa = st.multiselect(
-                        "Aplicar a estas linhas da DRE", _linhas_dre_orc, key="orc27_alvo")
-                with _m2:
-                    _dir_massa = st.selectbox(
-                        "Direcionador", [""] + DIRECIONADORES_2027, key="orc27_dir_massa")
-                with _m3:
-                    _par_massa = st.number_input(
-                        "Parâmetro (%)", value=0.0, step=0.10, format="%.4f",
-                        key="orc27_par_massa",
-                        help="Só é usado nos direcionadores que pedem percentual ou valor.")
-                with _m4:
-                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                    if st.button("Aplicar", width="stretch", key="orc27_aplicar"):
-                        for _item in _editaveis_orc:
-                            if _item["linha_dre"] in _alvo_massa:
-                                st.session_state["orc27_escolhas"][_item["nome"]] = (
-                                    _dir_massa, _par_massa)
-                        st.rerun()
-
-                for _i, _item in enumerate(_editaveis_orc):
-                    _guardado = st.session_state["orc27_escolhas"].get(_item["nome"])
-                    if _guardado:
-                        _df_editor_orc.loc[_i, "Direcionador"] = _guardado[0]
-                        _df_editor_orc.loc[_i, "Parâmetro %"] = _guardado[1]
-
-                _editado_orc = st.data_editor(
-                    _df_editor_orc, width="stretch", hide_index=True, height=420,
-                    key="orc27_editor",
-                    column_config={
-                        "Linha DRE": st.column_config.TextColumn(disabled=True, width="medium"),
-                        "Conta": st.column_config.TextColumn(disabled=True, width="medium"),
-                        _rotulo_base_orc: st.column_config.NumberColumn(
-                            disabled=True, format="R$ %.2f", width="small"),
-                        "Origem": st.column_config.TextColumn(
-                            disabled=True, width="small",
-                            help="De onde veio a base: DIÁRIO (plano de contas), aba da "
-                                 "unidade, DRE MENSAL (empresa inteira) ou sem movimento."),
-                        "Direcionador": st.column_config.SelectboxColumn(
-                            options=[""] + DIRECIONADORES_2027, width="medium"),
-                        "Parâmetro %": st.column_config.NumberColumn(
-                            format="%.4f", width="small",
-                            help="Percentual em decimal (0,0425 = 4,25%) ou valor do ano."),
-                    },
-                )
-
-
-                # ---- Camada 2: exceções por loja ---------------------------
-                # A regra geral acima vale para as 21 unidades. Aqui se
-                # sobrepõe SÓ onde a loja foge dela -- 219 planos x 21 lojas
-                # são quase 4.600 decisões, e ninguém preenche isso numa
-                # tabela. A tela entrega as contas que merecem a segunda
-                # olhada, em vez de deixar a pessoa percorrer 219 linhas.
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown('<div class="section-title">🏪 Exceções por loja</div>',
-                            unsafe_allow_html=True)
-
-                if "orc_excecoes" not in st.session_state:
-                    st.session_state["orc_excecoes"] = {}
-                _excecoes_orc = st.session_state["orc_excecoes"]
-
-                # Base por (loja, conta): plano vem do DIÁRIO, linha da DRE vem
-                # da cascata unidade -> DRE MENSAL.
-                _bases_por_loja = {}
-                for _aba in _abas_orc:
-                    _contas_aba = {}
-                    for _item in _editaveis_orc:
-                        _chave_i = chave_conta_orcamento(_item["nome"])
-                        if _item["tipo"] == "plano":
-                            _por_mes = _realizado_por_conta.get(
-                                (_normalizar_nome_aba(_aba), _chave_i), {})
-                            _contas_aba[_item["nome"]] = sum(_por_mes.values())
-                        else:
-                            _contas_aba[_item["nome"]] = _realizado_dre.get(
-                                (_aba, _chave_i), (0.0, ""))[0]
-                    _bases_por_loja[_aba] = _contas_aba
-                _pesos_orc = peso_da_loja_no_total(_bases_por_loja)
-                _bases_empresa_conta = {}
-                for _contas_aba in _bases_por_loja.values():
-                    for _conta, _valor in _contas_aba.items():
-                        _bases_empresa_conta[_conta] = _bases_empresa_conta.get(_conta, 0.0) + _valor
-
-                _qtd_exc, _lojas_exc = resumo_das_excecoes(_excecoes_orc)
-                _cl1, _cl2, _cl3 = st.columns([2, 1, 1])
-                with _cl1:
-                    _loja_orc = st.selectbox(
-                        "Loja", _abas_orc, key="orc_loja",
-                        help="A regra geral vale para todas. Aqui você sobrepõe só esta.")
-                with _cl2:
-                    _corte_orc = st.slider(
-                        "Fora do padrão a partir de", min_value=0.2, max_value=3.0,
-                        value=0.5, step=0.1, key="orc_corte",
-                        help="0,5 = a conta pesa 50% mais (ou menos) do que a loja costuma pesar.")
-                with _cl3:
-                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                    st.metric("Exceções ativas", f"{_qtd_exc} em {_lojas_exc} loja(s)")
-
-                _peso_loja = _pesos_orc.get(_loja_orc, 0.0)
-                st.caption(
-                    f"**{_loja_orc}** responde por **{_peso_loja * 100:.1f}%**".replace(".", ",")
-                    + " de tudo o que a empresa movimentou no ano anterior. A conta em que ela "
-                    "pesa muito mais (ou muito menos) do que isso é onde a regra geral "
-                    "provavelmente não serve — é essa a lista abaixo, ordenada pelo tamanho do "
-                    "desvio. As demais contas seguem a regra geral e não precisam ser tocadas."
-                )
-
-                _fora = contas_fora_do_padrao(
-                    _bases_por_loja.get(_loja_orc, {}), _bases_empresa_conta,
-                    _peso_loja, minimo=_corte_orc)
-
-                if not _fora:
-                    st.success(
-                        f"Nenhuma conta de **{_loja_orc}** foge do padrão dela acima do corte "
-                        "escolhido. A regra geral serve para esta loja inteira."
-                    )
-                else:
-                    _linhas_exc = []
-                    for _achado in _fora:
-                        _dir_ef, _par_ef, _origem_ef = direcionador_efetivo(
-                            _achado["conta"], _loja_orc,
-                            {i["nome"]: (str(_editado_orc.loc[j, "Direcionador"] or ""),
-                                         float(_editado_orc.loc[j, "Parâmetro %"] or 0))
-                             for j, i in enumerate(_editaveis_orc)},
-                            _excecoes_orc)
-                        _linhas_exc.append({
-                            "Conta": _achado["conta"],
-                            "Base da loja": _achado["base_loja"],
-                            "Base da empresa": _achado["base_empresa"],
-                            "Peso nesta conta": (abs(_achado["base_loja"]) / abs(_achado["base_empresa"])
-                                                 if _achado["base_empresa"] else 0.0),
-                            "Desvio vs padrão": _achado["desvio"],
-                            "Valendo hoje": f"{_dir_ef or '—'} ({_origem_ef})",
-                            "Direcionador da loja": (_excecoes_orc.get((_loja_orc, _achado["conta"]), ("", 0.0))[0]),
-                            "Parâmetro da loja": (_excecoes_orc.get((_loja_orc, _achado["conta"]), ("", 0.0))[1]),
-                        })
-                    _editado_exc = st.data_editor(
-                        pd.DataFrame(_linhas_exc), width="stretch", hide_index=True,
-                        height=340, key=f"orc_editor_exc_{_loja_orc}",
-                        column_config={
-                            "Conta": st.column_config.TextColumn(disabled=True, width="medium"),
-                            "Base da loja": st.column_config.NumberColumn(
-                                disabled=True, format="R$ %.2f", width="small"),
-                            "Base da empresa": st.column_config.NumberColumn(
-                                disabled=True, format="R$ %.2f", width="small"),
-                            "Peso nesta conta": st.column_config.NumberColumn(
-                                disabled=True, format="%.1f%%", width="small",
-                                help="Quanto desta conta é desta loja."),
-                            "Desvio vs padrão": st.column_config.NumberColumn(
-                                disabled=True, format="%.0f%%", width="small",
-                                help="Positivo: a loja pesa mais nesta conta do que costuma pesar."),
-                            "Valendo hoje": st.column_config.TextColumn(
-                                disabled=True, width="medium",
-                                help="O direcionador em vigor e de onde ele vem."),
-                            "Direcionador da loja": st.column_config.SelectboxColumn(
-                                options=[""] + DIRECIONADORES_2027, width="medium",
-                                help="Deixe vazio para herdar a regra geral."),
-                            "Parâmetro da loja": st.column_config.NumberColumn(
-                                format="%.4f", width="small"),
-                        },
-                    )
-                    _cg1, _cg2 = st.columns([1, 3])
-                    with _cg1:
-                        if st.button("Guardar exceções desta loja", width="stretch",
-                                     key=f"orc_guardar_exc_{_loja_orc}"):
-                            for _j, _achado in enumerate(_fora):
-                                _dir_l = str(_editado_exc.loc[_j, "Direcionador da loja"] or "")
-                                _par_l = float(_editado_exc.loc[_j, "Parâmetro da loja"] or 0)
-                                _chave_exc = (_loja_orc, _achado["conta"])
-                                if _dir_l:
-                                    _excecoes_orc[_chave_exc] = (_dir_l, _par_l)
-                                else:
-                                    _excecoes_orc.pop(_chave_exc, None)
-                            st.rerun()
-                    with _cg2:
-                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                        st.caption(
-                            "Deixar o direcionador da loja vazio faz a conta **voltar a herdar a "
-                            "regra geral** — é assim que se desfaz uma exceção. A coluna "
-                            "*Valendo hoje* mostra o que está em vigor e de onde vem, que é a "
-                            "primeira pergunta de quem cobrar o número numa reunião."
-                        )
-
-                # ---- Resumo do que já foi decidido -------------------------
-                _linhas_resumo = []
-                for _i, _item in enumerate(_editaveis_orc):
-                    _dir = str(_editado_orc.loc[_i, "Direcionador"] or "")
-                    _par = float(_editado_orc.loc[_i, "Parâmetro %"] or 0)
-                    _base = float(_editado_orc.loc[_i, _rotulo_base_orc] or 0)
-                    _linhas_resumo.append({
-                        "direcionador": _dir,
-                        "total_2027": aplicar_direcionador_2027(_base, _dir, _par, _premissas_orc),
-                    })
-                _decididas, _pendentes, _total_orc = resumo_da_proposta(_linhas_resumo)
-                st.markdown(
-                    render_kpi_row([
-                        dict(label="CONTAS DECIDIDAS", value=f"{_decididas} de {len(_editaveis_orc)}",
-                             value_color=(COLORS["positive"] if not _pendentes else COLORS["warning"]),
-                             progress_pct=_decididas / max(len(_editaveis_orc), 1) * 100,
-                             icon="✔️"),
-                        dict(label="SEM DIRECIONADOR", value=str(_pendentes),
-                             value_color=(COLORS["positive"] if not _pendentes else COLORS["negative"]),
-                             subtext="conta em branco não é conta zerada, é conta esquecida",
-                             icon="⚠️"),
-                        dict(label="TOTAL PROPOSTO (EMPRESA)", value=formata_valor_curto(_total_orc),
-                             value_color=COLORS["text"],
-                             subtext="soma do que já tem direcionador", icon="💰"),
-                    ]),
-                    unsafe_allow_html=True,
-                )
-
-
-                # ---- Proposta por loja, calculada UMA vez -------------------
-                # Os três blocos abaixo (memória de cálculo, confronto com a
-                # meta e o gerador do Excel) precisam do mesmo número. Calcular
-                # em três lugares seria três chances de eles discordarem -- e a
-                # discordância só apareceria com o arquivo já colado.
-                _escolhas_gerais_orc = {
-                    _item["nome"]: (str(_editado_orc.loc[_j, "Direcionador"] or ""),
-                                    float(_editado_orc.loc[_j, "Parâmetro %"] or 0))
-                    for _j, _item in enumerate(_editaveis_orc)
-                }
-                _proposta_por_loja, _memoria_itens = {}, []
-                for _aba in _abas_orc:
-                    for _item in _editaveis_orc:
-                        _chave_i = chave_conta_orcamento(_item["nome"])
-                        _dir_e, _par_e, _origem_e = direcionador_efetivo(
-                            _item["nome"], _aba, _escolhas_gerais_orc, _excecoes_orc)
-                        if _item["tipo"] == "plano":
-                            _base_i = sum(_realizado_por_conta.get(
-                                (_normalizar_nome_aba(_aba), _chave_i), {}).values())
-                            _origem_base = "DIÁRIO"
-                        else:
-                            _base_i, _origem_base = _realizado_dre.get(
-                                (_aba, _chave_i), (0.0, "sem movimento"))
-                        _base_anual = anualizar_realizado(
-                            [_base_i / max(int(_meses_fech_orc), 1)] * 12,
-                            int(_meses_fech_orc))
-                        _total_i = aplicar_direcionador_2027(
-                            _base_anual, _dir_e, _par_e, _premissas_orc)
-                        if _total_i is None:
-                            continue
-                        _curva_i = curva_do_ano(base_e_curva_da_linha(
-                            _dados_abas_tela.get(_aba, (pd.DataFrame(), pd.DataFrame()))[0],
-                            _item["linha_dre"], _meses_2026))
-                        _proposta_por_loja[(_normalizar_nome_aba(_aba), _chave_i)] = \
-                            distribuir_no_ano(_total_i, _curva_i)
-                        _memoria_itens.append({
-                            "loja": _aba, "linha_dre": _item["linha_dre"],
-                            "conta": _item["nome"], "base": _base_anual,
-                            "origem_base": _origem_base, "direcionador": _dir_e,
-                            "parametro": _par_e, "origem_direcionador": _origem_e,
-                            "proposto": _total_i,
-                        })
-
-                # ---- Confronto com a meta da indústria ---------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown('<div class="section-title">🏭 Confronto com a meta da indústria</div>',
-                            unsafe_allow_html=True)
-                st.caption(
-                    "A indústria manda a meta **por loja e por mês**. Aqui as duas ficam lado a "
-                    "lado para você decidir qual orçamento usar — e, quando decidir pelo seu, "
-                    "para ter na mão de quanto e onde vocês discordam."
-                )
-                _meta_arquivo = st.file_uploader(
-                    "Planilha da meta da indústria (.xlsx)", type=["xlsx"], key="orc_meta",
-                    help="Use o modelo padrão: colunas Loja, Conta e os 12 meses como texto.",
-                )
-                if _meta_arquivo is None:
-                    st.info(
-                        "**Sem a planilha da meta, este bloco fica em branco.** Baixe o modelo "
-                        "padrão, mande para a indústria preencher (ou preencha com o que eles "
-                        "enviarem) e suba aqui."
-                    )
-                else:
-                    _meta_df, _meses_meta, _erro_meta = ler_meta_da_industria(_meta_arquivo)
-                    if _erro_meta:
-                        st.error(_erro_meta)
-                    else:
-                        _confronto, _so_meta, _so_prop = confrontar_com_a_meta(
-                            _proposta_por_loja, _meta_df, _meses_meta)
-                        if _so_meta:
-                            # Quase sempre é nome escrito diferente, não meta
-                            # faltando -- e sem esta lista a pessoa compara um
-                            # subconjunto achando que comparou tudo.
-                            st.warning(
-                                f"**{len(_so_meta)} linhas da meta não encontraram par na "
-                                "proposta.** Costuma ser nome escrito diferente entre as duas "
-                                "planilhas, não meta faltando."
-                            )
-                            with st.expander("Ver as linhas sem par"):
-                                st.dataframe(
-                                    pd.DataFrame(_so_meta, columns=["Loja", "Conta"]),
-                                    width="stretch", hide_index=True)
-                        if _confronto.empty:
-                            st.warning("Nenhuma linha da meta casou com a proposta.")
-                        else:
-                            _tp = float(_confronto["Proposta do painel"].sum())
-                            _tm = float(_confronto["Meta da indústria"].sum())
-                            st.markdown(
-                                render_kpi_row([
-                                    dict(label="PROPOSTA DO PAINEL", value=formata_valor_curto(_tp),
-                                         value_color=COLORS["primary"],
-                                         subtext=f"{len(_confronto)} pares loja × conta", icon="🧮"),
-                                    dict(label="META DA INDÚSTRIA", value=formata_valor_curto(_tm),
-                                         value_color=COLORS["text"],
-                                         subtext="somando as mesmas linhas", icon="🏭"),
-                                    dict(label="DIFERENÇA", value=formata_valor_curto(_tp - _tm),
-                                         value_color=(COLORS["positive"] if _tp >= _tm
-                                                      else COLORS["negative"]),
-                                         subtext=(f"{(_tp / _tm - 1) * 100:+.1f}% contra a meta".replace(".", ",")
-                                                  if _tm else "meta zerada"),
-                                         icon="⚖️"),
-                                ]),
-                                unsafe_allow_html=True,
-                            )
-                            _visivel = _confronto.drop(
-                                columns=["_meses_proposta", "_meses_meta"])
-                            st.dataframe(
-                                _visivel.sort_values("Diferença", key=abs, ascending=False)
-                                .style.format({
-                                    "Proposta do painel": formata_brl,
-                                    "Meta da indústria": formata_brl,
-                                    "Diferença": formata_brl,
-                                    "Diferença %": lambda v: ("—" if v is None or pd.isna(v)
-                                                              else f"{v * 100:+.1f}%".replace(".", ",")),
-                                }),
-                                width="stretch", hide_index=True,
-                            )
-                            st.caption(
-                                "Ordenado pela maior diferença em reais, não em percentual: uma "
-                                "loja pequena 40% acima da meta move menos caixa que uma grande "
-                                "5% abaixo, e é a segunda que precisa de conversa."
-                            )
-                            _linha_det = st.selectbox(
-                                "Ver mês a mês", _confronto.index,
-                                format_func=lambda i: f"{_confronto.loc[i, 'Loja']} · {_confronto.loc[i, 'Conta']}",
-                                key="orc_meta_detalhe")
-                            _det = pd.DataFrame({
-                                "Mês": _meses_meta,
-                                "Proposta": _confronto.loc[_linha_det, "_meses_proposta"][:len(_meses_meta)],
-                                "Meta": _confronto.loc[_linha_det, "_meses_meta"],
-                            })
-                            _det["Diferença"] = _det["Proposta"] - _det["Meta"]
-                            st.dataframe(
-                                _det.style.format({c: formata_brl for c in
-                                                   ("Proposta", "Meta", "Diferença")}),
-                                width="stretch", hide_index=True)
-
-                # ---- Memória de cálculo ------------------------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown('<div class="section-title">📑 Memória de cálculo</div>',
-                            unsafe_allow_html=True)
-                st.caption(
-                    "É o documento da reunião. Cada linha diz de onde o número saiu: a base do "
-                    "ano anterior e de qual fonte ela veio, o direcionador aplicado, o parâmetro, "
-                    "se aquilo é regra geral ou exceção da loja, e quanto muda contra o ano "
-                    "anterior. **\"O painel calculou\" não é resposta** quando um departamento "
-                    "questiona o valor dele — a defesa tem de caber numa linha."
-                )
-                _memoria_df = memoria_de_calculo(_memoria_itens)
-                if _memoria_df.empty:
-                    st.info("Escolha ao menos um direcionador para a memória de cálculo aparecer.")
-                else:
-                    _cm1, _cm2 = st.columns([1, 2])
-                    with _cm1:
-                        _filtro_loja_mem = st.selectbox(
-                            "Loja", ["Todas"] + list(_abas_orc), key="orc_mem_loja")
-                    with _cm2:
-                        _filtro_linha_mem = st.multiselect(
-                            "Linha da DRE", sorted(_memoria_df["Linha DRE"].unique()),
-                            key="orc_mem_linha")
-                    _mem_vista = _memoria_df
-                    if _filtro_loja_mem != "Todas":
-                        _mem_vista = _mem_vista[_mem_vista["Loja"] == _filtro_loja_mem]
-                    if _filtro_linha_mem:
-                        _mem_vista = _mem_vista[_mem_vista["Linha DRE"].isin(_filtro_linha_mem)]
-                    st.dataframe(
-                        _mem_vista.head(500).style.format({
-                            "Base do ano anterior": formata_brl,
-                            "Proposto": formata_brl,
-                            "Parâmetro": lambda v: f"{v:.4f}".replace(".", ","),
-                            "Variação %": lambda v: ("—" if v is None or pd.isna(v)
-                                                     else f"{v * 100:+.1f}%".replace(".", ",")),
-                        }),
-                        width="stretch", hide_index=True, height=360,
-                    )
-                    if len(_mem_vista) > 500:
-                        st.caption(
-                            f"Mostrando 500 das {len(_mem_vista):,} linhas na tela — o arquivo "
-                            "abaixo traz todas.".replace(",", ".")
-                        )
-                    _csv_mem = _mem_vista.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
-                    st.download_button(
-                        "⬇️ Baixar a memória de cálculo (CSV)", data=_csv_mem,
-                        file_name="memoria_de_calculo_orcamento.csv", mime="text/csv",
-                        key="orc_mem_baixar",
-                        help="Ponto e vírgula, vírgula decimal e BOM: abre no Excel em português "
-                             "sem pedir nada.",
-                    )
-
-                # ---- Geração do Excel --------------------------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                if _pendentes:
-                    st.warning(
-                        f"**{_pendentes} contas ainda estão sem direcionador.** Dá para gerar o "
-                        "Excel assim mesmo — elas saem zeradas —, mas confira antes se é isso que "
-                        "você quer. Quem quer zerar de propósito escolhe **Não orçar**, que fica "
-                        "registrado como decisão."
-                    )
-                if st.button("📊 Gerar a planilha preenchida", type="primary", key="orc27_gerar"):
-                    # Reusa a proposta JÁ calculada acima, em vez de refazer a
-                    # conta aqui. Dois caminhos para o mesmo número são duas
-                    # chances de eles divergirem -- e a divergência entre a
-                    # tela e o arquivo só apareceria depois de colado.
-                    _valores_orc = {}
-                    for _aba in _abas_orc:
-                        _linhas_aba = {}
-                        for _item in _editaveis_orc:
-                            _meses_i = _proposta_por_loja.get(
-                                (_normalizar_nome_aba(_aba),
-                                 chave_conta_orcamento(_item["nome"])))
-                            if _meses_i is not None:
-                                _linhas_aba[_item["linha"]] = _meses_i
-                        _valores_orc[_aba] = _linhas_aba
-                    _modelo_2027.seek(0)
-                    with st.spinner("Escrevendo a planilha, aba por aba..."):
-                        _bytes_orc, _escritas_orc = gerar_excel_orcamento(
-                            _modelo_2027, _valores_orc)
-                    st.success(
-                        f"Planilha gerada: **{_escritas_orc:,} células** preenchidas em "
-                        f"**{len(_abas_orc)} abas**, sem tocar em nenhuma fórmula.".replace(",", ".")
-                    )
-                    st.download_button(
-                        "⬇️ Baixar ORCAMENTO_2027_preenchido.xlsx", data=_bytes_orc,
-                        file_name="ORCAMENTO_2027_preenchido.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="orc27_baixar",
-                    )
-                    st.caption(
-                        "As abas consolidadas não são tocadas: elas somam as unidades por fórmula "
-                        "e se resolvem sozinhas quando você abrir o arquivo."
-                    )
 
 
 # ---------------------------------------------------------------------------
