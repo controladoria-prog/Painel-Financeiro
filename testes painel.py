@@ -59,8 +59,11 @@ DEPENDENCIAS = {
                                     "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
                                     "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas",
                                     "chave_conta_orcamento", "_chave_frouxa"],
-    "preencher_modelo_com_rascunho": ["_normalizar_nome_aba", "chave_conta_orcamento", "curva_do_ano", "distribuir_no_ano",
+    "preencher_modelo_com_rascunho": ["chave_conta_orcamento", "curva_do_ano", "distribuir_no_ano", "_distribuir_entre_unidades",
                                       "_normalizar_coluna_fin", "_normalizar_texto", "_chave_frouxa"],
+    "diario_por_unidade_e_plano": ["_mask_loja_por_centro_custo", "_normalizar_texto", "_chave_frouxa", "chave_conta_orcamento",
+                                   "_normalizar_coluna_fin"],
+    "planos_do_diario_sem_par_no_modelo": ["_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
     "linhas_proprias_da_dre": ["_numero_linha_dre", "_eh_linha_de_resultado", "_normalizar_texto"],
     "diario_por_linha_e_plano": ["_numero_linha_dre"],
     "premissa_automatica_rascunho": ["_normalizar_coluna_fin"],
@@ -8323,8 +8326,10 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.ns2 = carregar(["montar_rascunho_pelo_modelo", "preencher_modelo_com_rascunho", "realizado_por_conta_e_loja"],
+        cls.ns2 = carregar(["montar_rascunho_pelo_modelo", "preencher_modelo_com_rascunho", "diario_por_unidade_e_plano",
+                            "planos_do_diario_sem_par_no_modelo"],
                            ["RESIDUO_SEM_PLANO", "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"])
+        cls.cc = {"LJ MARECHAL 6039": "6039 - LOJA MARECHAL", "LJ SETE 6052": "6052 - LOJA SETE"}
 
     def _estrutura(self):
         """Modelo: 1.1 e 4.1 sao linhas de valor; 8.3.1 abre em Salários; 8.4 abre
@@ -8344,10 +8349,11 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
                 dre(400, self.nomes["13"], True)]
 
     def _diario_lojas(self):
+        """Centro de custos com CODIGO, diferente do nome da aba -- como na
+        planilha real; o casamento e pela Tabela_Lojas (DE_PARA)."""
         d = self._diario()
-        d["Centro de Custos"] = ["LJ MARECHAL 6039" if i % 2 == 0 else "LJ SETE 6052" for i in range(len(d))]
-        d["Loja"] = d["Centro de Custos"]
-        d.loc[d["Plano de Contas"] == "Consultoria X", ["Centro de Custos", "Loja"]] = "LJ MARECHAL 6039"
+        d["Centro de Custos"] = ["6039 - LOJA MARECHAL" if i % 2 == 0 else "6052 - LOJA SETE" for i in range(len(d))]
+        d.loc[d["Plano de Contas"] == "Consultoria X", "Centro de Custos"] = "6039 - LOJA MARECHAL"
         return d
 
     def test_rascunho_sai_na_estrutura_do_modelo(self):
@@ -8388,12 +8394,23 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
                                                            retiradas={"8.8.3|Consultoria X": (10.0, "fornecedor que sai", "LJ MARECHAL 6039")},
                                                            premissas={"ipca": 0.0425, "dissidio": 0.074, "receita": 0.0})
         abas = ["LJ MARECHAL 6039", "LJ SETE 6052"]
-        real_lp = self.ns2["realizado_por_conta_e_loja"](diario, self.meses[:9])
-        valores, resumo = self.ns2["preencher_modelo_com_rascunho"](df, self._estrutura(), abas, real_lp, {}, lambda a, l: 0.0, self.meses[:9], self.meses)
+        diario_un, sem_aba = self.ns2["diario_por_unidade_e_plano"](diario, abas, self.cc, self.meses)
+        self.assertEqual(sem_aba, 0.0, "todo lancamento casou com uma aba pelo DE_PARA")
+        self.assertIn(("LJ MARECHAL 6039", "consultoriax"), diario_un)
+        valores, resumo, memoria = self.ns2["preencher_modelo_com_rascunho"](df, self._estrutura(), abas, diario_un, {}, lambda a, l: 0.0, {},
+                                                                             self.meses[:9], self.meses)
         # So linhas do modelo sao escritas; 12 meses cada; soma das unidades = rascunho das linhas do modelo (+ residuo somado aos planos).
         self.assertTrue(all(len(v) == 12 for aba in valores.values() for v in aba.values()))
         esperado = float(df.loc[df["linha_modelo"].notna() | (df["plano"] == self.ns2["RESIDUO_SEM_PLANO"]), "rascunho"].sum())
-        self.assertAlmostEqual(sum(resumo.values()), esperado, places=2)
+        self.assertAlmostEqual(sum(resumo.values()), esperado, places=1)
+        # NENHUMA linha de valor com rascunho fica em branco: a cadeia de criterios sempre acha unidade.
+        com_valor = df[df["linha_modelo"].notna() & (df["rascunho"].abs() >= 0.005)]
+        escritas = {int(l) for aba in valores.values() for l in aba}
+        self.assertTrue(set(com_valor["linha_modelo"].astype(int)) <= escritas)
+        criterios = set(memoria["Critério do rateio"].str.split(" · ").str[0])
+        self.assertIn("DIÁRIO da unidade", criterios)
+        self.assertIn("peso da unidade", criterios, "linha sem plano sem DRE/orcado por unidade cai no peso geral (aqui o DIARIO)")
+        self.assertNotIn("rateio igual", criterios)
         # Consultoria X e toda da MARECHAL: SETE nao recebe nada dela; a retirada com loja saiu da MARECHAL.
         self.assertNotIn(302, valores["LJ SETE 6052"])
         linha_x = df[df["chave"] == "8.8.3|Consultoria X"].iloc[0]
@@ -8404,6 +8421,37 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         # Residuo da 8.4 (sem linha no modelo) foi somado ao Aluguel: a linha 232 soma rascunho do plano + residuo.
         total_84 = float(df[df["numero"] == "8.4"]["rascunho"].sum())
         self.assertAlmostEqual(sum(valores["LJ MARECHAL 6039"][232]) + sum(valores["LJ SETE 6052"][232]), total_84, places=1)
+        # Sem DE_PARA e com centro de custos em codigo, nada casa por unidade -- e MESMO ASSIM nenhuma linha fica em branco.
+        diario_sem, sem_aba2 = self.ns2["diario_por_unidade_e_plano"](diario, abas, {}, self.meses)
+        self.assertGreater(sem_aba2, 0.0)
+        v2, r2, m2 = self.ns2["preencher_modelo_com_rascunho"](df, self._estrutura(), abas, diario_sem, {}, lambda a, l: 0.0, {}, self.meses[:9], self.meses)
+        self.assertAlmostEqual(sum(r2.values()), esperado, places=1)
+        self.assertIn("rateio igual", set(m2["Critério do rateio"].str.split(" · ").str[0]))
+        self.assertEqual(set(m2["Critério do rateio"].str.split(" · ").str[0]), {"rateio igual"}, "sem historico nenhum, so resta partes iguais")
+
+    def test_residuo_vai_para_o_plano_homonimo_da_linha(self):
+        """'6.2 - Taxa com Cartão' tem o plano 'Taxa com Cartão' abaixo: se o
+        DIARIO nao casou o plano, o valor da linha vai para ele, nao para um
+        rateio cego -- e o modelo preenchido sai com o numero no lugar certo."""
+        real, orc = self._dre(1.0, 9), self._dre(1.1)
+        estrutura = self._estrutura()
+        for e in estrutura:
+            if e["nome"] == "Aluguel":
+                e["nome"] = "Ocupação"   # homonimo da linha "8.4 - Ocupação"
+        d = self._diario_lojas()
+        d = d[d["Plano de Contas"] != "Aluguel"]   # DIARIO nao explica a 8.4: residuo = linha inteira
+        df, _, _ = self.ns2["montar_rascunho_pelo_modelo"](real, orc, d, estrutura, self.meses, self.meses[:9])
+        self.assertIn(("8.4", self.ns2["RESIDUO_SEM_PLANO"]), {(r["numero"], r["plano"]) for _, r in df.iterrows()})
+        self.assertEqual(df[df["chave"] == "8.4|Ocupação"].iloc[0]["origem_plano"], "sem movimento no DIÁRIO")
+        abas = ["LJ MARECHAL 6039", "LJ SETE 6052"]
+        diario_un, _ = self.ns2["diario_por_unidade_e_plano"](d, abas, self.cc, self.meses)
+        valores, _, memoria = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, abas, diario_un, {}, lambda a, l: 0.0, {}, self.meses[:9], self.meses)
+        total_84 = float(df[df["numero"] == "8.4"]["rascunho"].sum())
+        self.assertAlmostEqual(sum(valores[a].get(232, [0])[i] for a in abas for i in range(12)), total_84, places=1)
+        # E a lista do que o DIARIO tem e o modelo nao: 'Aluguel' nao esta mais no modelo, mas estava no DIARIO original.
+        sem_par = self.ns2["planos_do_diario_sem_par_no_modelo"](self._diario_lojas(), estrutura, self.meses)
+        self.assertIn("Aluguel", set(sem_par["Plano de Contas (DIÁRIO)"]))
+        self.assertAlmostEqual(float(sem_par[sem_par["Plano de Contas (DIÁRIO)"] == "Aluguel"]["Total no ano"].iloc[0]), -495.0)
 
     def test_plano_com_nome_parecido_casa_com_o_diario(self):
         """'Taxa com Cartão de Crédito / Débito' no modelo e 'Taxa com Cartao de
@@ -8421,9 +8469,9 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         self.assertAlmostEqual(x["realizado_fechado"], -235.0)
         self.assertTrue(any("2 plano(s)" in a and "não têm movimento" in a for a in avisos), "so o ICMS e o plano novo ficam sem movimento")
         # E a participacao por unidade tambem casa pelo nome parecido.
-        real_lp = self.ns2["realizado_por_conta_e_loja"](d, self.meses[:9])
-        valores, _ = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, ["LJ MARECHAL 6039", "LJ SETE 6052"], real_lp, {}, lambda a, l: 0.0,
-                                                               self.meses[:9], self.meses)
+        diario_un, _ = self.ns2["diario_por_unidade_e_plano"](d, ["LJ MARECHAL 6039", "LJ SETE 6052"], self.cc, self.meses)
+        valores, _, _ = self.ns2["preencher_modelo_com_rascunho"](df, estrutura, ["LJ MARECHAL 6039", "LJ SETE 6052"], diario_un, {}, lambda a, l: 0.0, {},
+                                                                  self.meses[:9], self.meses)
         self.assertIn(302, valores["LJ MARECHAL 6039"]); self.assertNotIn(302, valores["LJ SETE 6052"])
 
     def test_a_tela_le_o_modelo_no_topo_e_despeja_por_unidade(self):
@@ -8433,6 +8481,10 @@ class TesteRascunhoPeloModelo(TesteRascunhoOrcamento):
         self.assertEqual(FONTE.count('key="orc27_modelo"'), 1)
         self.assertIn("montar_rascunho_pelo_modelo(", trecho)
         self.assertIn("preencher_modelo_com_rascunho(", trecho)
+        self.assertIn("diario_por_unidade_e_plano(_diario_rasc, _abas_rasc, _mapa_cc_rasc, _meses_ano_rasc)", trecho,
+                      "o rateio por unidade casa o centro de custos pela Tabela_Lojas")
+        self.assertIn("planos_do_diario_sem_par_no_modelo(", trecho)
+        self.assertIn("Memória do rateio por unidade", trecho)
         self.assertIn('"Loja (opcional)"', trecho)
         self.assertIn('"Retirar por mês (R$)"', trecho, "a retirada e digitada por MES")
         self.assertNotIn('"Retirar (R$)": _vista_rasc', trecho)

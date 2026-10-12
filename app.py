@@ -15727,112 +15727,197 @@ def rascunho_por_linha(df):
     return agg
 
 
-def preencher_modelo_com_rascunho(df_rasc, estrutura, abas, realizado_loja_plano, realizado_dre_por_aba,
-                                  orcado_linha_por_aba, meses_fechados_cols, meses_ano):
+def diario_por_unidade_e_plano(df_diario, abas, mapa_loja_cc, meses_ano):
+    """{(aba, chave_frouxa_do_plano): [12 valores por mês]} a partir do DIÁRIO,
+    casando o Centro de Custos de cada lançamento com a aba de unidade do
+    modelo pela Tabela_Lojas (DE_PARA) e, na falta, pelo próprio nome da aba
+    -- o mesmo casamento tolerante que o resto do painel usa. É isto que o
+    rateio por unidade precisava e não tinha (12/10/2026): sem o DE_PARA, o
+    "LJ MARECHAL 6039" da aba nunca casava com o centro de custos do DIÁRIO,
+    toda participação dava zero e os 219 planos saíam em branco no modelo.
+    Devolve também o total do DIÁRIO que não casou com aba nenhuma."""
+    saida, sem_aba = {}, 0.0
+    if df_diario is None or df_diario.empty or "Centro de Custos" not in df_diario.columns:
+        return saida, sem_aba
+    bloco = df_diario[df_diario["Mês"].astype(str).isin(list(meses_ano))]
+    if bloco.empty:
+        return saida, sem_aba
+    pos = {m: i for i, m in enumerate(meses_ano)}
+    atribuido = pd.Series(False, index=bloco.index)
+    mapa = mapa_loja_cc or {}
+    for aba in abas:
+        candidatos = [c for c in (mapa.get(aba), aba) if c]
+        mask = _mask_loja_por_centro_custo(bloco, candidatos) & ~atribuido
+        if not mask.any():
+            continue
+        atribuido |= mask
+        sub = bloco[mask]
+        agrupado = sub.groupby([sub["Plano de Contas"].astype(str).map(_chave_frouxa), sub["Mês"].astype(str)], observed=True)["Valor Bruto"].sum()
+        for (plano, mes), valor in agrupado.items():
+            if mes in pos:
+                serie = saida.setdefault((aba, plano), [0.0] * len(meses_ano))
+                serie[pos[mes]] += float(valor)
+    if (~atribuido).any():
+        sem_aba = float(pd.to_numeric(bloco.loc[~atribuido, "Valor Bruto"], errors="coerce").fillna(0).abs().sum())
+    return saida, sem_aba
+
+
+def planos_do_diario_sem_par_no_modelo(df_diario, estrutura, meses_ano):
+    """Planos de contas que o DIÁRIO tem e o modelo não lista (nem por nome
+    parecido), com a linha da DRE em que foram lançados e o total do ano. É
+    de onde vem o "valor da linha sem plano no DIÁRIO": o dinheiro existe, só
+    está num nome que o modelo não conhece. Ordenado pelo maior valor."""
+    colunas = ["Linha DRE", "Plano de Contas (DIÁRIO)", "Lançamentos", "Total no ano"]
+    if df_diario is None or df_diario.empty or "Plano de Contas" not in df_diario.columns:
+        return pd.DataFrame(columns=colunas)
+    conhecidos = {_chave_frouxa(e["nome"]) for e in (estrutura or []) if e.get("tipo") == "plano"}
+    bloco = df_diario[df_diario["Mês"].astype(str).isin(list(meses_ano))]
+    if bloco.empty:
+        return pd.DataFrame(columns=colunas)
+    fr = bloco["Plano de Contas"].astype(str).map(_chave_frouxa)
+    fora = bloco[~fr.isin(conhecidos)]
+    if fora.empty:
+        return pd.DataFrame(columns=colunas)
+    tabela = (fora.groupby([fora["Linha DRE"].astype(str), fora["Plano de Contas"].astype(str)], observed=True)["Valor Bruto"]
+              .agg(["size", "sum"]).reset_index())
+    tabela.columns = colunas
+    tabela["Total no ano"] = tabela["Total no ano"].astype(float)
+    return tabela.sort_values("Total no ano", key=lambda c: c.abs(), ascending=False).reset_index(drop=True)
+
+
+def _distribuir_entre_unidades(total, partes, abas):
+    """Reparte `total` pelas `partes` (pesos por aba), centavos na última aba
+    com peso -- a soma das unidades bate com o total ao centavo."""
+    soma = sum(partes.get(a, 0.0) for a in abas)
+    if soma <= 0:
+        return {}
+    saida, acumulado, ultima = {}, 0.0, None
+    for a in abas:
+        if partes.get(a, 0.0) > 0:
+            saida[a] = round(total * partes[a] / soma, 2)
+            acumulado += saida[a]
+            ultima = a
+    if ultima is not None:
+        saida[ultima] = round(saida[ultima] + (round(total, 2) - acumulado), 2)
+    return saida
+
+
+def preencher_modelo_com_rascunho(df_rasc, estrutura, abas, diario_unidade, realizado_dre_por_aba,
+                                  orcado_linha_por_aba, peso_unidade, meses_fechados_cols, meses_ano):
     """Reparte o rascunho (empresa) entre as abas de unidade do modelo e devolve
-    {aba: {linha_da_planilha: [12 valores]}} para gerar_excel_orcamento.
+    ({aba: {linha_da_planilha: [12 valores]}}, {aba: total}, memória).
 
-    Participação de cada unidade numa linha do rascunho:
-      plano de contas  -> DIÁRIO da unidade naquele plano, meses fechados (módulo);
-      linha sem plano  -> realizado da linha na aba da unidade; sem isso, o
-                          orçado do ano da linha na unidade; sem nada, o peso
-                          geral da unidade (quanto ela representa do total).
-    Resíduo "sem plano no DIÁRIO" de uma linha é somado aos planos daquela
-    linha, na proporção deles, para a linha do modelo fechar com o rascunho.
-    Retirada marcada com LOJA sai só daquela unidade (até zerar a unidade);
-    sem loja, sai na proporção.
-    Os 12 meses da unidade seguem a curva da própria unidade (DIÁRIO fechado +
-    média), ou a curva da empresa quando a unidade não tem histórico.
-    Devolve (valores_por_aba, resumo) com resumo = {aba: total}."""
+    Critério de participação de cada unidade numa linha do rascunho, nesta
+    ordem (o primeiro que tiver número decide, e fica registrado na memória):
+      1. "DIÁRIO da unidade"  -> o realizado da unidade naquele plano, meses
+                                 fechados, em módulo (planos de contas);
+      2. "DRE da unidade"     -> o realizado da linha na aba da unidade
+                                 (linhas sem plano);
+      3. "orçado da unidade"  -> o orçado do ano da linha na aba da unidade;
+      4. "peso da unidade"    -> a participação geral da unidade (receita
+                                 bruta realizada; sem ela, o DIÁRIO total);
+      5. "rateio igual"       -> último recurso: partes iguais.
+    Assim NENHUMA linha fica em branco por falta de histórico: a soma das
+    unidades é sempre o rascunho da linha, ao centavo.
+
+    O resíduo "sem plano no DIÁRIO" de uma linha vai para o plano de mesmo
+    nome da linha (ex.: "6.2 - Taxa com Cartão" -> "Taxa com Cartão"); sem
+    esse, para os planos da linha na proporção das bases; sem base nenhuma,
+    em partes iguais. Retirada marcada com LOJA sai só daquela unidade.
+    Os 12 meses seguem a curva da própria unidade (DIÁRIO) ou a da empresa."""
     abas = list(abas or [])
+    memoria = []
     if df_rasc is None or df_rasc.empty or not abas:
-        return {}, {}
+        return {}, {}, pd.DataFrame()
     n_f = len(meses_fechados_cols)
-    chaves_aba = {aba: _normalizar_nome_aba(aba) for aba in abas}
-    # Peso geral de cada unidade (fallback): soma em módulo do DIÁRIO dela.
-    peso_geral = {aba: 0.0 for aba in abas}
-    for (loja, _plano), por_mes in (realizado_loja_plano or {}).items():
-        for aba in abas:
-            if chaves_aba[aba] == loja:
-                peso_geral[aba] += sum(abs(v) for m, v in por_mes.items() if m in meses_fechados_cols)
-    total_geral = sum(peso_geral.values()) or 1.0
+    diario_unidade = diario_unidade or {}
+    peso_unidade = {a: float(peso_unidade.get(a, 0.0) or 0.0) for a in abas} if peso_unidade else {a: 0.0 for a in abas}
+    if not any(peso_unidade.values()):
+        for (aba, _pl), serie in diario_unidade.items():
+            if aba in peso_unidade:
+                peso_unidade[aba] += sum(abs(v) for i, v in enumerate(serie) if meses_ano[i] in set(meses_fechados_cols))
 
-    # Índice frouxo do DIÁRIO por loja: {(loja, chave_frouxa): {mês: valor}} -- o mesmo
-    # casamento tolerante do rascunho, senão o plano casa na empresa e some na unidade.
-    por_loja_frouxa = {}
-    for (loja, chave), por_mes in (realizado_loja_plano or {}).items():
-        alvo = por_loja_frouxa.setdefault((loja, re.sub(r"[^a-z0-9]", "", str(chave))), {})
-        for m, v in por_mes.items():
-            alvo[m] = alvo.get(m, 0.0) + float(v)
+    def serie_unidade(aba, plano):
+        return diario_unidade.get((aba, _chave_frouxa(plano)))
 
-    def diario_da_unidade(aba, plano):
-        exato = (realizado_loja_plano or {}).get((chaves_aba[aba], chave_conta_orcamento(plano)))
-        if exato:
-            return exato
-        return por_loja_frouxa.get((chaves_aba[aba], _chave_frouxa(plano)), {})
-
-    def meses_da_unidade(aba, plano):
-        por_mes = diario_da_unidade(aba, plano)
-        fech = [float(por_mes.get(m, 0.0)) for m in meses_fechados_cols]
-        if not any(abs(v) >= 0.005 for v in fech):
-            return None
-        media = sum(fech) / n_f if n_f else 0.0
-        return fech + [media] * (len(meses_ano) - n_f)
-
-    # Resíduos somados aos planos da mesma linha.
+    # ---- Resíduos para dentro dos planos da linha ----
     df = df_rasc.copy()
-    residuos = df[df["plano"] == RESIDUO_SEM_PLANO]
-    for _, res in residuos.iterrows():
+    for idx_res, res in df[df["plano"] == RESIDUO_SEM_PLANO].iterrows():
         irmaos = df[(df["numero"] == res["numero"]) & (df["plano"] != RESIDUO_SEM_PLANO) & df["linha_modelo"].notna()]
         if irmaos.empty:
             continue
-        pesos = irmaos["base"].abs()
-        total = float(pesos.sum())
-        for idx, peso in pesos.items():
-            fatia = (peso / total) if total else 1.0 / len(irmaos)
-            df.at[idx, "rascunho"] = float(df.at[idx, "rascunho"]) + float(res["rascunho"]) * fatia
-            df.at[idx, "rascunho_meses"] = [a + b * fatia for a, b in zip(df.at[idx, "rascunho_meses"], res["rascunho_meses"])]
+        nome_linha = re.sub(r"^\s*\d+(\.\d+)*\s*[-–]\s*", "", str(res["linha"]))
+        homonimo = irmaos[irmaos["plano"].map(_chave_frouxa) == _chave_frouxa(nome_linha)]
+        if len(homonimo) == 1:
+            fatias = {homonimo.index[0]: 1.0}
+        elif len(irmaos) == 1:
+            fatias = {irmaos.index[0]: 1.0}
+        else:
+            pesos = irmaos["base"].abs()
+            total = float(pesos.sum())
+            fatias = {i: (p / total if total else 1.0 / len(irmaos)) for i, p in pesos.items()}
+        for i, fatia in fatias.items():
+            df.at[i, "rascunho"] = float(df.at[i, "rascunho"]) + float(res["rascunho"]) * fatia
+            df.at[i, "rascunho_meses"] = [a + b * fatia for a, b in zip(df.at[i, "rascunho_meses"], res["rascunho_meses"])]
+            df.at[i, "base"] = float(df.at[i, "base"]) + float(res["base"]) * fatia
     df = df[df["linha_modelo"].notna()]
 
     valores_por_aba = {aba: {} for aba in abas}
     resumo = {aba: 0.0 for aba in abas}
+    set_fech = set(meses_fechados_cols)
     for _, linha in df.iterrows():
-        numero, plano, total = linha["numero"], linha["plano"], float(linha["rascunho"])
+        plano, total = linha["plano"], float(linha["rascunho"])
         linha_modelo = int(linha["linha_modelo"])
-        # Participações por unidade.
+        if abs(total) < 0.005:
+            continue
+        partes, criterio = {}, ""
         if plano != LINHA_SEM_PLANO_NO_MODELO:
-            ch = plano
-            partes = {aba: sum(abs(v) for m, v in diario_da_unidade(aba, plano).items() if m in meses_fechados_cols) for aba in abas}
+            partes = {a: sum(abs(v) for i, v in enumerate(serie_unidade(a, plano) or []) if meses_ano[i] in set_fech) for a in abas}
+            criterio = "DIÁRIO da unidade"
         else:
-            ch = None
             chave_linha = chave_conta_orcamento(linha["linha"])
-            partes = {aba: abs(float((realizado_dre_por_aba or {}).get((aba, chave_linha), (0.0, ""))[0])) for aba in abas}
+            partes = {a: abs(float((realizado_dre_por_aba or {}).get((a, chave_linha), (0.0, ""))[0])) for a in abas}
+            criterio = "DRE da unidade"
             if not any(partes.values()) and orcado_linha_por_aba is not None:
-                partes = {aba: abs(float(orcado_linha_por_aba(aba, linha["linha"]))) for aba in abas}
+                partes = {a: abs(float(orcado_linha_por_aba(a, linha["linha"]) or 0.0)) for a in abas}
+                criterio = "orçado da unidade"
         if not any(partes.values()):
-            partes = {aba: peso_geral[aba] / total_geral for aba in abas}
-        soma_partes = sum(partes.values()) or 1.0
-        # Retirada por loja: tira da unidade antes de repartir o resto.
-        totais_unidade = {aba: total * partes[aba] / soma_partes for aba in abas}
+            partes, criterio = dict(peso_unidade), "peso da unidade"
+        if not any(partes.values()):
+            partes, criterio = {a: 1.0 for a in abas}, "rateio igual"
+        totais_unidade = _distribuir_entre_unidades(total, partes, abas)
+        # Retirada por loja: recompõe a base cheia por unidade e tira só da loja marcada.
         loja_ret = str(linha.get("loja_retirada") or "")
-        if loja_ret and loja_ret in totais_unidade and float(linha["retirado"]) > 0:
-            # Desfaz o rateio da retirada e aplica só na loja: o total da linha já veio sem a retirada
-            # (proporcional); recompõe a base cheia por unidade e tira da loja marcada.
-            base_cheia = float(linha["base"]) * (1.0 + float(linha["pct"]))
-            cheios = {aba: base_cheia * partes[aba] / soma_partes for aba in abas}
+        if loja_ret in totais_unidade and float(linha["retirado"]) > 0:
+            cheia = float(linha["base"]) * (1.0 + float(linha["pct"]))
+            cheios = _distribuir_entre_unidades(cheia, partes, abas)
             tirar = float(linha["retirado"]) * (1.0 + float(linha["pct"]))
-            sinal = 1.0 if cheios[loja_ret] >= 0 else -1.0
-            cheios[loja_ret] = sinal * max(abs(cheios[loja_ret]) - tirar, 0.0)
+            sinal = 1.0 if cheios.get(loja_ret, 0.0) >= 0 else -1.0
+            cheios[loja_ret] = round(sinal * max(abs(cheios.get(loja_ret, 0.0)) - tirar, 0.0), 2)
             totais_unidade = cheios
-        for aba in abas:
-            t_aba = totais_unidade[aba]
+            criterio += " · retirada só na " + loja_ret
+        soma_partes = sum(partes.get(a, 0.0) for a in abas) or 1.0
+        for aba, t_aba in totais_unidade.items():
             if abs(t_aba) < 0.005:
                 continue
-            curva_base = meses_da_unidade(aba, ch) if ch else None
+            curva_base = None
+            if plano != LINHA_SEM_PLANO_NO_MODELO:
+                su = serie_unidade(aba, plano)
+                if su and any(abs(su[i]) >= 0.005 for i, m in enumerate(meses_ano) if m in set_fech):
+                    media = sum(su[i] for i, m in enumerate(meses_ano) if m in set_fech) / n_f if n_f else 0.0
+                    curva_base = [su[i] if m in set_fech else media for i, m in enumerate(meses_ano)]
             curva = curva_do_ano(curva_base) if curva_base else curva_do_ano(linha["base_meses"])
-            valores_por_aba[aba][linha_modelo] = distribuir_no_ano(t_aba, curva)
+            meses = distribuir_no_ano(t_aba, curva)
+            valores_por_aba[aba][linha_modelo] = meses
             resumo[aba] += t_aba
-    return valores_por_aba, resumo
+            memoria.append({
+                "Unidade": aba, "Nº": linha["numero"], "Linha da DRE": linha["linha"], "Plano de Contas": plano,
+                "Critério do rateio": criterio, "Participação": partes.get(aba, 0.0) / soma_partes,
+                "Total da empresa": total, "Total da unidade": t_aba,
+                "Curva dos meses": "da própria unidade" if curva_base else "da empresa",
+                **{f"{m[:2]}/{int(m[3:]) + 1}": v for m, v in zip(meses_ano, meses)},
+            })
+    return valores_por_aba, resumo, pd.DataFrame(memoria)
 
 
 def totais_do_rascunho(df):
@@ -21235,6 +21320,18 @@ if tab_orc is not None:
                 _n_linhas_rasc = int(_df_rasc["numero"].nunique())
                 for _aviso_r in _avisos_rasc:
                     st.info(_aviso_r)
+                if _estrutura_rasc:
+                    _sem_par_rasc = planos_do_diario_sem_par_no_modelo(_diario_rasc, _estrutura_rasc, _meses_ano_rasc)
+                    _n_residuo_rasc = int((_df_rasc["plano"] == RESIDUO_SEM_PLANO).sum())
+                    if not _sem_par_rasc.empty:
+                        with st.expander(f"⚠️ {len(_sem_par_rasc)} planos do DIÁRIO que o modelo não tem (é daí que vem o 'valor da linha sem plano' "
+                                         f"em {_n_residuo_rasc} linha(s))", expanded=False):
+                            st.caption("O dinheiro está no DIÁRIO com um nome que o modelo não lista. No modelo preenchido ele vai para o plano de "
+                                       "mesmo nome da linha, ou é repartido entre os planos da linha. Para o rascunho sair plano a plano, acrescente "
+                                       "o nome ao modelo ou padronize o nome no DIÁRIO.")
+                            _sp_mostrar = _sem_par_rasc.copy()
+                            _sp_mostrar["Total no ano"] = _sp_mostrar["Total no ano"].map(formata_brl)
+                            st.dataframe(_sp_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sp_mostrar) + 1), 500))
 
                 def _var_txt(novo, antigo):
                     return ("—" if not antigo else f"{(novo / antigo - 1) * 100:+.1f}%".replace(".", ","))
@@ -21488,28 +21585,63 @@ if tab_orc is not None:
                     )
                     if st.button(f"📊 Gerar ORCAMENTO_{_ano_rasc_prox} preenchido com o rascunho", type="primary", key="rasc_preencher_modelo"):
                         with st.spinner("Repartindo o rascunho entre as unidades e escrevendo a planilha..."):
-                            _real_lp = realizado_por_conta_e_loja(_diario_rasc, _meses_fech_rasc)
+                            # Centro de custos do DIÁRIO -> aba de unidade, pela Tabela_Lojas (DE_PARA).
+                            try:
+                                _mapa_cc_rasc = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
+                            except Exception:   # noqa: BLE001 -- sem DE_PARA, casa pelo nome da aba
+                                _mapa_cc_rasc = {}
+                            _diario_un, _diario_sem_aba = diario_por_unidade_e_plano(_diario_rasc, _abas_rasc, _mapa_cc_rasc, _meses_ano_rasc)
                             _dados_un = carregar_dados_por_loja(path_orc, path_real, _abas_rasc)
                             _dre_mensal_r = _ler_aba_ou_vazio(path_real, "DRE MENSAL")
                             _nomes_sem_plano = sorted({r_["linha"] for _, r_ in _df_rasc[_df_rasc["plano"] == LINHA_SEM_PLANO_NO_MODELO].iterrows()})
                             _real_dre_un = realizado_da_dre_por_aba(_dados_un, _dre_mensal_r, _nomes_sem_plano, _meses_fech_rasc)
                             _orc_un = lambda aba, linha: sum(base_e_curva_da_linha(
                                 _dados_un.get(aba, (pd.DataFrame(), pd.DataFrame()))[0], linha, _meses_ano_rasc))
-                            _valores_un, _resumo_un = preencher_modelo_com_rascunho(
-                                _df_rasc, _estrutura_rasc, _abas_rasc, _real_lp, _real_dre_un, _orc_un, _meses_fech_rasc, _meses_ano_rasc)
+                            # Peso geral de cada unidade: a receita bruta realizada na aba dela.
+                            _peso_un = {}
+                            for _aba_u in _abas_rasc:
+                                _df_r_u = _dados_un.get(_aba_u, (pd.DataFrame(), pd.DataFrame()))[1]
+                                _peso_un[_aba_u] = abs(get_valor_consolidado_multi([_df_r_u], "1 - Receita Operacional Bruta", _meses_fech_rasc,
+                                                                                   exato_linha_sintetica=True)) if _df_r_u is not None and not _df_r_u.empty else 0.0
+                            _valores_un, _resumo_un, _memoria_un = preencher_modelo_com_rascunho(
+                                _df_rasc, _estrutura_rasc, _abas_rasc, _diario_un, _real_dre_un, _orc_un, _peso_un, _meses_fech_rasc, _meses_ano_rasc)
                             _modelo_2027.seek(0)
                             _bytes_rasc_modelo, _escritas_rasc = gerar_excel_orcamento(_modelo_2027, _valores_un)
                         _soma_un = sum(_resumo_un.values())
                         _soma_rasc = float(_df_rasc.loc[_df_rasc["linha_modelo"].notna() | (_df_rasc["plano"] == RESIDUO_SEM_PLANO), "rascunho"].sum())
-                        st.success(f"Planilha gerada: **{_escritas_rasc:,} células** em **{len(_abas_rasc)} abas**, sem tocar em fórmula. "
-                                   f"Soma das unidades {formata_brl(_soma_un)} · rascunho {formata_brl(_soma_rasc)}.".replace(",", "."))
+                        _linhas_escritas = len({(r_["Nº"], r_["Plano de Contas"]) for _, r_ in _memoria_un.iterrows()}) if not _memoria_un.empty else 0
+                        _linhas_modelo = int(_df_rasc["linha_modelo"].notna().sum())
+                        st.success(f"Planilha gerada: **{f'{_escritas_rasc:,}'.replace(',', '.')} células** em **{len(_abas_rasc)} abas**, sem tocar em fórmula. "
+                                   f"**{_linhas_escritas} de {_linhas_modelo} linhas de valor** do modelo receberam número (as demais têm rascunho zero). "
+                                   f"Soma das unidades {formata_brl(_soma_un)} · rascunho {formata_brl(_soma_rasc)}.")
                         if abs(_soma_un - _soma_rasc) >= 1.0:
-                            st.warning("A soma das unidades não bateu com o rascunho da empresa: alguma linha do modelo ficou sem unidade "
-                                       "com participação (confira os avisos acima).")
-                        st.download_button(f"⬇️ Baixar ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx", data=_bytes_rasc_modelo,
-                                           file_name=f"ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx",
-                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_modelo",
-                                           type="primary")
+                            st.warning("A soma das unidades não bateu com o rascunho da empresa — me avise, isso não deveria acontecer.")
+                        if _diario_sem_aba:
+                            st.warning(f"{formata_brl(_diario_sem_aba)} de lançamentos do DIÁRIO não casaram com nenhuma aba de unidade pelo centro "
+                                       "de custos (Tabela_Lojas). Eles contam no rascunho da empresa, mas não puxam participação para unidade "
+                                       "nenhuma — essas linhas caem no peso geral da unidade.")
+                        if not _memoria_un.empty:
+                            _crit = _memoria_un.groupby("Critério do rateio")["Total da unidade"].agg(["size", "sum"]).reset_index()
+                            _crit.columns = ["Critério do rateio", "Células (unidade × linha)", "Valor"]
+                            _crit["Valor"] = _crit["Valor"].map(formata_brl)
+                            st.markdown("**De onde veio cada número** — critério usado para repartir cada linha entre as unidades:")
+                            st.dataframe(_crit, hide_index=True, width="stretch", height=38 + 35 * (len(_crit) + 1))
+                        _cdl1, _cdl2 = st.columns(2)
+                        with _cdl1:
+                            st.download_button(f"⬇️ Baixar ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx", data=_bytes_rasc_modelo,
+                                               file_name=f"ORCAMENTO_{_ano_rasc_prox}_rascunho_preenchido.xlsx",
+                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_modelo",
+                                               type="primary")
+                        with _cdl2:
+                            if not _memoria_un.empty:
+                                _mem_buf = io.BytesIO()
+                                with pd.ExcelWriter(_mem_buf, engine="openpyxl") as _esc_mem:
+                                    _memoria_un.to_excel(_esc_mem, sheet_name="Memoria por unidade", index=False)
+                                    pd.DataFrame({"Unidade": list(_resumo_un.keys()), f"Rascunho {_ano_rasc_prox}": list(_resumo_un.values())}).to_excel(
+                                        _esc_mem, sheet_name="Total por unidade", index=False)
+                                st.download_button("⬇️ Memória do rateio por unidade (de onde veio cada número)", data=_mem_buf.getvalue(),
+                                                   file_name=f"Rascunho_{_ano_rasc_prox}_memoria_por_unidade.xlsx",
+                                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_mem_un")
                         st.dataframe(pd.DataFrame({"Unidade": list(_resumo_un.keys()),
                                                    f"Rascunho {_ano_rasc_prox}": [formata_brl(v) for v in _resumo_un.values()]}),
                                      hide_index=True, width="stretch", height=38 + 35 * (len(_resumo_un) + 1))
