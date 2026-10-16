@@ -64,5 +64,10 @@
  "estouro:Flaconetes:10/2026",
  "dep:🏬 Relatório de Custos - Coordenação de Loja:Flaconetes:10/2026",
  "dep:🚗 Relatório de Custos - Coordenação de VD:Flaconetes:10/2026",
- "dep:🛒 Relatório de Custos - Compras:Flaconetes:10/2026"
+ "dep:🛒 Relatório de Custos - Compras:Flaconetes:10/2026",
+ "dep:🏦 Relatório de Custos - ADM/Financeiro:Resultado Operacional:10/2026",
+ "dep:🏦 Relatório de Custos - ADM/Financeiro:EBITDA:10/2026",
+ "dep:🏦 Relatório de Custos - ADM/Financeiro:Margem de Contribuição 2:10/2026",
+ "dep:🏦 Relatório de Custos - ADM/Financeiro:Resultado Antes do Imposto:10/2026",
+ "dep:🏦 Relatório de Custos - ADM/Financeiro:Resultado Gerencial do Período:10/2026"
 ]
