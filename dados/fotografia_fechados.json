@@ -1,11 +1,11 @@
 {
- "data": "2026-10-15",
+ "data": "2026-10-16",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.19,
    "2 - Deduções da Receita Operacional Bruta": -439874.11,
-   "4 - Custo das Vendas": -3807757.7199999997,
-   "11 - EBITDA": 770587.3299999998,
+   "4 - Custo das Vendas": -2909682.53,
+   "11 - EBITDA": 1668662.5199999996,
    "6.1 - Comissões sobre Vendas": -146635.28999999998,
    "6.2 - Taxa com Cartão de Crédito / Débito": -51198.63,
    "6.3 - POS Cartões": -41980.32000000001,
@@ -43,8 +43,8 @@
   "02/2026": {
    "3 - Receita Operacional Liquida": 7422035.12,
    "2 - Deduções da Receita Operacional Bruta": -278030.79999999993,
-   "4 - Custo das Vendas": -3321524.48,
-   "11 - EBITDA": 1135819.46,
+   "4 - Custo das Vendas": -2539207.25,
+   "11 - EBITDA": 1918136.6900000002,
    "6.1 - Comissões sobre Vendas": -125449.26,
    "6.2 - Taxa com Cartão de Crédito / Débito": -46763.59,
    "6.3 - POS Cartões": -40061.84,
@@ -82,8 +82,8 @@
   "03/2026": {
    "3 - Receita Operacional Liquida": 10400921.54,
    "2 - Deduções da Receita Operacional Bruta": -658433.37,
-   "4 - Custo das Vendas": -5008698.19,
-   "11 - EBITDA": 1973525.13,
+   "4 - Custo das Vendas": -3874730.54,
+   "11 - EBITDA": 3107492.78,
    "6.1 - Comissões sobre Vendas": -149638.24000000002,
    "6.2 - Taxa com Cartão de Crédito / Débito": -69797.37,
    "6.3 - POS Cartões": -69239.75,
@@ -121,8 +121,8 @@
   "04/2026": {
    "3 - Receita Operacional Liquida": 9479543.43,
    "2 - Deduções da Receita Operacional Bruta": -426477.82,
-   "4 - Custo das Vendas": -4245208.489999999,
-   "11 - EBITDA": 2129433.55,
+   "4 - Custo das Vendas": -3305299.2799999993,
+   "11 - EBITDA": 3069342.76,
    "6.1 - Comissões sobre Vendas": -140870.97,
    "6.2 - Taxa com Cartão de Crédito / Débito": -61781.119999999995,
    "6.3 - POS Cartões": -76926.23000000001,
@@ -160,8 +160,8 @@
   "05/2026": {
    "3 - Receita Operacional Liquida": 13601909.98,
    "2 - Deduções da Receita Operacional Bruta": -1071822.4,
-   "4 - Custo das Vendas": -6700984.98,
-   "11 - EBITDA": 3412812.9099999997,
+   "4 - Custo das Vendas": -4908693.77,
+   "11 - EBITDA": 5205104.12,
    "6.1 - Comissões sobre Vendas": -209395.23999999996,
    "6.2 - Taxa com Cartão de Crédito / Débito": -103818.24000000002,
    "6.3 - POS Cartões": -91517.23000000001,
@@ -199,8 +199,8 @@
   "06/2026": {
    "3 - Receita Operacional Liquida": 11261758.16,
    "2 - Deduções da Receita Operacional Bruta": -540053.42,
-   "4 - Custo das Vendas": -4621729.65,
-   "11 - EBITDA": 3312435.08,
+   "4 - Custo das Vendas": -3577712.05,
+   "11 - EBITDA": 4356452.68,
    "6.1 - Comissões sobre Vendas": -162877.58,
    "6.2 - Taxa com Cartão de Crédito / Débito": -75432.82,
    "6.3 - POS Cartões": -83156.10999999999,
@@ -238,8 +238,8 @@
   "07/2026": {
    "3 - Receita Operacional Liquida": 10148340.32,
    "2 - Deduções da Receita Operacional Bruta": -483991.87999999995,
-   "4 - Custo das Vendas": -4337354.92,
-   "11 - EBITDA": 2226090.36,
+   "4 - Custo das Vendas": -3353956.83,
+   "11 - EBITDA": 3209488.4499999997,
    "6.1 - Comissões sobre Vendas": -130389.64000000001,
    "6.2 - Taxa com Cartão de Crédito / Débito": -65837.56,
    "6.3 - POS Cartões": -67638.7,
@@ -277,8 +277,8 @@
   "08/2026": {
    "3 - Receita Operacional Liquida": 10502921.84,
    "2 - Deduções da Receita Operacional Bruta": -657148.0099999999,
-   "4 - Custo das Vendas": -4573362.59,
-   "11 - EBITDA": 2769356.0000000005,
+   "4 - Custo das Vendas": -3214851.1799999997,
+   "11 - EBITDA": 4127867.41,
    "6.1 - Comissões sobre Vendas": -151494.7,
    "6.2 - Taxa com Cartão de Crédito / Débito": -71253.84,
    "6.3 - POS Cartões": -73455.54000000001,
@@ -316,8 +316,8 @@
   "09/2026": {
    "3 - Receita Operacional Liquida": 11426815.82,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
-   "4 - Custo das Vendas": -4830983.4399999995,
-   "11 - EBITDA": 4060167.410000001,
+   "4 - Custo das Vendas": -3341656.7100000004,
+   "11 - EBITDA": 5549494.140000001,
    "6.1 - Comissões sobre Vendas": 0.0,
    "6.2 - Taxa com Cartão de Crédito / Débito": -68377.2,
    "6.3 - POS Cartões": -75326.62,
