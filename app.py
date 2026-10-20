@@ -788,6 +788,49 @@ st.markdown(
             color: {COLORS["text"]} !important;
         }}
 
+        /* Componentes que o Streamlit pinta com a cor primária (âmbar) e
+           texto BRANCO por cima -- ilegível. Etiquetas do seletor múltiplo
+           ficam em âmbar suave com texto claro; botão primário, dia escolhido
+           no calendário e opção marcada ficam em âmbar com texto GRAFITE. */
+        span[data-baseweb="tag"], div[data-baseweb="tag"],
+        div[data-testid="stMultiSelect"] span[data-tag], span[data-tag] {{
+            background-color: {COLORS["accent_soft"]} !important;
+            border: 1px solid rgba(217, 160, 84, 0.55) !important;
+            color: {COLORS["text"]} !important;
+        }}
+        span[data-baseweb="tag"] span, div[data-baseweb="tag"] span,
+        span[data-baseweb="tag"] [role="presentation"], div[data-baseweb="tag"] [role="presentation"],
+        span[data-tag] span, span[data-tag] button, span[data-tag] svg {{
+            color: {COLORS["text"]} !important;
+            fill: {COLORS["text"]} !important;
+        }}
+        button[kind="primary"], button[data-testid="stBaseButton-primary"],
+        .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"],
+        .stFormSubmitButton > button[kind="primary"] {{
+            background: {COLORS["accent"]} !important;
+            border-color: {COLORS["accent"]} !important;
+            color: {COLORS["bg"]} !important;
+            font-weight: 700 !important;
+        }}
+        button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover,
+        .stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {{
+            background: {COLORS["warning"]} !important;
+            border-color: {COLORS["warning"]} !important;
+            color: {COLORS["bg"]} !important;
+        }}
+        button[kind="primary"] p, button[data-testid="stBaseButton-primary"] p {{
+            color: {COLORS["bg"]} !important;
+        }}
+        div[data-baseweb="calendar"] [aria-selected="true"],
+        div[data-baseweb="calendar"] [aria-selected="true"] div {{
+            color: {COLORS["bg"]} !important;
+        }}
+        div[data-baseweb="select"] li[aria-selected="true"],
+        ul[data-baseweb="menu"] li[aria-selected="true"] {{
+            background-color: {COLORS["accent_soft"]} !important;
+            color: {COLORS["text"]} !important;
+        }}
+
         /* Campos (seleção, texto, número) no mesmo contorno dos botões */
         div[data-baseweb="select"] > div,
         div[data-testid="stTextInput"] input,
