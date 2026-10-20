@@ -1,14 +1,14 @@
-# Identidade visual do Grupo BEEA (20/10/2026): tema claro. As cores batem com
-# o dicionário COLORS do app.py; o Streamlit usa estas nos componentes
-# nativos (campos, tabelas, abas) e o app aplica o resto pelo CSS injetado.
+# Identidade visual do Grupo BEEA (20/10/2026): tema escuro em grafite. As
+# cores batem com o dicionário COLORS do app.py; o Streamlit usa estas nos
+# componentes nativos (campos, tabelas, abas) e o app aplica o resto pelo CSS.
 [theme]
-base = "light"
-primaryColor = "#C4883B"
-backgroundColor = "#EDF0F2"
-secondaryBackgroundColor = "#FBFCFC"
-textColor = "#1B262E"
-linkColor = "#3C78A8"
-borderColor = "#D5DCE1"
+base = "dark"
+primaryColor = "#D9A054"
+backgroundColor = "#141B21"
+secondaryBackgroundColor = "#1D262D"
+textColor = "#E8EDF0"
+linkColor = "#8FBCE0"
+borderColor = "#34424B"
 showWidgetBorder = true
 baseRadius = "0.4rem"
 font = "sans-serif"
@@ -17,4 +17,4 @@ font = "sans-serif"
 backgroundColor = "#212F38"
 secondaryBackgroundColor = "#2B3A45"
 textColor = "#F4F6F7"
-borderColor = "#334049"
+borderColor = "#3A4954"

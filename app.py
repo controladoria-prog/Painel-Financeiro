@@ -59,57 +59,38 @@ LINK_PAINEL_PADRAO = "https://painel-financeiro-controladoriabeea.streamlit.app"
 # ============================================================================
 # 2. DESIGN SYSTEM — paleta única, usada tanto no CSS quanto nos gráficos
 # ============================================================================
-# Identidade visual do Grupo BEEA (20/10/2026). O painel deixa de ser escuro:
-# fundo "porcelana" (neutro frio, puxado para o grafite), barra lateral no
-# GRAFITE do próprio logotipo do grupo, e o ÂMBAR como única cor quente --
-# reservada ao que pede atenção (meta, destaque, botão principal). Verde-mata
-# e terracota ficam só para o semáforo de resultado: positivo verde,
-# negativo vermelho. O lilás e o azul-claro da paleta antiga saíram.
+# Identidade visual do Grupo BEEA (20/10/2026), em TEMA ESCURO por decisão da
+# diretoria: fundo em grafite profundo, barra lateral no GRAFITE do próprio
+# logotipo (#212F38), superfícies um tom acima do fundo, e o ÂMBAR como única
+# cor quente -- reservada ao que pede atenção (meta, destaque, botão
+# principal, aba ativa). Verde e vermelho ficam para os números: positivo
+# verde, negativo vermelho. O lilás e o azul-claro da paleta antiga saíram.
 COLORS = {
-    "bg": "#EDF0F2",
+    "bg": "#141B21",
     "sidebar_bg": "#212F38",
     "sidebar_text": "#F4F6F7",
     "sidebar_text_muted": "#B9C4CC",
-    "surface": "#FBFCFC",
-    "surface_alt": "#F3F5F6",
-    "border": "#D5DCE1",
-    "border_soft": "#E2E7EB",
-    "text": "#1B262E",
-    "text_muted": "#5C6B76",
-    "primary": "#212F38",
-    "primary_soft": "rgba(33, 47, 56, 0.10)",
-    "secondary": "#7E8C97",
-    "positive": "#2F7D5B",
-    "negative": "#B9463C",
-    "warning": "#9A6520",
-    "muted_line": "#A3AEB8",
-    "accent": "#C4883B",
-    "accent_soft": "#F4E7D3",
-}
-
-# O Painel de TV (?modo=tv) é a única área escura: mesma paleta, invertida.
-# As cores semânticas sobem de luminosidade para funcionar no grafite.
-PALETA_TV = {
-    "bg": "#141B21",
-    "sidebar_bg": "#2A3842",
-    "sidebar_text": "#F4F6F7",
-    "sidebar_text_muted": "#A9B6BF",
     "surface": "#1D262D",
-    "surface_alt": "#242F37",
-    "border": "#334049",
+    "surface_alt": "#26323A",
+    "border": "#34424B",
     "border_soft": "#2B3740",
     "text": "#E8EDF0",
-    "text_muted": "#A9B6BF",
-    "primary": "#E8EDF0",
-    "primary_soft": "rgba(232, 237, 240, 0.10)",
-    "secondary": "#8A98A3",
+    "text_muted": "#B4BFC7",
+    # Série principal dos gráficos (realizado): porcelana sobre o grafite.
+    "primary": "#DDE4E9",
+    "primary_soft": "rgba(221, 228, 233, 0.10)",
+    "secondary": "#7E8C97",
     "positive": "#5BBE8E",
     "negative": "#E07B6F",
     "warning": "#E6B46E",
     "muted_line": "#8A98A3",
     "accent": "#D9A054",
-    "accent_soft": "#3A3024",
+    "accent_soft": "rgba(217, 160, 84, 0.16)",
 }
+
+# O Painel de TV (?modo=tv) usa a mesma paleta, só com o fundo um passo mais
+# fundo para a tela grande.
+PALETA_TV = dict(COLORS, bg="#0F151A", surface="#1A2228", surface_alt="#222C34")
 
 
 def _modo_tv_na_url():
@@ -121,12 +102,8 @@ def _modo_tv_na_url():
         return False
 
 
-# COLORS nasce como a paleta clara (um dicionário literal, que a suíte e os
-# robôs leem sem executar nada); só a TV o troca pela paleta escura, aqui,
-# antes de qualquer CSS ser montado.
 if _modo_tv_na_url():
     COLORS.update(PALETA_TV)
-PALETA_CLARA = dict(COLORS) if not _modo_tv_na_url() else None
 
 # Tipografia: Sora (geométrica, como as letras do logotipo) nos títulos e
 # nos números grandes; Source Sans 3 no texto, nas tabelas e nas legendas.
@@ -545,8 +522,8 @@ st.markdown(
             background-color: {COLORS["sidebar_bg"]};
             border-right: 1px solid {COLORS["sidebar_bg"]};
         }}
-        /* Barra lateral em GRAFITE sobre a página clara: todo texto dela é
-           claro (as regras genéricas de cor abaixo não valem aqui). */
+        /* Barra lateral no GRAFITE da marca, um tom acima do fundo: todo
+           texto dela é claro (as regras genéricas de cor abaixo não valem aqui). */
         section[data-testid="stSidebar"],
         section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
         section[data-testid="stSidebar"] li, section[data-testid="stSidebar"] h1,
@@ -703,7 +680,7 @@ st.markdown(
             border: 1px solid {COLORS["border"]};
             border-left-width: 3px;
             margin-bottom: 10px;
-            box-shadow: 0 1px 2px rgba(27, 38, 46, 0.05);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
             transition: border-color 0.15s ease;
         }}
         .kpi-card:hover {{
@@ -770,8 +747,8 @@ st.markdown(
             font-feature-settings: "tnum";
         }}
 
-        /* Legendas e textos de apoio: cinza-grafite, com contraste de leitura
-           longa sobre a porcelana. */
+        /* Legendas e textos de apoio: quase-branco, com contraste de leitura
+           longa sobre o grafite. */
         div[data-testid="stCaptionContainer"], div[data-testid="stCaptionContainer"] p {{
             font-size: 11.5px !important;
             line-height: 1.65 !important;
