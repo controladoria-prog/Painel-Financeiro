@@ -59,42 +59,81 @@ LINK_PAINEL_PADRAO = "https://painel-financeiro-controladoriabeea.streamlit.app"
 # ============================================================================
 # 2. DESIGN SYSTEM — paleta única, usada tanto no CSS quanto nos gráficos
 # ============================================================================
-# Paleta calibrada para leitura longa em tela grande. O tema era quase preto
-# com texto quase branco: contraste acima de 17, bem além da faixa confortável
-# (7 a 12) -- hoje o texto de apoio no cartão fica em ~9,8. Naquela altura o
-# texto claro "sangrava" na borda e a vista cansava. O
-# fundo subiu alguns tons, as superfícies e bordas subiram junto para o relevo
-# não sumir, o texto de apoio saiu do branco puro e as cores semânticas foram
-# levemente dessaturadas -- num campo escuro grande, cor muito viva vibra.
+# Identidade visual do Grupo BEEA (20/10/2026). O painel deixa de ser escuro:
+# fundo "porcelana" (neutro frio, puxado para o grafite), barra lateral no
+# GRAFITE do próprio logotipo do grupo, e o ÂMBAR como única cor quente --
+# reservada ao que pede atenção (meta, destaque, botão principal). Verde-mata
+# e terracota ficam só para o semáforo de resultado: positivo verde,
+# negativo vermelho. O lilás e o azul-claro da paleta antiga saíram.
 COLORS = {
-    "bg": "#1B2230",
-    "sidebar_bg": "#161C28",
-    "surface": "#242C3C",
-    "surface_alt": "#2C3547",
-    "border": "#364054",
-    "border_soft": "#2E374A",
-    "text": "#E7EDF5",
-    # Cor de TODO texto de apoio (rótulos pequenos, legendas, subtextos,
-    # eixos de gráfico). Era um cinza médio, ilegível em 9-12px; passou por
-    # branco puro, que resolveu a leitura mas criou brilho demais. Este
-    # quase-branco parece igualmente branco na tela e mantém o contraste
-    # dentro da faixa confortável.
-    "text_muted": "#CFD9E7",
-    "primary": "#6B9EE6",
-    "primary_soft": "rgba(107, 158, 230, 0.18)",
-    "secondary": "#7A8698",
-    "positive": "#57BE92",
-    "negative": "#E08585",
-    "warning": "#D6A155",
-    "muted_line": "#A3AEBF",
-    # Cor neutra para categoria que precisa se distinguir sem ser lida como
-    # boa ou ruim. Verde e vermelho já significam "dentro" e "fora" no painel
-    # inteiro; usar um dos dois numa fatia de custo faria a pessoa ler juízo
-    # onde só há composição.
-    "accent": "#9B8CD1",
+    "bg": "#EDF0F2",
+    "sidebar_bg": "#212F38",
+    "sidebar_text": "#F4F6F7",
+    "sidebar_text_muted": "#B9C4CC",
+    "surface": "#FBFCFC",
+    "surface_alt": "#F3F5F6",
+    "border": "#D5DCE1",
+    "border_soft": "#E2E7EB",
+    "text": "#1B262E",
+    "text_muted": "#5C6B76",
+    "primary": "#212F38",
+    "primary_soft": "rgba(33, 47, 56, 0.10)",
+    "secondary": "#7E8C97",
+    "positive": "#2F7D5B",
+    "negative": "#B9463C",
+    "warning": "#9A6520",
+    "muted_line": "#A3AEB8",
+    "accent": "#C4883B",
+    "accent_soft": "#F4E7D3",
 }
 
-FONT_STACK = "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
+# O Painel de TV (?modo=tv) é a única área escura: mesma paleta, invertida.
+# As cores semânticas sobem de luminosidade para funcionar no grafite.
+PALETA_TV = {
+    "bg": "#141B21",
+    "sidebar_bg": "#2A3842",
+    "sidebar_text": "#F4F6F7",
+    "sidebar_text_muted": "#A9B6BF",
+    "surface": "#1D262D",
+    "surface_alt": "#242F37",
+    "border": "#334049",
+    "border_soft": "#2B3740",
+    "text": "#E8EDF0",
+    "text_muted": "#A9B6BF",
+    "primary": "#E8EDF0",
+    "primary_soft": "rgba(232, 237, 240, 0.10)",
+    "secondary": "#8A98A3",
+    "positive": "#5BBE8E",
+    "negative": "#E07B6F",
+    "warning": "#E6B46E",
+    "muted_line": "#8A98A3",
+    "accent": "#D9A054",
+    "accent_soft": "#3A3024",
+}
+
+
+def _modo_tv_na_url():
+    """True quando a URL pede o Painel de TV (?modo=tv). Protegido porque os
+    robôs e a suíte importam estas constantes com um Streamlit de mentira."""
+    try:
+        return str(st.query_params.get("modo", "")).strip().lower() == "tv"
+    except Exception:   # noqa: BLE001
+        return False
+
+
+# COLORS nasce como a paleta clara (um dicionário literal, que a suíte e os
+# robôs leem sem executar nada); só a TV o troca pela paleta escura, aqui,
+# antes de qualquer CSS ser montado.
+if _modo_tv_na_url():
+    COLORS.update(PALETA_TV)
+PALETA_CLARA = dict(COLORS) if not _modo_tv_na_url() else None
+
+# Tipografia: Sora (geométrica, como as letras do logotipo) nos títulos e
+# nos números grandes; Source Sans 3 no texto, nas tabelas e nas legendas.
+FONT_STACK = "'Source Sans 3', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
+FONT_DISPLAY = "'Sora', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
+IMPORT_FONTES_CSS = ("@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700"
+                     "&family=Source+Sans+3:wght@400;500;600;700&display=swap');")
 
 # Config fixa do Plotly: dashboard "travado" (sem zoom/pan/modebar) para uso executivo
 CONFIG_PLOTLY_TRAVADO = {
@@ -175,9 +214,10 @@ def html_compacto(html):
     return re.sub(r">\s+<", "><", " ".join(str(html).split()))
 
 
-# Fonte monoespaçada dos números do Diagnóstico Executivo: com ela as casas
-# se alinham na vertical de uma linha para a outra.
-FONTE_MONO = "ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, monospace"
+# Fonte dos números do Diagnóstico Executivo e dos cartões: a Sora, com
+# algarismos tabulares (regra no CSS), alinha as casas na vertical de uma
+# linha para a outra tão bem quanto a monoespaçada de antes -- e é a da marca.
+FONTE_MONO = FONT_DISPLAY
 
 
 def faixa_metricas_html(metricas):
@@ -441,7 +481,7 @@ def _estilo_linha_dre_mensal(linha):
     if linha.name == 0:
         return [
             f"color: {COLORS['text_muted']}; font-weight: 700; "
-            "letter-spacing: 0.8px; background-color: rgba(255,255,255,0.04);"
+            f"letter-spacing: 0.8px; background-color: {COLORS['surface_alt']};"
         ] * len(linha)
     estilos = []
     for i, valor in enumerate(linha):
@@ -483,10 +523,14 @@ LOGIN_BG_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwQDAwQEBAQFBQQFBwsHBwYGBw4K
 st.markdown(
     f"""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+        {IMPORT_FONTES_CSS}
 
         html, body, [class*="css"] {{
             font-family: {FONT_STACK};
+        }}
+        h1, h2, h3, h4, .section-title, .kpi-value, .hub-title, .login-hero-title,
+        div[data-testid="stMetricValue"] {{
+            font-family: {FONT_DISPLAY};
         }}
 
         /* Fundo chapado: o degradê deixava a metade de baixo da tela mais
@@ -499,7 +543,38 @@ st.markdown(
 
         [data-testid="stSidebar"] {{
             background-color: {COLORS["sidebar_bg"]};
-            border-right: 1px solid {COLORS["border"]};
+            border-right: 1px solid {COLORS["sidebar_bg"]};
+        }}
+        /* Barra lateral em GRAFITE sobre a página clara: todo texto dela é
+           claro (as regras genéricas de cor abaixo não valem aqui). */
+        section[data-testid="stSidebar"],
+        section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] li, section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3,
+        section[data-testid="stSidebar"] label p,
+        section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] p,
+        section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] p,
+        section[data-testid="stSidebar"] div[data-testid="stExpander"] summary,
+        section[data-testid="stSidebar"] div[data-testid="stExpander"] summary p {{
+            color: {COLORS["sidebar_text"]} !important;
+        }}
+        section[data-testid="stSidebar"] label[data-testid="stWidgetLabel"] p,
+        section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] p,
+        section[data-testid="stSidebar"] small {{
+            color: {COLORS["sidebar_text_muted"]} !important;
+        }}
+        section[data-testid="stSidebar"] div[data-testid="stExpander"] {{
+            background: rgba(255,255,255,0.05) !important;
+            border-color: rgba(255,255,255,0.14) !important;
+        }}
+        section[data-testid="stSidebar"] hr {{
+            border-color: rgba(255,255,255,0.14) !important;
+        }}
+        section[data-testid="stSidebar"] .stButton > button,
+        section[data-testid="stSidebar"] .stDownloadButton > button {{
+            background: rgba(255,255,255,0.06) !important;
+            border-color: rgba(255,255,255,0.18) !important;
+            color: {COLORS["sidebar_text"]} !important;
         }}
         [data-testid="stSidebarUserContent"] {{
             padding-bottom: 80px !important;
@@ -554,23 +629,26 @@ st.markdown(
             margin-bottom: 12px;
             border-bottom: 1px solid {COLORS["border"]};
         }}
+        .sidebar-brand {{
+            border-bottom-color: rgba(255,255,255,0.14);
+        }}
         .sidebar-brand .brand-logo {{
             width: 30px; height: 30px; border-radius: 50%;
             object-fit: cover;
-            box-shadow: 0 0 10px {COLORS["primary_soft"]};
+            background: #FFFFFF;
             flex-shrink: 0;
         }}
         .sidebar-brand span.title {{
-            font-size: 14px; font-weight: 700; color: {COLORS["text"]};
+            font-family: {FONT_DISPLAY};
+            font-size: 14px; font-weight: 600; color: {COLORS["sidebar_text"]} !important;
             letter-spacing: 0.2px;
         }}
         .sidebar-brand span.subtitle {{
-            display: block; font-size: 11px; color: {COLORS["text_muted"]};
+            display: block; font-size: 11px; color: {COLORS["sidebar_text_muted"]} !important;
         }}
         section[data-testid="stSidebar"] label p {{
             font-size: 12.5px !important;
             font-weight: 600 !important;
-            color: {COLORS["text_muted"]} !important;
             text-transform: uppercase;
             letter-spacing: 0.4px;
         }}
@@ -592,8 +670,8 @@ st.markdown(
         .top-status-strip b {{ color: {COLORS["text"]}; font-weight: 600; }}
         .top-status-strip .chip {{
             display: inline-block;
-            background: {COLORS["primary_soft"]};
-            color: {COLORS["primary"]};
+            background: {COLORS["accent_soft"]};
+            color: {COLORS["warning"]};
             border-radius: 20px;
             padding: 1px 10px;
             font-weight: 700;
@@ -623,8 +701,9 @@ st.markdown(
             padding: 14px 16px 14px 18px;
             border-radius: 8px;
             border: 1px solid {COLORS["border"]};
-            border-left-width: 2px;
+            border-left-width: 3px;
             margin-bottom: 10px;
+            box-shadow: 0 1px 2px rgba(27, 38, 46, 0.05);
             transition: border-color 0.15s ease;
         }}
         .kpi-card:hover {{
@@ -669,7 +748,7 @@ st.markdown(
         }}
         .progress-bar {{
             height: 100%;
-            background: {COLORS["primary"]};
+            background: {COLORS["accent"]};
             border-radius: 2px;
         }}
 
@@ -691,8 +770,8 @@ st.markdown(
             font-feature-settings: "tnum";
         }}
 
-        /* Legendas e textos de apoio. Tudo que é pequeno vai em branco:
-           em 11px sobre fundo escuro, cinza custa a ser lido. */
+        /* Legendas e textos de apoio: cinza-grafite, com contraste de leitura
+           longa sobre a porcelana. */
         div[data-testid="stCaptionContainer"], div[data-testid="stCaptionContainer"] p {{
             font-size: 11.5px !important;
             line-height: 1.65 !important;
@@ -801,7 +880,7 @@ st.markdown(
             background-color: transparent !important;
             color: {COLORS["text"]} !important;
             font-weight: 600;
-            border-bottom: 2px solid {COLORS["primary"]} !important;
+            border-bottom: 2px solid {COLORS["accent"]} !important;
         }}
         hr {{
             border-color: {COLORS["border"]} !important;
@@ -1365,7 +1444,7 @@ def _injetar_css_login():
         div[data-testid="stColumn"]:has(.login-hero-title) div[data-testid="stTextInput"] input {{
             background-image:
                 linear-gradient({COLORS["bg"]}, {COLORS["bg"]}),
-                linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["positive"]} 100%) !important;
+                linear-gradient(135deg, {COLORS["primary"]} 0%, {COLORS["accent"]} 100%) !important;
             background-origin: border-box !important;
             background-clip: padding-box, border-box !important;
             border: 2px solid transparent !important;
@@ -4787,7 +4866,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                 padding: 2px 4px 10px 4px; border-bottom: 1px solid {COLORS["border"]}; margin-bottom: 10px;
             }}
             .tv-header .brand {{ display:flex; align-items:center; gap:12px; }}
-            .tv-header img.logo {{ width: 38px; height: 38px; border-radius: 50%; box-shadow: 0 0 14px rgba(107, 158, 230, 0.35); }}
+            .tv-header img.logo {{ width: 38px; height: 38px; border-radius: 50%; background: #FFFFFF; }}
             .tv-header h1 {{ font-size: 23px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
             .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 12.5px; margin-top: 2px; }}
             .tv-live-pill {{
@@ -7655,16 +7734,16 @@ FOLGA_ABAIXO_TABELA_PX = 16
 # Até esta quantidade de colunas a tabela cabe na largura da tela e não
 # aparece barra horizontal -- é o caso do fluxo mensal, com 6 ou 7 meses.
 COLUNAS_SEM_ROLAGEM_HORIZONTAL = 9
-# Fundo das linhas comuns das tabelas do fluxo: PRETO, não a cor da página.
-# O painel tem fundo azulado; deixar a tabela transparente fazia as linhas
-# comuns puxarem esse azul e o destaque das consolidações se perder no meio.
-# O preto é o que separa "dado" de "total" sem precisar de mais nenhuma
-# marcação. Para suavizar, basta trocar aqui.
-FUNDO_TABELA_FLUXO = "#000000"
+# Fundo das linhas comuns das tabelas do fluxo: a SUPERFÍCIE do painel (era
+# preto no tema escuro). O que separa "dado" de "total" é o tom das
+# consolidações, que fica um passo acima deste. Para suavizar, basta trocar.
+FUNDO_TABELA_FLUXO = COLORS["surface"]
 # O iframe não herda a fonte da página, então a pilha precisa ser declarada
-# lá dentro -- é a mesma que o Streamlit usa nas outras tabelas do painel.
-FONTE_PADRAO_TABELA = ('"Source Sans Pro", -apple-system, BlinkMacSystemFont, '
-                       '"Segoe UI", Roboto, sans-serif')
+# lá dentro -- a mesma do resto do painel (o @import vai no CSS do iframe).
+# Aspas DUPLAS de propósito: esta pilha entra dentro de strings JavaScript
+# delimitadas por aspas simples.
+FONTE_PADRAO_TABELA = ('"Source Sans 3", "Segoe UI", -apple-system, BlinkMacSystemFont, '
+                       'Roboto, sans-serif')
 
 
 def _rotulo_unico_tabela(texto_rotulo, posicao):
@@ -7940,10 +8019,11 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
 
     codigo = f"""
 <style>
+  {IMPORT_FONTES_CSS}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:transparent;
          font-family:{FONTE_PADRAO_TABELA}; }}
-  /* Preto no corpo, tom claro só nas consolidações. */
+  /* Superfície no corpo, tom um passo acima só nas consolidações. */
   .rolagem {{ height:{altura_rolagem}px; overflow-x:auto; overflow-y:hidden;
               border:1px solid {COLORS['border']}; border-radius:10px;
               background:{FUNDO_TABELA_FLUXO}; }}
@@ -16403,7 +16483,7 @@ def maiores_lancamentos_da_linha(df_diario, numero, limite=15, plano=None):
     return bloco.reset_index(drop=True)
 
 
-def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base, retiradas_df):
+def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base, retiradas_df, projecao="media"):
     """Arquivo do rascunho: Resumo, Rascunho por linha (com os 12 meses do ano
     seguinte), Retiradas e Premissas. Tudo que a tela mostra, no formato que
     vai para a reunião."""
@@ -16466,7 +16546,10 @@ def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base
             {"Premissa": "Pessoal (8.3 e linhas de folha)", "Regra": "dissídio / salário mínimo", "%": premissas.get("dissidio", 0.0)},
             {"Premissa": "Demais despesas operacionais (8)", "Regra": "IPCA", "%": premissas.get("ipca", 0.0)},
             {"Premissa": "Abaixo do EBITDA e impostos (12 em diante)", "Regra": "mantém a base", "%": 0.0},
-            {"Premissa": "Meses abertos", "Regra": f"média dos {len(meses_fechados)} meses fechados; linha sem realizado usa o orçado {ano_base}", "%": None},
+            {"Premissa": "Meses abertos", "Regra": (f"orçado {ano_base} da unidade, mês a mês (linha sem orçado na unidade: média dos {len(meses_fechados)} fechados); "
+                                                    f"grupo 10 sempre zerado; grupo 16 só o realizado" if projecao == "orcado"
+                                                    else f"média dos {len(meses_fechados)} meses fechados; linha sem realizado usa o orçado {ano_base}"), "%": None},
+            {"Premissa": "Ajustes por unidade", "Regra": "zerar em todas as unidades; zerar em todas e deixar um valor fixo por mês numa; fixar um valor por mês numa; retirar um valor por mês de uma (valor fixado é final, sem premissa)", "%": None},
             {"Premissa": "Retiradas", "Regra": "valor POR MÊS, em módulo; sai de cada mês da base até onde o mês tem, ANTES das premissas; o retirado do ano é a soma do que saiu", "%": None},
             {"Premissa": f"Orçado {ano_base} por plano", "Regra": "o orçado existe por linha da DRE; foi rateado entre os planos pela participação de cada um no realizado fechado da linha", "%": None},
             {"Premissa": "Linha sem plano / diferença", "Regra": f"'{RESIDUO_SEM_PLANO}' é o que a DRE tem e o DIÁRIO não explica (receita, CMV, ICMS ou diferença de conciliação); garante que os planos fechem com a DRE", "%": None},
@@ -18439,8 +18522,8 @@ with tab1:
                 go.Scatter(
                     x=rotulos_m, y=mc_m, mode="lines+markers+text", name="Margem Contrib. 2 (R$)",
                     text=labels_mc, textposition="bottom center",
-                    line=dict(color=COLORS["muted_line"], width=2, shape="spline"),
-                    marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["muted_line"], width=2)),
+                    line=dict(color=COLORS["accent"], width=2, shape="spline"),
+                    marker=dict(size=6, color=COLORS["surface"], line=dict(color=COLORS["accent"], width=2)),
                     textfont=dict(color=COLORS["text_muted"], size=11, family=FONT_STACK),
                 )
             )
@@ -22047,7 +22130,8 @@ if tab_orc is not None:
 
                 # ---- Saídas: a planilha modelo preenchida (principal) e a memória do rascunho (apoio) ----
                 st.markdown('<div class="section-title" style="margin-top:18px;">📥 Saídas do rascunho</div>', unsafe_allow_html=True)
-                _xlsx_rasc = excel_do_rascunho(_df_rasc, _tot_rasc, _meses_ano_rasc, _premissas_rasc, _meses_fech_rasc, _ano_rasc, _rel_rasc)
+                _xlsx_rasc = excel_do_rascunho(_df_rasc, _tot_rasc, _meses_ano_rasc, _premissas_rasc, _meses_fech_rasc, _ano_rasc, _rel_rasc,
+                                               projecao=_modo_proj_rasc)
                 # ---- 1) A PRÓPRIA planilha modelo, preenchida: abas, linhas e meses dela ----
                 if _estrutura_rasc and _abas_rasc:
                     st.markdown(

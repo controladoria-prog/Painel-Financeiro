@@ -115,6 +115,10 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "VISOES_CONSOLIDADAS": ["GRUPO_ABPR", "GRUPO_VD", "GRUPO_LJ_GA", "GRUPO_LJ_CONSOLIDADO"],
     "RENOMEAR_MOVIMENTO_FIN": ["MOV_RECEBER_META", "MOV_RECEBER_AVENCER",
                                "MOV_RECEBER_LIQUIDADO", "MOV_PAGAR"],
+    # Identidade visual (20/10/2026): fontes e fundos derivam da paleta.
+    "FONTE_MONO": ["FONT_DISPLAY"],
+    "FUNDO_TABELA_FLUXO": ["COLORS"],
+    "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "linhas_proprias_da_dre": ["PALAVRAS_LINHA_DE_RESULTADO"],
@@ -144,7 +148,7 @@ CONSTANTES_DE_DEPENDENCIA = {
     "_planos_sem_linha_dre": ["MARCAS_SEM_LINHA_DRE"],
     "_assinatura_coluna_fin": ["LIGACOES_NOME_COLUNA", "_ACENTOS_FIN"],
     "_normalizar_coluna_fin": ["_ACENTOS_FIN"],
-    "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA",
+    "tabela_selecionavel": ["COLORS", "FONTE_MONO", "FONTE_PADRAO_TABELA", "IMPORT_FONTES_CSS",
                             "TETO_LINHAS_TABELA", "ALTURA_LINHA_TABELA_PX",
                             "ALTURA_CABECALHO_TABELA_PX", "ALTURA_BARRA_SOMA_PX",
                             "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
@@ -2279,13 +2283,14 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         return None
 
     def test_corpo_da_tabela_e_preto(self):
-        """O painel tem fundo azulado. Deixar a tabela transparente fazia as
-        linhas comuns puxarem esse azul e o destaque das consolidacoes se
-        perder no meio -- o corpo tem de ser preto."""
+        """Deixar a tabela transparente fazia as linhas comuns puxarem a cor
+        da pagina e o destaque das consolidacoes se perder no meio -- o corpo
+        tem de ser a SUPERFICIE do painel (era preto no tema escuro; na
+        identidade clara de 20/10/2026 e a superficie da paleta)."""
         capturado, ns_local = self._medir(5, 5)
         css = capturado["codigo"].split("<div")[0]
         preto = ns_local["FUNDO_TABELA_FLUXO"]
-        self.assertEqual(preto, "#000000")
+        self.assertEqual(preto, ns_local["COLORS"]["surface"])
         self.assertEqual(self._fundo_do_seletor(css, ".rolagem"), preto)
         self.assertEqual(self._fundo_do_seletor(css, ".linha-movimento td"), preto)
         self.assertEqual(self._fundo_do_seletor(css, "th.rotulo"), preto)
@@ -2373,7 +2378,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         capturado, _ = self._altura_para(3)
         codigo = capturado["codigo"]
         self.assertNotIn("monospace", codigo, "voltou a fonte monoespacada")
-        self.assertIn("Source Sans Pro", codigo, "sem a fonte do app declarada no iframe")
+        self.assertIn("Source Sans 3", codigo, "sem a fonte do app declarada no iframe")
         corpo = codigo.split(".barra")[0]
         self.assertNotIn("text-transform:uppercase", corpo,
                          "cabecalho da tabela nao e caixa alta nas outras telas")
@@ -3709,7 +3714,7 @@ class TesteDiarioConsolidado(unittest.TestCase):
             ("td.neg", "valor colorido por sinal"),
             ("white-space:normal", "o historico precisa poder quebrar linha"),
             ("position:sticky; bottom:0", "total fixo no rodape"),
-            ("FONTE_PADRAO_TABELA" if False else "Source Sans Pro", "mesma fonte do painel"),
+            ("Source Sans 3", "mesma fonte do painel"),
         ]:
             self.assertIn(marca, html, motivo)
 
