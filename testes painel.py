@@ -8599,6 +8599,38 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         self.assertNotIn("preencher_modelo_com_rascunho", FONTE); self.assertNotIn("montar_rascunho_pelo_modelo", FONTE)
 
 
+class TesteTrfRemNoGrafico(unittest.TestCase):
+    """20/10/2026: a DRE separou '4.3 - TRF / REM' em duas linhas (TRF e REM) e
+    a barra do grafico Real vs. Orcado ficou vazia. O valor passa a ser a soma
+    das duas -- sem contar 'Remuneracao' (6.22) e sem dobrar quando a linha
+    conjunta ainda existe."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["valor_trf_rem"])
+        cls.cols = ["01/2026", "02/2026"]
+
+    def test_soma_trf_e_rem_separados_sem_pegar_remuneracao(self):
+        df = pd.DataFrame({"Nome": ["4 - Custo das Vendas", "  4.1 - CMV", "  4.3 - TRF", "  4.4 - REM",
+                                    "  6.22 - Taxa de Remuneração de Esforços", "6.5 - Trf bancária"],
+                           "01/2026": [-10, -5, -3, -2, -9, -1], "02/2026": [-10, -5, -4, -1, -9, -1]})
+        self.assertAlmostEqual(self.ns["valor_trf_rem"]([df], self.cols), 10.0)
+
+    def test_linha_conjunta_continua_valendo_e_nao_dobra(self):
+        antiga = pd.DataFrame({"Nome": ["  4.3 - TRF / REM", "  6.22 - Taxa de Remuneração"], "01/2026": [-7, -9], "02/2026": [-5, -9]})
+        mae = pd.DataFrame({"Nome": ["  4.3 - TRF / REM", "    4.3.1 - TRF", "    4.3.2 - REM"], "01/2026": [-7, -4, -3], "02/2026": [-5, -3, -2]})
+        self.assertAlmostEqual(self.ns["valor_trf_rem"]([antiga], self.cols), 12.0)
+        self.assertAlmostEqual(self.ns["valor_trf_rem"]([mae], self.cols), 12.0, msg="mae + filhas: so a mae")
+        self.assertEqual(self.ns["valor_trf_rem"]([pd.DataFrame()], self.cols), 0.0)
+        self.assertEqual(self.ns["valor_trf_rem"]([antiga], []), 0.0)
+
+    def test_o_grafico_usa_a_funcao(self):
+        i = FONTE.index('cats = ["CMV", "TRF/REM", "Marg. Contrib. 2", "Despesas Fixas", "EBITDA"]')
+        trecho = FONTE[i:i + 2500]
+        self.assertIn("trf_r = valor_trf_rem(list_df_real, cols_kpi)", trecho)
+        self.assertIn("trf_o = valor_trf_rem(list_df_orc, cols_kpi)", trecho)
+
+
 class TesteIntegridade(unittest.TestCase):
     """15/09/2026: conciliacao DIARIO x DRE, ponte EBITDA -> caixa sem residuo
     e saude do orcamento -- so na Controladoria."""

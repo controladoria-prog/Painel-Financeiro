@@ -282,6 +282,33 @@ def get_valor_consolidado_multi(list_dfs, termo_conta, colunas, exato_linha_sint
     return total
 
 
+def valor_trf_rem(list_dfs, colunas):
+    """TRF/REM do gráfico Real vs. Orçado (20/10/2026). A DRE tinha UMA linha
+    ('4.3 - TRF / REM'); agora são duas, TRF e REM separadas, e o gráfico
+    ficava vazio. Soma, dentro do grupo 4, toda linha cujo nome tem a palavra
+    inteira TRF ou REM -- por palavra inteira para 'REM' não pegar
+    'Remuneração' (6.22). Se a linha conjunta ainda existir (sozinha ou como
+    mãe das duas), vale só ela, para não contar duas vezes. Devolve o módulo."""
+    total = 0.0
+    if not colunas:
+        return total
+    for df in list_dfs:
+        if df is None or df.empty:
+            continue
+        col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+        nomes = df[col_nome].astype(str).str.strip()
+        no_grupo_4 = nomes.str.match(r"^4(\.\d+)*\s*-")
+        tem_trf = nomes.str.contains(r"\bTRF\b", case=False, regex=True)
+        tem_rem = nomes.str.contains(r"\bREM\b", case=False, regex=True)
+        conjunta = no_grupo_4 & tem_trf & tem_rem
+        mask = conjunta if conjunta.any() else (no_grupo_4 & (tem_trf | tem_rem))
+        if not mask.any():
+            continue
+        cols_existentes = [c for c in colunas if c in df.columns]
+        total += df.loc[mask, cols_existentes].apply(pd.to_numeric, errors="coerce").fillna(0).sum().sum()
+    return abs(float(total))
+
+
 def formata_brl(val):
     if pd.isna(val) or val == 0:
         return "R$ 0,00"
@@ -18465,13 +18492,10 @@ with tab1:
             if cmv_o == 0:
                 cmv_o = abs(get_valor_consolidado_multi(list_df_orc, "4.1 - Custo da Mercadoria Vendida", cols_kpi))
 
-            trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF/REM", cols_kpi))
-            if trf_r == 0:
-                trf_r = abs(get_valor_consolidado_multi(list_df_real, "TRF / REM", cols_kpi))
-
-            trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF/REM", cols_kpi))
-            if trf_o == 0:
-                trf_o = abs(get_valor_consolidado_multi(list_df_orc, "TRF / REM", cols_kpi))
+            # TRF e REM viraram duas linhas na DRE: o gráfico soma as duas
+            # (ou lê a linha conjunta, onde ela ainda existir).
+            trf_r = valor_trf_rem(list_df_real, cols_kpi)
+            trf_o = valor_trf_rem(list_df_orc, cols_kpi)
 
             mc_r = get_valor_consolidado_multi(list_df_real, "Margem de Contribuição 2", cols_kpi)
             if mc_r == 0:
