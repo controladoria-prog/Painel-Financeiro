@@ -73,13 +73,20 @@ COLORS = {
     "surface": "#1D262D",
     "surface_alt": "#26323A",
     "border": "#34424B",
-    "border_soft": "#2B3740",
+    # Um passo acima da superfície: é o fundo das barras "projetadas" e das
+    # linhas de apoio, que precisam aparecer sobre o cartão.
+    "border_soft": "#33414B",
     "text": "#E8EDF0",
     "text_muted": "#B4BFC7",
-    # Série principal dos gráficos (realizado): porcelana sobre o grafite.
-    "primary": "#DDE4E9",
-    "primary_soft": "rgba(221, 228, 233, 0.10)",
-    "secondary": "#7E8C97",
+    # Série principal dos gráficos (realizado) e links: ARDÓSIA, um tom
+    # médio da família do grafite -- visível sobre o fundo e ainda legível
+    # com texto claro por cima (a porcelana deixava as colunas brancas e o
+    # rótulo dentro delas sumia).
+    "primary": "#6F91A8",
+    "primary_soft": "rgba(111, 145, 168, 0.22)",
+    # Série de comparação (orçado): cinza claro, para se separar da ardósia
+    # por luminosidade e não só por matiz.
+    "secondary": "#AEB8C1",
     "positive": "#5BBE8E",
     "negative": "#E07B6F",
     "warning": "#E6B46E",
@@ -1345,7 +1352,7 @@ def _injetar_css_login():
         .login-split-left .login-badge img {{
             width: 40px; height: 40px; border-radius: 50%;
             background: #FFFFFF; padding: 5px; object-fit: contain;
-            box-shadow: 0 4px 14px rgba(107, 158, 230, 0.3);
+            box-shadow: 0 4px 14px rgba(111, 145, 168, 0.3);
         }}
         .login-split-left .login-badge span {{
             font-size: 13px; font-weight: 700; color: {COLORS["text_muted"]};
@@ -4056,7 +4063,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 estilo = ""
                 if calor:
                     alfa = 0.06 + (abs(v) / teto) * 0.20
-                    estilo = f' style="background:rgba(214,161,85,{alfa:.3f});"'
+                    estilo = f' style="background:rgba(217, 160, 84,{alfa:.3f});"'
                 celulas += f"<td{estilo}>{formata_valor_curto(v)}</td>"
             celulas += f'<td class="tot">{formata_valor_curto(sum(valores))}</td>'
             partes.append(
@@ -4086,8 +4093,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         # Caixa e as do gráfico de desvio. As barras chapadas de antes eram as
         # únicas assim no painel inteiro -- era isso que destoava.
         for nome, serie, cor, fundo in (
-                ("Variáveis", var_mes, COLORS["muted_line"], "rgba(163,174,191,0.20)"),
-                ("Operacionais", op_mes, COLORS["warning"], "rgba(214,161,85,0.22)")):
+                ("Variáveis", var_mes, COLORS["muted_line"], "rgba(138, 152, 163,0.20)"),
+                ("Operacionais", op_mes, COLORS["warning"], "rgba(217, 160, 84,0.22)")):
             fig.add_trace(go.Bar(
                 name=nome, x=rot_mes, y=serie,
                 marker=dict(color=fundo, line=dict(color=cor, width=1.5)),
@@ -4847,7 +4854,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             .tv-header h1 {{ font-size: 23px; font-weight: 800; color: {COLORS["text"]}; margin: 0; letter-spacing: 0.3px; }}
             .tv-header .sub {{ color: {COLORS["text_muted"]}; font-size: 12.5px; margin-top: 2px; }}
             .tv-live-pill {{
-                display: inline-flex; align-items: center; gap: 6px; background: rgba(87, 190, 146, 0.12);
+                display: inline-flex; align-items: center; gap: 6px; background: rgba(91, 190, 142, 0.12);
                 border: 1px solid {COLORS["positive"]}; color: {COLORS["positive"]}; border-radius: 20px;
                 padding: 3px 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; margin-left: 12px;
             }}
@@ -4953,7 +4960,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                 font-weight:700; padding:12px 8px 4px 8px; border-bottom:none;
             }}
             .tv-matriz tr.destaque td {{
-                background:rgba(107,158,230,0.07); font-weight:700;
+                background:rgba(111, 145, 168,0.07); font-weight:700;
                 border-top:1px solid {COLORS["border"]};
             }}
             .tv-matriz .sec {{
@@ -5479,12 +5486,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             # reserva, e evita ter de conferir o desvio para saber se o mês
             # foi bom.
             _preenche_real = [
-                ("rgba(87,190,146,0.22)" if d >= 0 else "rgba(224,133,133,0.22)")
+                ("rgba(91, 190, 142,0.22)" if d >= 0 else "rgba(224, 123, 111,0.22)")
                 for d in desvio_m_tv
             ]
             fig_tv_desvio.add_trace(go.Bar(
                 name="Orçado", x=rot_m_tv, y=eb_orc_m_tv,
-                marker=dict(color="rgba(107,158,230,0.16)",
+                marker=dict(color="rgba(111, 145, 168,0.16)",
                             line=dict(color=COLORS["primary"], width=1.6)),
                 text=[formata_m(v) for v in eb_orc_m_tv], textposition="outside",
                 textfont=dict(size=10, color=COLORS["primary"]),
@@ -5762,7 +5769,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                         # uma faixa vazia embaixo dos meses. Com a largura toda, as
                         # quatro parcelas ficam numa linha só e não repetem o
                         # empilhamento dos cartões pequenos.
-                        + ("flex:1 1 100%;background:rgba(107,158,230,0.08);"
+                        + ("flex:1 1 100%;background:rgba(111, 145, 168,0.08);"
                            if destaque else "")
                         + '">'
                         f'<div class="topo"><b>{rotulo}</b>'
@@ -5973,7 +5980,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                             # tabela alta demais para varrer com o olho.
                             _pct_m = f"{_primeiro} · {_pct_sai_m} · {_pct_rec_m}"
                             _cels += (
-                                f'<td class="calor" style="background:rgba(214,161,85,{_alfa:.3f});">'
+                                f'<td class="calor" style="background:rgba(217, 160, 84,{_alfa:.3f});">'
                                 f'{formata_m(_v_m)}'
                                 f'<span class="sec">{_pct_m}</span></td>')
 
@@ -7139,10 +7146,10 @@ def _renderizar_painel_alertas(alertas, titulo="Alertas"):
         for alerta in criticos + atencoes:
             if alerta["nivel"] == "critico":
                 cor_borda, icone = COLORS["negative"], "🚨"
-                fundo = "rgba(224, 133, 133, 0.08)"
+                fundo = "rgba(224, 123, 111, 0.08)"
             else:
                 cor_borda, icone = COLORS["warning"], "⚠️"
-                fundo = "rgba(214, 161, 85, 0.08)"
+                fundo = "rgba(217, 160, 84, 0.08)"
             st.markdown(
                 html_compacto(f"""
                 <div style="border-left: 3px solid {cor_borda}; background: {fundo};
@@ -9234,7 +9241,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 }}
                 .fin-bloqueio .selo {{
                     width: 66px; height: 66px; margin: 0 auto 18px auto; border-radius: 50%;
-                    background: rgba(224, 133, 133, 0.10); border: 1px solid rgba(224, 133, 133, 0.35);
+                    background: rgba(224, 123, 111, 0.10); border: 1px solid rgba(224, 123, 111, 0.35);
                     display: flex; align-items: center; justify-content: center; font-size: 28px;
                 }}
                 .fin-bloqueio h2 {{
@@ -10295,7 +10302,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 fig_es = go.Figure()
                 fig_es.add_trace(go.Bar(
                     name="Entradas", x=rotulos_x_m, y=valores_entrada,
-                    marker=dict(color="rgba(87, 190, 146, 0.28)",
+                    marker=dict(color="rgba(91, 190, 142, 0.28)",
                                 line=dict(color=COLORS["positive"], width=1.8)),
                     text=[formata_m(v) for v in valores_entrada],
                     textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
@@ -10303,7 +10310,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ))
                 fig_es.add_trace(go.Bar(
                     name="Saídas", x=rotulos_x_m, y=valores_saida,
-                    marker=dict(color="rgba(224, 133, 133, 0.28)",
+                    marker=dict(color="rgba(224, 123, 111, 0.28)",
                                 line=dict(color=COLORS["negative"], width=1.8)),
                     text=[formata_m(v) for v in valores_saida],
                     textposition="outside", textfont=dict(size=9, color=COLORS["text_muted"]),
@@ -10876,13 +10883,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     # separa visualmente o que entra do que sai.
                     fig_ac.add_trace(go.Bar(
                         name="Entradas", x=rotulos_grafico_d, y=list(entradas_por_dia_d.values),
-                        marker=dict(color="rgba(87, 190, 146, 0.30)",
+                        marker=dict(color="rgba(91, 190, 142, 0.30)",
                                     line=dict(color=COLORS["positive"], width=1.3)),
                         hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                     ))
                     fig_ac.add_trace(go.Bar(
                         name="Saídas", x=rotulos_grafico_d, y=[-v for v in saidas_por_dia_graf.values],
-                        marker=dict(color="rgba(224, 133, 133, 0.30)",
+                        marker=dict(color="rgba(224, 123, 111, 0.30)",
                                     line=dict(color=COLORS["negative"], width=1.3)),
                         hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
                     ))
@@ -10898,7 +10905,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     fig_ac.add_trace(go.Scatter(
                         name="Acumulado", x=rotulos_grafico_d, y=list(acumulado_d.values), yaxis="y2",
                         mode="lines", line=dict(color=COLORS["primary"], width=3.5),
-                        fill="tozeroy", fillcolor="rgba(107, 158, 230, 0.10)",
+                        fill="tozeroy", fillcolor="rgba(111, 145, 168, 0.10)",
                         hovertemplate="Acumulado: R$ %{y:,.2f}<extra></extra>",
                     ))
                     # Referência: média diária do resultado
@@ -11377,13 +11384,13 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 fig_t = go.Figure()
                 fig_t.add_trace(go.Bar(
                     name="Entradas", x=rotulos_sem, y=list(entradas_sem.values),
-                    marker=dict(color="rgba(87, 190, 146, 0.30)",
+                    marker=dict(color="rgba(91, 190, 142, 0.30)",
                                 line=dict(color=COLORS["positive"], width=1.3)),
                     hovertemplate="Entradas: R$ %{y:,.2f}<extra></extra>",
                 ))
                 fig_t.add_trace(go.Bar(
                     name="Saídas", x=rotulos_sem, y=list(saidas_sem.values),
-                    marker=dict(color="rgba(224, 133, 133, 0.30)",
+                    marker=dict(color="rgba(224, 123, 111, 0.30)",
                                 line=dict(color=COLORS["negative"], width=1.3)),
                     hovertemplate="Saídas: R$ %{y:,.2f}<extra></extra>",
                 ))
@@ -12157,7 +12164,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     if not saidas_canal_a.empty and saidas_canal_a.sum():
                         fig_canal = go.Figure(data=[go.Bar(
                             x=list(saidas_canal_a.values), y=list(saidas_canal_a.index), orientation="h",
-                            marker=dict(color="rgba(224, 133, 133, 0.35)", line=dict(color=COLORS["negative"], width=1.5)),
+                            marker=dict(color="rgba(224, 123, 111, 0.35)", line=dict(color=COLORS["negative"], width=1.5)),
                             text=[formata_m(v) for v in saidas_canal_a.values],
                             textposition="outside", textfont=dict(size=10, color=COLORS["text_muted"]),
                             hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>",
@@ -19551,9 +19558,9 @@ if not departamento_ativo and tab_diag is not None:
                     <div style="position:relative; display:flex; height:38px;
                                 border-radius:6px; overflow:hidden;
                                 background:{COLORS['surface_alt']};">
-                        <div style="width:{pct_var:.2f}%; background:rgba(224, 133, 133, 0.55);"></div>
-                        <div style="width:{pct_fix:.2f}%; background:rgba(214, 161, 85, 0.55);"></div>
-                        <div style="width:{pct_res:.2f}%; background:rgba(87, 190, 146, 0.55);"></div>
+                        <div style="width:{pct_var:.2f}%; background:rgba(224, 123, 111, 0.55);"></div>
+                        <div style="width:{pct_fix:.2f}%; background:rgba(217, 160, 84, 0.55);"></div>
+                        <div style="width:{pct_res:.2f}%; background:rgba(91, 190, 142, 0.55);"></div>
                         <div style="position:absolute; left:{pos_pe:.2f}%; top:-5px; bottom:-5px;
                                     width:3px; background:{COLORS['text']};
                                     box-shadow:0 0 6px rgba(0,0,0,0.7);"></div>
@@ -20248,7 +20255,7 @@ que ainda não entrou.
                     fig_fc.add_trace(go.Scatter(
                         name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
                         mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor="rgba(214, 161, 85, 0.06)", connectgaps=False,
+                        fillcolor="rgba(217, 160, 84, 0.06)", connectgaps=False,
                         hovertemplate="Faixa de cenários<extra></extra>",
                     ))
             fig_fc.add_trace(go.Scatter(

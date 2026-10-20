@@ -6441,7 +6441,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         das barras do Fluxo de Caixa e do grafico de desvio."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn('("Variáveis", var_mes, COLORS["muted_line"], "rgba(163,174,191,0.20)")',
+        self.assertIn('("Variáveis", var_mes, COLORS["muted_line"], "rgba(138, 152, 163,0.20)")',
                       corpo)
         self.assertIn('marker=dict(color=fundo, line=dict(color=cor, width=1.5))', corpo)
 
