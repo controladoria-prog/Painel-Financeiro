@@ -8599,6 +8599,19 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         self.assertNotIn("preencher_modelo_com_rascunho", FONTE); self.assertNotIn("montar_rascunho_pelo_modelo", FONTE)
 
 
+class TesteOrdemDosBlocosDoFluxoMensal(unittest.TestCase):
+    """22/10/2026: as Aplicacoes ficavam no fim da aba, depois da reserva e dos
+    graficos -- ninguem via. Agora vem logo abaixo de Movimentos por Mes."""
+
+    def test_aplicacoes_logo_abaixo_de_movimentos_por_mes(self):
+        mov = FONTE.index('📋 Movimentos por Mês</div>')
+        apl = FONTE.index('💼 Aplicações (fora dos números acima)</div>')
+        conf = FONTE.index('🔍 Conferir o contas a pagar de um mês contra a planilha')
+        reserva = FONTE.index('🛡️ Reserva de Caixa — sobra depois de pagar tudo')
+        self.assertLess(mov, apl); self.assertLess(apl, conf); self.assertLess(conf, reserva)
+        self.assertEqual(FONTE.count('💼 Aplicações (fora dos números acima)</div>'), 1)
+
+
 class TesteTrfRemNoGrafico(unittest.TestCase):
     """20/10/2026: a DRE separou '4.3 - TRF / REM' em duas linhas (TRF e REM) e
     a barra do grafico Real vs. Orcado ficou vazia. O valor passa a ser a soma

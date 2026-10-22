@@ -9991,6 +9991,32 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     )
                 )
 
+            # ---- Aplicações: fora de todos os totais, só pra conhecimento. Fica logo
+            # abaixo de Movimentos por Mês (22/10/2026): lá embaixo ninguém via. ----
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="section-title">💼 Aplicações (fora dos números acima)</div>', unsafe_allow_html=True)
+            if df_aplicacoes_fin.empty:
+                st.caption("Nenhum lançamento de aplicação no período/filtros selecionados.")
+            else:
+                st.caption(
+                    "Estes valores **não entram** em nenhum KPI, tabela, total ou gráfico desta tela (nem na tabela acima) — "
+                    "estão aqui apenas para acompanhamento da posição aplicada."
+                )
+                df_ap = df_aplicacoes_fin.copy()
+                df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
+                meses_ap = sorted(df_ap["PeriodoMes"].unique())
+                pivot_ap = _pivot_fluxo_fin(df_ap, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ap)
+                ultimas_posicoes_ap = {}
+                for movimento in pivot_ap.index:
+                    serie_ap = pivot_ap.loc[movimento]
+                    nao_zerados_ap = serie_ap[serie_ap != 0]
+                    ultimas_posicoes_ap[movimento] = nao_zerados_ap.iloc[-1] if not nao_zerados_ap.empty else 0.0
+                pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
+                pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
+                pivot_ap.index.name = "Movimento"
+                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), width="stretch")
+                st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
+
             # ---- Conferência do contas a pagar contra a planilha (01/10/2026) ----
             # A planilha soma o mês pelo vencimento; o painel põe o título
             # pago no dia em que o dinheiro saiu. Quando não bate, a diferença
@@ -10510,31 +10536,6 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "(entradas − saídas). Linha laranja = Liquidez Corrente, no eixo da direita, com os pontos em verde "
                     "quando atingem a meta de 30% (tracejado cinza) e em vermelho quando ficam abaixo."
                 )
-
-            # ---- Aplicações: fora de todos os totais acima, só pra conhecimento ----
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div class="section-title">💼 Aplicações (fora dos números acima)</div>', unsafe_allow_html=True)
-            if df_aplicacoes_fin.empty:
-                st.caption("Nenhum lançamento de aplicação no período/filtros selecionados.")
-            else:
-                st.caption(
-                    "Estes valores **não entram** em nenhum KPI, tabela, total ou gráfico desta tela — "
-                    "estão aqui apenas para acompanhamento da posição aplicada."
-                )
-                df_ap = df_aplicacoes_fin.copy()
-                df_ap["PeriodoMes"] = df_ap["Data Efetiva"].dt.to_period("M")
-                meses_ap = sorted(df_ap["PeriodoMes"].unique())
-                pivot_ap = _pivot_fluxo_fin(df_ap, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ap)
-                ultimas_posicoes_ap = {}
-                for movimento in pivot_ap.index:
-                    serie_ap = pivot_ap.loc[movimento]
-                    nao_zerados_ap = serie_ap[serie_ap != 0]
-                    ultimas_posicoes_ap[movimento] = nao_zerados_ap.iloc[-1] if not nao_zerados_ap.empty else 0.0
-                pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
-                pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
-                pivot_ap.index.name = "Movimento"
-                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), width="stretch")
-                st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
     # ---------------- DIÁRIO ----------------
     with tab_fin_diario:
