@@ -1,5 +1,5 @@
 {
- "data": "2026-10-22",
+ "data": "2026-10-23",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.2,
@@ -317,9 +317,9 @@
    "3 - Receita Operacional Liquida": 11426815.82,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
    "4 - Custo das Vendas": -4907528.800000001,
-   "11 - EBITDA": 3857501.9700000007,
-   "6.1 - Comissões sobre Vendas": 0.0,
-   "6.2 - Taxa com Cartão de Crédito / Débito": -68389.1,
+   "11 - EBITDA": 3029403.6800000006,
+   "6.1 - Comissões sobre Vendas": -125437.77000000002,
+   "6.2 - Taxa com Cartão de Crédito / Débito": -68393.38,
    "6.3 - POS Cartões": -75182.06999999999,
    "6.4 - Taxa Omnichannel": 0.0,
    "6.5 - Taxa de Emissão de Boleto / Boleto Garantido": -223769.93,
@@ -345,12 +345,12 @@
    "6.25 - PDD": 0.0,
    "8.1 - Despesas Estruturais": -126951.26999999999,
    "8.2 - Despesas com Comunicação": -18740.739999999998,
-   "8.3 - Pessoal": -432694.42000000004,
+   "8.3 - Pessoal": -1052082.3,
    "8.4 - Taxa de Ocupação": -106570.10999999999,
    "8.5 - Despesas com Veículos": -7709.36,
    "8.6 - Despesas Administrativas": -84669.20000000001,
    "8.7 - Despesas Gerais": -77006.89,
-   "8.8 - Serviços de Terceiros": -380448.56
+   "8.8 - Serviços de Terceiros": -463716.92
   }
  }
 }
