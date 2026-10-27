@@ -8599,6 +8599,67 @@ class TesteRascunhoPorUnidade(TesteRascunhoOrcamento):
         self.assertNotIn("preencher_modelo_com_rascunho", FONTE); self.assertNotIn("montar_rascunho_pelo_modelo", FONTE)
 
 
+class TesteDetalheDoMesNoFluxoMensal(unittest.TestCase):
+    """27/10/2026: dois cliques num valor da tabela Movimentos por Mes abrem
+    os lancamentos do MES, como ja acontecia por dia no Diario Consolidado."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["montar_lancamentos_do_mes_por_celula", "montar_lancamentos_por_celula",
+                           "_classificar_movimento_fin"],
+                          ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_POR_CELULA_MES", "COL_FIN_CANAL",
+                           "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                           "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                           "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+
+    def _base(self):
+        ns = self.ns
+        d = lambda s: pd.Timestamp(s)
+        linhas = [
+            # contas a pagar: tres titulos em setembro, um em outubro
+            ("3 - Contas a Pagar", d("2026-09-03"), "NF 1", -100.0), ("3 - Contas a Pagar", d("2026-09-15"), "NF 2", -250.0),
+            ("3 - Contas a Pagar", d("2026-09-28"), "NF 3", -50.0), ("3 - Contas a Pagar", d("2026-10-02"), "NF 4", -70.0),
+            # caixa: posicao em dois dias de setembro -- so o primeiro dia e o da celula
+            ("1.1.Caixa", d("2026-09-01"), "POS 1", 1000.0), ("1.1.Caixa", d("2026-09-30"), "POS 2", 1300.0),
+            # meta: fica fora
+            ("2 - Contas a Receber Meta", d("2026-09-10"), "META", 5000.0),
+        ]
+        df = pd.DataFrame({
+            ns["COL_FIN_MOVIMENTO"]: [l[0] for l in linhas], "Data Efetiva": [l[1] for l in linhas],
+            ns["COL_FIN_NUMERO"]: [l[2] for l in linhas], ns["COL_FIN_VALOR"]: [l[3] for l in linhas],
+            ns["COL_FIN_HISTORICO"]: ["X"] * len(linhas), ns["COL_FIN_CANAL"]: ["LOJA"] * len(linhas),
+            ns["COL_FIN_MODALIDADE"]: [""] * len(linhas), ns["COL_FIN_GRUPO_DESPESA"]: [""] * len(linhas),
+            ns["COL_FIN_VENCIMENTO"]: [l[1] for l in linhas], ns["COL_FIN_DATA_LIQUIDACAO"]: [l[1] for l in linhas],
+        })
+        df["Tipo Movimento"] = df[ns["COL_FIN_MOVIMENTO"]].map(ns["_classificar_movimento_fin"])
+        df["PeriodoMes"] = df["Data Efetiva"].dt.to_period("M")
+        rotulos = {pd.Period("2026-09", "M"): "SET/2026", pd.Period("2026-10", "M"): "OUT/2026"}
+        return df, rotulos
+
+    def test_celula_do_mes_traz_todos_os_titulos_do_mes(self):
+        df, rotulos = self._base()
+        mapa, cortou = self.ns["montar_lancamentos_do_mes_por_celula"](df, rotulos)
+        self.assertFalse(cortou)
+        set_ = mapa["3 - Contas a Pagar||SET/2026"]
+        self.assertEqual(sorted(l["Número"] for l in set_), ["NF 1", "NF 2", "NF 3"])
+        self.assertAlmostEqual(sum(l["Valor"] for l in set_), -400.0, msg="a soma do detalhe e o valor da celula")
+        self.assertEqual([l["Número"] for l in mapa["3 - Contas a Pagar||OUT/2026"]], ["NF 4"])
+
+    def test_caixa_so_o_primeiro_dia_e_meta_fica_fora(self):
+        df, rotulos = self._base()
+        mapa, _ = self.ns["montar_lancamentos_do_mes_por_celula"](df, rotulos)
+        self.assertEqual([l["Número"] for l in mapa["1.1.Caixa||SET/2026"]], ["POS 1"], "caixa = posicao do primeiro dia")
+        self.assertFalse(any(k.startswith("2 - Contas a Receber Meta") for k in mapa), "meta nao e lancamento")
+        self.assertEqual(self.ns["montar_lancamentos_do_mes_por_celula"](pd.DataFrame(), rotulos), ({}, False))
+
+    def test_a_tabela_mensal_recebe_o_detalhe(self):
+        i = FONTE.index('tabela_selecionavel(\n                pivot_m_exibicao, chave="tabela_mensal"')
+        trecho = FONTE[i - 600:i + 900]
+        self.assertIn("montar_lancamentos_do_mes_por_celula(", trecho)
+        self.assertIn("detalhes_por_celula=lancamentos_m", trecho)
+        self.assertGreater(self.ns["TETO_LANCAMENTOS_POR_CELULA_MES"], self.ns["TETO_LANCAMENTOS_POR_CELULA"])
+
+
 class TesteOrdemDosBlocosDoFluxoMensal(unittest.TestCase):
     """22/10/2026: as Aplicacoes ficavam no fim da aba, depois da reserva e dos
     graficos -- ninguem via. Agora vem logo abaixo de Movimentos por Mes."""

@@ -7479,6 +7479,10 @@ def _avaliar_alertas_fluxo(
 # 20/08/2026 a planilha passou a consolidar as parcelas de cartão por loja e
 # dia (48.688 linhas, 93% a menos), então o teto pôde subir de novo.
 TETO_LANCAMENTOS_POR_CELULA = 300
+# No Fluxo MENSAL a célula é um mês inteiro de uma linha (27/10/2026): um mês
+# de contas a pagar passa de mil títulos, e o pedido é ver todos. O teto é
+# maior; quando ainda assim corta, a legenda avisa e os maiores ficam.
+TETO_LANCAMENTOS_POR_CELULA_MES = 6000
 
 
 def dias_de_giro(saldo_em_aberto, movimentado_no_periodo, dias_do_periodo):
@@ -7592,12 +7596,18 @@ def aging_de_vencidos(df, coluna_vencimento, coluna_valor, hoje, faixas=(7, 15, 
     return resultado
 
 
-def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
+def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo, chave_periodo=None, teto=None):
     """Agrupa os lançamentos por (linha da tabela, dia) para o duplo clique.
 
     `coluna_rotulo` é uma SÉRIE com o rótulo da linha da tabela a que cada
     lançamento pertence -- é o que amarra o lançamento à célula.
     Devolve ({"rótulo||dia": [ {campo: valor}, ... ]}, cortou_algo).
+
+    `chave_periodo` (27/10/2026) diz como a Data Efetiva vira a chave da
+    coluna: sem ele, o DIA (Diário Consolidado); no Fluxo Mensal é o MÊS
+    (`lambda s: s.dt.to_period("M")`), e `rotulos_por_dia` passa a ser o
+    mapa {período do mês: rótulo da coluna}. `teto` é o limite de lançamentos
+    por célula (padrão TETO_LANCAMENTOS_POR_CELULA).
 
     Dois tetos, e os dois existem por experiência ruim: a primeira versão
     percorria o recorte linha a linha e podia embutir dezenas de milhares de
@@ -7616,7 +7626,8 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
 
     recorte = df.loc[:, colunas + [COL_FIN_VALOR]].copy()
     recorte["_rotulo"] = list(coluna_rotulo)
-    recorte["_dia"] = df["Data Efetiva"].dt.normalize().map(rotulos_por_dia)
+    chaves = chave_periodo(df["Data Efetiva"]) if chave_periodo else df["Data Efetiva"].dt.normalize()
+    recorte["_dia"] = chaves.map(rotulos_por_dia)
     recorte = recorte[recorte["_dia"].notna()]
     if recorte.empty:
         return {}, False
@@ -7626,7 +7637,7 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     recorte = recorte.reindex(recorte[COL_FIN_VALOR].abs().sort_values(ascending=False).index)
     antes = len(recorte)
     recorte = recorte.groupby(["_rotulo", "_dia"], observed=True, sort=False).head(
-        TETO_LANCAMENTOS_POR_CELULA
+        int(teto or TETO_LANCAMENTOS_POR_CELULA)
     )
 
     # Teto de página NÃO existe mais como corte de linhas soltas. Ele já
@@ -7666,6 +7677,37 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo):
     for (rotulo, dia), grupo in saida.groupby(["_rotulo", "_dia"], observed=True, sort=False):
         por_celula[f"{rotulo}||{dia}"] = grupo[campos].to_dict("records")
     return por_celula, cortou
+
+
+def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses):
+    """Detalhe por célula da tabela Movimentos por Mês (27/10/2026): a linha é
+    o MOVIMENTO e a coluna é o MÊS. `df_m` é o recorte da tela com a coluna
+    "PeriodoMes"; `rotulos_meses` é {período do mês: rótulo da coluna}.
+
+    Linhas de fluxo (a receber, a pagar) levam todos os títulos do mês.
+    Caixa e banco levam só os lançamentos do PRIMEIRO dia com movimento do
+    mês, porque é essa posição que a célula mostra -- somar o mês inteiro
+    não explicaria o número. Meta não é lançamento (é alvo) e fica fora, o
+    que deixa a célula dela sem sublinhado. Devolve (mapa, cortou)."""
+    if df_m is None or df_m.empty or COL_FIN_MOVIMENTO not in df_m.columns:
+        return {}, False
+    base = df_m
+    if "PeriodoMes" not in base.columns:
+        base = base.assign(PeriodoMes=base["Data Efetiva"].dt.to_period("M"))
+    tipo = base[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin)
+    eh_meta = base["Tipo Movimento"].eq("meta") if "Tipo Movimento" in base.columns else pd.Series(False, index=base.index)
+    fluxo = base[~tipo.isin(["saldo", "aplicacao"]) & ~eh_meta]
+    saldo = base[tipo.eq("saldo")]
+    if not saldo.empty:
+        primeiro_dia = saldo.groupby([COL_FIN_MOVIMENTO, "PeriodoMes"], observed=True)["Data Efetiva"].transform("min")
+        saldo = saldo[saldo["Data Efetiva"] == primeiro_dia]
+    recorte = pd.concat([fluxo, saldo]) if not saldo.empty else fluxo
+    if recorte.empty:
+        return {}, False
+    return montar_lancamentos_por_celula(
+        recorte, rotulos_meses, recorte[COL_FIN_MOVIMENTO].astype(str),
+        chave_periodo=lambda serie: serie.dt.to_period("M"),
+        teto=TETO_LANCAMENTOS_POR_CELULA_MES)
 
 
 def fracao_da_meta_ainda_nao_coberta(meta_por_dia, realizado_por_dia):
@@ -9944,6 +9986,15 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pd.DataFrame([linha_total_geral_m], index=[rotulo_total_geral_m]),
             ])
 
+            # Dois cliques num valor abrem, numa aba nova, os lançamentos do MÊS
+            # que formam aquele número (27/10/2026) -- o mesmo mecanismo do
+            # Diário Consolidado, com a célula valendo um mês. Linhas de fluxo
+            # (a receber, a pagar) levam todos os títulos do mês; caixa e banco
+            # levam só os lançamentos do primeiro dia, que é a posição mostrada;
+            # a meta, SALDO INICIAL e TOTAL GERAL não são soma de lançamentos e
+            # ficam sem detalhe.
+            lancamentos_m, _cortou_m = montar_lancamentos_do_mes_por_celula(
+                df_m, rotulos_meses_m)
             tabela_selecionavel(
                 pivot_m_exibicao, chave="tabela_mensal",
                 tipos_linha=[
@@ -9951,8 +10002,17 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     else "total" if str(rotulo).startswith("TOTAL") else "movimento"
                     for rotulo in pivot_m_exibicao.index
                 ],
+                detalhes_por_celula=lancamentos_m,
                 # Sem número: a altura acompanha as linhas da tabela.
                 rotulo_canto="Movimento",
+            )
+            st.caption(
+                "**Dois cliques num valor** abrem, numa aba nova, todos os lançamentos daquele mês que formam o "
+                "número, com documento, fornecedor e vencimento, e dá para baixar em CSV por lá. As células com "
+                "detalhe aparecem sublinhadas; caixa e banco mostram os lançamentos do primeiro dia do mês, que é "
+                "a posição exibida."
+                + (" Em meses com muitos títulos a célula traz os maiores, até o teto de "
+                   f"{TETO_LANCAMENTOS_POR_CELULA_MES} lançamentos." if _cortou_m else "")
             )
             st.caption(
                 "As linhas de **caixa e banco** mostram o saldo com que o mês **começou** — a posição do "
