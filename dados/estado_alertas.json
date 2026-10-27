@@ -70,5 +70,7 @@
  "dep:🏦 Relatório de Custos - ADM/Financeiro:Margem de Contribuição 2:10/2026",
  "dep:🏦 Relatório de Custos - ADM/Financeiro:Resultado Antes do Imposto:10/2026",
  "dep:🏦 Relatório de Custos - ADM/Financeiro:Resultado Gerencial do Período:10/2026",
- "ritmo:10/2026"
+ "ritmo:10/2026",
+ "dep:🚗 Relatório de Custos - Coordenação de VD:Serviços de Terceiros:10/2026",
+ "dep:👥 Relatório de Custos - RH:Pessoal:10/2026"
 ]
