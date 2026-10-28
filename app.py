@@ -7679,7 +7679,18 @@ def montar_lancamentos_por_celula(df, rotulos_por_dia, coluna_rotulo, chave_peri
     return por_celula, cortou
 
 
-def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses):
+def rotulo_sem_detalhe(coluna):
+    """Nome da linha-filha que junta os títulos SEM valor na coluna de
+    abertura (27/10/2026). No Fluxo Mensal as filhas precisam FECHAR com a
+    mãe -- uma diferença de centenas de milhares entre "3 - Contas a Pagar"
+    e a soma dos grupos só confundiria --, então o que não tem grupo de
+    despesa, modalidade ou canal ganha uma linha própria em vez de sumir."""
+    nomes = {COL_FIN_GRUPO_DESPESA: "grupo de despesa", COL_FIN_MODALIDADE: "modalidade",
+             COL_FIN_CANAL: "canal"}
+    return f"(sem {nomes.get(coluna, str(coluna).lower())})"
+
+
+def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses, colunas_detalhe=()):
     """Detalhe por célula da tabela Movimentos por Mês (27/10/2026): a linha é
     o MOVIMENTO e a coluna é o MÊS. `df_m` é o recorte da tela com a coluna
     "PeriodoMes"; `rotulos_meses` é {período do mês: rótulo da coluna}.
@@ -7688,7 +7699,12 @@ def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses):
     Caixa e banco levam só os lançamentos do PRIMEIRO dia com movimento do
     mês, porque é essa posição que a célula mostra -- somar o mês inteiro
     não explicaria o número. Meta não é lançamento (é alvo) e fica fora, o
-    que deixa a célula dela sem sublinhado. Devolve (mapa, cortou)."""
+    que deixa a célula dela sem sublinhado. Devolve (mapa, cortou).
+
+    `colunas_detalhe` são as colunas pelas quais as linhas podem ser ABERTAS
+    (modalidade, grupo de despesa, canal): para cada uma, o mapa ganha também
+    as chaves das filhas, no formato "movimento › detalhe||mês", para a
+    célula da filha abrir só os lançamentos dela."""
     if df_m is None or df_m.empty or COL_FIN_MOVIMENTO not in df_m.columns:
         return {}, False
     base = df_m
@@ -7704,10 +7720,22 @@ def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses):
     recorte = pd.concat([fluxo, saldo]) if not saldo.empty else fluxo
     if recorte.empty:
         return {}, False
-    return montar_lancamentos_por_celula(
-        recorte, rotulos_meses, recorte[COL_FIN_MOVIMENTO].astype(str),
-        chave_periodo=lambda serie: serie.dt.to_period("M"),
-        teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+    por_mes = lambda serie: serie.dt.to_period("M")   # noqa: E731
+    movimento = recorte[COL_FIN_MOVIMENTO].astype(str)
+    mapa, cortou = montar_lancamentos_por_celula(
+        recorte, rotulos_meses, movimento, chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+    for coluna in colunas_detalhe or ():
+        if coluna not in recorte.columns:
+            continue
+        detalhe = recorte[coluna].astype("object").where(recorte[coluna].notna(), "").astype(str).str.strip()
+        detalhe = detalhe.where(detalhe.ne(""), rotulo_sem_detalhe(coluna))
+        parcial, cortou_parcial = montar_lancamentos_por_celula(
+            recorte, rotulos_meses, movimento + " › " + detalhe,
+            chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+        for chave, linhas in parcial.items():
+            mapa.setdefault(chave, linhas)
+        cortou = cortou or cortou_parcial
+    return mapa, cortou
 
 
 def fracao_da_meta_ainda_nao_coberta(meta_por_dia, realizado_por_dia):
@@ -7898,7 +7926,7 @@ SEPARADOR_LINHAS_ABERTAS = "~"
 PREFIXO_BOTAO_ABRIR = "st-key-dcabrir_"
 
 
-def botoes_de_abrir(linhas, chave_estado):
+def botoes_de_abrir(linhas, chave_estado, prefixo_chave="dcabrir_"):
     """Desenha, fora da tela, um botão por linha que pode ser aberta e
     devolve {linha: (está aberta, índice do botão)}.
 
@@ -7909,15 +7937,19 @@ def botoes_de_abrir(linhas, chave_estado):
     O botão precisa ser desenhado ANTES da tabela: é no ponto em que ele
     aparece que o Streamlit conta o clique, e a tabela tem de ser montada já
     sabendo o que está aberto."""
+    # `prefixo_chave` separa as tabelas: o Diário Consolidado usa "dcabrir_"
+    # e o Fluxo Mensal "fmabrir_". Sem isso as duas abas, desenhadas no mesmo
+    # ciclo, teriam botões com a mesma chave -- e o Streamlit recusa.
     abertas = st.session_state.setdefault(chave_estado, [])
+    classe_botao = f"st-key-{prefixo_chave}"
     st.markdown(
-        f"<style>div[class*='{PREFIXO_BOTAO_ABRIR}']"
+        f"<style>div[class*='{classe_botao}']"
         "{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}</style>",
         unsafe_allow_html=True,
     )
     comandos = {}
     for indice, linha in enumerate(linhas):
-        if st.button(f"{PREFIXO_BOTAO_ABRIR}{indice}", key=f"dcabrir_{indice}"):
+        if st.button(f"{classe_botao}{indice}", key=f"{prefixo_chave}{indice}"):
             if linha in abertas:
                 abertas.remove(linha)
             else:
@@ -7959,7 +7991,7 @@ def guardar_periodo_na_url(chave, data_ini=None, data_fim=None):
 
 def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
                        pais=None, filhas_abertas=False, comandos_abrir=None,
-                       detalhes_por_celula=None):
+                       detalhes_por_celula=None, prefixo_botao=PREFIXO_BOTAO_ABRIR):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -7996,7 +8028,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     arquivo e sem perder o que está na tela.
 
     `comandos_abrir` liga a seta ao servidor: um dicionário
-    {rótulo da linha: True se está aberta}. A seta vira um comando que
+    {rótulo da linha: True se está aberta}. `prefixo_botao` é a classe dos
+    botões escondidos que a seta aciona (um prefixo por tabela). A seta vira um comando que
     recarrega a página com aquela linha marcada na URL, e aí a tabela é
     redesenhada mais alta. É a única forma de a altura acompanhar: o quadro
     onde a tabela vive tem altura fixa, definida no momento de desenhar, e
@@ -8090,6 +8123,14 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                 continue
             sinal = "pos" if numero >= 0 else "neg"
             chave_celula = f"{rotulo_cru}||{coluna}"
+            # Linha filha: primeiro a chave COMPOSTA "mãe › filha", que separa
+            # a LOJA das contas a pagar da LOJA das contas a receber; sem ela
+            # no mapa, vale a chave simples (é o que o Diário Consolidado usa).
+            if pais[posicao] is not None and detalhes_por_celula:
+                rotulo_mae = str(df.index[pais[posicao]]).replace("\u200b", "").strip()
+                chave_composta = f"{rotulo_mae} › {rotulo_cru}||{coluna}"
+                if chave_composta in detalhes_por_celula:
+                    chave_celula = chave_composta
             tem_detalhe = bool(detalhes_por_celula) and chave_celula in detalhes_por_celula
             celulas.append(
                 f'<td class="{sinal}{" com-detalhe" if tem_detalhe else ""}" '
@@ -8553,12 +8594,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
       let alvo = null;
       try {{
         const fora = (window.parent || window.top).document;
-        alvo = fora.querySelector('.{PREFIXO_BOTAO_ABRIR}' + indice + ' button');
+        alvo = fora.querySelector('.{prefixo_botao}' + indice + ' button');
         if (!alvo) {{
           // Versão do Streamlit sem a classe por chave: procura pelo texto,
           // que é único e invisível na tela.
           alvo = Array.from(fora.querySelectorAll('button')).find(
-            b => b.innerText.trim() === '{PREFIXO_BOTAO_ABRIR}' + indice
+            b => b.innerText.trim() === '{prefixo_botao}' + indice
           );
         }}
       }} catch (erro) {{ /* sem acesso à página de fora */ }}
@@ -9980,11 +10021,71 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # de sempre em print nem em conversa.
             rotulo_total_geral_m = (
                 "TOTAL GERAL (com meta)" if total_geral_com_meta_m else "TOTAL GERAL")
-            pivot_m_exibicao = pd.concat([
-                pd.DataFrame([linha_saldo_inicial_m], index=["SALDO INICIAL"]),
-                pivot_m,
-                pd.DataFrame([linha_total_geral_m], index=[rotulo_total_geral_m]),
-            ])
+
+            # ---- Seta de abrir a linha (27/10/2026), igual ao Diário Consolidado ----
+            # Clicar no ▸ de "3 - Contas a Pagar" abre, logo abaixo, uma linha por
+            # grupo de despesa (ou por canal); contas a receber abre por
+            # modalidade. As filhas são só leitura: SALDO INICIAL e TOTAL GERAL
+            # continuam saindo das linhas-mãe. Quem está aberto vive na sessão,
+            # acionado por botões escondidos (ver botoes_de_abrir).
+            abrir_por_m = st.radio(
+                "Ao abrir uma linha, mostrar",
+                ["Detalhe da linha", "Canal"],
+                horizontal=True, key="abrir_por_fluxo_mensal",
+                help=("Detalhe da linha abre contas a receber por modalidade e contas a "
+                      "pagar por grupo de despesa. Canal abre todas por HUB, Loja e Venda Direta."),
+            )
+
+            def _coluna_de_abertura_m(movimento):
+                if abrir_por_m == "Canal":
+                    return COL_FIN_CANAL
+                if _classificar_movimento_fin(movimento) == "saida":
+                    return COL_FIN_GRUPO_DESPESA
+                if "receber" in _normalizar_texto(movimento).lower():
+                    return COL_FIN_MODALIDADE
+                return COL_FIN_CANAL
+
+            abriveis_m = [str(m) for m in pivot_m.index if _classificar_movimento_fin(m) != "meta"]
+            comandos_m = botoes_de_abrir(abriveis_m, "fm_linhas_abertas", "fmabrir_")
+            abertas_m = [linha for linha, (aberta, _i) in comandos_m.items() if aberta]
+
+            linhas_exib_m = [linha_saldo_inicial_m]
+            indices_exib_m, tipos_exib_m, pais_exib_m = ["SALDO INICIAL"], ["saldo_inicial"], [None]
+            for movimento in pivot_m.index:
+                posicao_mae_m = len(linhas_exib_m)
+                linhas_exib_m.append(pivot_m.loc[movimento])
+                indices_exib_m.append(str(movimento)); tipos_exib_m.append("movimento"); pais_exib_m.append(None)
+                if str(movimento) not in abertas_m:
+                    continue
+                recorte_mae = df_m[df_m[COL_FIN_MOVIMENTO].astype(str) == str(movimento)]
+                coluna_abertura_m = _coluna_de_abertura_m(movimento)
+                if recorte_mae.empty or coluna_abertura_m not in recorte_mae.columns:
+                    continue
+                # Título sem valor na coluna vira a filha "(sem ...)", no fim:
+                # assim as filhas somam exatamente a mãe.
+                _sem_m = rotulo_sem_detalhe(coluna_abertura_m)
+                _detalhes_m = (recorte_mae[coluna_abertura_m].astype("object")
+                               .where(recorte_mae[coluna_abertura_m].notna(), "").astype(str).str.strip())
+                _detalhes_m = _detalhes_m.where(_detalhes_m.ne(""), _sem_m)
+                _ordem_m = sorted(set(_detalhes_m) - {_sem_m}) + ([_sem_m] if (_detalhes_m == _sem_m).any() else [])
+                for detalhe in _ordem_m:
+                    filho = recorte_mae[_detalhes_m == detalhe]
+                    piv_filho = _pivot_fluxo_fin(
+                        filho, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m,
+                        posicao_saldo="primeira")
+                    if piv_filho.empty:
+                        continue
+                    serie_filho = piv_filho.iloc[0]
+                    serie_filho.index = [rotulos_meses_m[p] for p in serie_filho.index]
+                    if not serie_filho.any():
+                        continue
+                    linhas_exib_m.append(serie_filho)
+                    indices_exib_m.append(detalhe); tipos_exib_m.append("movimento"); pais_exib_m.append(posicao_mae_m)
+            linhas_exib_m.append(linha_total_geral_m)
+            indices_exib_m.append(rotulo_total_geral_m); tipos_exib_m.append("total"); pais_exib_m.append(None)
+            pivot_m_exibicao = pd.DataFrame(linhas_exib_m)
+            pivot_m_exibicao.index = [_rotulo_unico_tabela(r, i) for i, r in enumerate(indices_exib_m)]
+            pivot_m_exibicao = pivot_m_exibicao[colunas_meses_m]
 
             # Dois cliques num valor abrem, numa aba nova, os lançamentos do MÊS
             # que formam aquele número (27/10/2026) -- o mesmo mecanismo do
@@ -9994,19 +10095,23 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # a meta, SALDO INICIAL e TOTAL GERAL não são soma de lançamentos e
             # ficam sem detalhe.
             lancamentos_m, _cortou_m = montar_lancamentos_do_mes_por_celula(
-                df_m, rotulos_meses_m)
+                df_m, rotulos_meses_m,
+                colunas_detalhe=sorted({_coluna_de_abertura_m(m) for m in abertas_m}))
             tabela_selecionavel(
                 pivot_m_exibicao, chave="tabela_mensal",
-                tipos_linha=[
-                    "saldo_inicial" if str(rotulo).startswith("SALDO INICIAL")
-                    else "total" if str(rotulo).startswith("TOTAL") else "movimento"
-                    for rotulo in pivot_m_exibicao.index
-                ],
+                tipos_linha=tipos_exib_m,
+                pais=pais_exib_m,
+                filhas_abertas=True,
+                comandos_abrir=comandos_m,
+                prefixo_botao="st-key-fmabrir_",
                 detalhes_por_celula=lancamentos_m,
                 # Sem número: a altura acompanha as linhas da tabela.
                 rotulo_canto="Movimento",
             )
             st.caption(
+                "Clique no **▸** da linha para abrir o detalhe logo abaixo dela (a tabela cresce junto); "
+                "contas a receber abre por modalidade e contas a pagar por grupo de despesa, ou tudo por canal, "
+                "conforme a escolha acima. "
                 "**Dois cliques num valor** abrem, numa aba nova, todos os lançamentos daquele mês que formam o "
                 "número, com documento, fornecedor e vencimento, e dá para baixar em CSV por lá. As células com "
                 "detalhe aparecem sublinhadas; caixa e banco mostram os lançamentos do primeiro dia do mês, que é "

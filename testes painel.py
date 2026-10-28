@@ -50,6 +50,7 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
+    "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
@@ -121,6 +122,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "rotulo_sem_detalhe": ["COL_FIN_GRUPO_DESPESA", "COL_FIN_MODALIDADE", "COL_FIN_CANAL"],
     "linhas_proprias_da_dre": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "premissa_automatica_rascunho": ["PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN"],
     "montar_rascunho_orcamento": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
@@ -1433,10 +1435,12 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         self.assertEqual(saldos["OUT"], 4_737.0, "e segue em cadeia")
 
         i = FONTE.index("📋 Movimentos por Mês")
-        trecho = FONTE[max(0, i - 6000):i + 5000]
+        trecho = FONTE[max(0, i - 6000):i + 7000]
         self.assertIn("if _periodo <= _mes_corrente_m:", trecho,
                       "a regra precisa distinguir passado/corrente de previsao")
-        self.assertIn('index=["SALDO INICIAL"]', trecho)
+        # 27/10/2026: a linha virou a primeira da montagem hierarquica
+        # (mae/filha), nao mais um concat de tres pedacos.
+        self.assertIn('indices_exib_m, tipos_exib_m, pais_exib_m = ["SALDO INICIAL"], ["saldo_inicial"], [None]', trecho)
 
     def test_mensal_e_reserva_leem_pela_mesma_abertura(self):
         """25/08/2026: a Reserva de Caixa passou a ler caixa e banco pela
@@ -1900,8 +1904,15 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
             self.assertGreaterEqual(valor, 0.0, "disponivel e caixa: nao pode ser negativo")
         # Setembro pega a sobra de agosto, como pedido.
         self.assertAlmostEqual(disponiveis[2], 8_142_648.34 + 5_456_804.52, places=2)
-        # E nenhuma outra chamada do pivo pode ter mudado de base.
-        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 1)
+        # E nenhuma outra chamada do pivo pode ter mudado de base. Sao duas
+        # desde 27/10/2026: a tabela e o pivo das FILHAS abertas pela seta --
+        # as duas na abertura, para a filha de Caixa/Banco (aberta por canal)
+        # bater com a linha-mae.
+        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 2)
+        i_mensal = FONTE.index("📋 Movimentos por Mês")
+        bloco_mensal = FONTE[max(0, i_mensal - 6000):i_mensal + 9000]
+        self.assertEqual(bloco_mensal.count('posicao_saldo="primeira"'), 2,
+                         "as duas chamadas ficam no bloco do Fluxo Mensal")
 
 
 # ============================================================================
@@ -3977,8 +3988,12 @@ class TesteDiarioConsolidado(unittest.TestCase):
     def test_js_procura_o_botao_e_tem_plano_b(self):
         i = FONTE.index("def tabela_selecionavel(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertIn("{PREFIXO_BOTAO_ABRIR}' + indice + ' button'", corpo,
+        # 27/10/2026: a classe virou parametro (`prefixo_botao`), porque o
+        # Fluxo Mensal tem os seus proprios botoes; o padrao segue o do DC.
+        self.assertIn("{prefixo_botao}' + indice + ' button'", corpo,
                       "o JS precisa achar o botao pela classe da chave")
+        self.assertIn("prefixo_botao=PREFIXO_BOTAO_ABRIR", corpo,
+                      "sem parametro, a tabela aciona os botoes do Diario Consolidado")
         self.assertIn("innerText.trim() ===", corpo,
                       "sem a classe por chave, o plano B e achar pelo texto")
         self.assertIn("alvo.click()", corpo)
@@ -8895,6 +8910,124 @@ class TesteTravasEstruturais(unittest.TestCase):
         trecho = FONTE[i:fim]
         self.assertIn('teto_loja = loja["Orçado (R$)"]', trecho,
                       "o teto do 1% voltou a ser calculado sobre a receita")
+
+
+class TesteSetaDeAbrirNoFluxoMensal(unittest.TestCase):
+    """27/10/2026: no Fluxo Mensal a seta da linha abre o detalhe para baixo,
+    como no Diario Consolidado -- "3 - Contas a Pagar" abre por grupo de
+    despesa (ou por canal), a receber por modalidade."""
+
+    def test_botoes_tem_prefixo_proprio_por_tabela(self):
+        """As duas abas sao desenhadas no mesmo ciclo: com a mesma chave de
+        botao o Streamlit recusa a segunda. O DC segue em dcabrir_."""
+        ns_local = carregar(["botoes_de_abrir"], ["PREFIXO_BOTAO_ABRIR"])
+        estado, estilos, chaves = {}, [], []
+
+        class FakeST:
+            session_state = estado
+            clicado = None
+
+            def markdown(self, html, **kw):
+                estilos.append(html)
+
+            def button(self, rotulo, key=None, **kw):
+                chaves.append((rotulo, key))
+                return key == FakeST.clicado
+
+        ns_local["st"] = FakeST()
+        ns_local["botoes_de_abrir"](["1.1.Caixa"], "dc")
+        self.assertEqual(chaves[-1], ("st-key-dcabrir_0", "dcabrir_0"), "o DC nao muda")
+        FakeST.clicado = "fmabrir_1"
+        comandos = ns_local["botoes_de_abrir"](["1.1.Caixa", "3 - Contas a Pagar"], "fm", "fmabrir_")
+        self.assertEqual(chaves[-1], ("st-key-fmabrir_1", "fmabrir_1"))
+        self.assertEqual(comandos["3 - Contas a Pagar"], (True, 1))
+        self.assertIn("st-key-fmabrir_", estilos[-1], "o CSS esconde os botoes DESTA tabela")
+        self.assertNotIn("dcabrir", estado.get("fm", []))
+
+    def test_seta_da_tabela_aciona_o_prefixo_pedido(self):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        df = pd.DataFrame([[10.0], [30.0]], index=["1.1.Caixa", "3 - Contas a Pagar"], columns=["SET/2026"])
+        ns_local["tabela_selecionavel"](
+            df, chave="t", tipos_linha=["movimento", "movimento"], pais=[None, None], filhas_abertas=True,
+            comandos_abrir={"1.1.Caixa": (False, 0), "3 - Contas a Pagar": (False, 1)},
+            prefixo_botao="st-key-fmabrir_")
+        self.assertIn("'.st-key-fmabrir_' + indice + ' button'", capturado["codigo"])
+        self.assertNotIn("st-key-dcabrir_", capturado["codigo"], "a seta do mensal nao pode abrir linha do DC")
+
+    def test_fluxo_mensal_desenha_os_botoes_antes_da_tabela(self):
+        i = FONTE.index("📋 Movimentos por Mês")
+        trecho = FONTE[i:FONTE.index('chave="tabela_mensal"', i)]
+        self.assertIn('botoes_de_abrir(abriveis_m, "fm_linhas_abertas", "fmabrir_")', trecho)
+        self.assertLess(trecho.index("botoes_de_abrir("), trecho.index("pivot_m_exibicao = pd.DataFrame(linhas_exib_m)"),
+                        "o clique so vale se o botao existir antes de a tabela ser montada")
+        chamada = FONTE[FONTE.index('chave="tabela_mensal"'):FONTE.index('rotulo_canto="Movimento"')]
+        for pedaco in ("pais=pais_exib_m", "filhas_abertas=True", "comandos_abrir=comandos_m",
+                       'prefixo_botao="st-key-fmabrir_"', "detalhes_por_celula=lancamentos_m"):
+            self.assertIn(pedaco, chamada)
+        # Meta nao abre (e alvo, nao lancamento); SALDO INICIAL e TOTAL GERAL
+        # continuam vindo das maes, nunca das filhas.
+        self.assertIn('if _classificar_movimento_fin(m) != "meta"]', trecho)
+        self.assertIn("rotulo_sem_detalhe(coluna_abertura_m)", trecho, "as filhas tem de fechar com a mae")
+        self.assertIn("linhas_exib_m.append(linha_total_geral_m)", FONTE)
+
+    def test_detalhe_da_filha_abre_so_os_lancamentos_dela(self):
+        """A LOJA das contas a pagar nao e a LOJA das contas a receber: a
+        chave da filha leva a mae junto ("mae > filha||mes")."""
+        ns = carregar(["montar_lancamentos_do_mes_por_celula", "montar_lancamentos_por_celula",
+                       "_classificar_movimento_fin", "rotulo_sem_detalhe"],
+                      ["TETO_LANCAMENTOS_POR_CELULA", "TETO_LANCAMENTOS_POR_CELULA_MES", "COL_FIN_CANAL",
+                       "COL_FIN_MODALIDADE", "COL_FIN_GRUPO_DESPESA", "COL_FIN_VENCIMENTO",
+                       "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_VALOR", "COL_FIN_MOVIMENTO",
+                       "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+        d = pd.Timestamp("2026-09-10")
+        linhas = [("3 - Contas a Pagar", "NF 1", -100.0, "LOJA", "ALUGUEL"),
+                  ("3 - Contas a Pagar", "NF 2", -250.0, "HUB", "ALUGUEL"),
+                  ("3 - Contas a Pagar", "NF 3", -50.0, "LOJA", "ENERGIA"),
+                  ("2 - Contas a Receber", "REC 1", 900.0, "LOJA", "")]
+        df = pd.DataFrame({
+            ns["COL_FIN_MOVIMENTO"]: [l[0] for l in linhas], "Data Efetiva": [d] * 4,
+            ns["COL_FIN_NUMERO"]: [l[1] for l in linhas], ns["COL_FIN_VALOR"]: [l[2] for l in linhas],
+            ns["COL_FIN_HISTORICO"]: ["X"] * 4, ns["COL_FIN_CANAL"]: [l[3] for l in linhas],
+            ns["COL_FIN_MODALIDADE"]: ["PIX", "", "", "PIX"], ns["COL_FIN_GRUPO_DESPESA"]: [l[4] for l in linhas],
+            ns["COL_FIN_VENCIMENTO"]: [d] * 4, ns["COL_FIN_DATA_LIQUIDACAO"]: [d] * 4,
+        })
+        df["Tipo Movimento"] = df[ns["COL_FIN_MOVIMENTO"]].map(ns["_classificar_movimento_fin"])
+        rotulos = {pd.Period("2026-09", "M"): "SET/2026"}
+        mapa, _ = ns["montar_lancamentos_do_mes_por_celula"](
+            df, rotulos, colunas_detalhe=[ns["COL_FIN_GRUPO_DESPESA"], ns["COL_FIN_CANAL"]])
+        self.assertEqual(sorted(l["Número"] for l in mapa["3 - Contas a Pagar||SET/2026"]), ["NF 1", "NF 2", "NF 3"],
+                         "a mae continua inteira")
+        self.assertEqual(sorted(l["Número"] for l in mapa["3 - Contas a Pagar › ALUGUEL||SET/2026"]), ["NF 1", "NF 2"])
+        self.assertEqual([l["Número"] for l in mapa["3 - Contas a Pagar › LOJA||SET/2026"]], ["NF 1", "NF 3"])
+        self.assertEqual([l["Número"] for l in mapa["2 - Contas a Receber › LOJA||SET/2026"]], ["REC 1"],
+                         "a LOJA de cada mae e so dela")
+        self.assertNotIn("2 - Contas a Receber › ||SET/2026", mapa, "detalhe vazio nao fica sem nome")
+        # ...vira a filha "(sem ...)", para as filhas fecharem com a mae.
+        self.assertEqual([l["Número"] for l in mapa["2 - Contas a Receber › (sem grupo de despesa)||SET/2026"]], ["REC 1"])
+        self.assertEqual(ns["rotulo_sem_detalhe"](ns["COL_FIN_CANAL"]), "(sem canal)")
+        # Sem colunas de detalhe, o mapa e o de antes.
+        so_maes, _ = ns["montar_lancamentos_do_mes_por_celula"](df, rotulos)
+        self.assertFalse(any("›" in k for k in so_maes))
+
+    def test_celula_da_filha_prefere_a_chave_composta(self):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        df = pd.DataFrame([[-350.0], [-100.0], [900.0], [900.0]],
+                          index=["3 - Contas a Pagar", "LOJA", "2 - Contas a Receber", "LOJA\u200b"],
+                          columns=["SET/2026"])
+        detalhes = {"3 - Contas a Pagar||SET/2026": [{"a": 1}], "3 - Contas a Pagar › LOJA||SET/2026": [{"a": 2}],
+                    "2 - Contas a Receber › LOJA||SET/2026": [{"a": 3}]}
+        ns_local["tabela_selecionavel"](
+            df, chave="t", tipos_linha=["movimento"] * 4, pais=[None, 0, None, 2], filhas_abertas=True,
+            comandos_abrir={"3 - Contas a Pagar": (True, 0), "2 - Contas a Receber": (True, 1)},
+            prefixo_botao="st-key-fmabrir_", detalhes_por_celula=detalhes)
+        codigo = capturado["codigo"]
+        self.assertIn('data-k="3 - Contas a Pagar › LOJA||SET/2026"', codigo)
+        self.assertIn('data-k="2 - Contas a Receber › LOJA||SET/2026"', codigo)
+        self.assertNotIn('data-k="LOJA||SET/2026"', codigo, "a filha nao pode cair na chave solta")
 
 
 if __name__ == "__main__":
