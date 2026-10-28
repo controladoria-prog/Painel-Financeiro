@@ -51,6 +51,16 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 DEPENDENCIAS = {
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
     "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe"],
+    # Projetado x Realizado (28/10/2026)
+    "grupo_do_projetado": ["_normalizar_texto"],
+    "tabela_projetada_fin": ["_meses_projetado", "_rotulo_mes_pt", "_quadro_projetado_x_realizado", "grupos_do_projetado"],
+    "tabela_realizada_fin": ["_meses_projetado", "_rotulo_mes_pt", "_quadro_projetado_x_realizado", "grupos_do_projetado",
+                             "recorte_realizado_projetado"],
+    "recorte_realizado_projetado": ["_meses_projetado", "grupo_do_projetado", "_classificar_movimento_fin"],
+    "lancamentos_projetado_x_realizado": ["recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
+                                          "montar_lancamentos_por_celula"],
+    "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
+    "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
@@ -123,6 +133,18 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "rotulo_sem_detalhe": ["COL_FIN_GRUPO_DESPESA", "COL_FIN_MODALIDADE", "COL_FIN_CANAL"],
+    "grupos_do_projetado": ["PROJETADO_FIN_2026", "LINHA_RECEBER_PROJETADO"],
+    "grupo_do_projetado": ["GRUPOS_REALIZADO_NO_PROJETADO", "GRUPO_OUTRAS_SAIDAS"],
+    "_meses_projetado": ["MESES_PROJETADO_FIN"],
+    "_rotulo_mes_pt": ["MESES_PT_ABREV_FIN"],
+    "_quadro_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO",
+                                      "COLUNA_TOTAL_PROJETADO"],
+    "tabela_projetada_fin": ["PROJETADO_FIN_2026", "LINHA_RECEBER_PROJETADO"],
+    "recorte_realizado_projetado": ["COL_FIN_MOVIMENTO", "COL_FIN_GRUPO_DESPESA", "GRUPO_OUTRAS_SAIDAS"],
+    "tabela_realizada_fin": ["COL_FIN_VALOR"],
+    "lancamentos_projetado_x_realizado": ["LINHA_PAGAR_PROJETADO", "LINHA_RECEBER_PROJETADO",
+                                          "TETO_LANCAMENTOS_POR_CELULA_MES", "TETO_LANCAMENTOS_POR_CELULA"],
+    "linhas_exibidas_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO"],
     "linhas_proprias_da_dre": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "premissa_automatica_rascunho": ["PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN"],
     "montar_rascunho_orcamento": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
@@ -9098,6 +9120,124 @@ class TesteSaldoAnteriorAoPeriodoMensal(unittest.TestCase):
         self.assertIn("saldo_anterior_ao_periodo_m = saldo_anterior_ao_periodo_mensal(", trecho)
         self.assertIn("incluir_meta=total_geral_com_meta_m)", trecho[trecho.index("saldo_anterior_ao_periodo_mensal("):])
         self.assertNotIn("_antes_do_periodo_m[COL_FIN_VALOR].sum()", FONTE, "a soma crua voltou")
+
+
+class TesteProjetadoXRealizado(unittest.TestCase):
+    """28/10/2026: aba que compara o 2º semestre PROJETADO (planilha da
+    diretoria, em constante) com o REALIZADO da base, na estrutura da
+    planilha: receber so pelo total, contas a pagar aberto nos grupos dela."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["tabela_projetada_fin", "tabela_realizada_fin", "grupo_do_projetado", "grupos_do_projetado",
+                           "recorte_realizado_projetado", "lancamentos_projetado_x_realizado",
+                           "linhas_exibidas_projetado_x_realizado", "_classificar_movimento_fin"],
+                          ["COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO",
+                           "COL_FIN_NUMERO", "COL_FIN_HISTORICO"])
+
+    def test_projetado_e_a_planilha(self):
+        """Os totais tem de fechar com a planilha: e a prova de que os numeros
+        foram transcritos certos."""
+        q = self.ns["tabela_projetada_fin"]()
+        self.assertEqual(list(q.columns), ["JUL/2026", "AGO/2026", "SET/2026", "OUT/2026", "NOV/2026", "DEZ/2026", "Total"])
+        self.assertAlmostEqual(q.loc["TOTAL CONTAS A RECEBER", "JUL/2026"], 11_420_695.70, places=2)
+        self.assertAlmostEqual(q.loc["TOTAL CONTAS A RECEBER", "Total"], 77_746_772.02, places=2)
+        # contas a pagar e SOMA das filhas e bate com a linha da planilha
+        self.assertAlmostEqual(q.loc["4 - Contas a Pagar", "JUL/2026"], -10_650_388.87, places=2)
+        self.assertAlmostEqual(q.loc["4 - Contas a Pagar", "DEZ/2026"], -10_710_883.00, places=2)
+        self.assertAlmostEqual(q.loc["4 - Contas a Pagar", "Total"], -62_629_427.53, places=2)
+        for grupo, total in (("Custo - Mercadoria", -26_226_971.05), ("G&A", -4_687_183.03),
+                             ("OUTRAS SAÍDAS", -7_389_016.07), ("TRF", -8_211_400.35), ("Pessoal", -7_767_181.87)):
+            self.assertAlmostEqual(q.loc[grupo, "Total"], total, places=2, msg=grupo)
+        self.assertAlmostEqual(q.loc["Total Geral", "JUL/2026"], 770_306.83, places=2)
+        self.assertAlmostEqual(q.loc["Total Geral", "DEZ/2026"], 4_209_013.50, places=2)
+        self.assertAlmostEqual(q.loc["Total Geral", "Total"], 15_117_344.49, places=2)
+        # a ordem e a da planilha
+        self.assertEqual(list(q.index)[:3], ["TOTAL CONTAS A RECEBER", "4 - Contas a Pagar", "Custo - Mercadoria"])
+        self.assertEqual(list(q.index)[-1], "Total Geral")
+        self.assertEqual(len(self.ns["grupos_do_projetado"]()), 10)
+
+    def test_grupo_da_base_cai_na_linha_certa(self):
+        g = self.ns["grupo_do_projetado"]
+        self.assertEqual(g("Pessoal"), "Pessoal")
+        self.assertEqual(g("pessoal "), "Pessoal", "maiusculas e espacos nao separam")
+        self.assertEqual(g("Despesas Administrativas"), "G&A")
+        self.assertEqual(g("Taxa de Ocupação"), "G&A")
+        self.assertEqual(g("Custo - Mercadoria - kits"), "Custo - Mercadoria", "kits acompanha a mae")
+        self.assertEqual(g("TRF-Kits"), "TRF")
+        for sobra in ("Serviços de Terceiros", "Despesas Variáveis", "Ativo Permanente", "Operações Com Sócios", "", None, "nan"):
+            self.assertEqual(g(sobra), "OUTRAS SAÍDAS", repr(sobra))
+
+    def _base(self):
+        ns = self.ns
+        d = lambda m, dia: pd.Timestamp(2026, m, dia)
+        linhas = [
+            # receber: a vencer + liquidado somam; meta fica fora; junho fica fora
+            ("2.1 - Contas a Receber", d(7, 5), 100.0, ""), ("2.2 - Contas a Receber Liquidado", d(7, 9), 50.0, ""),
+            ("2 - Contas a Receber Meta", d(7, 1), 999.0, ""), ("2.1 - Contas a Receber", d(6, 30), 777.0, ""),
+            ("2.1 - Contas a Receber", d(8, 2), 30.0, ""),
+            # pagar
+            ("3 - Contas a Pagar", d(7, 3), -10.0, "Pessoal"), ("3 - Contas a Pagar", d(7, 4), -5.0, "Despesas Gerais"),
+            ("3 - Contas a Pagar", d(7, 6), -7.0, "Serviços de Terceiros"), ("3 - Contas a Pagar", d(7, 8), -1.0, None),
+            ("3 - Contas a Pagar", d(8, 1), -20.0, "Custo - Mercadoria - kits"),
+            # saldo e aplicacao nao entram
+            ("1.Banco", d(7, 1), 5000.0, ""), ("APLICACAO", d(7, 1), 4000.0, ""),
+        ]
+        df = pd.DataFrame({
+            "Movimento": [l[0] for l in linhas], "Data Efetiva": [l[1] for l in linhas],
+            "Valor.1": [l[2] for l in linhas], "GRUPO DESPESA": [l[3] for l in linhas],
+            ns["COL_FIN_NUMERO"]: [f"D{i}" for i in range(len(linhas))], ns["COL_FIN_HISTORICO"]: ["X"] * len(linhas),
+            ns["COL_FIN_CANAL"]: ["LOJA"] * len(linhas), ns["COL_FIN_MODALIDADE"]: [""] * len(linhas),
+            ns["COL_FIN_VENCIMENTO"]: [l[1] for l in linhas], ns["COL_FIN_DATA_LIQUIDACAO"]: [l[1] for l in linhas],
+        })
+        df["Tipo Movimento"] = df["Movimento"].map(ns["_classificar_movimento_fin"])
+        return df
+
+    def test_realizado_na_estrutura_da_planilha(self):
+        q = self.ns["tabela_realizada_fin"](self._base())
+        self.assertEqual(list(q.index), list(self.ns["tabela_projetada_fin"]().index), "mesma estrutura")
+        self.assertAlmostEqual(q.loc["TOTAL CONTAS A RECEBER", "JUL/2026"], 150.0, "a vencer + liquidado, sem meta")
+        self.assertAlmostEqual(q.loc["TOTAL CONTAS A RECEBER", "AGO/2026"], 30.0)
+        self.assertAlmostEqual(q.loc["TOTAL CONTAS A RECEBER", "Total"], 180.0, "junho nao entra")
+        self.assertAlmostEqual(q.loc["Pessoal", "JUL/2026"], -10.0)
+        self.assertAlmostEqual(q.loc["G&A", "JUL/2026"], -5.0)
+        self.assertAlmostEqual(q.loc["OUTRAS SAÍDAS", "JUL/2026"], -8.0, "terceiros + sem grupo")
+        self.assertAlmostEqual(q.loc["Custo - Mercadoria", "AGO/2026"], -20.0, "kits dentro da mae")
+        self.assertAlmostEqual(q.loc["4 - Contas a Pagar", "JUL/2026"], -23.0)
+        self.assertAlmostEqual(q.loc["Total Geral", "JUL/2026"], 127.0, "receber + pagar, sem banco nem aplicacao")
+        self.assertAlmostEqual(q.loc["Total Geral", "Total"], 180.0 - 43.0)
+        vazio = self.ns["tabela_realizada_fin"](pd.DataFrame())
+        self.assertEqual(list(vazio.index), list(q.index)); self.assertEqual(float(vazio.abs().sum().sum()), 0.0)
+
+    def test_duplo_clique_do_realizado(self):
+        mapa, cortou = self.ns["lancamentos_projetado_x_realizado"](self._base())
+        self.assertFalse(cortou)
+        self.assertEqual(sorted(l["Número"] for l in mapa["TOTAL CONTAS A RECEBER||JUL/2026"]), ["D0", "D1"], "sem meta")
+        self.assertEqual(len(mapa["4 - Contas a Pagar||JUL/2026"]), 4)
+        self.assertEqual([l["Número"] for l in mapa["4 - Contas a Pagar › G&A||JUL/2026"]], ["D6"])
+        self.assertEqual(sorted(l["Número"] for l in mapa["4 - Contas a Pagar › OUTRAS SAÍDAS||JUL/2026"]), ["D7", "D8"])
+        self.assertNotIn("1.Banco||JUL/2026", mapa)
+        self.assertEqual(self.ns["lancamentos_projetado_x_realizado"](pd.DataFrame()), ({}, False))
+
+    def test_linhas_da_tela(self):
+        f = self.ns["linhas_exibidas_projetado_x_realizado"]
+        rot, tipos, pais = f(False)
+        self.assertEqual(rot, ["TOTAL CONTAS A RECEBER", "4 - Contas a Pagar", "Total Geral"])
+        self.assertEqual(tipos, ["movimento", "movimento", "total"]); self.assertEqual(pais, [None, None, None])
+        rot, tipos, pais = f(True)
+        self.assertEqual(len(rot), 13); self.assertEqual(rot[2], "Custo - Mercadoria"); self.assertEqual(rot[-2], "TRF")
+        self.assertEqual(pais[2:-1], [1] * 10, "as filhas apontam para o contas a pagar")
+
+    def test_aba_existe_e_desenha_os_botoes_antes_das_tabelas(self):
+        self.assertIn('"🎯 Projetado x Realizado"', FONTE)
+        i = FONTE.index("with tab_fin_projetado:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:", i)]
+        self.assertLess(trecho.index('botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")'),
+                        trecho.index("tabela_selecionavel("))
+        self.assertEqual(trecho.count('prefixo_botao="st-key-pxrabrir_"'), 2, "lado a lado e tres quadros")
+        self.assertIn("detalhes_por_celula=lancamentos_pxr", trecho)
+        self.assertIn("tabela_realizada_fin(df_fin", trecho, "realizado vem da base inteira, nao do recorte da tela")
+        self.assertNotIn("df_fin_view", trecho)
 
 
 if __name__ == "__main__":

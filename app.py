@@ -7792,6 +7792,199 @@ def meta_diaria_que_ainda_falta(meta_por_dia, fracao_nao_coberta, dias_visiveis=
     return resultado
 
 
+
+# ============================================================================
+# PROJETADO x REALIZADO (28/10/2026)
+# ============================================================================
+# A aba compara o fluxo PROJETADO para o 2º semestre de 2026 (planilha
+# "FLUXO DE CAIXA PROJETADO - 2º SEMESTRE 2026") com o que a base do painel
+# está realizando. O projetado é fixo: são os números daquela planilha, mês
+# a mês, e só mudam quando a projeção for refeita -- por isso vivem aqui,
+# em constante, e não numa leitura de arquivo. Para atualizar, é trocar os
+# números em PROJETADO_FIN_2026 (a ordem é jul, ago, set, out, nov, dez).
+MESES_PROJETADO_FIN = ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"]
+LINHA_RECEBER_PROJETADO = "TOTAL CONTAS A RECEBER"
+LINHA_PAGAR_PROJETADO = "4 - Contas a Pagar"
+LINHA_TOTAL_PROJETADO = "Total Geral"
+COLUNA_TOTAL_PROJETADO = "Total"
+GRUPO_OUTRAS_SAIDAS = "OUTRAS SAÍDAS"
+# Valores da planilha, em reais. Contas a receber entra só pelo TOTAL (as
+# linhas "Projetado" e "Realizado" dela ficam de fora, a pedido). As filhas
+# do contas a pagar seguem a ordem da planilha.
+PROJETADO_FIN_2026 = {
+    "TOTAL CONTAS A RECEBER": [11420695.70, 12113978.70, 12743250.83, 13010359.23, 13538591.06, 14919896.50],
+    "Custo - Mercadoria": [-3680688.64, -4282098.69, -3778610.13, -4183474.96, -5231079.21, -5071019.42],
+    "Esforços de Marketing": [-75028.00, -79578.00, -98028.00, -41528.00, -40028.00, -40028.00],
+    "Esforços de Marketing - Gestão CP": [-157760.05, -52872.19, -53793.50, -78973.50, -104073.50, -91073.50],
+    "Esforços de Marketing - Gestão GB": [-439035.68, -204495.77, -212652.13, -212652.13, -225585.97, -247216.80],
+    "Esforços de Marketing - REM": [-269265.40, -187879.48, -172658.72, -180087.64, -224221.16, -214352.68],
+    "G&A": [-1146125.75, -723682.20, -759682.17, -697240.62, -695137.05, -665315.24],
+    "Imposto sobre Venda": [-769546.42, -770089.37, -773432.91, -766986.96, -777670.79, -787080.91],
+    "OUTRAS SAÍDAS": [-1608939.40, -1328565.74, -792917.94, -1616505.69, -1291389.94, -750697.36],
+    "Pessoal": [-1326890.14, -1257919.88, -1236856.68, -1282436.02, -1248363.38, -1414715.77],
+    "TRF": [-1177109.39, -1356558.84, -1289522.88, -1337598.12, -1621227.80, -1429383.32],
+}
+# De que GRUPO DESPESA da planilha-base cada linha do projetado é feita.
+# Nome igual fica onde está; "kits" acompanha o grupo-mãe (mercadoria é
+# mercadoria); G&A é a estrutura -- administrativo, estrutural, gerais,
+# comunicação, veículos e ocupação (é a composição que fecha com a
+# planilha em setembro). O que não estiver aqui cai em OUTRAS SAÍDAS.
+GRUPOS_REALIZADO_NO_PROJETADO = {
+    "Custo - Mercadoria": ["Custo - Mercadoria", "Custo - Mercadoria - kits"],
+    "Esforços de Marketing": ["Esforços de Marketing"],
+    "Esforços de Marketing - Gestão CP": ["Esforços de Marketing - Gestão CP"],
+    "Esforços de Marketing - Gestão GB": ["Esforços de Marketing - Gestão GB"],
+    "Esforços de Marketing - REM": ["Esforços de Marketing - REM", "Esforços de Marketing - REM - kits"],
+    "G&A": ["Despesas Administrativas", "Despesas Estruturais", "Despesas Gerais",
+            "Despesas com Comunicação", "Despesas com Veículos", "Taxa de Ocupação"],
+    "Imposto sobre Venda": ["Imposto sobre Venda"],
+    "Pessoal": ["Pessoal"],
+    "TRF": ["TRF", "TRF-Kits"],
+}
+
+
+def grupos_do_projetado():
+    """Filhas do contas a pagar, na ordem da planilha."""
+    return [g for g in PROJETADO_FIN_2026 if g != LINHA_RECEBER_PROJETADO]
+
+
+def grupo_do_projetado(grupo_realizado):
+    """Em que linha do projetado cai um GRUPO DESPESA da planilha-base.
+    Comparação tolerante a maiúsculas e espaços; vazio e desconhecido vão
+    para OUTRAS SAÍDAS -- é "o que sobrar", por definição."""
+    chave = _normalizar_texto(grupo_realizado)
+    if not chave or chave in ("NAN", "NONE", "-"):
+        return GRUPO_OUTRAS_SAIDAS
+    for grupo, nomes in GRUPOS_REALIZADO_NO_PROJETADO.items():
+        if any(_normalizar_texto(nome) == chave for nome in nomes):
+            return grupo
+    return GRUPO_OUTRAS_SAIDAS
+
+
+def _meses_projetado():
+    return [pd.Period(m, "M") for m in MESES_PROJETADO_FIN]
+
+
+def _quadro_projetado_x_realizado(receber, filhas, colunas):
+    """Monta o quadro na estrutura da planilha: receber (só o total), contas
+    a pagar, as filhas na ordem da planilha e o Total Geral (receber +
+    pagar); a última coluna soma os meses. `receber` é uma série por coluna
+    e `filhas` um dicionário {grupo: série por coluna}."""
+    receber = receber.reindex(colunas, fill_value=0.0).astype(float)
+    pagar = pd.Series(0.0, index=colunas)
+    linhas = {LINHA_RECEBER_PROJETADO: receber}
+    serie_filhas = {}
+    for grupo in grupos_do_projetado():
+        serie = filhas.get(grupo, pd.Series(0.0, index=colunas)).reindex(colunas, fill_value=0.0).astype(float)
+        serie_filhas[grupo] = serie
+        pagar = pagar + serie
+    linhas[LINHA_PAGAR_PROJETADO] = pagar
+    linhas.update(serie_filhas)
+    linhas[LINHA_TOTAL_PROJETADO] = receber + pagar
+    quadro = pd.DataFrame(linhas).T[colunas]
+    quadro[COLUNA_TOTAL_PROJETADO] = quadro.sum(axis=1)
+    return quadro
+
+
+def tabela_projetada_fin(rotulos_meses=None):
+    """O quadro do PROJETADO. `rotulos_meses` troca os nomes das colunas
+    (padrão: "JUL/2026", ...)."""
+    meses = _meses_projetado()
+    rotulos = rotulos_meses or {p: _rotulo_mes_pt(p) for p in meses}
+    colunas = [rotulos[p] for p in meses]
+    receber = pd.Series(PROJETADO_FIN_2026[LINHA_RECEBER_PROJETADO], index=colunas)
+    filhas = {g: pd.Series(PROJETADO_FIN_2026[g], index=colunas) for g in grupos_do_projetado()}
+    return _quadro_projetado_x_realizado(receber, filhas, colunas)
+
+
+def recorte_realizado_projetado(df_fin):
+    """Títulos da base que entram no realizado da comparação: entradas
+    (a vencer e liquidado -- a meta não é dinheiro) e saídas, nos meses da
+    projeção, com "PeriodoMes" e "Grupo Projetado" (a linha do projetado
+    em que a saída cai; vazio nas entradas)."""
+    if df_fin is None or df_fin.empty or "Data Efetiva" not in df_fin.columns:
+        return pd.DataFrame()
+    periodo = df_fin["Data Efetiva"].dt.to_period("M")
+    if "Tipo Movimento" in df_fin.columns:
+        tipo = df_fin["Tipo Movimento"].astype(str)
+    else:
+        tipo = df_fin[COL_FIN_MOVIMENTO].map(_classificar_movimento_fin).astype(str)
+    recorte = df_fin[periodo.isin(_meses_projetado()) & tipo.isin(["entrada", "saida"])].copy()
+    if recorte.empty:
+        return recorte
+    recorte["Tipo Movimento"] = tipo[recorte.index]
+    recorte["PeriodoMes"] = periodo[recorte.index]
+    if COL_FIN_GRUPO_DESPESA in recorte.columns:
+        grupos = recorte[COL_FIN_GRUPO_DESPESA].map(grupo_do_projetado)
+    else:
+        grupos = pd.Series(GRUPO_OUTRAS_SAIDAS, index=recorte.index)
+    recorte["Grupo Projetado"] = grupos.where(recorte["Tipo Movimento"].eq("saida"), "")
+    return recorte
+
+
+def tabela_realizada_fin(df_fin, rotulos_meses=None):
+    """O quadro do REALIZADO, na mesma estrutura do projetado, a partir da
+    base inteira: receber = soma das entradas do mês; cada filha = soma das
+    saídas cujo grupo de despesa cai nela (ver grupo_do_projetado)."""
+    meses = _meses_projetado()
+    rotulos = rotulos_meses or {p: _rotulo_mes_pt(p) for p in meses}
+    colunas = [rotulos[p] for p in meses]
+    recorte = recorte_realizado_projetado(df_fin)
+    if recorte.empty:
+        return _quadro_projetado_x_realizado(pd.Series(0.0, index=colunas), {}, colunas)
+    entradas = recorte[recorte["Tipo Movimento"].eq("entrada")].groupby("PeriodoMes", observed=True)[COL_FIN_VALOR].sum()
+    receber = pd.Series([float(entradas.get(p, 0.0)) for p in meses], index=colunas)
+    saidas = (recorte[recorte["Tipo Movimento"].eq("saida")]
+              .groupby(["Grupo Projetado", "PeriodoMes"], observed=True)[COL_FIN_VALOR].sum())
+    filhas = {
+        g: pd.Series([float(saidas.get((g, p), 0.0)) for p in meses], index=colunas)
+        for g in grupos_do_projetado()
+    }
+    return _quadro_projetado_x_realizado(receber, filhas, colunas)
+
+
+def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None):
+    """Detalhe por célula (duplo clique) do quadro REALIZADO: a célula do
+    receber traz as entradas do mês; a do contas a pagar, todas as saídas;
+    a de cada filha, só as saídas do seu grupo (chave "mãe › filha||mês")."""
+    recorte = recorte_realizado_projetado(df_fin)
+    if recorte.empty:
+        return {}, False
+    meses = _meses_projetado()
+    rotulos = rotulos_meses or {p: _rotulo_mes_pt(p) for p in meses}
+    por_mes = lambda serie: serie.dt.to_period("M")   # noqa: E731
+    eh_saida = recorte["Tipo Movimento"].eq("saida")
+    rotulo_mae = pd.Series(LINHA_RECEBER_PROJETADO, index=recorte.index).where(~eh_saida, LINHA_PAGAR_PROJETADO)
+    mapa, cortou = montar_lancamentos_por_celula(
+        recorte, rotulos, rotulo_mae, chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+    saidas = recorte[eh_saida]
+    if not saidas.empty:
+        parcial, cortou_filhas = montar_lancamentos_por_celula(
+            saidas, rotulos, LINHA_PAGAR_PROJETADO + " › " + saidas["Grupo Projetado"].astype(str),
+            chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+        mapa.update(parcial)
+        cortou = cortou or cortou_filhas
+    return mapa, cortou
+
+
+def linhas_exibidas_projetado_x_realizado(aberta):
+    """Que linhas do quadro vão para a tela e como: (rótulos, tipos, pais).
+    Com o contas a pagar fechado, só receber, pagar e total; aberto, as
+    filhas entram logo abaixo do pagar, apontando para ele."""
+    rotulos = [LINHA_RECEBER_PROJETADO, LINHA_PAGAR_PROJETADO]
+    tipos = ["movimento", "movimento"]
+    pais = [None, None]
+    if aberta:
+        for grupo in grupos_do_projetado():
+            rotulos.append(grupo)
+            tipos.append("movimento")
+            pais.append(1)
+    rotulos.append(LINHA_TOTAL_PROJETADO)
+    tipos.append("total")
+    pais.append(None)
+    return rotulos, tipos, pais
+
+
 def _pivot_fluxo_fin(df, coluna_periodo, coluna_valor, coluna_movimento, ordem_periodos,
                      posicao_saldo="ultima"):
     """Monta a tabela Movimento x Período com a agregação CORRETA para cada
@@ -9766,9 +9959,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
     _renderizar_painel_alertas(_alertas_fin, titulo="Alertas do Fluxo de Caixa")
 
-    (tab_fin_mensal, tab_fin_diario, tab_fin_consolidado,
+    (tab_fin_mensal, tab_fin_projetado, tab_fin_diario, tab_fin_consolidado,
      tab_fin_tesouraria, tab_fin_analises) = st.tabs(
-        ["📅 Fluxo Mensal", "🗓️ Fluxo Diário", "📆 Diário Consolidado",
+        ["📅 Fluxo Mensal", "🎯 Projetado x Realizado", "🗓️ Fluxo Diário", "📆 Diário Consolidado",
          "🏦 Tesouraria", "📊 Análises"]
     )
 
@@ -11226,6 +11419,102 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         "O gráfico mostra sempre o **mês inteiro**, mesmo quando a tabela acima está "
                         "recortada em alguns dias."
                     )
+
+
+    # ---------------- PROJETADO x REALIZADO ----------------
+    with tab_fin_projetado:
+        # Cópia do "Movimentos por Mês" com outra pergunta (28/10/2026): o
+        # 2º semestre está saindo como foi PROJETADO? Em cima, a planilha da
+        # projeção, em constante; embaixo, a base do painel agrupada na
+        # mesma estrutura; e a diferença. Mesmos mecanismos da tabela do
+        # mensal -- seta que abre o contas a pagar, duplo clique com os
+        # lançamentos (no realizado), soma por célula.
+        st.markdown('<div class="section-title">🎯 Projetado x Realizado — 2º semestre 2026</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "**Projetado**: a planilha *Fluxo de Caixa Projetado — 2º semestre 2026*, com os valores fixos no "
+            "painel. **Realizado**: a base inteira do painel, de julho a dezembro, na base de data escolhida na "
+            "barra lateral — os filtros de período, canal e modalidade do Fluxo Mensal **não valem aqui**, porque "
+            "a projeção é da empresa inteira. Contas a receber entra só pelo total (a vencer + liquidado, sem a "
+            "meta); contas a pagar abre nos grupos da projeção."
+        )
+        modo_pxr = st.radio(
+            "Como mostrar", ["Três quadros", "Lado a lado por mês"],
+            horizontal=True, key="modo_projetado_x_realizado",
+            help="Três quadros: Projetado, Realizado e Diferença, um embaixo do outro. "
+                 "Lado a lado: cada mês com as três colunas juntas (Proj. · Real. · Dif.).",
+        )
+        # Botões ANTES das tabelas, como no mensal: a seta aciona um botão
+        # escondido e a tabela precisa nascer já com o estado novo.
+        comandos_pxr = botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")
+        aberta_pxr = bool(comandos_pxr[LINHA_PAGAR_PROJETADO][0])
+        rotulos_pxr, tipos_pxr, pais_pxr = linhas_exibidas_projetado_x_realizado(aberta_pxr)
+
+        if modo_pxr == "Lado a lado por mês":
+            _abrev = lambda p, sufixo: f"{MESES_PT_ABREV_FIN[p.month - 1]} {sufixo}"   # noqa: E731
+            rot_proj = {p: _abrev(p, "Proj.") for p in _meses_projetado()}
+            rot_real = {p: _abrev(p, "Real.") for p in _meses_projetado()}
+            projetado_pxr = tabela_projetada_fin(rot_proj).rename(
+                columns={COLUNA_TOTAL_PROJETADO: "Total Proj."})
+            realizado_pxr = tabela_realizada_fin(df_fin, rot_real).rename(
+                columns={COLUNA_TOTAL_PROJETADO: "Total Real."})
+            diferenca_pxr = pd.DataFrame(
+                realizado_pxr.values - projetado_pxr.values, index=projetado_pxr.index,
+                columns=[c.replace("Real.", "Dif.") for c in realizado_pxr.columns])
+            colunas_lado = []
+            for cp, cr, cd in zip(projetado_pxr.columns, realizado_pxr.columns, diferenca_pxr.columns):
+                colunas_lado += [cp, cr, cd]
+            lado_pxr = pd.concat([projetado_pxr, realizado_pxr, diferenca_pxr], axis=1)
+            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, rot_real)
+            tabela_selecionavel(
+                lado_pxr.loc[rotulos_pxr, colunas_lado], chave="tabela_pxr_lado",
+                tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
+                comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
+                detalhes_por_celula=lancamentos_pxr, rotulo_canto="Linha",
+            )
+        else:
+            projetado_pxr = tabela_projetada_fin()
+            realizado_pxr = tabela_realizada_fin(df_fin)
+            diferenca_pxr = realizado_pxr - projetado_pxr
+            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin)
+            for titulo, quadro, chave_q, detalhes in (
+                ("Projetado", projetado_pxr, "tabela_pxr_proj", None),
+                ("Realizado", realizado_pxr, "tabela_pxr_real", lancamentos_pxr),
+                ("Diferença (Realizado − Projetado)", diferenca_pxr, "tabela_pxr_dif", None),
+            ):
+                st.markdown(f"**{titulo}**")
+                tabela_selecionavel(
+                    quadro.loc[rotulos_pxr], chave=chave_q,
+                    tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
+                    comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
+                    detalhes_por_celula=detalhes, rotulo_canto=titulo,
+                )
+        st.caption(
+            "Clique no **▸** de *4 - Contas a Pagar* para abrir os grupos da projeção logo abaixo (abre nos "
+            "quadros ao mesmo tempo). **Dois cliques num valor do Realizado** abrem, numa aba nova, os lançamentos "
+            "do mês que formam o número — na filha, só os do grupo; dá para baixar em CSV por lá. Na **Diferença**, "
+            "negativo é pior que o projetado (recebeu menos ou pagou mais) e positivo é melhor."
+            + (" Em meses com muitos títulos a célula traz os maiores, até o teto de "
+               f"{TETO_LANCAMENTOS_POR_CELULA_MES} lançamentos." if _cortou_pxr else "")
+        )
+        with st.expander("Como o realizado é agrupado nas linhas da projeção"):
+            _recorte_pxr = recorte_realizado_projetado(df_fin)
+            _grupos_base = (sorted(_recorte_pxr.loc[_recorte_pxr["Tipo Movimento"].eq("saida"), COL_FIN_GRUPO_DESPESA]
+                                   .dropna().astype(str).str.strip().unique())
+                            if not _recorte_pxr.empty and COL_FIN_GRUPO_DESPESA in _recorte_pxr.columns else [])
+            _em_outras = [g for g in _grupos_base if g and grupo_do_projetado(g) == GRUPO_OUTRAS_SAIDAS]
+            _sem_grupo = bool(not _recorte_pxr.empty and COL_FIN_GRUPO_DESPESA in _recorte_pxr.columns and
+                              _recorte_pxr.loc[_recorte_pxr["Tipo Movimento"].eq("saida"), COL_FIN_GRUPO_DESPESA]
+                              .fillna("").astype(str).str.strip().eq("").any())
+            linhas_md = [f"- **{grupo}** ← " + ", ".join(nomes)
+                         for grupo, nomes in GRUPOS_REALIZADO_NO_PROJETADO.items()]
+            linhas_md.append(
+                f"- **{GRUPO_OUTRAS_SAIDAS}** ← tudo o que não está acima. Hoje na base: "
+                + (", ".join(_em_outras) if _em_outras else "nenhum grupo")
+                + (" e os títulos **sem grupo de despesa**" if _sem_grupo else "") + ".")
+            st.markdown("\n".join(linhas_md))
+            st.caption("Os nomes são os da coluna GRUPO DESPESA da planilha-base. Para mudar o agrupamento, "
+                       "edite GRUPOS_REALIZADO_NO_PROJETADO no app.py; para atualizar a projeção, PROJETADO_FIN_2026.")
 
 
     # ---------------- DIÁRIO CONSOLIDADO ----------------
