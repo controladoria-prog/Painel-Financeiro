@@ -28,6 +28,9 @@ import sys
 import tempfile
 import time
 import unittest
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -61,7 +64,7 @@ DEPENDENCIAS = {
                                           "montar_lancamentos_por_celula"],
     "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
     "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
-    "tabela_selecionavel": ["formata_pct_tabela"],
+    "tabela_selecionavel": ["formata_pct_tabela", "botao_excel"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
@@ -104,7 +107,12 @@ DEPENDENCIAS = {
     "_avaliar_alertas_fluxo": ["_saldo_posicao_atual_fin", "_saldo_abertura_do_mes",
                                "formata_brl"],
     "meta_diaria_que_ainda_falta": [],
-    "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl"],
+    "_tabela_departamento": ["_cor_valor_invertido", "cor_valor", "formata_brl", "mostrar_tabela"],
+    # Excel das tabelas (28/10/2026)
+    "mostrar_tabela": ["botao_excel"],
+    "botao_excel": ["tabela_para_excel_bytes", "_nome_arquivo_excel"],
+    "tabela_para_excel_bytes": ["preparar_tabela_para_excel"],
+    "preparar_tabela_para_excel": ["_numero_de_texto_brl", "_numero_de_texto_pct"],
     "_cor_valor_invertido": ["cor_valor"],
     "_segredo": ["_segredo_com_origem"],
     "seletor_periodo_meses": ["_rotulo_mes_pt_extenso"],
@@ -133,6 +141,11 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "botao_excel": ["MIME_XLSX", "_CONTADOR_EXCEL"],
+    "tabela_para_excel_bytes": ["COR_CABECALHO_EXCEL"],
+    "preparar_tabela_para_excel": ["FORMATO_EXCEL_BRL", "FORMATO_EXCEL_INTEIRO", "FORMATO_EXCEL_PCT", "FORMATO_EXCEL_DATA"],
+    "_numero_de_texto_brl": ["_PADRAO_TEXTO_BRL"],
+    "_numero_de_texto_pct": ["_PADRAO_TEXTO_PCT"],
     "rotulo_sem_detalhe": ["COL_FIN_GRUPO_DESPESA", "COL_FIN_MODALIDADE", "COL_FIN_CANAL"],
     "grupos_do_projetado": ["PROJETADO_FIN_2026", "LINHA_RECEBER_PROJETADO"],
     "grupo_do_projetado": ["GRUPOS_REALIZADO_NO_PROJETADO", "GRUPO_OUTRAS_SAIDAS"],
@@ -200,6 +213,15 @@ def dubla_html_embutido(capturado):
     return _capturar
 
 
+class _StMudo:
+    """`st` minimo para funcoes que so desenham um botao de download."""
+    def download_button(self, *a, **k):
+        return False
+
+
+_ST_MUDO = _StMudo()
+
+
 def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
     """Executa apenas as funcoes e constantes pedidas, num espaco isolado."""
     nomes_funcoes = list(nomes_funcoes)
@@ -231,6 +253,12 @@ def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
     espaco = {
         "pd": pd, "re": re, "io": io, "time": time, "datetime": datetime,
         "base64": base64, "hashlib": hashlib, "hmac": hmac, "FUSO_BR": FUSO_BR,
+        # 28/10/2026: toda tabela desenha um botao de Excel; nos testes ele
+        # e um dublê mudo. Quem precisa de mais do `st` injeta o seu.
+        "st": _ST_MUDO,
+        # ...e o openpyxl, que o Excel das tabelas usa.
+        "Workbook": Workbook, "Font": Font, "PatternFill": PatternFill, "Alignment": Alignment,
+        "get_column_letter": get_column_letter,
     }
     espaco.update(extras or {})
     exec("\n\n".join(pedacos), espaco)
@@ -605,6 +633,7 @@ class TesteGerenciaComercial(unittest.TestCase):
                 "markdown": staticmethod(lambda *a, **k: None),
                 "caption": staticmethod(lambda *a, **k: None),
                 "dataframe": staticmethod(lambda d, **k: TesteGerenciaComercial.tabelas.append(d)),
+                "download_button": staticmethod(lambda *a, **k: False),
             })()},
         )
 
@@ -721,6 +750,7 @@ class TesteGerenciaComercial(unittest.TestCase):
                 "markdown": staticmethod(lambda *a, **k: None),
                 "caption": staticmethod(lambda *a, **k: None),
                 "dataframe": staticmethod(lambda *a, **k: None),
+                "download_button": staticmethod(lambda *a, **k: False),
             })()},
         )
         nome = "📈 Relatório de Custos - Gerência Comercial"
@@ -9273,6 +9303,129 @@ class TesteProjetadoXRealizado(unittest.TestCase):
         self.assertIn(">-3,5%<", codigo); self.assertIn(">12,0%<", codigo)
         self.assertEqual(len(re.findall(r'data-v="', codigo)), 2, "percentual nao entra na soma por celula")
         self.assertEqual(ns_local["formata_pct_tabela"](8.94), "8,9%")
+
+
+class TesteExcelDasTabelas(unittest.TestCase):
+    """28/10/2026: toda tabela do painel tem "Baixar em Excel", formatado
+    como a tela -- o CSV do botao nativo abria como texto corrido."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["preparar_tabela_para_excel", "tabela_para_excel_bytes", "botao_excel", "mostrar_tabela",
+                           "_numero_de_texto_brl", "_numero_de_texto_pct", "_nome_arquivo_excel"])
+
+    def test_texto_que_e_numero_volta_a_ser_numero(self):
+        ns = self.ns
+        self.assertEqual(ns["_numero_de_texto_brl"]("R$ 1.234,56"), 1234.56)
+        self.assertEqual(ns["_numero_de_texto_brl"]("-R$ 10,00"), -10.0)
+        self.assertEqual(ns["_numero_de_texto_brl"]("R$ -10,00"), -10.0)
+        self.assertIsNone(ns["_numero_de_texto_brl"]("Pessoal"))
+        self.assertEqual(ns["_numero_de_texto_pct"]("12,3%"), 12.3)
+        self.assertEqual(ns["_numero_de_texto_pct"]("-3%"), -3.0)
+        self.assertIsNone(ns["_numero_de_texto_pct"]("R$ 3,00"))
+
+    def test_preparar_poe_o_indice_na_frente_e_descobre_os_formatos(self):
+        df = pd.DataFrame({"Valor (R$)": [10.5, -2.0], "Qtd": [3, 4], "Var %": [1.5, -2.5],
+                           "Texto": ["R$ 1.000,00", "R$ 2,50"], "Pct": ["10,0%", "—"],
+                           "Quando": pd.to_datetime(["2026-01-05", "2026-02-06"]), "Nome": ["a\u200b", "b"]},
+                          index=pd.Index(["L1\u200b", "L2"], name="Linha"))
+        tabela, formatos = self.ns["preparar_tabela_para_excel"](df)
+        self.assertEqual(list(tabela.columns)[0], "Linha"); self.assertEqual(list(tabela["Linha"]), ["L1", "L2"])
+        self.assertEqual(formatos["Valor (R$)"], self.ns["FORMATO_EXCEL_BRL"])
+        self.assertEqual(formatos["Qtd"], self.ns["FORMATO_EXCEL_INTEIRO"])
+        self.assertEqual(formatos["Var %"], self.ns["FORMATO_EXCEL_PCT"], "nome com % e percentual")
+        self.assertEqual(list(tabela["Texto"]), [1000.0, 2.5]); self.assertEqual(formatos["Texto"], self.ns["FORMATO_EXCEL_BRL"])
+        self.assertEqual(tabela["Pct"].iloc[0], 10.0); self.assertTrue(pd.isna(tabela["Pct"].iloc[1]), "traço vira vazio")
+        self.assertEqual(formatos["Quando"], self.ns["FORMATO_EXCEL_DATA"])
+        self.assertEqual(list(tabela["Nome"]), ["a", "b"])
+        # Styler e RangeIndex
+        estilo = pd.DataFrame({"a": [1.0]}).style.format("{:.1f}")
+        tabela2, _ = self.ns["preparar_tabela_para_excel"](estilo)
+        self.assertEqual(list(tabela2.columns), ["a"], "sem indice com nome, nao inventa coluna")
+
+    def test_xlsx_sai_formatado_como_a_tela(self):
+        df = pd.DataFrame({"JUL/2026": [100.0, -40.0, 60.0], "Var.%": [5.0, -2.0, 1.0]},
+                          index=pd.Index(["Receber", "Filha", "Total"], name="Movimento"))
+        dados = self.ns["tabela_para_excel_bytes"](df, nome_aba="Teste", colunas_percentual={"Var.%"}, recuos=[0, 1, 0])
+        wb = load_workbook(io.BytesIO(dados)); ws = wb.active
+        self.assertEqual(ws.title, "Teste")
+        self.assertEqual([c.value for c in ws[1]], ["Movimento", "JUL/2026", "Var.%"])
+        self.assertTrue(ws["A1"].font.bold); self.assertEqual(ws["A1"].fill.fgColor.rgb[-6:], "212F38")
+        self.assertEqual(ws["B2"].value, 100.0); self.assertEqual(ws["B2"].number_format, self.ns["FORMATO_EXCEL_BRL"])
+        self.assertEqual(ws["C3"].number_format, self.ns["FORMATO_EXCEL_PCT"])
+        self.assertEqual(ws["A3"].alignment.indent, 2, "filha recuada"); self.assertEqual(ws["A2"].alignment.indent, 0)
+        self.assertEqual(ws.freeze_panes, "B2")
+        self.assertEqual(ws["A4"].value, "Total")
+
+    def test_botao_e_sequencial_e_so_gera_no_clique(self):
+        chamadas = []
+
+        class FakeST:
+            def download_button(self, rotulo, data=None, file_name=None, mime=None, key=None, **kw):
+                chamadas.append((key, callable(data), file_name, mime)); return False
+
+            def dataframe(self, df, *a, **k):
+                chamadas.append(("dataframe", len(df))); return "evento"
+
+        self.ns["st"] = FakeST()
+        self.ns["_CONTADOR_EXCEL"]["n"] = 0
+        df = pd.DataFrame({"a": [1.0, 2.0]})
+        self.assertEqual(self.ns["mostrar_tabela"](df, hide_index=True, nome_excel="Minha tabela"), "evento")
+        self.ns["botao_excel"](df)
+        self.ns["botao_excel"](pd.DataFrame())           # vazia: sem botao
+        self.ns["botao_excel"](pd.DataFrame({"a": [1.0]}).style.format("{:.0f}"), nome_arquivo="Com estilo")
+        chaves = [c[0] for c in chamadas if c[0] != "dataframe"]
+        self.assertEqual(chaves, ["xlsx_1", "xlsx_2", "xlsx_3"], "Styler tambem ganha botao")
+        self.assertTrue(all(c[1] for c in chamadas if c[0] != "dataframe"), "o arquivo e gerado so no clique")
+        self.assertTrue(chamadas[1][2].startswith("Minha tabela - ") and chamadas[1][2].endswith(".xlsx"))
+        self.assertEqual(chamadas[1][3], self.ns["MIME_XLSX"])
+
+    def test_todas_as_tabelas_do_painel_passam_pelo_botao(self):
+        """O unico st.dataframe que sobra e o de dentro do mostrar_tabela."""
+        self.assertEqual(FONTE.count("st.dataframe("), 1)
+        i = FONTE.index("def mostrar_tabela(")
+        self.assertIn("st.dataframe(", FONTE[i:i + 600])
+        self.assertGreaterEqual(FONTE.count("mostrar_tabela("), 40)
+        corpo = FONTE[FONTE.index("def tabela_selecionavel("):FONTE.index("\ndef _peso_ordem_movimento_fin(")]
+        self.assertIn("botao_excel(exportavel", corpo, "a tabela selecionavel tambem exporta")
+        self.assertIn("recuos=[1 if p is not None else 0 for p in pais]", corpo)
+
+
+class TesteMetaNoTotalDoDiarioConsolidado(unittest.TestCase):
+    """28/10/2026: o Diario Consolidado ganhou o mesmo interruptor do Fluxo
+    Mensal -- somar a linha de meta (quanto falta) no TOTAL GERAL, com o
+    SALDO INICIAL dos dias de previsao acompanhando."""
+
+    def _bloco(self):
+        i = FONTE.index("with tab_fin_consolidado:")
+        return FONTE[i:FONTE.index("# ---------------- TESOURARIA ----------------", i)]
+
+    def test_interruptor_segue_a_regra_do_mensal(self):
+        bloco = self._bloco()
+        self.assertIn('key="dc_total_geral_com_meta"', bloco)
+        self.assertIn('"Somar a linha de meta no TOTAL GERAL"', bloco, "mesmo rotulo do mensal")
+        self.assertIn("if pai is None and (rotulo != MOV_RECEBER_META or total_com_meta_dc):", bloco)
+        self.assertIn('"TOTAL GERAL (com meta)" if total_com_meta_dc else "TOTAL GERAL"', bloco)
+        # a falta e calculada ANTES do saldo inicial, e entra na cadeia quando ligado
+        self.assertLess(bloco.index("serie_falta_dc = falta if falta.any() else None"),
+                        bloco.index("calcular_saldo_inicial_diario("))
+        self.assertIn('pd.DataFrame({"DiaOrd": list(serie_falta_dc.index), "Tipo Movimento": "entrada",', bloco)
+        self.assertEqual(bloco.count("meta_diaria_que_ainda_falta("), 1, "a conta da falta nao pode ter sido duplicada")
+
+    def test_saldo_inicial_dos_dias_de_previsao_acompanha(self):
+        """Com a falta entrando como entrada do dia, o dia seguinte abre com
+        ela dentro -- e o mesmo encadeamento das colunas do mensal."""
+        ns = carregar(["calcular_saldo_inicial_diario"])
+        d1, d2, d3 = pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-04"), pd.Timestamp("2026-11-05")
+        base = pd.DataFrame({"DiaOrd": [d1, d2, d3], "Tipo Movimento": ["saida"] * 3, "V": [-100.0, -50.0, -10.0]})
+        falta = pd.Series([300.0, 300.0, 300.0], index=[d1, d2, d3])
+        com_meta = pd.concat([base, pd.DataFrame({"DiaOrd": list(falta.index), "Tipo Movimento": "entrada",
+                                                  "V": [float(v) for v in falta.values]})], ignore_index=True)
+        sem, _ = ns["calcular_saldo_inicial_diario"](base, "V")
+        com, total = ns["calcular_saldo_inicial_diario"](com_meta, "V")
+        self.assertEqual(sem[d2], -100.0)
+        self.assertEqual(com[d2], 200.0, "abre com o que faltava somado")
+        self.assertEqual(total[d3], 200.0 + 250.0 + 290.0)
 
 
 if __name__ == "__main__":

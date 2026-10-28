@@ -8071,6 +8071,190 @@ FONTE_PADRAO_TABELA = ('"Source Sans 3", "Segoe UI", -apple-system, BlinkMacSyst
                        'Roboto, sans-serif')
 
 
+
+# ============================================================================
+# EXPORTAR TABELAS EM EXCEL (28/10/2026)
+# ============================================================================
+# O botão nativo do st.dataframe baixa CSV, que abre no Excel como texto
+# corrido. Toda tabela do painel ganha um "Baixar em Excel" que entrega o
+# .xlsx já formatado como se vê na tela: cabeçalho grafite, números em
+# reais com duas casas (positivo verde, negativo vermelho), percentuais com
+# "%", datas em dd/mm/aaaa, primeira coluna e cabeçalho congelados. Texto
+# que é número disfarçado ("R$ 1.234,56", "12,3%") volta a ser número.
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+FORMATO_EXCEL_BRL = '[Color10]#,##0.00;[Red]-#,##0.00;0.00'
+FORMATO_EXCEL_INTEIRO = '#,##0'
+FORMATO_EXCEL_PCT = '[Color10]0.0"%";[Red]-0.0"%";0.0"%"'
+FORMATO_EXCEL_DATA = "dd/mm/yyyy"
+COR_CABECALHO_EXCEL = "212F38"
+_PADRAO_TEXTO_BRL = re.compile(r"^\s*(-|−)?\s*R\$\s*(-|−)?\s*(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})\s*$")
+_PADRAO_TEXTO_PCT = re.compile(r"^\s*(-|−)?\s*(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d+))?\s*%\s*$")
+_CONTADOR_EXCEL = {"n": 0}
+
+
+def _numero_de_texto_brl(texto):
+    """"R$ 1.234,56" → 1234.56; "-R$ 10,00" e "R$ -10,00" → -10.0; senão None."""
+    m = _PADRAO_TEXTO_BRL.match(str(texto))
+    if not m:
+        return None
+    valor = float(m.group(3).replace(".", "") + "." + m.group(4))
+    return -valor if (m.group(1) or m.group(2)) else valor
+
+
+def _numero_de_texto_pct(texto):
+    """"12,3%" → 12.3 (pontos percentuais, como a tela mostra); senão None."""
+    m = _PADRAO_TEXTO_PCT.match(str(texto))
+    if not m:
+        return None
+    valor = float(m.group(2).replace(".", "") + "." + (m.group(3) or "0"))
+    return -valor if m.group(1) else valor
+
+
+def preparar_tabela_para_excel(df, colunas_percentual=()):
+    """Deixa a tabela pronta para a planilha e diz o formato de cada coluna.
+
+    Devolve (tabela, formatos): `tabela` é um DataFrame só com colunas (o
+    índice com nome ou rótulos vira a primeira coluna) e `formatos` é
+    {nome da coluna: formato do Excel}. Aceita Styler (usa o .data). Colunas
+    de texto em que a maioria dos valores é "R$ ..." ou "...%" viram número
+    com o formato certo; "—" e espaços invisíveis são limpos."""
+    if hasattr(df, "data") and hasattr(df, "format"):   # pandas Styler
+        df = df.data
+    tabela = pd.DataFrame(df).copy()
+    if isinstance(tabela.columns, pd.MultiIndex):
+        tabela.columns = [" / ".join(str(p) for p in tupla if str(p)) for tupla in tabela.columns]
+    else:
+        tabela.columns = [str(c) for c in tabela.columns]
+    if not isinstance(tabela.index, pd.RangeIndex):
+        nome_indice = str(tabela.index.name or "Linha")
+        while nome_indice in tabela.columns:
+            nome_indice = nome_indice + " "
+        rotulos = [str(r).replace("\u200b", "").strip() for r in tabela.index]
+        tabela.insert(0, nome_indice, rotulos)
+    tabela = tabela.reset_index(drop=True)
+    percentuais = {str(c) for c in (colunas_percentual or ())}
+    formatos = {}
+    for coluna in tabela.columns:
+        serie = tabela[coluna]
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            tabela[coluna] = serie.dt.tz_localize(None) if getattr(serie.dt, "tz", None) is not None else serie
+            formatos[coluna] = FORMATO_EXCEL_DATA
+        elif pd.api.types.is_bool_dtype(serie):
+            continue
+        elif pd.api.types.is_integer_dtype(serie):
+            formatos[coluna] = FORMATO_EXCEL_PCT if coluna in percentuais else FORMATO_EXCEL_INTEIRO
+        elif pd.api.types.is_numeric_dtype(serie):
+            formatos[coluna] = FORMATO_EXCEL_PCT if (coluna in percentuais or "%" in coluna) else FORMATO_EXCEL_BRL
+        elif pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie):
+            textos = serie.dropna().astype(str)
+            textos = textos[textos.str.strip().ne("") & textos.str.strip().ne("—")]
+            if textos.empty:
+                continue
+            em_reais = textos.map(_numero_de_texto_brl)
+            em_pct = textos.map(_numero_de_texto_pct)
+            if em_reais.notna().mean() >= 0.6:
+                tabela[coluna] = serie.map(lambda v: _numero_de_texto_brl(v) if _numero_de_texto_brl(v) is not None
+                                           else (None if str(v).strip() in ("", "—", "nan", "None") else v))
+                formatos[coluna] = FORMATO_EXCEL_BRL
+            elif em_pct.notna().mean() >= 0.6:
+                tabela[coluna] = serie.map(lambda v: _numero_de_texto_pct(v) if _numero_de_texto_pct(v) is not None
+                                           else (None if str(v).strip() in ("", "—", "nan", "None") else v))
+                formatos[coluna] = FORMATO_EXCEL_PCT
+            else:
+                tabela[coluna] = serie.map(lambda v: v.replace("\u200b", "") if isinstance(v, str) else v)
+    return tabela, formatos
+
+
+def tabela_para_excel_bytes(df, nome_aba="Tabela", colunas_percentual=(), recuos=None):
+    """O .xlsx em bytes, formatado como a tela. `recuos` (opcional) é uma
+    lista com um nível de recuo por linha, para as filhas da tabela
+    hierárquica saírem deslocadas na primeira coluna."""
+    tabela, formatos = preparar_tabela_para_excel(df, colunas_percentual)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = re.sub(r"[\\/*?:\[\]]", "-", str(nome_aba))[:31] or "Tabela"
+    fonte_cab = Font(bold=True, color="FFFFFF")
+    fundo_cab = PatternFill("solid", fgColor=COR_CABECALHO_EXCEL)
+    colunas = list(tabela.columns)
+    for j, coluna in enumerate(colunas, start=1):
+        celula = ws.cell(row=1, column=j, value=coluna)
+        celula.font, celula.fill = fonte_cab, fundo_cab
+        celula.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    primeira_e_rotulo = bool(colunas) and colunas[0] not in formatos
+    for i, linha in enumerate(tabela.itertuples(index=False), start=2):
+        for j, valor in enumerate(linha, start=1):
+            if valor is None or (isinstance(valor, float) and valor != valor):
+                continue
+            if isinstance(valor, (pd.Timestamp, datetime)):
+                valor = pd.Timestamp(valor).to_pydatetime()
+            elif hasattr(valor, "item"):          # numpy → python
+                valor = valor.item()
+            celula = ws.cell(row=i, column=j, value=valor)
+            formato = formatos.get(colunas[j - 1])
+            if formato:
+                celula.number_format = formato
+            if j == 1 and recuos is not None and primeira_e_rotulo:
+                nivel = recuos[i - 2] if i - 2 < len(recuos) else 0
+                if nivel:
+                    celula.alignment = Alignment(indent=int(nivel) * 2)
+    for j, coluna in enumerate(colunas, start=1):
+        if coluna in formatos:
+            largura = 16
+        else:
+            textos = tabela[coluna].dropna().astype(str)
+            largura = min(max([len(coluna)] + [len(t) for t in textos.head(500)]) + 2, 60)
+        ws.column_dimensions[get_column_letter(j)].width = max(largura, 10)
+    ws.freeze_panes = "B2" if primeira_e_rotulo else "A2"
+    ws.auto_filter.ref = ws.dimensions
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def _nome_arquivo_excel(nome):
+    base = re.sub(r"[^\w\-. ]+", "", str(nome or "tabela"), flags=re.UNICODE).strip() or "tabela"
+    return f"{base} - {datetime.now(FUSO_BR):%Y-%m-%d}.xlsx"
+
+
+def botao_excel(df, nome_arquivo="tabela", colunas_percentual=(), recuos=None, rotulo="📥 Baixar em Excel"):
+    """Botão de download do .xlsx, logo abaixo de uma tabela. A planilha é
+    gerada só no clique (não pesa no carregamento da página); em versões do
+    Streamlit que não aceitam função como dado, gera na hora. A chave é
+    sequencial por execução: toda tabela ganha a sua sem ninguém precisar
+    inventar nome."""
+    if df is None:
+        return
+    conteudo = df.data if (hasattr(df, "data") and hasattr(df, "format")) else df   # Styler → tabela
+    try:
+        if len(conteudo) == 0:
+            return
+    except TypeError:
+        return
+    _CONTADOR_EXCEL["n"] += 1
+    chave = f"xlsx_{_CONTADOR_EXCEL['n']}"
+    nome_aba = str(nome_arquivo or "Tabela")[:31]
+
+    def gerar():
+        return tabela_para_excel_bytes(df, nome_aba=nome_aba, colunas_percentual=colunas_percentual, recuos=recuos)
+
+    try:
+        st.download_button(rotulo, data=gerar, file_name=_nome_arquivo_excel(nome_arquivo), mime=MIME_XLSX,
+                           key=chave, on_click="ignore", type="tertiary",
+                           help="Baixa esta tabela em Excel, formatada como está na tela.")
+    except Exception:
+        st.download_button(rotulo, data=gerar(), file_name=_nome_arquivo_excel(nome_arquivo), mime=MIME_XLSX,
+                           key=chave, type="tertiary",
+                           help="Baixa esta tabela em Excel, formatada como está na tela.")
+
+
+def mostrar_tabela(df, *args, nome_excel="tabela", **kwargs):
+    """st.dataframe + botão de Excel. Devolve o que o st.dataframe devolver
+    (importa para as tabelas com seleção de linha)."""
+    resultado = st.dataframe(df, *args, **kwargs)
+    botao_excel(df, nome_arquivo=nome_excel)
+    return resultado
+
+
 def _rotulo_unico_tabela(texto_rotulo, posicao):
     """Rótulos repetidos (o mesmo canal em blocos diferentes, a mesma
     modalidade sob duas mães) quebram o índice do DataFrame. Espaços
@@ -8198,7 +8382,7 @@ def formata_pct_tabela(numero):
 def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
                        pais=None, filhas_abertas=False, comandos_abrir=None,
                        detalhes_por_celula=None, prefixo_botao=PREFIXO_BOTAO_ABRIR,
-                       colunas_percentual=None):
+                       colunas_percentual=None, nome_excel=None):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -8851,6 +9035,13 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     # por JavaScript. Com as filhas já abertas, a altura veio pronta.
     html_embutido(codigo, altura=altura_total,
                   redimensionavel=bool(tem_filhas) and not filhas_abertas)
+    # Excel da tabela como está na tela: rótulos sem o espaço invisível,
+    # filhas recuadas, percentuais como percentuais.
+    exportavel = df.copy()
+    exportavel.index = [str(r).replace("\u200b", "").strip() for r in df.index]
+    exportavel.index.name = rotulo_canto or "Linha"
+    botao_excel(exportavel, nome_arquivo=nome_excel or chave, colunas_percentual=colunas_percentual,
+                recuos=[1 if p is not None else 0 for p in pais])
 
 
 def _peso_ordem_movimento_fin(nome_movimento):
@@ -9949,7 +10140,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "traz -- procure ali a coluna que guarda a data do pagamento."
                 )
                 if diag_fluxo.get("varredura_pagar") is not None:
-                    st.dataframe(diag_fluxo["varredura_pagar"], width="stretch", hide_index=True)
+                    mostrar_tabela(diag_fluxo["varredura_pagar"], width="stretch", hide_index=True)
             if diag_fluxo.get("colunas_csv"):
                 st.caption("**Colunas lidas do CSV:** " + " · ".join(diag_fluxo["colunas_csv"]))
             if diag_fluxo.get("colunas_liq_extras"):
@@ -9959,9 +10150,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
             if diag_fluxo.get("por_movimento") is not None:
                 st.write("**Liquidação por Movimento (pagos/recebidos x em aberto):**")
-                st.dataframe(diag_fluxo["por_movimento"], width="stretch", hide_index=True)
+                mostrar_tabela(diag_fluxo["por_movimento"], width="stretch", hide_index=True)
             st.write("**Movimento → como o painel classificou:**")
-            st.dataframe(
+            mostrar_tabela(
                 df_fin.groupby([COL_FIN_MOVIMENTO, "Tipo Movimento"], observed=True)[COL_FIN_VALOR]
                 .agg(["count", "sum"]).reset_index()
                 .rename(columns={"count": "Qtd. lançamentos", "sum": "Soma (R$)"}),
@@ -9969,7 +10160,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             )
             st.write("**Canais:** " + ", ".join(sorted(df_fin[COL_FIN_CANAL].dropna().unique().astype(str))))
             st.write("**Modalidades:** " + ", ".join(sorted(df_fin[COL_FIN_MODALIDADE].dropna().unique().astype(str))))
-            st.dataframe(df_fin.head(15), width="stretch", hide_index=True)
+            mostrar_tabela(df_fin.head(15), width="stretch", hide_index=True)
 
     # Faixa de alertas, no mesmo lugar e no mesmo formato da Controladoria:
     # logo abaixo do contexto e antes das abas.
@@ -10347,7 +10538,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_m, rotulos_meses_m,
                 colunas_detalhe=sorted({_coluna_de_abertura_m(m) for m in abertas_m}))
             tabela_selecionavel(
-                pivot_m_exibicao, chave="tabela_mensal",
+                pivot_m_exibicao, chave="tabela_mensal", nome_excel="Fluxo Mensal",
                 tipos_linha=tipos_exib_m,
                 pais=pais_exib_m,
                 filhas_abertas=True,
@@ -10428,7 +10619,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 pivot_ap.columns = [_rotulo_mes_pt(p) for p in pivot_ap.columns]
                 pivot_ap["ÚLT. POSIÇÃO"] = pd.Series(ultimas_posicoes_ap)
                 pivot_ap.index.name = "Movimento"
-                st.dataframe(pivot_ap.style.format(formata_brl).map(cor_valor), width="stretch")
+                mostrar_tabela(pivot_ap.style.format(formata_brl).map(cor_valor), width="stretch", nome_excel="Conferencia contas a pagar")
                 st.caption("Aplicação é posição, não movimento — cada mês mostra o saldo aplicado no último dia daquele mês.")
 
             # ---- Conferência do contas a pagar contra a planilha (01/10/2026) ----
@@ -10488,7 +10679,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 else:
                     _det_conf = _conf["detalhes"].copy()
                     _det_conf["Valor"] = _det_conf["Valor"].map(formata_brl)
-                    st.dataframe(_det_conf, hide_index=True, width="stretch", height=min(38 + 35 * (len(_det_conf) + 1), 520))
+                    mostrar_tabela(_det_conf, hide_index=True, width="stretch", height=min(38 + 35 * (len(_det_conf) + 1), 520))
                     st.download_button("⬇️ Baixar os títulos que explicam a diferença (CSV)",
                                        _conf["detalhes"].to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"conferencia_contas_a_pagar_{_mes_conf}.csv", mime="text/csv",
@@ -10758,7 +10949,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     return [f"color: {COLORS['warning']};" for _ in linha]
                 return [cor_valor(v) for v in linha]
 
-            st.dataframe(
+            mostrar_tabela(
                 df_reserva_m.style.format(
                     formata_brl, subset=pd.IndexSlice[LINHAS_EM_REAIS, :]
                 ).apply(_cor_pct_meta_fin, axis=1),
@@ -11490,7 +11681,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             lado_pxr = pd.concat([projetado_pxr, realizado_pxr, variacao_pxr], axis=1)
             lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, rot_real)
             tabela_selecionavel(
-                lado_pxr.loc[rotulos_pxr, colunas_lado], chave="tabela_pxr_lado",
+                lado_pxr.loc[rotulos_pxr, colunas_lado], chave="tabela_pxr_lado", nome_excel="Projetado x Realizado",
                 tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                 comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                 detalhes_por_celula=lancamentos_pxr, rotulo_canto="Linha",
@@ -11510,7 +11701,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             ):
                 st.markdown(f"**{titulo}**")
                 tabela_selecionavel(
-                    quadro.loc[rotulos_pxr], chave=chave_q,
+                    quadro.loc[rotulos_pxr], chave=chave_q, nome_excel=f"Projetado x Realizado - {titulo}",
                     tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                     comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                     detalhes_por_celula=detalhes, rotulo_canto=titulo,
@@ -11617,8 +11808,70 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 df_dc_metas = df_dc[df_dc["Tipo Movimento"] == "meta"]
                 df_dc_real = df_dc[df_dc["Tipo Movimento"] != "meta"]
 
+                # Meta: quanto ainda falta receber em cada dia. Calculada
+                # ANTES do saldo inicial porque, com o interruptor abaixo
+                # ligado, ela entra na cadeia dos dias de previsão.
+                serie_falta_dc = None
+                if not df_dc_metas.empty:
+                    # Mês INTEIRO, não o recorte: com o período começando no
+                    # dia 18, olhar só a tela esconde tudo que entrou do dia
+                    # 1 ao 17 e a meta reaparece nos dias seguintes.
+                    _meses_dc = {pd.Timestamp(d).to_period("M") for d in dias_dc}
+                    _do_mes_cheio = df_fin[
+                        df_fin["Data Efetiva"].dt.to_period("M").isin(_meses_dc)
+                    ]
+
+                    def _por_dia_mes_cheio(recorte):
+                        if recorte.empty:
+                            return pd.Series(dtype="float64")
+                        return recorte.groupby(
+                            recorte["Data Efetiva"].dt.normalize()
+                        )[COL_FIN_VALOR].sum()
+
+                    serie_meta = _por_dia_mes_cheio(
+                        _do_mes_cheio[_do_mes_cheio["Tipo Movimento"] == "meta"]).abs()
+                    realizado_receber = _do_mes_cheio[
+                        _do_mes_cheio[COL_FIN_MOVIMENTO].isin(
+                            [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
+                    ]
+                    falta = meta_diaria_que_ainda_falta(
+                        serie_meta,
+                        fracao_da_meta_ainda_nao_coberta(
+                            serie_meta, _por_dia_mes_cheio(realizado_receber)),
+                        dias_dc)
+                    # Zerada no intervalo inteiro, a linha não acrescenta
+                    # nada: some. Volta sozinha se o período alcançar um mês
+                    # em que ainda falta receber.
+                    serie_falta_dc = falta if falta.any() else None
+
+                # INTERRUPTOR DA META NO TOTAL GERAL (28/10/2026), a mesma
+                # regra do Fluxo Mensal: nasce DESLIGADO; ligado, o TOTAL
+                # GERAL de cada dia soma também o "quanto falta" da meta, e o
+                # SALDO INICIAL dos dias de previsão acompanha, porque parte
+                # do total do dia anterior. Só aparece quando há linha de meta.
+                total_com_meta_dc = False
+                if serie_falta_dc is not None:
+                    total_com_meta_dc = bool(st.toggle(
+                        "Somar a linha de meta no TOTAL GERAL",
+                        value=False, key="dc_total_geral_com_meta",
+                        help="Desligado (padrão): o TOTAL GERAL do dia soma saldo inicial, caixa, banco, "
+                             "contas a receber e contas a pagar — a meta fica de fora. Ligado: soma também "
+                             "a linha 2 - Contas a Receber Meta, que mostra quanto ainda falta para bater a "
+                             "meta naquele dia, e o total passa a responder como o dia fica se a meta for "
+                             "atingida. O SALDO INICIAL dos dias de previsão acompanha, porque parte do "
+                             "TOTAL GERAL do dia anterior.",
+                    ))
+                df_para_saldo_dc = df_dc_real
+                if total_com_meta_dc:
+                    # A falta entra na cadeia como se fosse entrada do dia.
+                    df_para_saldo_dc = pd.concat([
+                        df_dc_real[["DiaOrd", "Tipo Movimento", COL_FIN_VALOR]],
+                        pd.DataFrame({"DiaOrd": list(serie_falta_dc.index), "Tipo Movimento": "entrada",
+                                      COL_FIN_VALOR: [float(v) for v in serie_falta_dc.values]}),
+                    ], ignore_index=True)
+
                 saldo_inicial_dc, _total_dia_dc = calcular_saldo_inicial_diario(
-                    df_dc_real, COL_FIN_VALOR
+                    df_para_saldo_dc, COL_FIN_VALOR
                 )
                 linhas_dc, indices_dc, tipos_dc, pais_dc = [], [], [], []
 
@@ -11682,42 +11935,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             tipos_dc.append("movimento")
                             pais_dc.append(posicao_mae)
 
-                # Meta: quanto ainda falta receber em cada dia.
-                serie_falta_dc = None
-                if not df_dc_metas.empty:
-                    # Mês INTEIRO, não o recorte: com o período começando no
-                    # dia 18, olhar só a tela esconde tudo que entrou do dia
-                    # 1 ao 17 e a meta reaparece nos dias seguintes.
-                    _meses_dc = {pd.Timestamp(d).to_period("M") for d in dias_dc}
-                    _do_mes_cheio = df_fin[
-                        df_fin["Data Efetiva"].dt.to_period("M").isin(_meses_dc)
-                    ]
-
-                    def _por_dia_mes_cheio(recorte):
-                        if recorte.empty:
-                            return pd.Series(dtype="float64")
-                        return recorte.groupby(
-                            recorte["Data Efetiva"].dt.normalize()
-                        )[COL_FIN_VALOR].sum()
-
-                    serie_meta = _por_dia_mes_cheio(
-                        _do_mes_cheio[_do_mes_cheio["Tipo Movimento"] == "meta"]).abs()
-                    realizado_receber = _do_mes_cheio[
-                        _do_mes_cheio[COL_FIN_MOVIMENTO].isin(
-                            [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
-                    ]
-                    falta = meta_diaria_que_ainda_falta(
-                        serie_meta,
-                        fracao_da_meta_ainda_nao_coberta(
-                            serie_meta, _por_dia_mes_cheio(realizado_receber)),
-                        dias_dc)
-                    # Zerada no intervalo inteiro, a linha não acrescenta
-                    # nada: some. Volta sozinha se o período alcançar um mês
-                    # em que ainda falta receber.
-                    serie_falta_dc = falta if falta.any() else None
+                # Linha da meta (quanto falta no dia), com as filhas quando aberta.
                 if serie_falta_dc is not None:
                     posicao_meta = len(linhas_dc)
-                    linhas_dc.append(falta)
+                    linhas_dc.append(serie_falta_dc)
                     indices_dc.append(MOV_RECEBER_META)
                     tipos_dc.append("movimento")
                     pais_dc.append(None)
@@ -11738,13 +11959,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         tipos_dc.append("movimento")
                         pais_dc.append(posicao_meta)
 
-                # TOTAL GERAL: saldo inicial + tudo que não é meta.
+                # TOTAL GERAL: saldo inicial + tudo que não é meta -- e a meta
+                # também, quando o interruptor está ligado.
                 total_dc = linhas_dc[0].copy()
                 for serie, pai, rotulo in zip(linhas_dc[1:], pais_dc[1:], indices_dc[1:]):
-                    if pai is None and rotulo != MOV_RECEBER_META:
+                    if pai is None and (rotulo != MOV_RECEBER_META or total_com_meta_dc):
                         total_dc = total_dc + serie
                 linhas_dc.append(total_dc)
-                indices_dc.append("TOTAL GERAL")
+                indices_dc.append("TOTAL GERAL (com meta)" if total_com_meta_dc else "TOTAL GERAL")
                 tipos_dc.append("total")
                 pais_dc.append(None)
 
@@ -11843,8 +12065,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "os lançamentos que formam aquele número, com documento e fornecedor — as "
                     "células com detalhe aparecem sublinhadas"
                     + (" (com muitos lançamentos no período, cada célula traz os maiores)"
-                       if _cortou_dc else "") + ". **2 - Contas a Receber Meta** mostra quanto ainda falta no dia "
-                    "e não entra no TOTAL GERAL."
+                       if _cortou_dc else "") + ". **2 - Contas a Receber Meta** mostra quanto ainda falta no dia"
+                    + (" e está somada no TOTAL GERAL (com meta), que responde como o dia fica se a meta for batida."
+                       if total_com_meta_dc else " e não entra no TOTAL GERAL.")
                 )
 
     # ---------------- TESOURARIA ----------------
@@ -12023,7 +12246,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         "Líquido": liquido_sem.values,
                         "Saldo projetado": saldo_projetado_sem.values,
                     })
-                    st.dataframe(
+                    mostrar_tabela(
                         df_proj_t.style.format({
                             "Entradas": formata_brl, "Saídas": formata_brl,
                             "Líquido": formata_brl, "Saldo projetado": formata_brl,
@@ -12606,7 +12829,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         columns=["Valor", "% do vencido", "Títulos"],
                     )
                     tabela_aging_a.index.name = "Tempo de atraso"
-                    st.dataframe(tabela_aging_a, width="stretch")
+                    mostrar_tabela(tabela_aging_a, width="stretch", nome_excel="Aging contas a pagar")
                     _pior_faixa_a = faixas_atraso_a[-1]
                     if _pior_faixa_a[1] > 0:
                         st.caption(
@@ -12671,7 +12894,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         columns=["Valor", "% do vencido", "Títulos"],
                     )
                     _tabela_aging_receber.index.name = "Tempo de atraso"
-                    st.dataframe(_tabela_aging_receber, width="stretch")
+                    mostrar_tabela(_tabela_aging_receber, width="stretch", nome_excel="Aging contas a receber")
                     st.caption(
                         "Recebível vencido é dinheiro que a operação já contou como certo e não entrou. "
                         "Quanto mais à direita da tabela, menor a chance de entrar — e a mesma régua do "
@@ -12858,7 +13081,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                 "Valor (R$)": grupo_a.values,
                                 "% do total": [abs(v) / total_saidas_grupo * 100 for v in grupo_a.values],
                             })
-                            st.dataframe(
+                            mostrar_tabela(
                                 df_grupo_a.style.format({
                                     "Valor (R$)": formata_brl,
                                     "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
@@ -17259,7 +17482,7 @@ def _tabela_departamento(linhas, colunas_percentual=(), colunas_menor_e_melhor=(
     invertidas = [c for c in colunas_menor_e_melhor if c in df.columns]
     if invertidas:
         estilo = estilo.map(_cor_valor_invertido, subset=invertidas)
-    st.dataframe(estilo, width="stretch", hide_index=True)
+    mostrar_tabela(estilo, width="stretch", hide_index=True, nome_excel="Departamento")
 
 
 # ---------------------------------------------------------------------------
@@ -18482,7 +18705,7 @@ with tab1:
                     })
                 df_tabela_dept = pd.DataFrame(linhas_tabela_dept)
                 cols_num_dept = ["Realizado (R$)", "Orçado (R$)", "Desvio (R$)"]
-                st.dataframe(
+                mostrar_tabela(
                     df_tabela_dept.style.format(
                         {
                             "Realizado (R$)": formata_brl,
@@ -18522,7 +18745,7 @@ with tab1:
                         "Desvio (R$)": v_r_info - v_o_info,
                     })
                 df_tabela_info = pd.DataFrame(linhas_tabela_info)
-                st.dataframe(
+                mostrar_tabela(
                     df_tabela_info.style.format(
                         {
                             "Realizado (R$)": formata_brl,
@@ -19588,7 +19811,7 @@ with tab2:
             # de linhas feita no outro desenho, que tinha outras colunas.
             f"{'mensal' if abrir_dre_por_mes else 'acumulado'}"
         )
-        evento_dre = st.dataframe(
+        evento_dre = mostrar_tabela(
             (df_dre_final.style.apply(_estilo_linha_dre_mensal, axis=1)
              if abrir_dre_por_mes and _meses_abertura_dre
              else df_dre_final.style.format(formato_dre).map(
@@ -19600,6 +19823,7 @@ with tab2:
             on_select="rerun",
             selection_mode="multi-row",
             key=key_tabela_dre,
+            nome_excel="DRE Orcado x Realizado",
         )
 
     if not filtro_manual_dre_ativo:
@@ -19631,7 +19855,7 @@ with tab2:
                 "Conta / Linha DRE": l, "Realizado (R$)": v_r_info_dre, "Orçado (R$)": v_o_info_dre,
                 "Desvio (R$)": v_r_info_dre - v_o_info_dre,
             })
-        st.dataframe(
+        mostrar_tabela(
             pd.DataFrame(linhas_tabela_info_dre).style.format(
                 {"Realizado (R$)": formata_brl, "Orçado (R$)": formata_brl, "Desvio (R$)": formata_brl}
             ).map(cor_valor, subset=["Realizado (R$)", "Orçado (R$)"])
@@ -19834,7 +20058,7 @@ with tab3:
             f"{','.join(sorted(st.session_state['grupos_hist_expandidos']))}__"
             f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}"
         )
-        evento_hist = st.dataframe(
+        evento_hist = mostrar_tabela(
             df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
             column_config=col_config_hist,
             width="stretch",
@@ -19843,6 +20067,7 @@ with tab3:
             on_select="rerun",
             selection_mode="multi-row",
             key=key_tabela_hist,
+            nome_excel="Historico Mensal",
         )
 
     if not filtro_manual_hist_ativo:
@@ -19881,7 +20106,7 @@ with tab3:
 
         df_hist_info = pd.DataFrame(hist_data_info)
         colunas_numericas_info = list(m_map.keys()) + ["Total Acumulado"]
-        st.dataframe(
+        mostrar_tabela(
             df_hist_info.style.format({col: formata_brl for col in colunas_numericas_info}).map(
                 cor_valor, subset=colunas_numericas_info
             ),
@@ -20405,7 +20630,7 @@ if not departamento_ativo and tab_diag is not None:
             )
 
             with st.expander(f"📋 Ver a classificação completa das {len(df_abc)} contas"):
-                st.dataframe(
+                mostrar_tabela(
                     df_abc[["Conta", "Classe", "Valor (R$)", "% do total", "% acumulado"]].style.format({
                         "Valor (R$)": formata_brl,
                         "% do total": lambda v: f"{v:.1f}%".replace(".", ","),
@@ -20601,7 +20826,7 @@ if not departamento_ativo and tab_diag is not None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             with st.expander("📋 Ver todas as anomalias em tabela"):
-                st.dataframe(
+                mostrar_tabela(
                     df_anom.drop(columns=["Historico"]).style.format({
                         "Valor do mês": formata_brl,
                         "Média anterior": formata_brl,
@@ -21177,7 +21402,7 @@ if not departamento_ativo:
 
         ALTURA_12_LINHAS = 38 + len(df_resumo_proj) * 35
 
-        st.dataframe(
+        mostrar_tabela(
             df_resumo_proj.style.format({
                 "Valor Realizado / Projetado": formata_brl,
                 "Orçado Original": formata_brl,
@@ -21284,7 +21509,7 @@ if not departamento_ativo:
                 [(l, v_o, v_n, d) for l, v_o, v_n, d in detalhes_dependentes],
                 columns=["Linha da DRE", "Valor Original", "Valor Estressado", "Delta (R$)"],
             )
-            st.dataframe(
+            mostrar_tabela(
                 df_dependentes_stress.style.format({
                     "Valor Original": formata_brl, "Valor Estressado": formata_brl, "Delta (R$)": formata_brl,
                 }).map(cor_valor, subset=["Delta (R$)"]),
@@ -21810,7 +22035,7 @@ if tab_fech is not None:
                         for coluna, valor in zip(linha.index, linha)
                     ]
 
-                st.dataframe(
+                mostrar_tabela(
                     _checklist.style.apply(_cor_status_fechamento, axis=1),
                     width="stretch",
                     hide_index=True,
@@ -21879,7 +22104,7 @@ if tab_fech is not None:
                             for indice, valor in zip(coluna.index, coluna)
                         ]
 
-                    st.dataframe(
+                    mostrar_tabela(
                         _panorama.style.apply(_cor_panorama, axis=0),
                         width="stretch",
                     )
@@ -21942,7 +22167,7 @@ if tab_orc is not None:
                     _mostrar["Competência"] = pd.to_datetime(_mostrar["Competência"], errors="coerce").dt.strftime("%d/%m/%Y")
                     _mostrar["Valor Bruto"] = pd.to_numeric(_mostrar["Valor Bruto"], errors="coerce").map(
                         lambda v: formata_brl(v) if pd.notna(v) else "")
-                    st.dataframe(_mostrar, hide_index=True, width="stretch",
+                    mostrar_tabela(_mostrar, hide_index=True, width="stretch",
                                  height=min(38 + 35 * (len(_mostrar) + 1), 700))
                     st.download_button("⬇️ Baixar a lista (CSV)", _rev.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                                        file_name=f"revisao_lancamentos_{_comp_rev.strftime('%Y-%m')}.csv", mime="text/csv",
@@ -22043,7 +22268,7 @@ if tab_orc is not None:
             else:
                 _mostrar_esc = _tabela_esc.copy()
                 _mostrar_esc["Valor"] = pd.to_numeric(_mostrar_esc["Valor"], errors="coerce").map(lambda v: formata_brl(v) if pd.notna(v) else "")
-                st.dataframe(_mostrar_esc, hide_index=True, width="stretch", height=min(38 + 35 * (len(_mostrar_esc) + 1), 600))
+                mostrar_tabela(_mostrar_esc, hide_index=True, width="stretch", height=min(38 + 35 * (len(_mostrar_esc) + 1), 600))
                 if _det_esc is not None:
                     st.download_button("⬇️ Baixar os lançamentos do escritório (CSV)",
                                        _det_esc.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
@@ -22106,7 +22331,7 @@ if tab_orc is not None:
                     "% da receita": _fmt_pct_cer(b["pct_liquida"]),
                     "% orçado": _fmt_pct_cer(b["pct_orc"]),
                 } for b in _cer["por_mes"]])
-                st.dataframe(_tab_mes, hide_index=True, width="stretch", height=38 + 35 * (len(_tab_mes) + 1))
+                mostrar_tabela(_tab_mes, hide_index=True, width="stretch", height=38 + 35 * (len(_tab_mes) + 1))
             with _c_sub:
                 st.markdown("**Onde está o custo (subgrupos do 8 e o que fica fora dele)**")
                 if _cer["subgrupos"]:
@@ -22116,7 +22341,7 @@ if tab_orc is not None:
                         "% do escritório": _fmt_pct_cer(s_["pct_do_escritorio"]),
                         "% da receita": _fmt_pct_cer(s_["pct_da_receita"]),
                     } for s_ in _cer["subgrupos"]])
-                    st.dataframe(_tab_sub, hide_index=True, width="stretch", height=min(38 + 35 * (len(_tab_sub) + 1), 600))
+                    mostrar_tabela(_tab_sub, hide_index=True, width="stretch", height=min(38 + 35 * (len(_tab_sub) + 1), 600))
                 else:
                     st.info("Sem linhas com valor na aba do escritório no período.")
 
@@ -22159,7 +22384,7 @@ if tab_orc is not None:
                 _m = _conc.copy()
                 for _c in ("DIÁRIO", "DRE", "Diferença"):
                     _m[_c] = _m[_c].map(lambda v: formata_brl(v) if pd.notna(v) else "—")
-                st.dataframe(_m, hide_index=True, width="stretch", height=min(38 + 35 * (len(_m) + 1), 500))
+                mostrar_tabela(_m, hide_index=True, width="stretch", height=min(38 + 35 * (len(_m) + 1), 500))
                 _pares = {(str(r["Linha DRE"]), str(r["Mês"])) for _, r in _conc.iterrows()}
                 _dl = _dia_int.copy()
                 _dl["_mes"] = pd.to_datetime(_dl["Competência"], errors="coerce").dt.strftime("%m/%Y")
@@ -22198,7 +22423,7 @@ if tab_orc is not None:
                 _pm = _ponte.copy()
                 for _c in [c for c in _pm.columns if c != "Mês"]:
                     _pm[_c] = _pm[_c].map(formata_brl)
-                st.dataframe(_pm, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pm) + 1), 420))
+                mostrar_tabela(_pm, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pm) + 1), 420))
                 _tot = _ponte[["EBITDA", "Variação de caixa"]].sum()
                 st.caption(f"No acumulado dos meses fechados: EBITDA {formata_brl(_tot['EBITDA'])} → variação de caixa "
                            f"{formata_brl(_tot['Variação de caixa'])}. A diferença é capital de giro (receita ainda não recebida e "
@@ -22219,7 +22444,7 @@ if tab_orc is not None:
             _sd = pd.DataFrame(_saude)
             for _c in ("Realizado", "Orçado"):
                 _sd[_c] = _sd[_c].map(formata_brl)
-            st.dataframe(_sd, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sd) + 1), 500))
+            mostrar_tabela(_sd, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sd) + 1), 500))
 
     with tab_orc:
         # ---- Rascunho do ano seguinte a partir da base realizada (09/10/2026) ----
@@ -22361,7 +22586,7 @@ if tab_orc is not None:
                                        "o nome ao modelo ou padronize o nome no DIÁRIO.")
                             _sp_mostrar = _sem_par_rasc.copy()
                             _sp_mostrar["Total no ano"] = _sp_mostrar["Total no ano"].map(formata_brl)
-                            st.dataframe(_sp_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sp_mostrar) + 1), 500))
+                            mostrar_tabela(_sp_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_sp_mostrar) + 1), 500))
 
                 def _var_txt(novo, antigo):
                     return ("—" if not antigo else f"{(novo / antigo - 1) * 100:+.1f}%".replace(".", ","))
@@ -22404,7 +22629,7 @@ if tab_orc is not None:
                             _dc = _difs_cons.copy()
                             for _c in ("Soma das unidades", "DRE CONSOLIDADO", "Diferença"):
                                 _dc[_c] = _dc[_c].map(formata_brl)
-                            st.dataframe(_dc.drop(columns=["Grupo"]), hide_index=True, width="stretch", height=min(38 + 35 * (len(_dc) + 1), 480))
+                            mostrar_tabela(_dc.drop(columns=["Grupo"]), hide_index=True, width="stretch", height=min(38 + 35 * (len(_dc) + 1), 480))
                 else:
                     st.warning(f"A soma das linhas de detalhe até o grupo 10 ({formata_brl(_ebitda_folhas_fech)}) não bate com a linha 11 - EBITDA do "
                                f"realizado ({formata_brl(_ebitda_dre_fech)}) nos meses fechados. Confira a numeração da DRE antes de levar o rascunho.")
@@ -22543,7 +22768,7 @@ if tab_orc is not None:
                         _aj_df = pd.DataFrame(_linhas_aj)
                         _aj_mostrar = _aj_df.drop(columns=["Chave", "_pos"]).copy()
                         _aj_mostrar["Valor por mês"] = _aj_mostrar["Valor por mês"].map(lambda v: formata_brl(v) if v else "")
-                        st.dataframe(_aj_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_aj_mostrar) + 1), 400))
+                        mostrar_tabela(_aj_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_aj_mostrar) + 1), 400))
                         _ra1, _ra2 = st.columns([3, 1])
                         with _ra1:
                             _opcoes_rem = list(range(len(_linhas_aj)))
@@ -22623,7 +22848,7 @@ if tab_orc is not None:
                         f"Orçado {_ano_rasc}": [formata_brl(sum(v[i] for v in _bloco_det["orcado_meses"])) for i in range(12)],
                         f"Rascunho {_ano_rasc_prox}": [formata_brl(sum(v[i] for v in _bloco_det["rascunho_meses"])) for i in range(12)],
                     })
-                    st.dataframe(_meses_det, hide_index=True, width="stretch", height=38 + 35 * 13)
+                    mostrar_tabela(_meses_det, hide_index=True, width="stretch", height=38 + 35 * 13)
                     _planos_opc = [p_ for p_ in _bloco_det["plano"] if p_ not in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO)]
                     if _planos_opc:
                         _plano_det = st.selectbox("Plano de contas", ["(todos da linha)"] + _planos_opc, key="rasc_plano_det")
@@ -22632,7 +22857,7 @@ if tab_orc is not None:
                             st.markdown("**Maiores lançamentos no ano**")
                             _lanc_mostrar = _lanc_det.copy()
                             _lanc_mostrar["Valor Bruto"] = pd.to_numeric(_lanc_mostrar["Valor Bruto"], errors="coerce").map(formata_brl)
-                            st.dataframe(_lanc_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_lanc_mostrar) + 1), 420))
+                            mostrar_tabela(_lanc_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_lanc_mostrar) + 1), 420))
                     else:
                         st.caption("Esta linha não tem plano de contas no DIÁRIO (vem direto da DRE, como receita, ICMS e CMV).")
 
@@ -22667,7 +22892,7 @@ if tab_orc is not None:
                         elif _c.startswith("%") or " vs " in _c:
                             _rel_mostrar[_c] = pd.to_numeric(_rel_mostrar[_c], errors="coerce").map(
                                 lambda v: ("" if pd.isna(v) else f"{v * 100:+.1f}%".replace(".", ",") if " vs " in _c else f"{v * 100:.1f}%".replace(".", ",")))
-                    st.dataframe(_rel_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_rel_mostrar) + 1), 520))
+                    mostrar_tabela(_rel_mostrar, hide_index=True, width="stretch", height=min(38 + 35 * (len(_rel_mostrar) + 1), 520))
 
                 # ---- Por linha da DRE e por grupo ----
                 with st.expander("Por linha da DRE — os planos somados", expanded=False):
@@ -22680,7 +22905,7 @@ if tab_orc is not None:
                         "vs base": [_var_txt(r, b) for r, b in zip(_pl["rascunho"], _pl["base"])],
                         f"vs orçado {_ano_rasc}": [_var_txt(r, o) for r, o in zip(_pl["rascunho"], _pl["orcado_ano"])],
                     })
-                    st.dataframe(_pl_df, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pl_df) + 1), 600))
+                    mostrar_tabela(_pl_df, hide_index=True, width="stretch", height=min(38 + 35 * (len(_pl_df) + 1), 600))
                 with st.expander("Por grupo da DRE — base, orçado, retirado e rascunho", expanded=False):
                     _pg = _tot_rasc["por_grupo"]
                     _pg_df = pd.DataFrame([{
@@ -22689,7 +22914,7 @@ if tab_orc is not None:
                         "Retirado": formata_brl(t["retirado"]), f"Rascunho {_ano_rasc_prox}": formata_brl(t["rascunho"]),
                         "vs base": _var_txt(t["rascunho"], t["base"]), f"vs orçado {_ano_rasc}": _var_txt(t["rascunho"], t["orcado_ano"]),
                     } for g, t in sorted(_pg.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 999)])
-                    st.dataframe(_pg_df, hide_index=True, width="stretch", height=38 + 35 * (len(_pg_df) + 1))
+                    mostrar_tabela(_pg_df, hide_index=True, width="stretch", height=38 + 35 * (len(_pg_df) + 1))
 
                 _pct2 = lambda v: f"{v * 100:.2f}%".replace(".", ",")
                 st.caption(
@@ -22751,7 +22976,7 @@ if tab_orc is not None:
                                 st.download_button("⬇️ Memória por unidade (de onde veio cada número)", data=_mem_buf.getvalue(),
                                                    file_name=f"Rascunho_{_ano_rasc_prox}_memoria_por_unidade.xlsx",
                                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rasc_baixar_mem_un")
-                        st.dataframe(pd.DataFrame({"Unidade": list(_resumo_un.keys()),
+                        mostrar_tabela(pd.DataFrame({"Unidade": list(_resumo_un.keys()),
                                                    f"Rascunho {_ano_rasc_prox}": [formata_brl(v) for v in _resumo_un.values()]}),
                                      hide_index=True, width="stretch", height=38 + 35 * (len(_resumo_un) + 1))
                 else:
@@ -22794,7 +23019,7 @@ if tab_orc is not None:
                                            for c in _pf_fech]
                     _pf_saida = _bfp.prova_de_fogo_orcamento(_pf_real, _pf_proposto, _pf_tol / 100)
                     if _pf_saida:
-                        st.dataframe(pd.DataFrame([{
+                        mostrar_tabela(pd.DataFrame([{
                             "Linha": s["linha"], "Proposto (ano)": formata_valor_curto(s["proposto"]),
                             "Ritmo deste ano (média × 12)": formata_valor_curto(s["run_rate"]),
                             "Últimos 3 meses × 4": formata_valor_curto(s["recente"]),
@@ -22826,7 +23051,7 @@ if eh_admin and not departamento_ativo:
             {"E-mail": u["email"], "Perfil": u["perfil"]}
             for u in usuarios_atuais.values()
         ]
-        st.dataframe(pd.DataFrame(lista_usuarios), width="stretch", hide_index=True)
+        mostrar_tabela(pd.DataFrame(lista_usuarios), width="stretch", hide_index=True, nome_excel="Usuarios")
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**➕ Novo usuário de visualização**")
