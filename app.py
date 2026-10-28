@@ -7967,6 +7967,14 @@ def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None):
     return mapa, cortou
 
 
+def variacao_percentual_pxr(realizado, projetado):
+    """(Realizado − Projetado) / |Projetado| × 100, célula a célula. O sinal
+    lê igual nas duas direções: negativo é pior que o projetado (recebeu
+    menos, pagou mais), positivo é melhor. Projetado zero fica em branco."""
+    base = projetado.abs().replace(0.0, float("nan"))
+    return (realizado.values - projetado.values) / base.values * 100.0
+
+
 def linhas_exibidas_projetado_x_realizado(aberta):
     """Que linhas do quadro vão para a tela e como: (rótulos, tipos, pais).
     Com o contas a pagar fechado, só receber, pagar e total; aberto, as
@@ -8182,9 +8190,15 @@ def guardar_periodo_na_url(chave, data_ini=None, data_fim=None):
     return _ler(chave_ini), _ler(chave_fim)
 
 
+def formata_pct_tabela(numero):
+    """"8,9%" / "-3,4%": uma casa, vírgula, sem separador de milhar."""
+    return f"{numero:.1f}%".replace(".", ",")
+
+
 def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotulo_canto="",
                        pais=None, filhas_abertas=False, comandos_abrir=None,
-                       detalhes_por_celula=None, prefixo_botao=PREFIXO_BOTAO_ABRIR):
+                       detalhes_por_celula=None, prefixo_botao=PREFIXO_BOTAO_ABRIR,
+                       colunas_percentual=None):
     """Tabela onde dá para clicar em CÉLULAS soltas e ver a soma delas.
 
     O `st.dataframe` do Streamlit só seleciona linha ou coluna inteira, e o
@@ -8222,7 +8236,10 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
 
     `comandos_abrir` liga a seta ao servidor: um dicionário
     {rótulo da linha: True se está aberta}. `prefixo_botao` é a classe dos
-    botões escondidos que a seta aciona (um prefixo por tabela). A seta vira um comando que
+    botões escondidos que a seta aciona (um prefixo por tabela).
+    `colunas_percentual` (28/10/2026) são colunas mostradas como "8,9%" em
+    vez de reais; elas não entram na soma por célula (somar percentuais
+    não quer dizer nada) e por isso não são clicáveis. A seta vira um comando que
     recarrega a página com aquela linha marcada na URL, e aí a tabela é
     redesenhada mais alta. É a única forma de a altura acompanhar: o quadro
     onde a tabela vive tem altura fixa, definida no momento de desenhar, e
@@ -8315,6 +8332,9 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                 celulas.append('<td class="vazio">—</td>')
                 continue
             sinal = "pos" if numero >= 0 else "neg"
+            if colunas_percentual and coluna in colunas_percentual:
+                celulas.append(f'<td class="{sinal} pct">{formata_pct_tabela(numero)}</td>')
+                continue
             chave_celula = f"{rotulo_cru}||{coluna}"
             # Linha filha: primeiro a chave COMPOSTA "mãe › filha", que separa
             # a LOJA das contas a pagar da LOJA das contas a receber; sem ela
@@ -11439,13 +11459,16 @@ if st.session_state["painel_escolhido"] == "financeiro":
             "meta); contas a pagar abre nos grupos da projeção."
         )
         modo_pxr = st.radio(
-            "Como mostrar", ["Três quadros", "Lado a lado por mês"],
+            "Como mostrar", ["Lado a lado por mês", "Três quadros"],
             horizontal=True, key="modo_projetado_x_realizado",
-            help="Três quadros: Projetado, Realizado e Diferença, um embaixo do outro. "
-                 "Lado a lado: cada mês com as três colunas juntas (Proj. · Real. · Dif.).",
+            help="Lado a lado (padrão): cada mês com as três colunas juntas (Proj. · Real. · Var.%). "
+                 "Três quadros: Projetado, Realizado e Variação %, um embaixo do outro.",
         )
         # Botões ANTES das tabelas, como no mensal: a seta aciona um botão
-        # escondido e a tabela precisa nascer já com o estado novo.
+        # escondido e a tabela precisa nascer já com o estado novo. O contas
+        # a pagar nasce ABERTO (pedido de 28/10/2026): a semente entra na
+        # sessão antes do botão existir, e a seta fecha quando quiser.
+        st.session_state.setdefault("pxr_linhas_abertas", [LINHA_PAGAR_PROJETADO])
         comandos_pxr = botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")
         aberta_pxr = bool(comandos_pxr[LINHA_PAGAR_PROJETADO][0])
         rotulos_pxr, tipos_pxr, pais_pxr = linhas_exibidas_projetado_x_realizado(aberta_pxr)
@@ -11458,29 +11481,32 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 columns={COLUNA_TOTAL_PROJETADO: "Total Proj."})
             realizado_pxr = tabela_realizada_fin(df_fin, rot_real).rename(
                 columns={COLUNA_TOTAL_PROJETADO: "Total Real."})
-            diferenca_pxr = pd.DataFrame(
-                realizado_pxr.values - projetado_pxr.values, index=projetado_pxr.index,
-                columns=[c.replace("Real.", "Dif.") for c in realizado_pxr.columns])
+            variacao_pxr = pd.DataFrame(
+                variacao_percentual_pxr(realizado_pxr, projetado_pxr), index=projetado_pxr.index,
+                columns=[c.replace("Real.", "Var.%") for c in realizado_pxr.columns])
             colunas_lado = []
-            for cp, cr, cd in zip(projetado_pxr.columns, realizado_pxr.columns, diferenca_pxr.columns):
-                colunas_lado += [cp, cr, cd]
-            lado_pxr = pd.concat([projetado_pxr, realizado_pxr, diferenca_pxr], axis=1)
+            for cp, cr, cv in zip(projetado_pxr.columns, realizado_pxr.columns, variacao_pxr.columns):
+                colunas_lado += [cp, cr, cv]
+            lado_pxr = pd.concat([projetado_pxr, realizado_pxr, variacao_pxr], axis=1)
             lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, rot_real)
             tabela_selecionavel(
                 lado_pxr.loc[rotulos_pxr, colunas_lado], chave="tabela_pxr_lado",
                 tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                 comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                 detalhes_por_celula=lancamentos_pxr, rotulo_canto="Linha",
+                colunas_percentual=set(variacao_pxr.columns),
             )
         else:
             projetado_pxr = tabela_projetada_fin()
             realizado_pxr = tabela_realizada_fin(df_fin)
-            diferenca_pxr = realizado_pxr - projetado_pxr
+            variacao_pxr = pd.DataFrame(
+                variacao_percentual_pxr(realizado_pxr, projetado_pxr),
+                index=projetado_pxr.index, columns=projetado_pxr.columns)
             lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin)
-            for titulo, quadro, chave_q, detalhes in (
-                ("Projetado", projetado_pxr, "tabela_pxr_proj", None),
-                ("Realizado", realizado_pxr, "tabela_pxr_real", lancamentos_pxr),
-                ("Diferença (Realizado − Projetado)", diferenca_pxr, "tabela_pxr_dif", None),
+            for titulo, quadro, chave_q, detalhes, percentual in (
+                ("Projetado", projetado_pxr, "tabela_pxr_proj", None, None),
+                ("Realizado", realizado_pxr, "tabela_pxr_real", lancamentos_pxr, None),
+                ("Variação % (Realizado vs. Projetado)", variacao_pxr, "tabela_pxr_var", None, set(variacao_pxr.columns)),
             ):
                 st.markdown(f"**{titulo}**")
                 tabela_selecionavel(
@@ -11488,12 +11514,14 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                     comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                     detalhes_por_celula=detalhes, rotulo_canto=titulo,
+                    colunas_percentual=percentual,
                 )
         st.caption(
-            "Clique no **▸** de *4 - Contas a Pagar* para abrir os grupos da projeção logo abaixo (abre nos "
+            "O *4 - Contas a Pagar* já vem aberto nos grupos da projeção; clique no **▾** para fechar (vale para os "
             "quadros ao mesmo tempo). **Dois cliques num valor do Realizado** abrem, numa aba nova, os lançamentos "
-            "do mês que formam o número — na filha, só os do grupo; dá para baixar em CSV por lá. Na **Diferença**, "
-            "negativo é pior que o projetado (recebeu menos ou pagou mais) e positivo é melhor."
+            "do mês que formam o número — na filha, só os do grupo; dá para baixar em CSV por lá. A **Var.%** é "
+            "(Realizado − Projetado) ÷ Projetado: negativo é pior que o projetado (recebeu menos ou pagou mais) e "
+            "positivo é melhor; fica em branco quando o projetado é zero."
             + (" Em meses com muitos títulos a célula traz os maiores, até o teto de "
                f"{TETO_LANCAMENTOS_POR_CELULA_MES} lançamentos." if _cortou_pxr else "")
         )

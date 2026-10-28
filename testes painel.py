@@ -61,6 +61,7 @@ DEPENDENCIAS = {
                                           "montar_lancamentos_por_celula"],
     "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
     "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
+    "tabela_selecionavel": ["formata_pct_tabela"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
@@ -9238,6 +9239,40 @@ class TesteProjetadoXRealizado(unittest.TestCase):
         self.assertIn("detalhes_por_celula=lancamentos_pxr", trecho)
         self.assertIn("tabela_realizada_fin(df_fin", trecho, "realizado vem da base inteira, nao do recorte da tela")
         self.assertNotIn("df_fin_view", trecho)
+
+    def test_padroes_da_tela(self):
+        """28/10/2026: lado a lado como padrao, contas a pagar ja aberto e
+        variacao % no lugar da diferenca em reais."""
+        i = FONTE.index("with tab_fin_projetado:")
+        trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:", i)]
+        self.assertIn('"Como mostrar", ["Lado a lado por mês", "Três quadros"]', trecho,
+                      "o primeiro item e o padrao do st.radio")
+        semente = 'st.session_state.setdefault("pxr_linhas_abertas", [LINHA_PAGAR_PROJETADO])'
+        self.assertIn(semente, trecho)
+        self.assertLess(trecho.index(semente), trecho.index("botoes_de_abrir("), "a semente vem antes do botao")
+        self.assertNotIn("Dif.", trecho); self.assertNotIn("Diferença", trecho)
+        self.assertIn('c.replace("Real.", "Var.%")', trecho)
+        self.assertEqual(trecho.count("colunas_percentual="), 2)
+
+    def test_variacao_percentual(self):
+        ns = carregar(["variacao_percentual_pxr"])
+        proj = pd.DataFrame({"JUL": [100.0, -200.0, 0.0]}, index=["rec", "pag", "zero"])
+        real = pd.DataFrame({"JUL": [90.0, -180.0, 5.0]}, index=["rec", "pag", "zero"])
+        var = ns["variacao_percentual_pxr"](real, proj)
+        self.assertAlmostEqual(var[0][0], -10.0, msg="recebeu 10% a menos: pior, negativo")
+        self.assertAlmostEqual(var[1][0], 10.0, msg="pagou 10% a menos: melhor, positivo")
+        self.assertTrue(var[2][0] != var[2][0], "projetado zero fica em branco (NaN)")
+
+    def test_coluna_percentual_na_tabela(self):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        df = pd.DataFrame([[100.0, -3.456], [-200.0, 12.0]], index=["rec", "pag"], columns=["JUL Real.", "JUL Var.%"])
+        ns_local["tabela_selecionavel"](df, chave="t", colunas_percentual={"JUL Var.%"})
+        codigo = capturado["codigo"]
+        self.assertIn(">-3,5%<", codigo); self.assertIn(">12,0%<", codigo)
+        self.assertEqual(len(re.findall(r'data-v="', codigo)), 2, "percentual nao entra na soma por celula")
+        self.assertEqual(ns_local["formata_pct_tabela"](8.94), "8,9%")
 
 
 if __name__ == "__main__":
