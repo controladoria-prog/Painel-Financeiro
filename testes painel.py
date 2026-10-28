@@ -149,6 +149,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "_aplicar_meta_como_falta": ["MESES_META_ZERADA_FIN"],
     "botao_excel": ["MIME_XLSX", "_CONTADOR_EXCEL"],
     "normalizar_venda_diaria": ["COLUNAS_VENDA_DIARIA", "NOMES_CANAL_VENDA_DIARIA", "CANAIS_PEF"],
     "venda_realizada_por_mes": ["VENDA_REALIZADA_2026", "VENDA_REALIZADA_ACUMULADA_ATE", "CANAIS_PEF"],
@@ -2009,6 +2010,34 @@ class TesteMetasDeRecebimento(unittest.TestCase):
              "COL_FIN_MODALIDADE", "COL_FIN_VALOR", "COL_FIN_VENCIMENTO",
              "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_EFETIVA"],
         )
+
+    def setUp(self):
+        # Os testes da REGRA geral rodam sem mes zerado a pedido; o teste
+        # proprio da lista liga outubro de volta.
+        self.ns["MESES_META_ZERADA_FIN"] = []
+
+    def test_mes_da_lista_fica_zerado_a_pedido(self):
+        """28/10/2026: outubro sai da linha de meta do Fluxo Mensal ("nao
+        precisamos mais dela"); os outros meses seguem a regra normal. A
+        lista e o unico lugar a mexer para ligar ou desligar."""
+        chave = self.ns["MOV_RECEBER_META"]
+        out, nov = pd.Period("2026-10", "M"), pd.Period("2026-11", "M")
+        pivo = pd.DataFrame({
+            out: {chave: 12_111_597.35, self.ns["MOV_RECEBER_AVENCER"]: 8_649_812.06, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
+            nov: {chave: 13_128_339.38, self.ns["MOV_RECEBER_AVENCER"]: 5_712_644.27, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
+        })
+        self.ns["MESES_META_ZERADA_FIN"] = ["2026-10"]
+        novo, cheia = self.ns["_aplicar_meta_como_falta"](pivo, mes_corrente=out)
+        self.assertEqual(novo.loc[chave, out], 0.0, "outubro zerado a pedido, mesmo sendo o mes corrente")
+        self.assertAlmostEqual(novo.loc[chave, nov], 7_415_695.11, places=2, msg="novembro segue")
+        self.assertAlmostEqual(cheia[out], 12_111_597.35, places=2, msg="a meta cheia fica para a legenda")
+        # Tambem com rotulo de texto, e sem mes corrente.
+        pivo_txt = pivo.copy(); pivo_txt.columns = ["10/2026", "11/2026"]
+        txt, _ = self.ns["_aplicar_meta_como_falta"](pivo_txt)
+        self.assertEqual(txt.loc[chave, "10/2026"], 0.0); self.assertGreater(txt.loc[chave, "11/2026"], 0.0)
+        # O app de verdade esta com outubro na lista.
+        i = FONTE.index("MESES_META_ZERADA_FIN = ")
+        self.assertIn('"2026-10"', FONTE[i:FONTE.index("\n", i)])
 
     def test_meta_mensal_bate_com_a_planilha_do_gestor(self):
         """A soma dos dias tem de devolver a meta do mes -- os centavos do

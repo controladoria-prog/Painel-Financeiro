@@ -9423,6 +9423,13 @@ def _periodo_mensal(valor):
         return None
 
 
+# Meses em que a linha de meta do Fluxo Mensal fica ZERADA por decisão da
+# área (28/10/2026: outubro -- "praticamente não precisamos mais dela").
+# Vale só para a linha de meta da tabela mensal; os demais meses seguem a
+# regra normal. Para voltar, é tirar o mês da lista.
+MESES_META_ZERADA_FIN = ["2026-10"]
+
+
 def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     """Substitui a linha de META pelo que AINDA FALTA receber no período:
     meta menos o que já está a vencer e o que já foi liquidado, com piso em
@@ -9440,7 +9447,8 @@ def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     frente; mês fechado sem bater não tem mais "quanto falta" -- o que
     faltou virou resultado, e segurar o número na tela fazia setembro
     continuar pedindo R$ 133 mil em pleno outubro. Fica "quanto falta" só
-    do mês corrente em diante.
+    do mês corrente em diante. Os meses de MESES_META_ZERADA_FIN ficam em
+    zero sempre (28/10/2026), independentemente da regra acima.
 
     Devolve (pivot ajustado, série da meta cheia) -- a meta original ainda
     serve para a legenda dizer qual era o alvo."""
@@ -9460,6 +9468,11 @@ def _aplicar_meta_como_falta(pivot, mes_corrente=None):
                 periodo = _periodo_mensal(coluna)
                 if periodo is not None and periodo < corrente:
                     falta[coluna] = 0.0
+    zerados = {pd.Period(m, "M") for m in MESES_META_ZERADA_FIN}
+    for coluna in list(falta.index):
+        periodo = _periodo_mensal(coluna)
+        if periodo is not None and periodo in zerados:
+            falta[coluna] = 0.0
     ajustado.loc[MOV_RECEBER_META] = falta
     return ajustado, meta_cheia
 
@@ -10924,6 +10937,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         f"{mes} {formata_brl(abs(valor))}"
                         for mes, valor in meta_cheia_m.items() if valor
                     )
+                    + (" **A linha de meta está zerada a pedido em "
+                       + ", ".join(_rotulo_mes_pt(pd.Period(m, "M")) for m in MESES_META_ZERADA_FIN)
+                       + "** (28/10/2026) — vale só para essa linha; os demais meses seguem a regra."
+                       if any(pd.Period(m, "M") in set(meses_ordenados_m) for m in MESES_META_ZERADA_FIN) else "")
                 )
 
             # ---- Aplicações: fora de todos os totais, só pra conhecimento. Fica logo
