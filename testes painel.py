@@ -1908,11 +1908,15 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # desde 27/10/2026: a tabela e o pivo das FILHAS abertas pela seta --
         # as duas na abertura, para a filha de Caixa/Banco (aberta por canal)
         # bater com a linha-mae.
-        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 2)
+        # 28/10/2026: uma terceira, em `saldo_anterior_ao_periodo_mensal`,
+        # que refaz a mesma cadeia nos meses que ficaram antes da tela.
+        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 3)
         i_mensal = FONTE.index("📋 Movimentos por Mês")
         bloco_mensal = FONTE[max(0, i_mensal - 6000):i_mensal + 9000]
         self.assertEqual(bloco_mensal.count('posicao_saldo="primeira"'), 2,
-                         "as duas chamadas ficam no bloco do Fluxo Mensal")
+                         "duas chamadas ficam no bloco do Fluxo Mensal")
+        i_fn = FONTE.index("def saldo_anterior_ao_periodo_mensal(")
+        self.assertIn('posicao_saldo="primeira"', FONTE[i_fn:FONTE.index("\ndef ", i_fn + 10)])
 
 
 # ============================================================================
@@ -9028,6 +9032,72 @@ class TesteSetaDeAbrirNoFluxoMensal(unittest.TestCase):
         self.assertIn('data-k="3 - Contas a Pagar › LOJA||SET/2026"', codigo)
         self.assertIn('data-k="2 - Contas a Receber › LOJA||SET/2026"', codigo)
         self.assertNotIn('data-k="LOJA||SET/2026"', codigo, "a filha nao pode cair na chave solta")
+
+
+class TesteSaldoAnteriorAoPeriodoMensal(unittest.TestCase):
+    """28/10/2026: com outubro na tela o Fluxo Mensal batia; so novembro e
+    dezembro, o SALDO INICIAL de novembro virava R$ 697 milhoes. A abertura
+    "antes do periodo" era a SOMA de tudo antes do primeiro mes -- e caixa e
+    banco sao posicao DIARIA, entao cada dia entrava de novo na soma. Agora
+    ela refaz, nos meses de tras, a mesma cadeia das colunas da tabela."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["saldo_anterior_ao_periodo_mensal", "_pivot_fluxo_fin", "_aplicar_meta_como_falta",
+                           "_total_geral_fin", "_total_geral_sem_meta", "_classificar_movimento_fin",
+                           "_normalizar_texto", "_periodo_mensal"],
+                          ["COL_FIN_VALOR", "COL_FIN_MOVIMENTO", "MOV_RECEBER_META", "MOV_RECEBER_AVENCER",
+                           "MOV_RECEBER_LIQUIDADO"])
+
+    def _base(self):
+        ns = self.ns
+        linhas = []
+        # Banco: posicao TODO dia util de setembro e outubro (e isso que inflava).
+        for mes in (9, 10):
+            for dia in range(1, 29):
+                linhas.append(("1.Banco", pd.Timestamp(2026, mes, dia), 6_000_000.0 + dia))
+        # Fluxo: a receber e a pagar em setembro e outubro; novembro so previsao.
+        for mes, rec, pag in ((9, 8_000_000.0, -9_000_000.0), (10, 2_700_000.0, -10_300_000.0), (11, 8_300_000.0, -11_000_000.0)):
+            linhas.append(("2.1 - Contas a Receber", pd.Timestamp(2026, mes, 10), rec))
+            linhas.append(("3 - Contas a Pagar", pd.Timestamp(2026, mes, 12), pag))
+        linhas.append(("APLICACAO XP", pd.Timestamp(2026, 10, 5), 50_000_000.0))
+        df = pd.DataFrame({ns["COL_FIN_MOVIMENTO"]: [l[0] for l in linhas], "Data Efetiva": [l[1] for l in linhas],
+                           ns["COL_FIN_VALOR"]: [l[2] for l in linhas]})
+        df["Tipo Movimento"] = df[ns["COL_FIN_MOVIMENTO"]].map(ns["_classificar_movimento_fin"])
+        df.loc[df[ns["COL_FIN_MOVIMENTO"]] == "APLICACAO XP", "Tipo Movimento"] = "aplicacao"
+        return df
+
+    def test_posicao_diaria_nao_e_somada(self):
+        df = self._base()
+        corrente = pd.Period("2026-10", "M")
+        abertura_nov = self.ns["saldo_anterior_ao_periodo_mensal"](df, pd.Period("2026-11", "M"), corrente)
+        # Outubro e o mes corrente: fecha com o seu proprio TOTAL GERAL =
+        # banco do PRIMEIRO dia + a receber + a pagar.
+        self.assertAlmostEqual(abertura_nov, 6_000_001.0 + 2_700_000.0 - 10_300_000.0, places=2)
+        self.assertLess(abs(abertura_nov), 10_000_000.0, "697 milhoes nunca mais")
+
+    def test_e_a_mesma_cadeia_da_tabela(self):
+        """Tirar outubro da tela nao pode mudar a abertura de novembro: ela
+        tem de ser o TOTAL GERAL de outubro que a tabela mostrava."""
+        df = self._base()
+        corrente = pd.Period("2026-10", "M")
+        com_outubro = self.ns["saldo_anterior_ao_periodo_mensal"](df, pd.Period("2026-10", "M"), corrente)
+        self.assertAlmostEqual(com_outubro, 6_000_001.0 + 8_000_000.0 - 9_000_000.0, places=2,
+                               msg="setembro (passado) tambem fecha com a posicao real")
+        # Dezembro na tela sozinho: novembro e previsao, herda outubro e soma o seu fluxo.
+        abertura_dez = self.ns["saldo_anterior_ao_periodo_mensal"](df, pd.Period("2026-12", "M"), corrente)
+        total_out = 6_000_001.0 + 2_700_000.0 - 10_300_000.0
+        self.assertAlmostEqual(abertura_dez, total_out + 8_300_000.0 - 11_000_000.0, places=2)
+        self.assertEqual(self.ns["saldo_anterior_ao_periodo_mensal"](df, pd.Period("2026-09", "M"), corrente), 0.0,
+                         "nada antes do primeiro mes da base")
+        self.assertEqual(self.ns["saldo_anterior_ao_periodo_mensal"](pd.DataFrame(), pd.Period("2026-09", "M"), corrente), 0.0)
+
+    def test_a_tela_usa_a_funcao_depois_do_interruptor_da_meta(self):
+        i = FONTE.index("📋 Movimentos por Mês")
+        trecho = FONTE[i:i + 6000]
+        self.assertIn("saldo_anterior_ao_periodo_m = saldo_anterior_ao_periodo_mensal(", trecho)
+        self.assertIn("incluir_meta=total_geral_com_meta_m)", trecho[trecho.index("saldo_anterior_ao_periodo_mensal("):])
+        self.assertNotIn("_antes_do_periodo_m[COL_FIN_VALOR].sum()", FONTE, "a soma crua voltou")
 
 
 if __name__ == "__main__":

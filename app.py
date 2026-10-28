@@ -8737,6 +8737,44 @@ def _total_geral_sem_meta(pivot):
     return pivot.loc[linhas].sum(axis=0)
 
 
+def saldo_anterior_ao_periodo_mensal(df_base, primeiro_mes, mes_corrente, incluir_meta=False):
+    """Com quanto o Fluxo Mensal ENTRA no primeiro mês da tela (28/10/2026).
+
+    Antes era `soma de tudo antes do primeiro mês` -- e caixa e banco são
+    POSIÇÃO diária, não movimento: somar a posição de todos os dias dava
+    centenas de milhões (R$ 697 mi de "saldo inicial" em novembro quando
+    outubro saía da tela). Com o mês corrente na tela o erro ficava
+    escondido, porque a abertura dele é forçada a zero.
+
+    Aqui a conta é a MESMA cadeia que a tabela faz nas suas colunas, só que
+    nos meses que ficaram para trás: mês passado ou corrente fecha com o
+    seu próprio TOTAL GERAL (posição do primeiro dia + fluxo do mês); mês
+    de previsão soma o seu fluxo ao que herdou. O que sobra ao fim do
+    último mês antes da tela é a abertura do primeiro mês visível.
+    `incluir_meta` acompanha o interruptor da tela."""
+    if df_base is None or df_base.empty or primeiro_mes is None:
+        return 0.0
+    periodo = df_base["Data Efetiva"].dt.to_period("M")
+    tipo = df_base["Tipo Movimento"] if "Tipo Movimento" in df_base.columns else pd.Series("", index=df_base.index)
+    antes = df_base[(periodo < primeiro_mes) & (tipo != "aplicacao")].copy()
+    if antes.empty:
+        return 0.0
+    antes["PeriodoMes"] = antes["Data Efetiva"].dt.to_period("M")
+    meses = sorted(antes["PeriodoMes"].unique())
+    pivot = _pivot_fluxo_fin(antes, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses,
+                             posicao_saldo="primeira")
+    pivot, _meta = _aplicar_meta_como_falta(pivot, mes_corrente=mes_corrente)
+    movimentos = _total_geral_fin(pivot, incluir_meta=incluir_meta)
+    acumulado = 0.0
+    for mes in meses:
+        valor = float(movimentos.get(mes, 0.0))
+        if mes <= mes_corrente:
+            acumulado = valor          # posição real do mês, não herança
+        else:
+            acumulado += valor         # previsão: herda e soma
+    return acumulado
+
+
 def _total_geral_fin(pivot, incluir_meta=False):
     """TOTAL GERAL da tabela Movimentos por Mês, com ou sem a linha de meta.
 
@@ -9898,15 +9936,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # começaria do zero e os meses à frente ficariam negativos: eles
             # pagam contas com o caixa que veio de trás. Vem de df_fin (a base
             # inteira), não de df_fin_view, que é o recorte visível.
-            saldo_anterior_ao_periodo_m = 0.0
-            if meses_ordenados_m:
-                _antes_do_periodo_m = df_fin[
-                    (df_fin["Data Efetiva"].dt.to_period("M") < meses_ordenados_m[0])
-                    & (df_fin["Tipo Movimento"] != "meta")
-                    & (df_fin["Tipo Movimento"] != "aplicacao")
-                ]
-                saldo_anterior_ao_periodo_m = float(
-                    _antes_do_periodo_m[COL_FIN_VALOR].sum())
+            # 28/10/2026: a conta vive em `saldo_anterior_ao_periodo_mensal`
+            # e é feita DEPOIS do interruptor da meta, porque o acompanha --
+            # ver a chamada logo abaixo de `total_geral_com_meta_m`.
 
             # Aqui, e SÓ aqui, caixa e banco mostram o saldo com que o mês
             # COMEÇOU -- a posição do primeiro dia. Nesta leitura a pergunta é
@@ -9986,6 +10018,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 ))
             movimentos_do_mes_m = _total_geral_fin(pivot_m, incluir_meta=total_geral_com_meta_m)
             colunas_meses_m = list(pivot_m.columns)
+            saldo_anterior_ao_periodo_m = saldo_anterior_ao_periodo_mensal(
+                df_fin, meses_ordenados_m[0] if meses_ordenados_m else None,
+                pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M"),
+                incluir_meta=total_geral_com_meta_m)
 
             # O saldo inicial só vale para PREVISÃO. Mês que já passou, e o
             # mês corrente, têm as posições de caixa e banco reais dentro
