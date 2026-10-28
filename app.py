@@ -8126,17 +8126,57 @@ def normalizar_venda_diaria(bruto):
     return saida, ""
 
 
+# A planilha de venda diária da Controladoria no Drive (28/10/2026). Fica
+# aqui como padrão para o painel já nascer ligado a ela; o segredo
+# VENDA_DIARIA_CSV_URL, quando existir, tem prioridade (serve para trocar
+# de arquivo ou colar um link de publicação sem mexer no código).
+ID_PLANILHA_VENDA_DIARIA_PADRAO = "1k53UVHS5-E_xvQIC9FEmUj7BbAMnAhmD"
+
+
+def fontes_csv_venda_diaria(valor_secret=""):
+    """Lista de (descrição, url) para tentar, na ordem; a primeira que
+    responder com as colunas certas é a usada. O link dos Secrets vem
+    primeiro; depois as duas formas de puxar CSV pelo ID da planilha (a
+    exportação direta e a consulta gviz, que costuma responder também para
+    arquivo .xlsx aberto no modo de compatibilidade)."""
+    fontes = []
+    url_secret = url_csv_do_fechamento(valor_secret)
+    if url_secret:
+        fontes.append(("link dos Secrets (VENDA_DIARIA_CSV_URL)", url_secret))
+    achado = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", str(valor_secret or ""))
+    id_planilha = achado.group(1) if achado else (
+        str(valor_secret).strip() if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", str(valor_secret or "").strip())
+        else ID_PLANILHA_VENDA_DIARIA_PADRAO)
+    fontes.append(("exportação CSV da planilha",
+                   f"https://docs.google.com/spreadsheets/d/{id_planilha}/export?format=csv"))
+    fontes.append(("consulta gviz da planilha",
+                   f"https://docs.google.com/spreadsheets/d/{id_planilha}/gviz/tq?tqx=out:csv"))
+    vistas, unicas = set(), []
+    for descricao, url in fontes:
+        if url not in vistas:
+            vistas.add(url); unicas.append((descricao, url))
+    return unicas
+
+
 @st.cache_data(ttl=None, show_spinner=False, max_entries=2)
-def carregar_venda_diaria(url):
-    """Lê a planilha de venda diária publicada (link nos Secrets, em
-    VENDA_DIARIA_CSV_URL). Devolve (tabela, erro)."""
-    if not url:
-        return pd.DataFrame(columns=COLUNAS_VENDA_DIARIA), "sem_url"
-    try:
-        bruto = pd.read_csv(url, dtype=str, keep_default_na=False, na_values=[""])
-    except Exception as erro:                                    # noqa: BLE001
-        return pd.DataFrame(columns=COLUNAS_VENDA_DIARIA), f"Não consegui ler a planilha de venda diária: {erro}"
-    return normalizar_venda_diaria(bruto)
+def carregar_venda_diaria(fontes):
+    """Lê a planilha de venda diária pela primeira fonte que responder.
+    `fontes` é a tupla de (descrição, url) de fontes_csv_venda_diaria.
+    Devolve (tabela, origem, erros): origem é a descrição da fonte usada
+    ("" se nenhuma serviu) e erros a lista do que deu errado em cada uma."""
+    erros = []
+    for descricao, url in fontes or ():
+        try:
+            bruto = pd.read_csv(url, dtype=str, keep_default_na=False, na_values=[""])
+        except Exception as erro:                                # noqa: BLE001
+            erros.append(f"{descricao}: {erro}")
+            continue
+        tabela, erro = normalizar_venda_diaria(bruto)
+        if erro:
+            erros.append(f"{descricao}: {erro}")
+            continue
+        return tabela, descricao, erros
+    return pd.DataFrame(columns=COLUNAS_VENDA_DIARIA), "", erros
 
 
 def venda_realizada_por_mes(venda_diaria, acumulado_ate=VENDA_REALIZADA_ACUMULADA_ATE):
@@ -11928,161 +11968,125 @@ if st.session_state["painel_escolhido"] == "financeiro":
         # Fica ACIMA do Projetado x Realizado do fluxo: é a leitura de venda,
         # e é ela que muda todo dia. O quadro é um só -- PEF original, PEF
         # revisada, venda realizada e a diferença -- e cada bloco abre nos
-        # canais pela seta. A venda diária alimenta os meses em aberto.
-        with st.expander("📌 PEF x Venda Realizada — 2º semestre 2026", expanded=True):
-            _valor_vd, _onde_vd = _segredo_com_origem("VENDA_DIARIA_CSV_URL")
-            _url_vd = url_csv_do_fechamento(_valor_vd)
-            if _url_vd:
-                venda_diaria_pef, _erro_vd = carregar_venda_diaria(_url_vd)
-                fonte_venda_diaria = "planilha"
-            else:
-                # Sem planilha ligada: dá para lançar os dias aqui mesmo, só
-                # nesta sessão (some ao recarregar) -- serve para testar a
-                # leitura e para o dia a dia até a planilha existir.
-                venda_diaria_pef = st.session_state.get("venda_diaria_sessao", pd.DataFrame(columns=COLUNAS_VENDA_DIARIA))
-                _erro_vd = "" if _valor_vd == "" else "link_invalido"
-                fonte_venda_diaria = "sessao"
-            venda_por_mes_pef = venda_realizada_por_mes(venda_diaria_pef)
-            quadro_pef_completo = quadro_pef(venda_por_mes_pef)
+        # canais pela seta (nascem fechados). A venda diária vem da planilha
+        # da Controladoria no Drive e alimenta os meses em aberto.
+        st.markdown('<div class="section-title">📌 PEF x Venda Realizada — 2º semestre 2026</div>',
+                    unsafe_allow_html=True)
+        _valor_vd, _onde_vd = _segredo_com_origem("VENDA_DIARIA_CSV_URL")
+        _fontes_vd = tuple(fontes_csv_venda_diaria(_valor_vd))
+        venda_diaria_pef, _origem_vd, _erros_vd = carregar_venda_diaria(_fontes_vd)
+        venda_por_mes_pef = venda_realizada_por_mes(venda_diaria_pef)
+        quadro_pef_completo = quadro_pef(venda_por_mes_pef)
 
-            blocos_pef = [LINHA_PEF_ORIGINAL, LINHA_PEF_REVISADA, LINHA_VENDA_REALIZADA, LINHA_DIFERENCA_PEF]
-            # Nasce tudo aberto; a seta de cada bloco fecha e abre.
-            st.session_state.setdefault("pef_linhas_abertas", list(blocos_pef))
-            comandos_pef = botoes_de_abrir(blocos_pef, "pef_linhas_abertas", "pefabrir_")
-            abertos_pef = {linha for linha, (aberta, _i) in comandos_pef.items() if aberta}
-            tabela_pef, tipos_pef, pais_pef = montar_tabela_pef(quadro_pef_completo, abertos_pef)
-            tabela_selecionavel(
-                tabela_pef, chave="tabela_pef", tipos_linha=tipos_pef, pais=pais_pef, filhas_abertas=True,
-                comandos_abrir=comandos_pef, prefixo_botao="st-key-pefabrir_",
-                rotulo_canto="Faturamento / previsão", nome_excel="PEF x Venda Realizada",
+        blocos_pef = [LINHA_PEF_ORIGINAL, LINHA_PEF_REVISADA, LINHA_VENDA_REALIZADA, LINHA_DIFERENCA_PEF]
+        # Botões ANTES da tabela (a seta aciona um botão escondido). Os
+        # blocos nascem FECHADOS; a seta de cada um abre os canais.
+        comandos_pef = botoes_de_abrir(blocos_pef, "pef_linhas_abertas", "pefabrir_")
+        abertos_pef = {linha for linha, (aberta, _i) in comandos_pef.items() if aberta}
+        tabela_pef, tipos_pef, pais_pef = montar_tabela_pef(quadro_pef_completo, abertos_pef)
+        tabela_selecionavel(
+            tabela_pef, chave="tabela_pef", tipos_linha=tipos_pef, pais=pais_pef, filhas_abertas=True,
+            comandos_abrir=comandos_pef, prefixo_botao="st-key-pefabrir_",
+            rotulo_canto="Faturamento / previsão", nome_excel="PEF x Venda Realizada",
+        )
+        _corte_pef = pd.Timestamp(VENDA_REALIZADA_ACUMULADA_ATE)
+        st.caption(
+            "**PEF original** e **PEF revisada** são as previsões de faturamento da diretoria, fixas no painel. "
+            "**Venda realizada**: meses fechados como na planilha; o mês em aberto parte do acumulado até "
+            f"**{_corte_pef:%d/%m/%Y}** e soma, em cima, as linhas de venda diária com data posterior; "
+            "os meses por vir vivem só das linhas diárias. **Diferença** = venda realizada − PEF original "
+            "(negativo = abaixo da previsão). A seta de cada bloco abre e fecha os canais; "
+            "**TOTAL FATURADO** soma julho a dezembro."
+        )
+
+        # ---- Venda diária, ritmo e probabilidade ----
+        st.markdown("**📈 Venda diária, projeção do mês e chance de bater a PEF**")
+        _hoje_pef = pd.Timestamp(datetime.now(FUSO_BR).date())
+        _meses_pef = _meses_projetado()
+        _mes_padrao_pef = _hoje_pef.to_period("M") if _hoje_pef.to_period("M") in _meses_pef else _meses_pef[-1]
+        col_pef_a, col_pef_b = st.columns([1, 2])
+        with col_pef_a:
+            mes_pef = st.selectbox(
+                "Mês da projeção", _meses_pef, index=_meses_pef.index(_mes_padrao_pef),
+                format_func=_rotulo_mes_pt_extenso, key="pef_mes_projecao",
             )
-            _corte_pef = pd.Timestamp(VENDA_REALIZADA_ACUMULADA_ATE)
-            st.caption(
-                "**PEF original** e **PEF revisada** são as previsões de faturamento da diretoria, fixas no painel. "
-                "**Venda realizada**: meses fechados como na planilha; o mês em aberto parte do acumulado até "
-                f"**{_corte_pef:%d/%m/%Y}** e soma, em cima, as linhas de venda diária com data posterior; "
-                "os meses por vir vivem só das linhas diárias. **Diferença** = venda realizada − PEF original "
-                "(negativo = abaixo da previsão). A seta de cada bloco abre e fecha os canais; "
-                "**TOTAL FATURADO** soma julho a dezembro."
-            )
-
-            # ---- Venda diária, ritmo e probabilidade ----
-            st.markdown("**📈 Venda diária, projeção do mês e chance de bater a PEF**")
-            _hoje_pef = pd.Timestamp(datetime.now(FUSO_BR).date())
-            _meses_pef = _meses_projetado()
-            _mes_padrao_pef = _hoje_pef.to_period("M") if _hoje_pef.to_period("M") in _meses_pef else _meses_pef[-1]
-            col_pef_a, col_pef_b = st.columns([1, 2])
-            with col_pef_a:
-                mes_pef = st.selectbox(
-                    "Mês da projeção", _meses_pef, index=_meses_pef.index(_mes_padrao_pef),
-                    format_func=_rotulo_mes_pt_extenso, key="pef_mes_projecao",
-                )
-            projecao_pef = projecao_do_mes_pef(venda_diaria_pef, mes_pef, _hoje_pef)
-            if not projecao_pef.empty:
-                _dias_dec = projecao_pef.attrs.get("dias_decorridos", 0)
-                _dias_rest = projecao_pef.attrs.get("dias_restantes", 0)
-                _ultimo = projecao_pef.attrs.get("ultimo_dia")
-                with col_pef_b:
-                    if _dias_dec:
-                        st.caption(
-                            f"Realizado até **{pd.Timestamp(_ultimo):%d/%m}** ({_dias_dec} dia(s) corrido(s)); "
-                            f"faltam **{_dias_rest}** dia(s) no mês. Linhas diárias no mês: "
-                            f"**{projecao_pef.attrs.get('linhas_diarias', 0)}**."
-                        )
-                    else:
-                        st.caption("Mês ainda sem venda lançada: a projeção aparece quando houver a primeira linha diária.")
-                tabela_selecionavel(
-                    projecao_pef, chave="tabela_pef_projecao",
-                    tipos_linha=["movimento"] * len(CANAIS_PEF) + ["total"],
-                    rotulo_canto="Canal", nome_excel=f"Projecao PEF {_rotulo_mes_pt(mes_pef)}",
-                    colunas_percentual={"Prob. original %", "Prob. revisada %"},
-                )
-                st.caption(
-                    "**Média/dia** = realizado ÷ dias corridos até o último dia com dado; **projeção** = realizado + "
-                    "média × dias que faltam; **Dif.** = realizado − PEF (negativo = ainda falta). A **probabilidade** trata o que falta vender como a soma dos dias "
-                    "restantes no mesmo ritmo, com a variação dia a dia das linhas lançadas (com menos de três "
-                    f"linhas, assume {int(VARIACAO_DIARIA_PADRAO * 100)}% de variação): acima de 50% o ritmo atual "
-                    "já basta; abaixo, precisa acelerar. Dias corridos, sem separar domingo — leia como ordem de "
-                    "grandeza, não como certeza."
-                )
-                # Gráfico: acumulado do mês contra a reta de cada PEF.
-                _diarias_mes = pd.DataFrame(columns=COLUNAS_VENDA_DIARIA)
-                if len(venda_diaria_pef):
-                    _datas_vd = pd.to_datetime(venda_diaria_pef["Data"])
-                    _diarias_mes = venda_diaria_pef[(_datas_vd >= mes_pef.start_time) & (_datas_vd <= mes_pef.end_time)]
-                if len(_diarias_mes) >= 2:
-                    _base_acum = float(projecao_pef.loc["TOTAL", "Realizado"]) - float(_diarias_mes[CANAIS_PEF].sum().sum())
-                    _acum = _base_acum + _diarias_mes[CANAIS_PEF].sum(axis=1).cumsum()
-                    _dias_x = [int(pd.Timestamp(d).day) for d in _diarias_mes["Data"]]
-                    _n_dias = mes_pef.days_in_month
-                    fig_pef = go.Figure()
-                    fig_pef.add_trace(go.Scatter(x=_dias_x, y=list(_acum), mode="lines+markers", name="Venda acumulada",
-                                                 line=dict(color=COLORS["accent"], width=3)))
-                    for _nome, _alvo, _cor in (("PEF original", float(projecao_pef.loc["TOTAL", "PEF original"]), COLORS["negative"]),
-                                               ("PEF revisada", float(projecao_pef.loc["TOTAL", "PEF revisada"]), COLORS["primary"])):
-                        fig_pef.add_trace(go.Scatter(x=[1, _n_dias], y=[_alvo / _n_dias, _alvo], mode="lines", name=f"Ritmo p/ {_nome}",
-                                                     line=dict(color=_cor, width=1.5, dash="dash")))
-                    estilo_grafico(
-                        fig_pef, height=320,
-                        xaxis=dict(title=dict(text="Dia do mês"), gridcolor="rgba(0,0,0,0)", fixedrange=True, dtick=2),
-                        yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
-                        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5, font=dict(size=10)),
-                        margin=dict(l=70, r=20, t=20, b=70), hovermode="x unified",
-                    )
-                    st.plotly_chart(fig_pef, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
-
-            # ---- Onde a venda diária é lançada ----
-            if fonte_venda_diaria == "planilha":
-                if _erro_vd:
-                    st.error(_erro_vd)
-                else:
+        projecao_pef = projecao_do_mes_pef(venda_diaria_pef, mes_pef, _hoje_pef)
+        if not projecao_pef.empty:
+            _dias_dec = projecao_pef.attrs.get("dias_decorridos", 0)
+            _dias_rest = projecao_pef.attrs.get("dias_restantes", 0)
+            _ultimo = projecao_pef.attrs.get("ultimo_dia")
+            with col_pef_b:
+                if _dias_dec:
                     st.caption(
-                        f"Venda diária lida da planilha ligada em **VENDA_DIARIA_CSV_URL** — "
-                        f"{len(venda_diaria_pef)} dia(s) lançado(s)"
-                        + (f", último em **{pd.Timestamp(venda_diaria_pef['Data'].max()):%d/%m/%Y}**" if len(venda_diaria_pef) else "")
-                        + ". Lançou um dia novo? Use **Atualizar Dados** na barra lateral."
+                        f"Realizado até **{pd.Timestamp(_ultimo):%d/%m}** ({_dias_dec} dia(s) corrido(s)); "
+                        f"faltam **{_dias_rest}** dia(s) no mês. Linhas diárias no mês: "
+                        f"**{projecao_pef.attrs.get('linhas_diarias', 0)}**."
                     )
-                    with st.expander("Ver as linhas de venda diária"):
-                        mostrar_tabela(venda_diaria_pef.assign(Data=pd.to_datetime(venda_diaria_pef["Data"]).dt.strftime("%d/%m/%Y")),
-                                       hide_index=True, width="stretch", nome_excel="Venda diaria")
-            else:
-                if _erro_vd == "link_invalido":
-                    st.error(
-                        f"**O segredo VENDA_DIARIA_CSV_URL existe** (encontrado no {_onde_vd}), mas não reconheci o "
-                        f"conteúdo como um link de planilha. Valor lido: `{str(_valor_vd)[:120]}`."
-                    )
-                st.info(
-                    "**Para lançar a venda de cada dia:** crie uma Planilha Google com as colunas **Data, VD, LOJA, HUB** "
-                    "(uma linha por dia, valores em reais), compartilhe como *Qualquer pessoa com o link → Leitor* e cole "
-                    "o link em **VENDA_DIARIA_CSV_URL**, no topo dos Secrets do app. O painel passa a ler dali e a venda "
-                    "realizada dos meses em aberto se atualiza sozinha (depois de **Atualizar Dados**). "
-                    f"Só entram as datas depois de {_corte_pef:%d/%m/%Y}, que é até onde o acumulado da planilha já vai."
+                else:
+                    st.caption("Mês ainda sem venda lançada: a projeção aparece quando houver a primeira linha diária.")
+            tabela_selecionavel(
+                projecao_pef, chave="tabela_pef_projecao",
+                tipos_linha=["movimento"] * len(CANAIS_PEF) + ["total"],
+                rotulo_canto="Canal", nome_excel=f"Projecao PEF {_rotulo_mes_pt(mes_pef)}",
+                colunas_percentual={"Prob. original %", "Prob. revisada %"},
+            )
+            st.caption(
+                "**Média/dia** = realizado ÷ dias corridos até o último dia com dado; **projeção** = realizado + "
+                "média × dias que faltam; **Dif.** = realizado − PEF (negativo = ainda falta). A **probabilidade** "
+                "trata o que falta vender como a soma dos dias restantes no mesmo ritmo, com a variação dia a dia "
+                f"das linhas lançadas (com menos de três linhas, assume {int(VARIACAO_DIARIA_PADRAO * 100)}% de "
+                "variação): acima de 50% o ritmo atual já basta; abaixo, precisa acelerar. Dias corridos, sem "
+                "separar domingo — leia como ordem de grandeza, não como certeza."
+            )
+            # Gráfico: acumulado do mês contra a reta de cada PEF.
+            _diarias_mes = pd.DataFrame(columns=COLUNAS_VENDA_DIARIA)
+            if len(venda_diaria_pef):
+                _datas_vd = pd.to_datetime(venda_diaria_pef["Data"])
+                _diarias_mes = venda_diaria_pef[(_datas_vd >= mes_pef.start_time) & (_datas_vd <= mes_pef.end_time)]
+            if len(_diarias_mes) >= 2:
+                _base_acum = float(projecao_pef.loc["TOTAL", "Realizado"]) - float(_diarias_mes[CANAIS_PEF].sum().sum())
+                _acum = _base_acum + _diarias_mes[CANAIS_PEF].sum(axis=1).cumsum()
+                _dias_x = [int(pd.Timestamp(d).day) for d in _diarias_mes["Data"]]
+                _n_dias = mes_pef.days_in_month
+                fig_pef = go.Figure()
+                fig_pef.add_trace(go.Scatter(x=_dias_x, y=list(_acum), mode="lines+markers", name="Venda acumulada",
+                                             line=dict(color=COLORS["accent"], width=3)))
+                for _nome, _alvo, _cor in (("PEF original", float(projecao_pef.loc["TOTAL", "PEF original"]), COLORS["negative"]),
+                                           ("PEF revisada", float(projecao_pef.loc["TOTAL", "PEF revisada"]), COLORS["primary"])):
+                    fig_pef.add_trace(go.Scatter(x=[1, _n_dias], y=[_alvo / _n_dias, _alvo], mode="lines", name=f"Ritmo p/ {_nome}",
+                                                 line=dict(color=_cor, width=1.5, dash="dash")))
+                estilo_grafico(
+                    fig_pef, height=320,
+                    xaxis=dict(title=dict(text="Dia do mês"), gridcolor="rgba(0,0,0,0)", fixedrange=True, dtick=2),
+                    yaxis=dict(gridcolor=COLORS["border"], fixedrange=True, tickformat=",.0f"),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5, font=dict(size=10)),
+                    margin=dict(l=70, r=20, t=20, b=70), hovermode="x unified",
                 )
-                st.download_button(
-                    "📄 Baixar modelo da planilha de venda diária (CSV)",
-                    data="Data,VD,LOJA,HUB\n28/10/2026,0,0,0\n", file_name="venda_diaria_modelo.csv", mime="text/csv",
-                    key="pef_modelo_csv", type="tertiary",
-                )
-                with st.expander("Lançar dias nesta sessão (teste — some ao recarregar)"):
-                    _editor_base = venda_diaria_pef.copy() if len(venda_diaria_pef) else pd.DataFrame(
-                        {"Data": pd.Series(dtype="datetime64[ns]"), "VD": pd.Series(dtype=float),
-                         "LOJA": pd.Series(dtype=float), "HUB": pd.Series(dtype=float)})
-                    _editado = st.data_editor(
-                        _editor_base, num_rows="dynamic", hide_index=True, width="stretch", key="pef_editor_sessao",
-                        column_config={
-                            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                            "VD": st.column_config.NumberColumn("VD", format="R$ %.2f"),
-                            "LOJA": st.column_config.NumberColumn("LOJA", format="R$ %.2f"),
-                            "HUB": st.column_config.NumberColumn("HUB", format="R$ %.2f"),
-                        },
-                    )
-                    if st.button("Usar estas linhas", key="pef_usar_sessao"):
-                        _limpo, _erro_limpo = normalizar_venda_diaria(_editado)
-                        if _erro_limpo:
-                            st.error(_erro_limpo)
-                        else:
-                            st.session_state["venda_diaria_sessao"] = _limpo
-                            st.rerun()
+                st.plotly_chart(fig_pef, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
+
+        # ---- De onde vem a venda diária ----
+        if _origem_vd:
+            st.caption(
+                f"Venda diária lida da planilha do Drive ({_origem_vd}) — {len(venda_diaria_pef)} dia(s) lançado(s)"
+                + (f", último em **{pd.Timestamp(venda_diaria_pef['Data'].max()):%d/%m/%Y}**" if len(venda_diaria_pef) else "")
+                + ". Lançou um dia novo na planilha? Use **Atualizar Dados** na barra lateral. "
+                "Colunas esperadas: **Data, VD, LOJA, HUB**, uma linha por dia, em reais; só entram as datas "
+                f"depois de {_corte_pef:%d/%m/%Y}."
+            )
+            if len(venda_diaria_pef):
+                with st.expander("Linhas de venda diária lidas da planilha"):
+                    mostrar_tabela(venda_diaria_pef.assign(Data=pd.to_datetime(venda_diaria_pef["Data"]).dt.strftime("%d/%m/%Y")),
+                                   hide_index=True, width="stretch", nome_excel="Venda diaria")
+        else:
+            st.warning(
+                "**Não consegui ler a planilha de venda diária.** O painel tentou, nesta ordem: "
+                + " · ".join(f"{d} (`{u}`)" for d, u in _fontes_vd)
+                + ". Erros: " + (" | ".join(_erros_vd) if _erros_vd else "nenhuma fonte configurada") + ". "
+                "Confira se a planilha está compartilhada como *Qualquer pessoa com o link → Leitor*; se for um "
+                "arquivo .xlsx no Drive, abra-o no Planilhas Google e use *Arquivo → Salvar como Planilha Google* "
+                "(ou *Arquivo → Compartilhar → Publicar na web → CSV* e cole o link em **VENDA_DIARIA_CSV_URL**, "
+                "no topo dos Secrets). Enquanto isso, a venda realizada mostra só o acumulado já conhecido."
+            )
 
         # ================= PROJETADO x REALIZADO (fluxo) =================
         # Cópia do "Movimentos por Mês" com outra pergunta (28/10/2026): o

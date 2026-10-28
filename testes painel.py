@@ -69,6 +69,8 @@ DEPENDENCIAS = {
     "quadro_pef": ["_meses_projetado", "_rotulo_mes_pt"],
     "montar_tabela_pef": ["_rotulo_unico_tabela"],
     "projecao_do_mes_pef": ["_meses_projetado", "venda_realizada_por_mes", "probabilidade_de_bater"],
+    "fontes_csv_venda_diaria": ["url_csv_do_fechamento"],
+    "carregar_venda_diaria": ["normalizar_venda_diaria"],
     "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
     "tabela_selecionavel": ["formata_pct_tabela", "botao_excel"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
@@ -156,6 +158,8 @@ CONSTANTES_DE_DEPENDENCIA = {
     "probabilidade_de_bater": ["VARIACAO_DIARIA_PADRAO"],
     "projecao_do_mes_pef": ["CANAIS_PEF", "PEF_ORIGINAL_2026", "PEF_REVISADA_2026", "COLUNAS_VENDA_DIARIA",
                             "VENDA_REALIZADA_ACUMULADA_ATE"],
+    "fontes_csv_venda_diaria": ["ID_PLANILHA_VENDA_DIARIA_PADRAO"],
+    "carregar_venda_diaria": ["COLUNAS_VENDA_DIARIA"],
     "tabela_para_excel_bytes": ["COR_CABECALHO_EXCEL"],
     "preparar_tabela_para_excel": ["FORMATO_EXCEL_BRL", "FORMATO_EXCEL_INTEIRO", "FORMATO_EXCEL_PCT", "FORMATO_EXCEL_DATA"],
     "_numero_de_texto_brl": ["_PADRAO_TEXTO_BRL"],
@@ -9551,16 +9555,53 @@ class TestePefXVendaRealizada(unittest.TestCase):
         i = FONTE.index("with tab_fin_projetado:")
         bloco = FONTE[i:FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================", i)]
         self.assertLess(i, FONTE.index("🎯 Projetado x Realizado — 2º semestre 2026"), "o quadro da PEF vem antes")
-        self.assertIn('st.expander("📌 PEF x Venda Realizada — 2º semestre 2026", expanded=True)', bloco)
-        self.assertIn('st.session_state.setdefault("pef_linhas_abertas", list(blocos_pef))', bloco, "nasce aberto")
+        # 28/10/2026 (tarde): fixo na aba, blocos fechados, sem lancamento no app.
+        self.assertNotIn("st.expander(\"📌", bloco, "o quadro nao fica dentro de expansor")
+        self.assertIn("section-title\">📌 PEF x Venda Realizada", bloco)
+        self.assertNotIn('setdefault("pef_linhas_abertas"', bloco, "nasce fechado")
+        self.assertNotIn("st.data_editor(", bloco); self.assertNotIn("venda_diaria_sessao", bloco)
         self.assertLess(bloco.index('botoes_de_abrir(blocos_pef, "pef_linhas_abertas", "pefabrir_")'),
                         bloco.index('chave="tabela_pef"'))
         self.assertIn('prefixo_botao="st-key-pefabrir_"', bloco)
         self.assertIn('_segredo_com_origem("VENDA_DIARIA_CSV_URL")', bloco)
-        self.assertIn("carregar_venda_diaria(_url_vd)", bloco)
+        self.assertIn("carregar_venda_diaria(_fontes_vd)", bloco)
         self.assertIn('colunas_percentual={"Prob. original %", "Prob. revisada %"}', bloco)
         self.assertLess(FONTE.index("def url_csv_do_fechamento("), FONTE.index("with tab_fin_projetado:"),
                         "a funcao precisa existir antes de a aba rodar")
+
+    def test_fontes_da_planilha_de_venda_diaria(self):
+        ns = carregar(["fontes_csv_venda_diaria", "url_csv_do_fechamento"], ["ID_PLANILHA_VENDA_DIARIA_PADRAO"])
+        self.assertEqual(ns["ID_PLANILHA_VENDA_DIARIA_PADRAO"], "1k53UVHS5-E_xvQIC9FEmUj7BbAMnAhmD")
+        padrao = ns["fontes_csv_venda_diaria"]("")
+        self.assertEqual([d for d, _ in padrao], ["exportação CSV da planilha", "consulta gviz da planilha"])
+        self.assertTrue(all("1k53UVHS5-E_xvQIC9FEmUj7BbAMnAhmD" in u for _, u in padrao))
+        self.assertIn("gviz/tq?tqx=out:csv", padrao[1][1])
+        # link de compartilhamento colado no segredo: vira a mesma planilha, sem repetir
+        link = "https://docs.google.com/spreadsheets/d/ABCDEFGHIJKLMNOPQRSTUVWXYZ123456/edit?usp=sharing&rtpof=true"
+        com_link = ns["fontes_csv_venda_diaria"](link)
+        self.assertEqual(len(com_link), 2, "exportacao do segredo e a do ID sao a mesma url")
+        self.assertTrue(all("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" in u for _, u in com_link))
+        publicado = ns["fontes_csv_venda_diaria"]("https://docs.google.com/spreadsheets/d/e/2PACX-xyz/pub?output=csv")
+        self.assertEqual(publicado[0][0], "link dos Secrets (VENDA_DIARIA_CSV_URL)")
+        self.assertEqual(len(publicado), 3, "depois do link publicado, tenta a planilha padrao")
+
+    def test_carregador_tenta_as_fontes_na_ordem(self):
+        ns = carregar(["carregar_venda_diaria", "normalizar_venda_diaria"])
+        import tempfile, os
+        pasta = tempfile.mkdtemp()
+        ok = os.path.join(pasta, "ok.csv")
+        with open(ok, "w", encoding="utf-8") as f:
+            f.write("Data,VD,LOJA,HUB\n28/10/2026,\"1.000,50\",200,300\n")
+        ruim = os.path.join(pasta, "ruim.csv")
+        with open(ruim, "w", encoding="utf-8") as f:
+            f.write("Data,VD\n28/10/2026,1\n")
+        fn = ns["carregar_venda_diaria"]
+        fn = getattr(fn, "__wrapped__", fn)
+        tabela, origem, erros = fn((("inexistente", os.path.join(pasta, "nao_existe.csv")), ("sem colunas", ruim), ("boa", ok)))
+        self.assertEqual(origem, "boa"); self.assertEqual(len(erros), 2)
+        self.assertEqual(float(tabela["VD"].iloc[0]), 1000.5)
+        tabela, origem, erros = fn((("sem colunas", ruim),))
+        self.assertEqual(origem, ""); self.assertTrue(tabela.empty)
 
 
 if __name__ == "__main__":
