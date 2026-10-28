@@ -63,6 +63,12 @@ DEPENDENCIAS = {
     "lancamentos_projetado_x_realizado": ["recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
                                           "montar_lancamentos_por_celula"],
     "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
+    # PEF x Venda Realizada (28/10/2026)
+    "normalizar_venda_diaria": ["_normalizar_texto", "_numero_pt_br"],
+    "venda_realizada_por_mes": ["_meses_projetado"],
+    "quadro_pef": ["_meses_projetado", "_rotulo_mes_pt"],
+    "montar_tabela_pef": ["_rotulo_unico_tabela"],
+    "projecao_do_mes_pef": ["_meses_projetado", "venda_realizada_por_mes", "probabilidade_de_bater"],
     "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
     "tabela_selecionavel": ["formata_pct_tabela", "botao_excel"],
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
@@ -142,6 +148,14 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
 }
 CONSTANTES_DE_DEPENDENCIA = {
     "botao_excel": ["MIME_XLSX", "_CONTADOR_EXCEL"],
+    "normalizar_venda_diaria": ["COLUNAS_VENDA_DIARIA", "NOMES_CANAL_VENDA_DIARIA", "CANAIS_PEF"],
+    "venda_realizada_por_mes": ["VENDA_REALIZADA_2026", "VENDA_REALIZADA_ACUMULADA_ATE", "CANAIS_PEF"],
+    "quadro_pef": ["PEF_ORIGINAL_2026", "PEF_REVISADA_2026", "CANAIS_PEF", "LINHA_PEF_ORIGINAL", "LINHA_PEF_REVISADA",
+                   "LINHA_VENDA_REALIZADA", "LINHA_DIFERENCA_PEF", "COLUNA_TOTAL_PEF"],
+    "montar_tabela_pef": ["CANAIS_PEF", "LINHA_PEF_ORIGINAL", "LINHA_PEF_REVISADA", "LINHA_VENDA_REALIZADA", "LINHA_DIFERENCA_PEF"],
+    "probabilidade_de_bater": ["VARIACAO_DIARIA_PADRAO"],
+    "projecao_do_mes_pef": ["CANAIS_PEF", "PEF_ORIGINAL_2026", "PEF_REVISADA_2026", "COLUNAS_VENDA_DIARIA",
+                            "VENDA_REALIZADA_ACUMULADA_ATE"],
     "tabela_para_excel_bytes": ["COR_CABECALHO_EXCEL"],
     "preparar_tabela_para_excel": ["FORMATO_EXCEL_BRL", "FORMATO_EXCEL_INTEIRO", "FORMATO_EXCEL_PCT", "FORMATO_EXCEL_DATA"],
     "_numero_de_texto_brl": ["_PADRAO_TEXTO_BRL"],
@@ -9261,7 +9275,7 @@ class TesteProjetadoXRealizado(unittest.TestCase):
 
     def test_aba_existe_e_desenha_os_botoes_antes_das_tabelas(self):
         self.assertIn('"🎯 Projetado x Realizado"', FONTE)
-        i = FONTE.index("with tab_fin_projetado:")
+        i = FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================")
         trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:", i)]
         self.assertLess(trecho.index('botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")'),
                         trecho.index("tabela_selecionavel("))
@@ -9273,7 +9287,7 @@ class TesteProjetadoXRealizado(unittest.TestCase):
     def test_padroes_da_tela(self):
         """28/10/2026: lado a lado como padrao, contas a pagar ja aberto e
         variacao % no lugar da diferenca em reais."""
-        i = FONTE.index("with tab_fin_projetado:")
+        i = FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================")
         trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:", i)]
         self.assertIn('"Como mostrar", ["Lado a lado por mês", "Três quadros"]', trecho,
                       "o primeiro item e o padrao do st.radio")
@@ -9426,6 +9440,127 @@ class TesteMetaNoTotalDoDiarioConsolidado(unittest.TestCase):
         self.assertEqual(sem[d2], -100.0)
         self.assertEqual(com[d2], 200.0, "abre com o que faltava somado")
         self.assertEqual(total[d3], 200.0 + 250.0 + 290.0)
+
+
+class TestePefXVendaRealizada(unittest.TestCase):
+    """28/10/2026: PEF original, PEF revisada e venda realizada por canal, com
+    a venda diaria alimentando os meses em aberto e a projecao do mes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["quadro_pef", "montar_tabela_pef", "venda_realizada_por_mes", "normalizar_venda_diaria",
+                           "projecao_do_mes_pef", "probabilidade_de_bater", "_numero_pt_br"],
+                          ["math"] if False else [])
+        cls.ns["math"] = __import__("math")
+
+    def test_quadro_bate_com_a_planilha(self):
+        ns = self.ns
+        q = ns["quadro_pef"](ns["venda_realizada_por_mes"](None))
+        T = ns["COLUNA_TOTAL_PEF"]
+        self.assertAlmostEqual(q.loc[("PEF ORIGINAL", "TOTAL"), "JUL/2026"], 13_251_089.78, places=2)
+        self.assertAlmostEqual(q.loc[("PEF ORIGINAL", "TOTAL"), T], 83_652_431.79, delta=0.05)
+        self.assertAlmostEqual(q.loc[("PEF ORIGINAL", "VD"), T], 40_916_183.10, delta=0.05)
+        self.assertAlmostEqual(q.loc[("PEF REVISADA", "TOTAL"), "JUL/2026"], 13_079_475.34, places=2)
+        self.assertAlmostEqual(q.loc[("PEF REVISADA", "TOTAL"), T], 82_296_361.33, delta=0.05)
+        self.assertAlmostEqual(q.loc[("PEF REVISADA", "HUB"), T], 20_721_895.80, delta=0.05)
+        self.assertAlmostEqual(q.loc[("VENDA REALIZADA", "TOTAL"), "OUT/2026"], 10_503_444.50, places=2)
+        self.assertAlmostEqual(q.loc[("VENDA REALIZADA", "TOTAL"), T], 48_675_399.98, delta=0.05)
+        self.assertAlmostEqual(q.loc[("VENDA REALIZADA", "LOJA"), "NOV/2026"], 0.0)
+        self.assertAlmostEqual(q.loc[(ns["LINHA_DIFERENCA_PEF"], "TOTAL"), "JUL/2026"], 12_224_327.21 - 13_251_089.78, places=2)
+        self.assertAlmostEqual(q.loc[(ns["LINHA_DIFERENCA_PEF"], "VD"), "SET/2026"], 6_792_196.06 - 6_873_702.08, places=2)
+
+    def test_numero_pt_br_e_normalizacao(self):
+        ns = self.ns
+        self.assertEqual(ns["_numero_pt_br"]("1.234,56"), 1234.56)
+        self.assertEqual(ns["_numero_pt_br"]("R$ 10,00"), 10.0)
+        self.assertEqual(ns["_numero_pt_br"]("1234.56"), 1234.56)
+        self.assertEqual(ns["_numero_pt_br"]("-5,5"), -5.5)
+        self.assertIsNone(ns["_numero_pt_br"](""))
+        bruto = pd.DataFrame({"data": ["28/10/2026", "29/10/2026", "29/10/2026", "", "30/10/2026"],
+                              "Venda Direta": ["100,50", "200", "50", "", ""],
+                              "Loja": ["10", "20", "", "", ""], "hub": ["1", "2", "", "", ""]})
+        limpo, erro = ns["normalizar_venda_diaria"](bruto)
+        self.assertEqual(erro, "")
+        self.assertEqual(len(limpo), 2, "linha vazia e dia zerado caem; mesmo dia soma")
+        self.assertEqual(float(limpo.loc[limpo["Data"] == pd.Timestamp("2026-10-29"), "VD"].iloc[0]), 250.0)
+        self.assertEqual(list(limpo.columns), ["Data", "VD", "LOJA", "HUB"])
+        _, erro2 = ns["normalizar_venda_diaria"](pd.DataFrame({"Data": ["01/11/2026"], "VD": ["1"]}))
+        self.assertIn("LOJA", erro2)
+
+    def test_venda_diaria_soma_so_depois_do_acumulado(self):
+        ns = self.ns
+        diaria = pd.DataFrame({"Data": pd.to_datetime(["2026-10-27", "2026-10-28", "2026-10-29", "2026-11-03"]),
+                               "VD": [999.0, 100.0, 200.0, 50.0], "LOJA": [999.0, 10.0, 20.0, 5.0], "HUB": [999.0, 1.0, 2.0, 0.5]})
+        por_mes = ns["venda_realizada_por_mes"](diaria)
+        out, nov = pd.Period("2026-10", "M"), pd.Period("2026-11", "M")
+        self.assertAlmostEqual(por_mes["VD"][out], 5_286_432.62 + 300.0, places=2, msg="27/10 ja esta no acumulado")
+        self.assertAlmostEqual(por_mes["LOJA"][nov], 5.0)
+        self.assertAlmostEqual(por_mes["HUB"][pd.Period("2026-09", "M")], 3_659_246.96, msg="mes fechado nao muda")
+
+    def test_tabela_abre_e_fecha_por_bloco(self):
+        ns = self.ns
+        q = ns["quadro_pef"](ns["venda_realizada_por_mes"](None))
+        tabela, tipos, pais = ns["montar_tabela_pef"](q, set())
+        self.assertEqual(len(tabela), 4); self.assertEqual(pais, [None] * 4)
+        tabela, tipos, pais = ns["montar_tabela_pef"](q, {"PEF ORIGINAL", "VENDA REALIZADA"})
+        self.assertEqual(len(tabela), 10)
+        rotulos = [str(r).replace("\u200b", "") for r in tabela.index]
+        self.assertEqual(rotulos[:5], ["PEF ORIGINAL", "VD", "LOJA", "HUB", "PEF REVISADA"])
+        self.assertEqual(pais[1:4], [0, 0, 0]); self.assertEqual(pais[6:9], [5, 5, 5])
+        self.assertEqual(len(set(tabela.index)), 10, "rotulos repetidos (VD, LOJA, HUB) ficam unicos")
+        self.assertEqual(tipos[1], "movimento"); self.assertEqual(tipos[rotulos.index(ns["LINHA_DIFERENCA_PEF"])], "total")
+
+    def test_probabilidade(self):
+        p = self.ns["probabilidade_de_bater"]
+        self.assertEqual(p(100.0, 10.0, 2.0, 0, 90.0), 100.0)
+        self.assertEqual(p(80.0, 10.0, 2.0, 0, 90.0), 0.0)
+        meio = p(0.0, 10.0, 2.0, 4, 40.0)
+        self.assertAlmostEqual(meio, 50.0, places=5, msg="no ritmo exato, meio a meio")
+        self.assertGreater(p(0.0, 10.0, 2.0, 4, 30.0), 99.0)
+        self.assertLess(p(0.0, 10.0, 2.0, 4, 60.0), 1.0)
+        self.assertGreater(p(0.0, 10.0, None, 4, 38.0), 50.0, "sem desvio informado usa a variacao padrao")
+        self.assertEqual(p(0.0, 10.0, 0.01, 4, 41.0), p(0.0, 10.0, 1.5, 4, 41.0), "desvio minusculo cai no piso (15% da media)")
+        self.assertGreater(p(0.0, 10.0, 0.01, 4, 41.0), 30.0, "com o piso, um dia nao vira certeza")
+
+    def test_projecao_do_mes_em_aberto(self):
+        ns = self.ns
+        hoje = pd.Timestamp("2026-10-28")
+        proj = ns["projecao_do_mes_pef"](None, pd.Period("2026-10", "M"), hoje)
+        self.assertEqual(proj.attrs["dias_decorridos"], 27, "acumulado ate 27/10 = 27 dias corridos")
+        self.assertEqual(proj.attrs["dias_restantes"], 4)
+        self.assertAlmostEqual(proj.loc["TOTAL", "Realizado"], 10_503_444.50, places=2)
+        self.assertAlmostEqual(proj.loc["TOTAL", "Média/dia"], 10_503_444.50 / 27, places=2)
+        self.assertAlmostEqual(proj.loc["TOTAL", "Projeção do mês"], 10_503_444.50 / 27 * 31, places=2)
+        self.assertAlmostEqual(proj.loc["VD", "PEF original"], 7_325_831.28)
+        self.assertAlmostEqual(proj.loc["VD", "Dif. vs original"], 5_286_432.62 - 7_325_831.28, places=2, msg="negativo = falta")
+        self.assertTrue(0.0 <= proj.loc["TOTAL", "Prob. original %"] < 50.0, "no ritmo atual nao bate a PEF")
+        # com linhas diarias, o ultimo dia com dado avanca e o desvio vem delas
+        diaria = pd.DataFrame({"Data": pd.to_datetime(["2026-10-28", "2026-10-29", "2026-10-30"]),
+                               "VD": [400_000.0, 420_000.0, 380_000.0], "LOJA": [150_000.0] * 3, "HUB": [200_000.0] * 3})
+        proj2 = ns["projecao_do_mes_pef"](diaria, pd.Period("2026-10", "M"), pd.Timestamp("2026-10-31"))
+        self.assertEqual(proj2.attrs["dias_decorridos"], 30); self.assertEqual(proj2.attrs["linhas_diarias"], 3)
+        self.assertAlmostEqual(proj2.loc["VD", "Realizado"], 5_286_432.62 + 1_200_000.0, places=2)
+        # mes fechado: 100% ou 0%, sem dias restantes; mes por vir: sem projecao
+        fechado = ns["projecao_do_mes_pef"](None, pd.Period("2026-09", "M"), hoje)
+        self.assertEqual(fechado.attrs["dias_restantes"], 0); self.assertEqual(fechado.loc["TOTAL", "Prob. original %"], 0.0)
+        self.assertEqual(fechado.loc["HUB", "Prob. original %"], 100.0, "HUB bateu a PEF em setembro")
+        futuro = ns["projecao_do_mes_pef"](None, pd.Period("2026-12", "M"), hoje)
+        self.assertEqual(futuro.attrs["dias_decorridos"], 0); self.assertTrue(pd.isna(futuro.loc["TOTAL", "Projeção do mês"]))
+
+    def test_tela(self):
+        i = FONTE.index("with tab_fin_projetado:")
+        bloco = FONTE[i:FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================", i)]
+        self.assertLess(i, FONTE.index("🎯 Projetado x Realizado — 2º semestre 2026"), "o quadro da PEF vem antes")
+        self.assertIn('st.expander("📌 PEF x Venda Realizada — 2º semestre 2026", expanded=True)', bloco)
+        self.assertIn('st.session_state.setdefault("pef_linhas_abertas", list(blocos_pef))', bloco, "nasce aberto")
+        self.assertLess(bloco.index('botoes_de_abrir(blocos_pef, "pef_linhas_abertas", "pefabrir_")'),
+                        bloco.index('chave="tabela_pef"'))
+        self.assertIn('prefixo_botao="st-key-pefabrir_"', bloco)
+        self.assertIn('_segredo_com_origem("VENDA_DIARIA_CSV_URL")', bloco)
+        self.assertIn("carregar_venda_diaria(_url_vd)", bloco)
+        self.assertIn('colunas_percentual={"Prob. original %", "Prob. revisada %"}', bloco)
+        self.assertLess(FONTE.index("def url_csv_do_fechamento("), FONTE.index("with tab_fin_projetado:"),
+                        "a funcao precisa existir antes de a aba rodar")
 
 
 if __name__ == "__main__":
