@@ -7176,15 +7176,19 @@ def _dias_da_meta_no_mes(ano, mes, modalidade):
     return [d for d in dias if d.weekday() < 5]
 
 
-def montar_linhas_de_meta(colunas_modelo):
-    """Transforma METAS_RECEBER em lançamentos DIÁRIOS, para que a visão
-    mensal e a diária saiam da mesma fonte -- somar os dias devolve o mês.
+def montar_linhas_de_meta(colunas_modelo, metas=None):
+    """Transforma as metas em lançamentos DIÁRIOS, para que a visão mensal e
+    a diária saiam da mesma fonte -- somar os dias devolve o mês.
+
+    `metas` é {canal: {modalidade: {(ano, mês): valor}}} -- desde 29/10/2026
+    vem da planilha de metas (ver metas_em_vigor); sem ela, vale o
+    METAS_RECEBER do código. Mês com Mostrar = NÃO já chega aqui sem valor.
 
     O valor do mês é dividido pelos dias em que aquela modalidade recebe, e a
     sobra de centavos vai no último dia, para o mês fechar no valor exato da
     meta em vez de perder alguns centavos no arredondamento."""
     linhas = []
-    for canal, modalidades in METAS_RECEBER.items():
+    for canal, modalidades in (METAS_RECEBER if metas is None else metas).items():
         for modalidade, por_mes in modalidades.items():
             for (ano, mes), valor in por_mes.items():
                 dias = _dias_da_meta_no_mes(ano, mes, modalidade)
@@ -7212,6 +7216,320 @@ def montar_linhas_de_meta(colunas_modelo):
         if coluna not in df_meta.columns:
             df_meta[coluna] = pd.NA
     return df_meta[list(colunas_modelo)] if not df_meta.empty else df_meta
+
+
+# ============================================================================
+# PLANILHA DE METAS DE RECEBIMENTO (29/10/2026)
+# ============================================================================
+# As metas saíram do código: a Controladoria mantém uma Planilha Google com
+# uma linha por MÊS × CANAL × MODALIDADE (colunas Mês, Canal, Modalidade,
+# Meta (R$), Mostrar) e o painel só lê. Mostrar = NÃO tira aquela meta de
+# TODAS as tabelas que têm a linha meta (Fluxo Mensal, Diário Consolidado,
+# Fluxo Diário) sem perder o valor na planilha. Como toda planilha do
+# painel, ela é relida no "Atualizar Dados" -- nenhum cache vence sozinho,
+# para duas telas nunca mostrarem números diferentes. Se a planilha não
+# responder, valem as metas do código (METAS_RECEBER), com o aviso na tela.
+#
+# O ID da planilha fica aqui; o segredo METAS_RECEBER_CSV_URL, quando
+# existir, tem prioridade (para trocar de arquivo sem mexer no código).
+# Planilha "Metas de Recebimento - Painel Financeiro" da Controladoria
+# (ligada em 29/10/2026).
+ID_PLANILHA_METAS_PADRAO = "15ZE9sdeVbnJLo0D3GzOHoSCEW1wqQii1V250PXAcBnM"
+ABA_PLANILHA_METAS = "Metas"
+COLUNAS_PLANILHA_METAS = ["Mês", "Canal", "Modalidade", "Meta (R$)", "Mostrar"]
+# Reserva do código: meses que estavam ocultos quando a planilha entrou --
+# outubro, zerado a pedido em 28/10/2026. Só vale enquanto a planilha não
+# estiver ligada (ou não responder).
+METAS_OCULTAS_NO_CODIGO = {(2026, 10)}
+CANAIS_DA_META = {
+    "HUB LOGISTICO": ("HUB", "HUBLOGISTICO", "HUBLOG"),
+    "LOJA": ("LOJA", "LOJAS"),
+    "VENDA DIRETA": ("VD", "VENDADIRETA"),
+}
+MODALIDADES_DA_META = ("Débito", "Boleto Garantido", "Crédito à Vista", "Crédito Parcelado")
+MESES_PT_POR_NOME = {
+    "JAN": 1, "JANEIRO": 1, "FEV": 2, "FEVEREIRO": 2, "MAR": 3, "MARCO": 3, "ABR": 4, "ABRIL": 4,
+    "MAI": 5, "MAIO": 5, "JUN": 6, "JUNHO": 6, "JUL": 7, "JULHO": 7, "AGO": 8, "AGOSTO": 8,
+    "SET": 9, "SETEMBRO": 9, "OUT": 10, "OUTUBRO": 10, "NOV": 11, "NOVEMBRO": 11, "DEZ": 12, "DEZEMBRO": 12,
+}
+
+
+def _so_letras(texto):
+    """Maiúsculas, sem acento e só letras -- para comparar nomes escritos de
+    jeitos diferentes ("Crédito à vista" = "CREDITO A VISTA")."""
+    base = "".join(c for c in unicodedata.normalize("NFKD", str(texto or "")) if not unicodedata.combining(c))
+    return re.sub(r"[^A-Z]", "", base.upper())
+
+
+def _numero_flexivel(texto):
+    """Número escrito em reais, no formato brasileiro OU americano:
+    "13.010.359,23", "13010359.23", "13,010,359.23", "R$ 1.000", 1234.5.
+    O separador decimal é o ÚLTIMO que aparece com até duas casas depois;
+    vazio devolve None."""
+    if texto is None:
+        return None
+    if isinstance(texto, (int, float)):
+        return None if texto != texto else float(texto)
+    t = str(texto).strip().replace("R$", "").replace("\u00a0", "").replace(" ", "")
+    if not t or t in ("-", "—"):
+        return None
+    negativo = t.startswith("-") or t.startswith("−") or (t.startswith("(") and t.endswith(")"))
+    t = t.strip("()-−")
+    ultimo = max(t.rfind(","), t.rfind("."))
+    if ultimo >= 0 and len(t) - ultimo - 1 in (1, 2) and t.count(t[ultimo]) == 1:
+        inteiro, decimal = t[:ultimo], t[ultimo + 1:]
+    else:
+        inteiro, decimal = t, ""
+    inteiro = inteiro.replace(".", "").replace(",", "")
+    try:
+        valor = float(f"{inteiro or '0'}.{decimal or '0'}")
+    except ValueError:
+        return None
+    return -valor if negativo else valor
+
+
+def _mes_da_planilha(texto):
+    """(ano, mês) de "10/2026", "1/2026", "2026-10", "01/10/2026", "out/2026",
+    "Outubro/2026"; None quando não dá para saber."""
+    t = str(texto or "").strip()
+    if not t:
+        return None
+    m = re.fullmatch(r"(\d{1,2})\s*[/.-]\s*(\d{4})", t)
+    if m and 1 <= int(m.group(1)) <= 12:
+        return int(m.group(2)), int(m.group(1))
+    m = re.fullmatch(r"(\d{4})\s*[/.-]\s*(\d{1,2})(?:\s*[/.-]\s*\d{1,2})?(?:[ T].*)?", t)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(1)), int(m.group(2))
+    m = re.fullmatch(r"(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4})(?:\s.*)?", t)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(3)), int(m.group(2))
+    m = re.fullmatch(r"([^\d/.-]+)\s*[/.-]?\s*(\d{4})", t)
+    if m and _so_letras(m.group(1)) in MESES_PT_POR_NOME:
+        return int(m.group(2)), MESES_PT_POR_NOME[_so_letras(m.group(1))]
+    return None
+
+
+def _canal_da_meta(texto):
+    letras = _so_letras(texto)
+    for canal, apelidos in CANAIS_DA_META.items():
+        if letras == _so_letras(canal) or letras in apelidos:
+            return canal
+    return None
+
+
+def _modalidade_da_meta(texto):
+    letras = _so_letras(texto)
+    for modalidade in MODALIDADES_DA_META:
+        if letras == _so_letras(modalidade):
+            return modalidade
+    return None
+
+
+def _mostrar_da_planilha(texto):
+    """SIM (ou vazio) mostra; NÃO, NAO, N, FALSO, 0, OCULTAR escondem."""
+    return _so_letras(texto) not in ("NAO", "N", "NO", "FALSO", "FALSE", "OCULTAR", "OCULTA") and str(texto).strip() != "0"
+
+
+def consolidar_metas(linhas):
+    """Das linhas lidas -- dicionários com ano, mes, canal, modalidade,
+    meta, mostrar -- para (tupla, quadro). A TUPLA é o que muda o cálculo
+    (só as metas mostradas e maiores que zero, em ordem fixa) e serve de
+    chave do cache do fluxo; o QUADRO guarda todas, para a tela de
+    conferência."""
+    tupla = tuple(sorted(
+        (l["canal"], l["modalidade"], int(l["ano"]), int(l["mes"]), round(float(l["meta"]), 2))
+        for l in linhas if l["mostrar"] and l["meta"] and l["meta"] > 0
+    ))
+    quadro = pd.DataFrame([{
+        "Mês": pd.Period(year=int(l["ano"]), month=int(l["mes"]), freq="M"), "Canal": l["canal"],
+        "Modalidade": l["modalidade"], "Meta (R$)": float(l["meta"] or 0.0), "Mostrar": bool(l["mostrar"]),
+    } for l in linhas], columns=COLUNAS_PLANILHA_METAS)
+    if not quadro.empty:
+        quadro = quadro.sort_values(["Mês", "Canal", "Modalidade"]).reset_index(drop=True)
+    return tupla, quadro
+
+
+def metas_da_tupla(tupla):
+    """De volta ao formato {canal: {modalidade: {(ano, mês): valor}}}."""
+    metas = {}
+    for canal, modalidade, ano, mes, valor in tupla or ():
+        metas.setdefault(canal, {}).setdefault(modalidade, {})[(int(ano), int(mes))] = float(valor)
+    return metas
+
+
+def metas_do_codigo():
+    """As metas de reserva (METAS_RECEBER), com os meses ocultos de
+    METAS_OCULTAS_NO_CODIGO marcados como Mostrar = NÃO."""
+    linhas = []
+    for canal, modalidades in METAS_RECEBER.items():
+        for modalidade, por_mes in modalidades.items():
+            for (ano, mes), valor in por_mes.items():
+                linhas.append({"ano": ano, "mes": mes, "canal": canal, "modalidade": modalidade,
+                               "meta": float(valor), "mostrar": (ano, mes) not in METAS_OCULTAS_NO_CODIGO})
+    return consolidar_metas(linhas)
+
+
+def normalizar_metas_recebimento(bruto):
+    """Lê a aba de metas. Devolve (tupla, quadro, avisos, erro).
+
+    Tolera nome de coluna sem acento ou em minúsculas, mês em vários
+    formatos, canal por apelido (VD, HUB), modalidade sem acento, número em
+    formato brasileiro ou americano e Mostrar em branco (= SIM). Linha que
+    não dá para ler é IGNORADA e listada em `avisos` com o número da linha
+    na planilha; linha repetida (mesmo mês, canal e modalidade) vale a
+    última. Planilha sem nenhuma linha válida devolve `erro` -- aí o painel
+    fica com as metas do código em vez de zerar tudo por engano."""
+    if bruto is None or len(bruto) == 0:
+        return None, None, [], "a planilha de metas veio vazia"
+    tabela = pd.DataFrame(bruto).copy()
+    tabela.columns = [str(c).strip() for c in tabela.columns]
+    achar = lambda prefixo: next((c for c in tabela.columns if _so_letras(c).startswith(prefixo)), None)  # noqa: E731
+    col_mes, col_canal, col_mod = achar("MES"), achar("CANAL"), achar("MODALIDADE")
+    col_meta, col_mostrar = achar("META"), achar("MOSTRAR")
+    faltando = [nome for nome, col in (("Mês", col_mes), ("Canal", col_canal), ("Modalidade", col_mod),
+                                       ("Meta (R$)", col_meta)) if col is None]
+    if faltando:
+        return None, None, [], "a planilha de metas não tem a(s) coluna(s) " + ", ".join(faltando)
+    avisos, por_chave = [], {}
+    for posicao, (_i, linha) in enumerate(tabela.iterrows()):
+        n_linha = posicao + 2
+        valores = [str(linha.get(c, "") if linha.get(c, "") is not None else "").strip()
+                   for c in (col_mes, col_canal, col_mod, col_meta)]
+        if not any(v and v.lower() != "nan" for v in valores):
+            continue                                            # linha em branco
+        mes = _mes_da_planilha(linha.get(col_mes))
+        canal = _canal_da_meta(linha.get(col_canal))
+        modalidade_txt = str(linha.get(col_mod) or "").strip()
+        modalidade = _modalidade_da_meta(modalidade_txt) or (modalidade_txt if modalidade_txt.lower() != "nan" else "")
+        bruto_meta = linha.get(col_meta)
+        meta = _numero_flexivel(bruto_meta)
+        if mes is None:
+            avisos.append(f"linha {n_linha}: mês '{linha.get(col_mes)}' não reconhecido (use 10/2026)")
+            continue
+        if canal is None:
+            avisos.append(f"linha {n_linha}: canal '{linha.get(col_canal)}' não reconhecido "
+                          f"(use {', '.join(CANAIS_DA_META)})")
+            continue
+        if not modalidade:
+            avisos.append(f"linha {n_linha}: sem modalidade")
+            continue
+        if meta is None and str(bruto_meta or "").strip() not in ("", "nan"):
+            avisos.append(f"linha {n_linha}: meta '{bruto_meta}' não é um número")
+            continue
+        if modalidade not in MODALIDADES_DA_META:
+            avisos.append(f"linha {n_linha}: modalidade '{modalidade}' é nova para o painel -- foi aceita como está")
+        chave = (mes, canal, modalidade)
+        if chave in por_chave:
+            avisos.append(f"linha {n_linha}: {mes[1]:02d}/{mes[0]} · {canal} · {modalidade} aparece mais de uma vez "
+                          "-- vale esta linha")
+        por_chave[chave] = {"ano": mes[0], "mes": mes[1], "canal": canal, "modalidade": modalidade,
+                            "meta": abs(meta or 0.0),
+                            "mostrar": _mostrar_da_planilha(linha.get(col_mostrar, "") if col_mostrar else "")}
+    if not por_chave:
+        return None, None, avisos, "nenhuma linha válida na planilha de metas"
+    tupla, quadro = consolidar_metas(list(por_chave.values()))
+    return tupla, quadro, avisos, ""
+
+
+def _fontes_csv_planilha_google(valor_secret, id_padrao, nome_secret, aba=None):
+    """(descrição, url) para ler uma Planilha Google em CSV, na ordem: o
+    link dos Secrets, a exportação CSV pelo ID e a consulta gviz (com o nome
+    da aba, quando informado). Sem segredo e sem ID padrão, lista vazia."""
+    fontes = []
+    url_secret = url_csv_do_fechamento(valor_secret)
+    if url_secret:
+        fontes.append((f"link dos Secrets ({nome_secret})", url_secret))
+    achado = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", str(valor_secret or ""))
+    id_planilha = achado.group(1) if achado else (
+        str(valor_secret).strip() if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", str(valor_secret or "").strip())
+        else id_padrao)
+    if id_planilha:
+        fontes.append(("exportação CSV da planilha",
+                       f"https://docs.google.com/spreadsheets/d/{id_planilha}/export?format=csv"))
+        fontes.append(("consulta gviz da planilha",
+                       f"https://docs.google.com/spreadsheets/d/{id_planilha}/gviz/tq?tqx=out:csv"
+                       + (f"&sheet={aba}" if aba else "")))
+    vistas, unicas = set(), []
+    for descricao, url in fontes:
+        if url not in vistas:
+            vistas.add(url); unicas.append((descricao, url))
+    return unicas
+
+
+def fontes_csv_metas(valor_secret=""):
+    """Fontes da planilha de metas (ver _fontes_csv_planilha_google)."""
+    return _fontes_csv_planilha_google(valor_secret, ID_PLANILHA_METAS_PADRAO, "METAS_RECEBER_CSV_URL",
+                                       ABA_PLANILHA_METAS)
+
+
+@st.cache_data(ttl=None, show_spinner=False, max_entries=2)
+def ler_metas_recebimento(fontes):
+    """Lê a planilha de metas pela primeira fonte que responder com linhas
+    válidas. Devolve (tupla, quadro, origem, avisos, erros) -- tupla None
+    quando nenhuma fonte serviu. Fica guardada até o "Atualizar Dados"."""
+    erros = []
+    for descricao, url in fontes or ():
+        try:
+            bruto = pd.read_csv(url, dtype=str, keep_default_na=False, na_values=[""])
+        except Exception as erro:                                # noqa: BLE001
+            erros.append(f"{descricao}: {erro}")
+            continue
+        tupla, quadro, avisos, erro = normalizar_metas_recebimento(bruto)
+        if erro:
+            erros.append(f"{descricao}: {erro}")
+            continue
+        return tupla, quadro, descricao, avisos, erros
+    return None, None, "", [], erros
+
+
+def metas_em_vigor():
+    """As metas que o painel usa agora: as da planilha quando ela responde;
+    senão, as do código. Devolve um dicionário com tupla (para o cálculo),
+    quadro (para conferir), origem, avisos, erros e se veio da planilha."""
+    valor_secret, _onde = _segredo_com_origem("METAS_RECEBER_CSV_URL")
+    fontes = tuple(fontes_csv_metas(valor_secret))
+    erros = []
+    if fontes:
+        tupla, quadro, origem, avisos, erros = ler_metas_recebimento(fontes)
+        if tupla is not None:
+            return {"tupla": tupla, "quadro": quadro, "origem": origem, "avisos": avisos,
+                    "erros": [], "planilha": True}
+    tupla, quadro = metas_do_codigo()
+    return {"tupla": tupla, "quadro": quadro,
+            "origem": "metas do código (planilha não respondeu)" if fontes else "metas do código (planilha ainda não ligada)",
+            "avisos": [], "erros": erros, "planilha": False, "configurada": bool(fontes)}
+
+
+def resumo_das_metas(quadro):
+    """Quadro de conferência: uma linha por canal › modalidade, um mês por
+    coluna, com a meta da planilha; a linha final soma só o que está em
+    vigor (Mostrar = SIM). Devolve (tabela, ocultas) -- ocultas é a lista
+    de "MÊS · canal · modalidade" com Mostrar = NÃO."""
+    if quadro is None or quadro.empty:
+        return pd.DataFrame(), []
+    dados = quadro.copy()
+    dados["Linha"] = dados["Canal"] + " › " + dados["Modalidade"]
+    dados["Coluna"] = dados["Mês"].map(_rotulo_mes_pt)
+    ordem_colunas = [_rotulo_mes_pt(p) for p in sorted(dados["Mês"].unique())]
+    tabela = dados.pivot_table(index="Linha", columns="Coluna", values="Meta (R$)", aggfunc="sum").reindex(
+        columns=ordem_colunas).fillna(0.0)
+    em_vigor = dados[dados["Mostrar"]].groupby("Coluna")["Meta (R$)"].sum().reindex(ordem_colunas).fillna(0.0)
+    tabela.loc["TOTAL EM VIGOR (Mostrar = SIM)"] = em_vigor
+    tabela.index.name = "Canal › Modalidade"
+    # Mês inteiro oculto vira uma entrada só ("OUT/2026 — mês inteiro");
+    # oculta parcial lista as combinações daquele mês.
+    ocultas = []
+    for mes in sorted(dados["Mês"].unique()):
+        do_mes = dados[dados["Mês"] == mes]
+        escondidas = do_mes[~do_mes["Mostrar"]]
+        if escondidas.empty:
+            continue
+        if len(escondidas) == len(do_mes):
+            ocultas.append(f"{_rotulo_mes_pt(mes)} — mês inteiro")
+        else:
+            ocultas.append(f"{_rotulo_mes_pt(mes)}: " + ", ".join(
+                f"{l['Canal']} · {l['Modalidade']}" for _i, l in escondidas.iterrows()))
+    return tabela, ocultas
 
 
 def _classificar_movimento_fin(nome_movimento):
@@ -8293,23 +8611,7 @@ def fontes_csv_venda_diaria(valor_secret=""):
     primeiro; depois as duas formas de puxar CSV pelo ID da planilha (a
     exportação direta e a consulta gviz, que costuma responder também para
     arquivo .xlsx aberto no modo de compatibilidade)."""
-    fontes = []
-    url_secret = url_csv_do_fechamento(valor_secret)
-    if url_secret:
-        fontes.append(("link dos Secrets (VENDA_DIARIA_CSV_URL)", url_secret))
-    achado = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", str(valor_secret or ""))
-    id_planilha = achado.group(1) if achado else (
-        str(valor_secret).strip() if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", str(valor_secret or "").strip())
-        else ID_PLANILHA_VENDA_DIARIA_PADRAO)
-    fontes.append(("exportação CSV da planilha",
-                   f"https://docs.google.com/spreadsheets/d/{id_planilha}/export?format=csv"))
-    fontes.append(("consulta gviz da planilha",
-                   f"https://docs.google.com/spreadsheets/d/{id_planilha}/gviz/tq?tqx=out:csv"))
-    vistas, unicas = set(), []
-    for descricao, url in fontes:
-        if url not in vistas:
-            vistas.add(url); unicas.append((descricao, url))
-    return unicas
+    return _fontes_csv_planilha_google(valor_secret, ID_PLANILHA_VENDA_DIARIA_PADRAO, "VENDA_DIARIA_CSV_URL")
 
 
 @st.cache_data(ttl=None, show_spinner=False, max_entries=2)
@@ -9603,13 +9905,6 @@ def _periodo_mensal(valor):
         return None
 
 
-# Meses em que a linha de meta do Fluxo Mensal fica ZERADA por decisão da
-# área (28/10/2026: outubro -- "praticamente não precisamos mais dela").
-# Vale só para a linha de meta da tabela mensal; os demais meses seguem a
-# regra normal. Para voltar, é tirar o mês da lista.
-MESES_META_ZERADA_FIN = ["2026-10"]
-
-
 def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     """Substitui a linha de META pelo que AINDA FALTA receber no período:
     meta menos o que já está a vencer e o que já foi liquidado, com piso em
@@ -9627,8 +9922,8 @@ def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     frente; mês fechado sem bater não tem mais "quanto falta" -- o que
     faltou virou resultado, e segurar o número na tela fazia setembro
     continuar pedindo R$ 133 mil em pleno outubro. Fica "quanto falta" só
-    do mês corrente em diante. Os meses de MESES_META_ZERADA_FIN ficam em
-    zero sempre (28/10/2026), independentemente da regra acima.
+    do mês corrente em diante. Esconder a meta de um mês inteiro é com a
+    coluna Mostrar da planilha de metas (29/10/2026) -- a meta nem chega.
 
     Devolve (pivot ajustado, série da meta cheia) -- a meta original ainda
     serve para a legenda dizer qual era o alvo."""
@@ -9648,11 +9943,6 @@ def _aplicar_meta_como_falta(pivot, mes_corrente=None):
                 periodo = _periodo_mensal(coluna)
                 if periodo is not None and periodo < corrente:
                     falta[coluna] = 0.0
-    zerados = {pd.Period(m, "M") for m in MESES_META_ZERADA_FIN}
-    for coluna in list(falta.index):
-        periodo = _periodo_mensal(coluna)
-        if periodo is not None and periodo in zerados:
-            falta[coluna] = 0.0
     ajustado.loc[MOV_RECEBER_META] = falta
     return ajustado, meta_cheia
 
@@ -10042,7 +10332,7 @@ TERMOS_COL_LIQUIDACAO_DIARIO = ["liquida", "pagamento", "pgto", "baixa", "quita"
 # max_entries=1: a base do fluxo tem centenas de milhares de linhas, e duas
 # delas na memória ao mesmo tempo é o que mais aproxima o app do limite.
 @st.cache_resource(ttl=None, max_entries=1, show_spinner="Preparando os dados do fluxo de caixa...")
-def preparar_fluxo_caixa(base_data):
+def preparar_fluxo_caixa(base_data, metas=None):
     """Faz TODO o trabalho pesado uma vez só e guarda em cache: leitura do
     CSV, conversão de ~650 mil valores e datas do formato brasileiro, e a
     classificação dos movimentos.
@@ -10051,6 +10341,10 @@ def preparar_fluxo_caixa(base_data):
     deixava o painel lento sem necessidade -- os dados são os mesmos. O
     cache é por `base_data` porque só essa escolha muda o resultado; os
     demais filtros são aplicados depois, sobre o DataFrame já pronto.
+
+    `metas` (29/10/2026) é a tupla de metas_em_vigor(): entra na chave do
+    cache, então mudar a planilha de metas refaz a base uma vez -- e só
+    então. Sem ela, valem as metas do código (METAS_RECEBER).
 
     Retorna (df, erro, total_lido, linhas_sem_data)."""
     df_fluxo, erro, origem_fluxo = obter_dados_fluxo_caixa()
@@ -10312,7 +10606,7 @@ def preparar_fluxo_caixa(base_data):
 
     # As metas entram como lançamentos diários, geradas na hora: assim a
     # visão mensal é a soma da diária, sem dois caminhos de cálculo.
-    df_metas = montar_linhas_de_meta(df.columns)
+    df_metas = montar_linhas_de_meta(df.columns, metas_da_tupla(metas) if metas is not None else None)
     if not df_metas.empty:
         df = pd.concat([df, df_metas], ignore_index=True)
     diagnostico["linhas_de_meta_geradas"] = len(df_metas)
@@ -10533,7 +10827,11 @@ if st.session_state["painel_escolhido"] == "financeiro":
     # Todo o trabalho pesado (leitura + conversão de ~650 mil linhas) fica
     # em cache: só refaz se a base de data mudar ou se você clicar em
     # "Atualizar Dados".
-    df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data, diag_fluxo = preparar_fluxo_caixa(base_data_fin)
+    # Metas de recebimento da planilha (29/10/2026): lidas antes, e a tupla
+    # vai junto na chave do cache do fluxo.
+    metas_vigor_fin = metas_em_vigor()
+    df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data, diag_fluxo = preparar_fluxo_caixa(
+        base_data_fin, metas_vigor_fin["tupla"])
 
     if erro_fluxo and str(erro_fluxo).startswith("COLUNAS_FALTANDO:"):
         st.error(
@@ -11152,15 +11450,46 @@ if st.session_state["painel_escolhido"] == "financeiro":
                         "com a meta batida. "
                     )
                     + "Meta cheia do período: "
+                    # "\\$": dois "R$" na mesma frase viravam fórmula matemática
+                    # no Markdown e a legenda saía truncada, em verde.
                     + " · ".join(
-                        f"{mes} {formata_brl(abs(valor))}"
+                        f"{_rotulo_mes_pt(mes) if isinstance(mes, pd.Period) else mes} "
+                        + formata_brl(abs(valor)).replace("$", "\\$")
                         for mes, valor in meta_cheia_m.items() if valor
                     )
-                    + (" **A linha de meta está zerada a pedido em "
-                       + ", ".join(_rotulo_mes_pt(pd.Period(m, "M")) for m in MESES_META_ZERADA_FIN)
-                       + "** (28/10/2026) — vale só para essa linha; os demais meses seguem a regra."
-                       if any(pd.Period(m, "M") in set(meses_ordenados_m) for m in MESES_META_ZERADA_FIN) else "")
+                    + ". As metas vêm da **planilha de metas de recebimento** (Mostrar = NÃO tira a meta da tela)."
                 )
+
+            # ---- Conferência das metas em vigor (29/10/2026, só admin) ----
+            # Mudou a planilha? Aqui se vê o que o painel leu, de onde, e o
+            # que foi ignorado -- sem precisar adivinhar pelo resultado.
+            if eh_admin:
+                _resumo_metas, _ocultas_metas = resumo_das_metas(metas_vigor_fin["quadro"])
+                _rotulo_exp_metas = ("🎯 Metas de recebimento em vigor"
+                                     + ("" if metas_vigor_fin["planilha"] else " — usando as metas do código"))
+                with st.expander(_rotulo_exp_metas, expanded=not metas_vigor_fin["planilha"]):
+                    if metas_vigor_fin["planilha"]:
+                        st.caption(f"Fonte: **planilha de metas** ({metas_vigor_fin['origem']}). Mudou um valor? "
+                                   "Clique em **Atualizar Dados** na barra lateral e ele vale na hora.")
+                    elif metas_vigor_fin.get("configurada"):
+                        st.warning("**Não consegui ler a planilha de metas** — o painel está usando as metas do "
+                                   "código, que podem estar desatualizadas. Erros: "
+                                   + " | ".join(metas_vigor_fin["erros"] or ["sem detalhe"])
+                                   + ". Confira se é Planilha Google (não .xlsx no Drive), compartilhada como "
+                                     "*Qualquer pessoa com o link → Leitor*, com a aba **Metas** em primeiro.")
+                    else:
+                        st.info("A planilha de metas **ainda não está ligada**: o painel usa as metas do código "
+                                "(com outubro/2026 oculto). Para ligar, cole o link da planilha em "
+                                "**METAS_RECEBER_CSV_URL** nos Secrets — ou mande para a Controladoria fixar no código.")
+                    for _aviso_meta in metas_vigor_fin["avisos"]:
+                        st.warning("Planilha de metas — " + _aviso_meta)
+                    if not _resumo_metas.empty:
+                        mostrar_tabela(_resumo_metas.style.format(formata_brl), width="stretch",
+                                       height=38 + 35 * (len(_resumo_metas) + 1),
+                                       nome_excel="Metas de recebimento em vigor")
+                    if _ocultas_metas:
+                        st.caption("**Ocultas (Mostrar = NÃO)** — não aparecem em nenhuma tabela: "
+                                   + " · ".join(_ocultas_metas))
 
             # ---- Aplicações: fora de todos os totais, só pra conhecimento. Fica logo
             # abaixo de Movimentos por Mês (22/10/2026): lá embaixo ninguém via. ----
@@ -23117,7 +23446,7 @@ if tab_orc is not None:
                    "receita bruta − EBITDA). Recebimentos e pagamentos vêm do fluxo de caixa por data efetiva; a receita e o EBITDA, da DRE da visão.")
         try:
             _base_fx, _erro_fx, _ = obter_dados_fluxo_caixa()
-            _df_fx = preparar_fluxo_caixa(_base_fx)[0] if _base_fx is not None else None
+            _df_fx = preparar_fluxo_caixa(_base_fx, metas_em_vigor()["tupla"])[0] if _base_fx is not None else None
         except Exception as _erro_fx2:   # noqa: BLE001
             _df_fx, _erro_fx = None, str(_erro_fx2)
         if _df_fx is None or _df_fx.empty or "Data Efetiva" not in _df_fx.columns:

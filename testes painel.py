@@ -27,6 +27,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -74,7 +75,17 @@ DEPENDENCIAS = {
     "quadro_pef": ["_meses_projetado", "_rotulo_mes_pt"],
     "montar_tabela_pef": ["_rotulo_unico_tabela"],
     "projecao_do_mes_pef": ["_meses_projetado", "venda_realizada_por_mes", "probabilidade_de_bater"],
-    "fontes_csv_venda_diaria": ["url_csv_do_fechamento"],
+    "fontes_csv_venda_diaria": ["_fontes_csv_planilha_google"],
+    "_fontes_csv_planilha_google": ["url_csv_do_fechamento"],
+    # Planilha de metas (29/10/2026)
+    "normalizar_metas_recebimento": ["_so_letras", "_mes_da_planilha", "_canal_da_meta", "_modalidade_da_meta",
+                                     "_numero_flexivel", "_mostrar_da_planilha", "consolidar_metas"],
+    "_mes_da_planilha": ["_so_letras"], "_canal_da_meta": ["_so_letras"], "_modalidade_da_meta": ["_so_letras"],
+    "_mostrar_da_planilha": ["_so_letras"],
+    "metas_do_codigo": ["consolidar_metas"],
+    "fontes_csv_metas": ["_fontes_csv_planilha_google"],
+    "ler_metas_recebimento": ["normalizar_metas_recebimento"],
+    "resumo_das_metas": ["_rotulo_mes_pt"],
     "carregar_venda_diaria": ["normalizar_venda_diaria"],
     "_quadro_projetado_x_realizado": ["grupos_do_projetado"],
     "tabela_selecionavel": ["formata_pct_tabela", "botao_excel"],
@@ -154,13 +165,18 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "_mes_da_planilha": ["MESES_PT_POR_NOME"], "_canal_da_meta": ["CANAIS_DA_META"],
+    "_modalidade_da_meta": ["MODALIDADES_DA_META"],
+    "normalizar_metas_recebimento": ["CANAIS_DA_META", "MODALIDADES_DA_META"],
+    "consolidar_metas": ["COLUNAS_PLANILHA_METAS"],
+    "metas_do_codigo": ["METAS_RECEBER", "METAS_OCULTAS_NO_CODIGO"],
+    "fontes_csv_metas": ["ID_PLANILHA_METAS_PADRAO", "ABA_PLANILHA_METAS"],
     # PROVISÃO x NF (29/10/2026): a tabela monta o caminho "mãe › filha › neta".
     "tipo_documento_fin": ["ROTULO_PROVISAO", "ROTULO_NF"],
     "montar_lancamentos_do_mes_por_celula": ["SEPARADOR_CAMINHO"],
     "realizado_por_documento_pxr": ["DOCUMENTOS_FIN", "SEPARADOR_CAMINHO", "COLUNA_TOTAL_PROJETADO", "COL_FIN_NUMERO",
                                     "COL_FIN_VALOR"],
     "quadro_exibicao_pxr": ["SEPARADOR_CAMINHO"],
-    "_aplicar_meta_como_falta": ["MESES_META_ZERADA_FIN"],
     "botao_excel": ["MIME_XLSX", "_CONTADOR_EXCEL"],
     "normalizar_venda_diaria": ["COLUNAS_VENDA_DIARIA", "NOMES_CANAL_VENDA_DIARIA", "CANAIS_PEF"],
     "venda_realizada_por_mes": ["VENDA_REALIZADA_2026", "VENDA_REALIZADA_ACUMULADA_ATE", "CANAIS_PEF"],
@@ -287,7 +303,7 @@ def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
         "base64": base64, "hashlib": hashlib, "hmac": hmac, "FUSO_BR": FUSO_BR,
         # 28/10/2026: toda tabela desenha um botao de Excel; nos testes ele
         # e um dublê mudo. Quem precisa de mais do `st` injeta o seu.
-        "st": _ST_MUDO,
+        "st": _ST_MUDO, "unicodedata": unicodedata,
         # ...e o openpyxl, que o Excel das tabelas usa.
         "Workbook": Workbook, "Font": Font, "PatternFill": PatternFill, "Alignment": Alignment,
         "get_column_letter": get_column_letter,
@@ -2025,34 +2041,6 @@ class TesteMetasDeRecebimento(unittest.TestCase):
              "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_EFETIVA"],
         )
 
-    def setUp(self):
-        # Os testes da REGRA geral rodam sem mes zerado a pedido; o teste
-        # proprio da lista liga outubro de volta.
-        self.ns["MESES_META_ZERADA_FIN"] = []
-
-    def test_mes_da_lista_fica_zerado_a_pedido(self):
-        """28/10/2026: outubro sai da linha de meta do Fluxo Mensal ("nao
-        precisamos mais dela"); os outros meses seguem a regra normal. A
-        lista e o unico lugar a mexer para ligar ou desligar."""
-        chave = self.ns["MOV_RECEBER_META"]
-        out, nov = pd.Period("2026-10", "M"), pd.Period("2026-11", "M")
-        pivo = pd.DataFrame({
-            out: {chave: 12_111_597.35, self.ns["MOV_RECEBER_AVENCER"]: 8_649_812.06, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
-            nov: {chave: 13_128_339.38, self.ns["MOV_RECEBER_AVENCER"]: 5_712_644.27, self.ns["MOV_RECEBER_LIQUIDADO"]: 0.0},
-        })
-        self.ns["MESES_META_ZERADA_FIN"] = ["2026-10"]
-        novo, cheia = self.ns["_aplicar_meta_como_falta"](pivo, mes_corrente=out)
-        self.assertEqual(novo.loc[chave, out], 0.0, "outubro zerado a pedido, mesmo sendo o mes corrente")
-        self.assertAlmostEqual(novo.loc[chave, nov], 7_415_695.11, places=2, msg="novembro segue")
-        self.assertAlmostEqual(cheia[out], 12_111_597.35, places=2, msg="a meta cheia fica para a legenda")
-        # Tambem com rotulo de texto, e sem mes corrente.
-        pivo_txt = pivo.copy(); pivo_txt.columns = ["10/2026", "11/2026"]
-        txt, _ = self.ns["_aplicar_meta_como_falta"](pivo_txt)
-        self.assertEqual(txt.loc[chave, "10/2026"], 0.0); self.assertGreater(txt.loc[chave, "11/2026"], 0.0)
-        # O app de verdade esta com outubro na lista.
-        i = FONTE.index("MESES_META_ZERADA_FIN = ")
-        self.assertIn('"2026-10"', FONTE[i:FONTE.index("\n", i)])
-
     def test_meta_mensal_bate_com_a_planilha_do_gestor(self):
         """A soma dos dias tem de devolver a meta do mes -- os centavos do
         arredondamento vao no ultimo dia, entao nada se perde."""
@@ -2293,7 +2281,8 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         i = FONTE.index("_metas_antigas = int(")
         trecho = FONTE[i:i + 300]
         self.assertIn("df = df[df[COL_FIN_MOVIMENTO] != MOV_RECEBER_META]", trecho)
-        self.assertIn("montar_linhas_de_meta(df.columns)", FONTE)
+        # 29/10/2026: as metas vem da planilha (tupla na chave do cache).
+        self.assertIn("montar_linhas_de_meta(df.columns, metas_da_tupla(metas) if metas is not None else None)", FONTE)
 
     def test_tabela_permite_selecionar_celulas_soltas(self):
         """O st.dataframe so seleciona linha ou coluna inteira. A area precisa
@@ -9828,6 +9817,150 @@ class TesteProvisaoXNF(unittest.TestCase):
         self.assertIn('[f"{LINHA_PAGAR_PROJETADO}{SEPARADOR_CAMINHO}{g}" for g in grupos_do_projetado()]', pxr)
         self.assertIn("realizado_por_documento_pxr(df_fin", pxr)
         self.assertEqual(FONTE.count("ROTULO_PROVISAO = \"PROVISÃO\""), 1)
+
+
+class TestePlanilhaDeMetas(unittest.TestCase):
+    """29/10/2026: as metas de recebimento sairam do codigo e passaram a vir
+    de uma Planilha Google (Mes, Canal, Modalidade, Meta, Mostrar). Mostrar =
+    NAO tira a meta de todas as tabelas que tem a linha meta."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["normalizar_metas_recebimento", "metas_do_codigo", "metas_da_tupla", "fontes_csv_metas",
+                           "_fontes_csv_planilha_google",
+                           "ler_metas_recebimento", "resumo_das_metas", "montar_linhas_de_meta", "_dias_da_meta_no_mes",
+                           "_normalizar_texto", "url_csv_do_fechamento"],
+                          ["MOV_RECEBER_META", "COL_FIN_MOVIMENTO", "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_VALOR",
+                           "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO", "COL_FIN_LIQ_EFETIVA",
+                           "DIAS_DA_SEMANA_POR_MODALIDADE", "MESES_PT_ABREV_FIN"])
+
+    def _planilha(self, linhas):
+        return pd.DataFrame(linhas, columns=["Mês", "Canal", "Modalidade", "Meta (R$)", "Mostrar"])
+
+    def test_leitura_tolera_os_jeitos_de_escrever(self):
+        ns = self.ns
+        bruto = self._planilha([
+            ["10/2026", "HUB LOGISTICO", "Débito", "89.187,18", "SIM"],
+            ["2026-11", "hub logístico", "credito a vista", "14010.69", ""],          # gviz/sem acento/sem Mostrar
+            ["out/2026", "VD", "Boleto Garantido", "R$ 5.494.927,28", "NÃO"],
+            ["Dezembro/2026", "Loja", "CRÉDITO PARCELADO", "1,468,603.25", "nao"],    # formato americano
+            ["01/12/2026", "LOJA", "Débito", "2393351.26", "sim"],
+            [None, None, None, None, None],                                            # linha em branco
+        ])
+        tupla, quadro, avisos, erro = ns["normalizar_metas_recebimento"](bruto)
+        self.assertEqual(erro, ""); self.assertEqual(avisos, [])
+        self.assertEqual(len(quadro), 5)
+        metas = ns["metas_da_tupla"](tupla)
+        self.assertAlmostEqual(metas["HUB LOGISTICO"]["Débito"][(2026, 10)], 89_187.18)
+        self.assertAlmostEqual(metas["HUB LOGISTICO"]["Crédito à Vista"][(2026, 11)], 14_010.69, msg="Mostrar vazio = SIM")
+        self.assertAlmostEqual(metas["LOJA"]["Débito"][(2026, 12)], 2_393_351.26)
+        self.assertNotIn("VENDA DIRETA", metas, "Mostrar = NÃO some do calculo")
+        self.assertNotIn("Crédito Parcelado", metas.get("LOJA", {}))
+        oculta = quadro[~quadro["Mostrar"]]
+        self.assertEqual(len(oculta), 2, "mas continua no quadro de conferencia, com o valor")
+        self.assertAlmostEqual(float(oculta[oculta["Canal"] == "LOJA"]["Meta (R$)"].iloc[0]), 1_468_603.25)
+
+    def test_linha_ruim_e_avisada_e_ignorada(self):
+        ns = self.ns
+        bruto = self._planilha([
+            ["13/2026", "LOJA", "Débito", "10", "SIM"],
+            ["10/2026", "ATACADO", "Débito", "10", "SIM"],
+            ["10/2026", "LOJA", "", "10", "SIM"],
+            ["10/2026", "LOJA", "Débito", "dez mil", "SIM"],
+            ["10/2026", "LOJA", "PIX", "50", "SIM"],
+            ["11/2026", "LOJA", "Débito", "100", "SIM"],
+            ["11/2026", "LOJA", "Debito", "200", "SIM"],
+        ])
+        tupla, quadro, avisos, erro = ns["normalizar_metas_recebimento"](bruto)
+        self.assertEqual(erro, "")
+        textos = " | ".join(avisos)
+        for pedaco in ("linha 2: mês", "linha 3: canal 'ATACADO'", "linha 4: sem modalidade", "linha 5: meta 'dez mil'",
+                       "linha 6: modalidade 'PIX' é nova", "linha 8: 11/2026 · LOJA · Débito aparece mais de uma vez"):
+            self.assertIn(pedaco, textos)
+        metas = ns["metas_da_tupla"](tupla)
+        self.assertEqual(metas["LOJA"]["Débito"][(2026, 11)], 200.0, "repetida: vale a ultima")
+        self.assertEqual(metas["LOJA"]["PIX"][(2026, 10)], 50.0, "modalidade nova e aceita")
+
+    def test_planilha_sem_linha_valida_nao_zera_as_metas(self):
+        ns = self.ns
+        _t, _q, _a, erro = ns["normalizar_metas_recebimento"](self._planilha([["xx", "yy", "zz", "1", "SIM"]]))
+        self.assertIn("nenhuma linha válida", erro)
+        _t, _q, _a, erro = ns["normalizar_metas_recebimento"](pd.DataFrame({"Mês": ["10/2026"], "Canal": ["LOJA"]}))
+        self.assertIn("Modalidade", erro)
+        self.assertIn("vazia", ns["normalizar_metas_recebimento"](pd.DataFrame())[3])
+        # tudo oculto e valido: nao e erro -- e uma escolha
+        tupla, _q, _a, erro = ns["normalizar_metas_recebimento"](self._planilha([["10/2026", "LOJA", "Débito", "1", "NÃO"]]))
+        self.assertEqual(erro, ""); self.assertEqual(tupla, ())
+
+    def test_reserva_do_codigo_esconde_outubro(self):
+        tupla, quadro = self.ns["metas_do_codigo"]()
+        self.assertFalse(any((ano, mes) == (2026, 10) for _c, _m, ano, mes, _v in tupla))
+        self.assertTrue(any((ano, mes) == (2026, 11) for _c, _m, ano, mes, _v in tupla))
+        self.assertEqual(len(quadro), 66, "11 combinacoes x 6 meses")
+        total_nov = quadro[quadro["Mês"] == pd.Period("2026-11", "M")]["Meta (R$)"].sum()
+        self.assertAlmostEqual(total_nov, 13_538_629.92, places=2)
+
+    def test_meta_oculta_nao_vira_lancamento(self):
+        ns = self.ns
+        bruto = self._planilha([["11/2026", "LOJA", "Débito", "2000", "SIM"], ["12/2026", "LOJA", "Débito", "9000", "NÃO"]])
+        tupla, _q, _a, _e = ns["normalizar_metas_recebimento"](bruto)
+        colunas = ["Movimento", "Canal.1", "Modalidade", "Valor.1", "Data Efetiva", "Vencimento.1",
+                   "Data Liquidação", "Liq. Efetiva", "Liquidado", "Tipo Movimento"]
+        colunas = [ns.get("COL_FIN_MOVIMENTO"), ns.get("COL_FIN_CANAL"), ns.get("COL_FIN_MODALIDADE"),
+                   ns.get("COL_FIN_VALOR"), "Data Efetiva", ns.get("COL_FIN_VENCIMENTO"),
+                   ns.get("COL_FIN_DATA_LIQUIDACAO"), ns.get("COL_FIN_LIQ_EFETIVA"), "Liquidado", "Tipo Movimento"]
+        diarias = ns["montar_linhas_de_meta"](colunas, ns["metas_da_tupla"](tupla))
+        self.assertAlmostEqual(diarias[ns["COL_FIN_VALOR"]].sum(), 2000.0, places=2, msg="dezembro oculto nao entra")
+        self.assertTrue((diarias["Data Efetiva"].dt.month == 11).all())
+        self.assertGreater(len(ns["montar_linhas_de_meta"](colunas)), 0, "sem metas, vale o codigo")
+
+    def test_fontes_e_leitura_na_ordem(self):
+        ns = self.ns
+        # 29/10/2026: a planilha da Controladoria esta fixada no codigo.
+        padrao = ns["fontes_csv_metas"]("")
+        self.assertEqual([d for d, _ in padrao], ["exportação CSV da planilha", "consulta gviz da planilha"])
+        self.assertTrue(all("15ZE9sdeVbnJLo0D3GzOHoSCEW1wqQii1V250PXAcBnM" in u for _, u in padrao))
+        self.assertTrue(padrao[1][1].endswith("&sheet=Metas"))
+        self.assertEqual(ns["_fontes_csv_planilha_google"]("", "", "X"), [], "sem link e sem ID: vale o codigo")
+        link = "https://docs.google.com/spreadsheets/d/ABCDEFGHIJKLMNOPQRSTUVWXYZ123456/edit?usp=sharing"
+        fontes = ns["fontes_csv_metas"](link)
+        self.assertEqual([d for d, _ in fontes], ["link dos Secrets (METAS_RECEBER_CSV_URL)", "consulta gviz da planilha"])
+        self.assertIn("/export?format=csv", fontes[0][1])
+        self.assertTrue(fontes[1][1].endswith("&sheet=Metas"))
+        import tempfile, os
+        pasta = tempfile.mkdtemp()
+        ok = os.path.join(pasta, "ok.csv")
+        with open(ok, "w", encoding="utf-8") as f:
+            f.write("Mês,Canal,Modalidade,Meta (R$),Mostrar\n11/2026,LOJA,Débito,\"1.000,00\",SIM\n")
+        ler = ns["ler_metas_recebimento"]
+        ler = getattr(ler, "__wrapped__", ler)
+        tupla, quadro, origem, avisos, erros = ler((("sumiu", os.path.join(pasta, "x.csv")), ("boa", ok)))
+        self.assertEqual(origem, "boa"); self.assertEqual(len(erros), 1)
+        self.assertEqual(tupla, (("LOJA", "Débito", 2026, 11, 1000.0),))
+        self.assertIsNone(ler((("sumiu", os.path.join(pasta, "x.csv")),))[0])
+
+    def test_resumo_de_conferencia(self):
+        ns = self.ns
+        _t, quadro, _a, _e = ns["normalizar_metas_recebimento"](self._planilha([
+            ["11/2026", "LOJA", "Débito", "100", "SIM"], ["11/2026", "VD", "Débito", "50", "NÃO"],
+            ["12/2026", "LOJA", "Débito", "70", "SIM"]]))
+        tabela, ocultas = ns["resumo_das_metas"](quadro)
+        self.assertEqual(list(tabela.columns), ["NOV/2026", "DEZ/2026"])
+        self.assertEqual(tabela.loc["VENDA DIRETA › Débito", "NOV/2026"], 50.0, "a oculta aparece com o valor")
+        self.assertEqual(tabela.loc["TOTAL EM VIGOR (Mostrar = SIM)", "NOV/2026"], 100.0, "mas nao soma no total")
+        self.assertEqual(ocultas, ["NOV/2026: VENDA DIRETA · Débito"])
+        _t2, quadro2, _a2, _e2 = ns["normalizar_metas_recebimento"](self._planilha([
+            ["10/2026", "LOJA", "Débito", "100", "NÃO"], ["10/2026", "VD", "Débito", "50", "NÃO"]]))
+        self.assertEqual(ns["resumo_das_metas"](quadro2)[1], ["OUT/2026 — mês inteiro"])
+
+    def test_painel_usa_a_planilha_em_todo_lugar(self):
+        self.assertNotIn("MESES_META_ZERADA_FIN", FONTE, "o zerar do codigo saiu: quem manda e a planilha")
+        self.assertIn("def preparar_fluxo_caixa(base_data, metas=None):", FONTE)
+        self.assertIn('preparar_fluxo_caixa(\n        base_data_fin, metas_vigor_fin["tupla"])', FONTE)
+        self.assertIn('preparar_fluxo_caixa(_base_fx, metas_em_vigor()["tupla"])', FONTE)
+        self.assertIn('@st.cache_data(ttl=None, show_spinner=False, max_entries=2)\ndef ler_metas_recebimento(', FONTE)
+        i = FONTE.index("# ---- Conferência das metas em vigor")
+        self.assertIn("if eh_admin:", FONTE[i:i + 300], "a conferencia e so para admin")
 
 
 if __name__ == "__main__":
