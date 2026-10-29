@@ -53,7 +53,12 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
-    "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe"],
+    "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe",
+                                             "rotulos_de_abertura", "tipo_documento_fin"],
+    "rotulos_de_abertura": ["rotulo_sem_detalhe"],
+    "realizado_por_documento_pxr": ["_meses_projetado", "_rotulo_mes_pt", "recorte_realizado_projetado",
+                                    "grupos_do_projetado", "tipo_documento_fin"],
+    "quadro_exibicao_pxr": ["_rotulo_unico_tabela"],
     # Projetado x Realizado (28/10/2026)
     "grupo_do_projetado": ["_normalizar_texto"],
     "tabela_projetada_fin": ["_meses_projetado", "_rotulo_mes_pt", "_quadro_projetado_x_realizado", "grupos_do_projetado"],
@@ -61,7 +66,7 @@ DEPENDENCIAS = {
                              "recorte_realizado_projetado"],
     "recorte_realizado_projetado": ["_meses_projetado", "grupo_do_projetado", "_classificar_movimento_fin"],
     "lancamentos_projetado_x_realizado": ["recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
-                                          "montar_lancamentos_por_celula"],
+                                          "montar_lancamentos_por_celula", "tipo_documento_fin"],
     "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
     # PEF x Venda Realizada (28/10/2026)
     "normalizar_venda_diaria": ["_normalizar_texto", "_numero_pt_br"],
@@ -149,6 +154,12 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    # PROVISÃO x NF (29/10/2026): a tabela monta o caminho "mãe › filha › neta".
+    "tipo_documento_fin": ["ROTULO_PROVISAO", "ROTULO_NF"],
+    "montar_lancamentos_do_mes_por_celula": ["SEPARADOR_CAMINHO"],
+    "realizado_por_documento_pxr": ["DOCUMENTOS_FIN", "SEPARADOR_CAMINHO", "COLUNA_TOTAL_PROJETADO", "COL_FIN_NUMERO",
+                                    "COL_FIN_VALOR"],
+    "quadro_exibicao_pxr": ["SEPARADOR_CAMINHO"],
     "_aplicar_meta_como_falta": ["MESES_META_ZERADA_FIN"],
     "botao_excel": ["MIME_XLSX", "_CONTADOR_EXCEL"],
     "normalizar_venda_diaria": ["COLUNAS_VENDA_DIARIA", "NOMES_CANAL_VENDA_DIARIA", "CANAIS_PEF"],
@@ -176,8 +187,10 @@ CONSTANTES_DE_DEPENDENCIA = {
     "recorte_realizado_projetado": ["COL_FIN_MOVIMENTO", "COL_FIN_GRUPO_DESPESA", "GRUPO_OUTRAS_SAIDAS"],
     "tabela_realizada_fin": ["COL_FIN_VALOR"],
     "lancamentos_projetado_x_realizado": ["LINHA_PAGAR_PROJETADO", "LINHA_RECEBER_PROJETADO",
-                                          "TETO_LANCAMENTOS_POR_CELULA_MES", "TETO_LANCAMENTOS_POR_CELULA"],
-    "linhas_exibidas_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO"],
+                                          "TETO_LANCAMENTOS_POR_CELULA_MES", "TETO_LANCAMENTOS_POR_CELULA",
+                                          "SEPARADOR_CAMINHO"],
+    "linhas_exibidas_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO",
+                                              "DOCUMENTOS_FIN", "SEPARADOR_CAMINHO"],
     "linhas_proprias_da_dre": ["PALAVRAS_LINHA_DE_RESULTADO"],
     "premissa_automatica_rascunho": ["PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN"],
     "montar_rascunho_orcamento": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
@@ -211,7 +224,7 @@ CONSTANTES_DE_DEPENDENCIA = {
                             "ALTURA_BARRA_ROLAGEM_PX", "COLUNAS_SEM_ROLAGEM_HORIZONTAL",
                             "FOLGA_ABAIXO_TABELA_PX",
                             "FUNDO_TABELA_FLUXO", "PARAM_LINHAS_ABERTAS",
-                            "SEPARADOR_LINHAS_ABERTAS", "PREFIXO_BOTAO_ABRIR"],
+                            "SEPARADOR_LINHAS_ABERTAS", "PREFIXO_BOTAO_ABRIR", "SEPARADOR_CAMINHO"],
     "botoes_de_abrir": ["PREFIXO_BOTAO_ABRIR"],
     "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
     "linhas_abertas_da_url": ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"],
@@ -1982,11 +1995,12 @@ class TesteSaldoDeAberturaMensal(unittest.TestCase):
         # bater com a linha-mae.
         # 28/10/2026: uma terceira, em `saldo_anterior_ao_periodo_mensal`,
         # que refaz a mesma cadeia nos meses que ficaram antes da tela.
-        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 3)
+        # 29/10/2026: uma quarta, no pivo das NETAS (PROVISAO x NF) do mensal.
+        self.assertEqual(FONTE.count('posicao_saldo="primeira"'), 4)
         i_mensal = FONTE.index("📋 Movimentos por Mês")
-        bloco_mensal = FONTE[max(0, i_mensal - 6000):i_mensal + 9000]
-        self.assertEqual(bloco_mensal.count('posicao_saldo="primeira"'), 2,
-                         "duas chamadas ficam no bloco do Fluxo Mensal")
+        bloco_mensal = FONTE[max(0, i_mensal - 6000):i_mensal + 12000]
+        self.assertEqual(bloco_mensal.count('posicao_saldo="primeira"'), 3,
+                         "tres chamadas ficam no bloco do Fluxo Mensal (tabela, filhas, netas)")
         i_fn = FONTE.index("def saldo_anterior_ao_periodo_mensal(")
         self.assertIn('posicao_saldo="primeira"', FONTE[i_fn:FONTE.index("\ndef ", i_fn + 10)])
 
@@ -9073,7 +9087,8 @@ class TesteSetaDeAbrirNoFluxoMensal(unittest.TestCase):
         # Meta nao abre (e alvo, nao lancamento); SALDO INICIAL e TOTAL GERAL
         # continuam vindo das maes, nunca das filhas.
         self.assertIn('if _classificar_movimento_fin(m) != "meta"]', trecho)
-        self.assertIn("rotulo_sem_detalhe(coluna_abertura_m)", trecho, "as filhas tem de fechar com a mae")
+        self.assertIn("rotulos_de_abertura(recorte_mae[coluna_abertura_m], coluna_abertura_m)", trecho,
+                      "as filhas tem de fechar com a mae (vazio vira \"(sem ...)\")")
         self.assertIn("linhas_exib_m.append(linha_total_geral_m)", FONTE)
 
     def test_detalhe_da_filha_abre_so_os_lancamentos_dela(self):
@@ -9310,7 +9325,7 @@ class TesteProjetadoXRealizado(unittest.TestCase):
         self.assertIn('"🎯 Projetado x Realizado"', FONTE)
         i = FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================")
         trecho = FONTE[i:FONTE.index("with tab_fin_consolidado:", i)]
-        self.assertLess(trecho.index('botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")'),
+        self.assertLess(trecho.index('"pxr_linhas_abertas", "pxrabrir_")'),
                         trecho.index("tabela_selecionavel("))
         self.assertEqual(trecho.count('prefixo_botao="st-key-pxrabrir_"'), 2, "lado a lado e tres quadros")
         self.assertIn("detalhes_por_celula=lancamentos_pxr", trecho)
@@ -9435,7 +9450,8 @@ class TesteExcelDasTabelas(unittest.TestCase):
         self.assertGreaterEqual(FONTE.count("mostrar_tabela("), 40)
         corpo = FONTE[FONTE.index("def tabela_selecionavel("):FONTE.index("\ndef _peso_ordem_movimento_fin(")]
         self.assertIn("botao_excel(exportavel", corpo, "a tabela selecionavel tambem exporta")
-        self.assertIn("recuos=[1 if p is not None else 0 for p in pais]", corpo)
+        # 29/10/2026: o recuo e o NIVEL da linha (filha 1, neta 2).
+        self.assertIn("recuos=niveis)", corpo)
 
 
 class TesteMetaNoTotalDoDiarioConsolidado(unittest.TestCase):
@@ -9657,6 +9673,161 @@ class TesteUsuarioSoDoFinanceiro(unittest.TestCase):
         j = FONTE.index('key="fin_btn_trocar"')
         self.assertIn("if email_atual_financeiro not in EMAILS_SO_FINANCEIRO:", FONTE[j - 200:j],
                       "sem Trocar Painel para quem so tem um painel")
+
+
+class TesteProvisaoXNF(unittest.TestCase):
+    """29/10/2026: cada grupo de despesa ganha uma seta que abre o grupo em
+    PROVISAO (coluna Numero escrita "PROVISAO", com as variantes) e NF (o
+    resto) -- no Fluxo Mensal, no Diario Consolidado e no Projetado x Realizado."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["tipo_documento_fin", "rotulos_de_abertura", "_ordenar_com_filhas", "_pais_reordenados",
+                           "montar_lancamentos_do_mes_por_celula", "montar_lancamentos_por_celula",
+                           "_classificar_movimento_fin", "_peso_ordem_movimento_fin",
+                           "realizado_por_documento_pxr", "quadro_exibicao_pxr", "tabela_realizada_fin",
+                           "tabela_projetada_fin", "linhas_exibidas_projetado_x_realizado",
+                           "lancamentos_projetado_x_realizado"],
+                          ["COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_VENCIMENTO", "COL_FIN_DATA_LIQUIDACAO",
+                           "COL_FIN_HISTORICO", "COL_FIN_NUMERO"])
+
+    def test_variantes_de_provisao(self):
+        doc = self.ns["tipo_documento_fin"]
+        provisoes = ["PROVISAO", "PROVISÃO", "PROVISÃO ", "  provisão", "PROVISÃO.", "PROVISÃO (9/11)",
+                     "PROVISÃO (10/11", "PROV. ISÃO", "Provisões", "P R O V I S A O"]
+        notas = ["362967", "NFE 71", "CTE 20527", "CONTRATO", "IMPROVISO", "PROV", "", None, float("nan")]
+        r = doc(pd.Series(provisoes + notas))
+        self.assertEqual(list(r[:len(provisoes)]), ["PROVISÃO"] * len(provisoes))
+        self.assertEqual(list(r[len(provisoes):]), ["NF"] * len(notas))
+        # categoria (como a base chega) e indice preservado
+        cat = pd.Series(["PROVISÃO", "123"], index=[10, 20], dtype="category")
+        self.assertEqual(doc(cat).to_dict(), {10: "PROVISÃO", 20: "NF"})
+        self.assertTrue(doc(pd.Series([], dtype=object)).empty)
+
+    def test_ordem_leva_as_netas_junto(self):
+        ordenar = self.ns["_ordenar_com_filhas"]
+        indices = ["TOTAL GERAL", "3 - Contas a Pagar", "Pessoal", "PROVISÃO", "NF", "Custo - Mercadoria", "1.Banco"]
+        tipos = ["total", "movimento", "movimento", "movimento", "movimento", "movimento", "movimento"]
+        pais = [None, None, 1, 2, 2, 1, None]
+        ordem = ordenar(indices, pais, tipos)
+        self.assertEqual([indices[i] for i in ordem],
+                         ["1.Banco", "3 - Contas a Pagar", "Pessoal", "PROVISÃO", "NF", "Custo - Mercadoria", "TOTAL GERAL"])
+        novos_pais = self.ns["_pais_reordenados"](pais, ordem)
+        self.assertEqual(novos_pais, [None, None, 1, 2, 2, 1, None], "as netas apontam para o grupo na posicao nova")
+
+    def _base_mes(self):
+        ns = self.ns
+        d = pd.Timestamp("2026-11-06")
+        linhas = [("3 - Contas a Pagar", "PROVISAO", "Custo - Mercadoria", -275_000.0),
+                  ("3 - Contas a Pagar", "PROVISÃO (9/11)", "Custo - Mercadoria", -175_000.0),
+                  ("3 - Contas a Pagar", "362967", "Custo - Mercadoria", -251_199.0),
+                  ("3 - Contas a Pagar", "NFE 71", "Pessoal", -10_917.0),
+                  ("3 - Contas a Pagar", "PROVISÃO", "Pessoal", -5_000.0),
+                  ("3 - Contas a Pagar", "777", None, -1_000.0)]
+        df = pd.DataFrame({
+            "Movimento": [l[0] for l in linhas], "Data Efetiva": [d] * len(linhas), ns["COL_FIN_NUMERO"]: [l[1] for l in linhas],
+            "GRUPO DESPESA": [l[2] for l in linhas], "Valor.1": [l[3] for l in linhas],
+            ns["COL_FIN_HISTORICO"]: ["X"] * len(linhas), ns["COL_FIN_CANAL"]: ["LOJA"] * len(linhas),
+            ns["COL_FIN_MODALIDADE"]: [""] * len(linhas), ns["COL_FIN_VENCIMENTO"]: [d] * len(linhas),
+            ns["COL_FIN_DATA_LIQUIDACAO"]: [d] * len(linhas)})
+        df["Tipo Movimento"] = df["Movimento"].map(ns["_classificar_movimento_fin"])
+        df["PeriodoMes"] = df["Data Efetiva"].dt.to_period("M")
+        return df, {pd.Period("2026-11", "M"): "NOV/2026"}
+
+    def test_duplo_clique_da_neta_no_mensal(self):
+        df, rotulos = self._base_mes()
+        fn = self.ns["montar_lancamentos_do_mes_por_celula"]
+        mapa, _ = fn(df, rotulos, colunas_detalhe=["GRUPO DESPESA"],
+                     grupos_abertos=["3 - Contas a Pagar › Custo - Mercadoria"])
+        prov = mapa["3 - Contas a Pagar › Custo - Mercadoria › PROVISÃO||NOV/2026"]
+        nf = mapa["3 - Contas a Pagar › Custo - Mercadoria › NF||NOV/2026"]
+        self.assertAlmostEqual(sum(l["Valor"] for l in prov), -450_000.0)
+        self.assertEqual([l["Número"] for l in nf], ["362967"])
+        self.assertAlmostEqual(sum(l["Valor"] for l in prov + nf),
+                               sum(l["Valor"] for l in mapa["3 - Contas a Pagar › Custo - Mercadoria||NOV/2026"]),
+                               msg="as duas netas somam o grupo")
+        self.assertFalse(any(k.startswith("3 - Contas a Pagar › Pessoal › ") for k in mapa), "so os grupos abertos")
+        sem_netas, _ = fn(df, rotulos, colunas_detalhe=["GRUPO DESPESA"])
+        self.assertFalse(any(k.count("›") == 2 for k in sem_netas))
+        # grupo vazio vira "(sem grupo de despesa)" -- e tambem abre
+        mapa2, _ = fn(df, rotulos, colunas_detalhe=["GRUPO DESPESA"],
+                      grupos_abertos=["3 - Contas a Pagar › (sem grupo de despesa)"])
+        self.assertIn("3 - Contas a Pagar › (sem grupo de despesa) › NF||NOV/2026", mapa2)
+
+    def test_tabela_desenha_a_neta_com_seta_e_chave_proprias(self):
+        ns_local = carregar(["formata_brl", "tabela_selecionavel"], [])
+        capturado = {}
+        ns_local["html_embutido"] = dubla_html_embutido(capturado)
+        df = pd.DataFrame([[-700.0], [-450.0], [-450.0], [0.0], [-10.0], [-5.0]],
+                          index=["3 - Contas a Pagar", "Custo - Mercadoria", "PROVISÃO", "NF\u200b", "Pessoal", "PROVISÃO\u200b\u200b"],
+                          columns=["NOV/2026"])
+        comandos = {"3 - Contas a Pagar": (True, 0), "3 - Contas a Pagar › Custo - Mercadoria": (True, 1),
+                    "3 - Contas a Pagar › Pessoal": (False, 2)}
+        detalhes = {"3 - Contas a Pagar › Custo - Mercadoria › PROVISÃO||NOV/2026": [{"a": 1}],
+                    "PROVISÃO||NOV/2026": [{"errado": 1}]}
+        ns_local["tabela_selecionavel"](df, chave="t", tipos_linha=["movimento"] * 6, pais=[None, 0, 1, 1, 0, 4],
+                                        filhas_abertas=True, comandos_abrir=comandos, prefixo_botao="st-key-fmabrir_",
+                                        detalhes_por_celula=detalhes)
+        codigo = capturado["codigo"]
+        self.assertIn('data-botao="1"', codigo, "o grupo tem a sua seta (chave pelo caminho)")
+        self.assertIn('data-botao="2"', codigo)
+        self.assertEqual(codigo.count('class="linha-movimento linha-filha linha-neta"'), 3)
+        self.assertIn('data-k="3 - Contas a Pagar › Custo - Mercadoria › PROVISÃO||NOV/2026"', codigo)
+        self.assertIn(".linha-neta th.rotulo", codigo)
+
+    def test_projetado_x_realizado_abre_o_grupo(self):
+        ns = self.ns
+        f = ns["linhas_exibidas_projetado_x_realizado"]
+        rot, tipos, pais = f(True, ["G&A"])
+        i = rot.index("G&A")
+        self.assertEqual(rot[i + 1:i + 3], ["G&A › PROVISÃO", "G&A › NF"])
+        self.assertEqual(pais[i + 1:i + 3], [i, i])
+        self.assertEqual(f(True)[0], f(True, [])[0], "sem grupo aberto, nada muda")
+        # realizado por documento soma o grupo
+        d = pd.Timestamp("2026-08-10")
+        linhas = [("3 - Contas a Pagar", "PROVISÃO", "Despesas Gerais", -30.0), ("3 - Contas a Pagar", "123", "Despesas Gerais", -70.0),
+                  ("3 - Contas a Pagar", "PROVISAO", "Pessoal", -9.0), ("2.1 - Contas a Receber", "R1", "", 500.0)]
+        df = pd.DataFrame({"Movimento": [l[0] for l in linhas], "Data Efetiva": [d] * 4, ns["COL_FIN_NUMERO"]: [l[1] for l in linhas],
+                           "GRUPO DESPESA": [l[2] for l in linhas], "Valor.1": [l[3] for l in linhas],
+                           ns["COL_FIN_HISTORICO"]: ["X"] * 4, ns["COL_FIN_CANAL"]: ["LOJA"] * 4, ns["COL_FIN_MODALIDADE"]: [""] * 4,
+                           ns["COL_FIN_VENCIMENTO"]: [d] * 4, ns["COL_FIN_DATA_LIQUIDACAO"]: [d] * 4})
+        df["Tipo Movimento"] = df["Movimento"].map(ns["_classificar_movimento_fin"])
+        doc = ns["realizado_por_documento_pxr"](df)
+        real = ns["tabela_realizada_fin"](df)
+        self.assertAlmostEqual(doc.loc["G&A › PROVISÃO", "AGO/2026"], -30.0)
+        self.assertAlmostEqual(doc.loc["G&A › NF", "AGO/2026"], -70.0)
+        self.assertAlmostEqual(doc.loc["G&A › PROVISÃO", "AGO/2026"] + doc.loc["G&A › NF", "AGO/2026"], real.loc["G&A", "AGO/2026"])
+        self.assertAlmostEqual(doc.loc["Pessoal › PROVISÃO", "Total"], -9.0)
+        # quadro da tela: realizado traz a neta; projetado fica em branco
+        chaves = ["4 - Contas a Pagar", "G&A", "G&A › PROVISÃO", "G&A › NF"]
+        tela_real = ns["quadro_exibicao_pxr"](real, chaves, doc)
+        tela_proj = ns["quadro_exibicao_pxr"](ns["tabela_projetada_fin"](), chaves)
+        self.assertAlmostEqual(tela_real.iloc[2]["AGO/2026"], -30.0)
+        self.assertTrue(pd.isna(tela_proj.iloc[2]["AGO/2026"]), "a projecao nao separa provisao")
+        self.assertEqual([str(r).replace("\u200b", "") for r in tela_real.index], ["4 - Contas a Pagar", "G&A", "PROVISÃO", "NF"])
+        self.assertEqual(len(set(tela_real.index)), 4)
+        mapa, _ = ns["lancamentos_projetado_x_realizado"](df, None, ["G&A"])
+        self.assertEqual([l["Número"] for l in mapa["4 - Contas a Pagar › G&A › PROVISÃO||AGO/2026"]], ["PROVISÃO"])
+        self.assertNotIn("4 - Contas a Pagar › Pessoal › PROVISÃO||AGO/2026", mapa)
+
+    def test_tres_tabelas_ligam_a_seta_dos_grupos(self):
+        i = FONTE.index("📋 Movimentos por Mês")
+        mensal = FONTE[i:FONTE.index('chave="tabela_mensal"', i)]
+        self.assertLess(mensal.index('abriveis_m += [f"{_mov_g}{SEPARADOR_CAMINHO}{_g}" for _g in _ordem_g]'),
+                        mensal.index('comandos_m = botoes_de_abrir(abriveis_m'), "os grupos entram na lista ANTES dos botoes")
+        self.assertIn("for _documento in DOCUMENTOS_FIN:", mensal)
+        self.assertIn("grupos_abertos=grupos_abertos_m", FONTE)
+        j = FONTE.index("with tab_fin_consolidado:")
+        dc = FONTE[j:FONTE.index("# ---------------- TESOURARIA ----------------", j)]
+        self.assertLess(dc.index('abriveis_dc += [f"{_mov_g}{SEPARADOR_CAMINHO}{_g}" for _g in _grupos_dc if _g]'),
+                        dc.index('comandos_dc = botoes_de_abrir(abriveis_dc'))
+        self.assertIn("for _documento in DOCUMENTOS_FIN:", dc)
+        self.assertIn("_chave_grupo_dc[_escolhidos_dc] + SEPARADOR_CAMINHO", dc)
+        k = FONTE.index("# ================= PROJETADO x REALIZADO (fluxo) =================")
+        pxr = FONTE[k:j]
+        self.assertIn('[f"{LINHA_PAGAR_PROJETADO}{SEPARADOR_CAMINHO}{g}" for g in grupos_do_projetado()]', pxr)
+        self.assertIn("realizado_por_documento_pxr(df_fin", pxr)
+        self.assertEqual(FONTE.count("ROTULO_PROVISAO = \"PROVISÃO\""), 1)
 
 
 if __name__ == "__main__":

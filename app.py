@@ -7739,7 +7739,54 @@ def rotulo_sem_detalhe(coluna):
     return f"(sem {nomes.get(coluna, str(coluna).lower())})"
 
 
-def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses, colunas_detalhe=()):
+# ---------------------------------------------------------------------------
+# PROVISÃO x NF (29/10/2026)
+# ---------------------------------------------------------------------------
+# Pedido da diretoria: cada grupo de despesa abre em dois -- o que é
+# PROVISÃO e o que é NF. Não é uma coluna da planilha: é a coluna Número.
+# Título provisionado vem escrito "PROVISÃO" ali (com ou sem acento, com
+# espaço a mais, "PROVISÃO (9/11)" quando é parcela); todo o resto é NF.
+ROTULO_PROVISAO = "PROVISÃO"
+ROTULO_NF = "NF"
+DOCUMENTOS_FIN = (ROTULO_PROVISAO, ROTULO_NF)
+# Separador dos caminhos "mãe › filha › neta" -- o mesmo das chaves do
+# duplo clique e das linhas que abrem.
+SEPARADOR_CAMINHO = " › "
+
+
+def tipo_documento_fin(numeros):
+    """"PROVISÃO" ou "NF" para cada título, pela coluna Número.
+
+    O texto é reduzido às LETRAS, sem acento e em maiúsculas, e é provisão
+    quando começa por "PROVIS": pega "PROVISÃO", "PROVISAO", " provisão ",
+    "PROVISÃO.", "PROVISÃO (9/11)" e "PROV. ISÃO". A conta é feita uma vez
+    por valor distinto (há poucos), não por linha -- a base tem centenas
+    de milhares de títulos."""
+    serie = pd.Series(numeros)
+    if serie.empty:
+        return pd.Series([], index=serie.index, dtype="object")
+    texto = serie.astype("object").where(serie.notna(), "").astype(str)
+    codigos, unicos = pd.factorize(texto, sort=False)
+    letras = (pd.Series(list(unicos), dtype="object").astype(str)
+              .str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("ascii")
+              .str.upper().str.replace(r"[^A-Z]", "", regex=True))
+    marcados = pd.Series(letras.str.startswith("PROVIS").to_numpy()).take(codigos).to_numpy()
+    return pd.Series(marcados, index=serie.index).map({True: ROTULO_PROVISAO, False: ROTULO_NF})
+
+
+def rotulos_de_abertura(valores, coluna):
+    """Rótulo de cada título na coluna que abre a linha e a ordem das
+    filhas. Vazio vira "(sem ...)", que vai por último -- assim as filhas
+    somam exatamente a mãe."""
+    sem = rotulo_sem_detalhe(coluna)
+    serie = pd.Series(valores)
+    rotulos = serie.astype("object").where(serie.notna(), "").astype(str).str.strip()
+    rotulos = rotulos.where(rotulos.ne(""), sem)
+    ordem = sorted(set(rotulos) - {sem}) + ([sem] if (rotulos == sem).any() else [])
+    return rotulos, ordem
+
+
+def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses, colunas_detalhe=(), grupos_abertos=()):
     """Detalhe por célula da tabela Movimentos por Mês (27/10/2026): a linha é
     o MOVIMENTO e a coluna é o MÊS. `df_m` é o recorte da tela com a coluna
     "PeriodoMes"; `rotulos_meses` é {período do mês: rótulo da coluna}.
@@ -7753,7 +7800,12 @@ def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses, colunas_detalhe=()
     `colunas_detalhe` são as colunas pelas quais as linhas podem ser ABERTAS
     (modalidade, grupo de despesa, canal): para cada uma, o mapa ganha também
     as chaves das filhas, no formato "movimento › detalhe||mês", para a
-    célula da filha abrir só os lançamentos dela."""
+    célula da filha abrir só os lançamentos dela.
+
+    `grupos_abertos` (29/10/2026) são os grupos de despesa abertos em
+    PROVISÃO x NF, como "movimento › grupo": eles ganham as chaves das netas,
+    "movimento › grupo › PROVISÃO||mês" e "... › NF||mês". Só os abertos, para
+    a página não carregar o mesmo lançamento três vezes à toa."""
     if df_m is None or df_m.empty or COL_FIN_MOVIMENTO not in df_m.columns:
         return {}, False
     base = df_m
@@ -7784,6 +7836,22 @@ def montar_lancamentos_do_mes_por_celula(df_m, rotulos_meses, colunas_detalhe=()
         for chave, linhas in parcial.items():
             mapa.setdefault(chave, linhas)
         cortou = cortou or cortou_parcial
+    abertos = set(grupos_abertos or ())
+    if abertos and COL_FIN_GRUPO_DESPESA in recorte.columns:
+        grupo, _ordem = rotulos_de_abertura(recorte[COL_FIN_GRUPO_DESPESA], COL_FIN_GRUPO_DESPESA)
+        chave_grupo = movimento + SEPARADOR_CAMINHO + grupo.values
+        escolhidos = chave_grupo.isin(abertos)
+        if escolhidos.any():
+            numeros = (recorte.loc[escolhidos, COL_FIN_NUMERO] if COL_FIN_NUMERO in recorte.columns
+                       else pd.Series("", index=recorte.index[escolhidos]))
+            documento = tipo_documento_fin(numeros)
+            parcial, cortou_parcial = montar_lancamentos_por_celula(
+                recorte[escolhidos], rotulos_meses,
+                chave_grupo[escolhidos] + SEPARADOR_CAMINHO + documento.values,
+                chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+            for chave, linhas in parcial.items():
+                mapa.setdefault(chave, linhas)
+            cortou = cortou or cortou_parcial
     return mapa, cortou
 
 
@@ -7992,10 +8060,12 @@ def tabela_realizada_fin(df_fin, rotulos_meses=None):
     return _quadro_projetado_x_realizado(receber, filhas, colunas)
 
 
-def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None):
+def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None, grupos_abertos=()):
     """Detalhe por célula (duplo clique) do quadro REALIZADO: a célula do
     receber traz as entradas do mês; a do contas a pagar, todas as saídas;
-    a de cada filha, só as saídas do seu grupo (chave "mãe › filha||mês")."""
+    a de cada filha, só as saídas do seu grupo (chave "mãe › filha||mês").
+    `grupos_abertos` (29/10/2026) são os grupos da projeção abertos em
+    PROVISÃO x NF: ganham as chaves "mãe › grupo › PROVISÃO||mês" e "... › NF"."""
     recorte = recorte_realizado_projetado(df_fin)
     if recorte.empty:
         return {}, False
@@ -8013,7 +8083,62 @@ def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None):
             chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
         mapa.update(parcial)
         cortou = cortou or cortou_filhas
+        abertos = set(grupos_abertos or ())
+        escolhidas = saidas[saidas["Grupo Projetado"].astype(str).isin(abertos)]
+        if not escolhidas.empty:
+            numeros = (escolhidas[COL_FIN_NUMERO] if COL_FIN_NUMERO in escolhidas.columns
+                       else pd.Series("", index=escolhidas.index))
+            parcial, cortou_netas = montar_lancamentos_por_celula(
+                escolhidas, rotulos,
+                LINHA_PAGAR_PROJETADO + SEPARADOR_CAMINHO + escolhidas["Grupo Projetado"].astype(str)
+                + SEPARADOR_CAMINHO + tipo_documento_fin(numeros).values,
+                chave_periodo=por_mes, teto=TETO_LANCAMENTOS_POR_CELULA_MES)
+            mapa.update(parcial)
+            cortou = cortou or cortou_netas
     return mapa, cortou
+
+
+def realizado_por_documento_pxr(df_fin, rotulos_meses=None):
+    """O realizado de cada grupo da projeção aberto em PROVISÃO e NF
+    (29/10/2026): DataFrame indexado por "grupo › PROVISÃO" e "grupo › NF",
+    com as mesmas colunas do quadro realizado (meses + Total). As duas
+    netas de um grupo somam o grupo."""
+    meses = _meses_projetado()
+    rotulos = rotulos_meses or {p: _rotulo_mes_pt(p) for p in meses}
+    colunas = [rotulos[p] for p in meses]
+    recorte = recorte_realizado_projetado(df_fin)
+    saidas = recorte[recorte["Tipo Movimento"].eq("saida")] if not recorte.empty else recorte
+    soma = pd.Series(dtype=float)
+    if not saidas.empty:
+        numeros = (saidas[COL_FIN_NUMERO] if COL_FIN_NUMERO in saidas.columns
+                   else pd.Series("", index=saidas.index))
+        soma = (saidas.assign(_documento=tipo_documento_fin(numeros).values)
+                .groupby(["Grupo Projetado", "_documento", "PeriodoMes"], observed=True)[COL_FIN_VALOR].sum())
+    linhas = {}
+    for grupo in grupos_do_projetado():
+        for documento in DOCUMENTOS_FIN:
+            linhas[f"{grupo}{SEPARADOR_CAMINHO}{documento}"] = pd.Series(
+                [float(soma.get((grupo, documento, p), 0.0)) for p in meses], index=colunas)
+    quadro = pd.DataFrame(linhas).T[colunas]
+    quadro[COLUNA_TOTAL_PROJETADO] = quadro.sum(axis=1)
+    return quadro
+
+
+def quadro_exibicao_pxr(quadro, chaves, por_documento=None):
+    """Monta o quadro que vai à tela na ordem das `chaves`: o que existe no
+    quadro vem dele; as netas ("grupo › PROVISÃO") vêm de `por_documento`
+    -- e, sem ele (o projetado não tem lançamento), ficam em branco. O
+    rótulo da tela é o último pedaço da chave, tornado único."""
+    linhas = []
+    for chave in chaves:
+        if chave in quadro.index:
+            linhas.append(quadro.loc[chave].to_numpy(dtype=float))
+        elif por_documento is not None and chave in por_documento.index:
+            linhas.append(por_documento.loc[chave, list(quadro.columns)].to_numpy(dtype=float))
+        else:
+            linhas.append([float("nan")] * len(quadro.columns))
+    rotulos = [_rotulo_unico_tabela(str(c).split(SEPARADOR_CAMINHO)[-1], i) for i, c in enumerate(chaves)]
+    return pd.DataFrame(linhas, index=rotulos, columns=list(quadro.columns))
 
 
 def variacao_percentual_pxr(realizado, projetado):
@@ -8024,18 +8149,27 @@ def variacao_percentual_pxr(realizado, projetado):
     return (realizado.values - projetado.values) / base.values * 100.0
 
 
-def linhas_exibidas_projetado_x_realizado(aberta):
+def linhas_exibidas_projetado_x_realizado(aberta, grupos_abertos=()):
     """Que linhas do quadro vão para a tela e como: (rótulos, tipos, pais).
     Com o contas a pagar fechado, só receber, pagar e total; aberto, as
-    filhas entram logo abaixo do pagar, apontando para ele."""
+    filhas entram logo abaixo do pagar, apontando para ele. Grupo aberto
+    (29/10/2026) traz as netas "grupo › PROVISÃO" e "grupo › NF" logo abaixo
+    dele -- o rótulo é a CHAVE do quadro; a tela mostra só o último pedaço."""
     rotulos = [LINHA_RECEBER_PROJETADO, LINHA_PAGAR_PROJETADO]
     tipos = ["movimento", "movimento"]
     pais = [None, None]
+    abertos = set(grupos_abertos or ())
     if aberta:
         for grupo in grupos_do_projetado():
+            posicao_grupo = len(rotulos)
             rotulos.append(grupo)
             tipos.append("movimento")
             pais.append(1)
+            if grupo in abertos:
+                for documento in DOCUMENTOS_FIN:
+                    rotulos.append(f"{grupo}{SEPARADOR_CAMINHO}{documento}")
+                    tipos.append("movimento")
+                    pais.append(posicao_grupo)
     rotulos.append(LINHA_TOTAL_PROJETADO)
     tipos.append("total")
     pais.append(None)
@@ -8632,10 +8766,17 @@ def _ordenar_com_filhas(indices, pais, tipos):
             return (99, "")
         return (_peso_ordem_movimento_fin(indices[posicao]), str(indices[posicao]))
 
+    # Recursivo (29/10/2026): a filha leva junto as netas dela (PROVISÃO e
+    # NF de um grupo de despesa), na ordem em que foram montadas.
+    def com_descendentes(posicao):
+        saida = [posicao]
+        for filha in filhas_de.get(posicao, []):
+            saida.extend(com_descendentes(filha))
+        return saida
+
     ordem = []
     for posicao in sorted((p for p, pai in enumerate(pais) if pai is None), key=peso):
-        ordem.append(posicao)
-        ordem.extend(filhas_de.get(posicao, []))
+        ordem.extend(com_descendentes(posicao))
     return ordem
 
 
@@ -8821,6 +8962,20 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     colunas = [str(c) for c in df.columns]
     linhas_html = []
 
+    # Caminho de cada linha até a raiz ("mãe › filha › neta"), já sem os
+    # espaços invisíveis. É a chave da seta e do duplo clique: o mesmo nome
+    # de grupo pode existir sob mães diferentes, e "PROVISÃO" existe sob
+    # todos os grupos -- o caminho inteiro é que diz de quem é cada linha.
+    def _caminho_da_linha(posicao):
+        partes, atual, passos = [], posicao, 0
+        while atual is not None and passos < 12:
+            partes.append(str(df.index[atual]).replace("\u200b", "").strip())
+            atual, passos = pais[atual], passos + 1
+        return list(reversed(partes))
+
+    caminhos = [_caminho_da_linha(p) for p in range(len(df))]
+    niveis = [len(c) - 1 for c in caminhos]
+
     for posicao, (rotulo, tipo) in enumerate(zip(df.index, tipos_linha)):
         # O índice do diário carrega espaços invisíveis para não repetir
         # rótulo; eles não podem aparecer na tela.
@@ -8831,20 +8986,23 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
         # chegava a valer -- as linhas de consolidação ficavam iguais às
         # outras, que foi o que apareceu na tela.
         rotulo_cru = texto_rotulo
+        caminho_txt = SEPARADOR_CAMINHO.join(caminhos[posicao])
         classe = f"linha-{tipo}"
         if pais[posicao] is not None:
             classe += " linha-filha"
+        if niveis[posicao] >= 2:
+            classe += " linha-neta"
         atributos_linha = f' data-pos="{posicao}"'
         if pais[posicao] is not None and not filhas_abertas:
             # Nasce escondida; o clique na mãe é que revela.
             atributos_linha += f' data-pai="{pais[posicao]}" style="display:none"'
-        if comandos_abrir is not None and rotulo_cru in comandos_abrir:
+        if comandos_abrir is not None and caminho_txt in comandos_abrir:
             # Comando de abrir/fechar. Ele aciona um BOTÃO de verdade da
             # página, escondido fora da tela: o quadro onde a tabela vive não
             # tem permissão para trocar o endereço da página (o navegador
             # bloqueia em silêncio), mas TEM permissão para tocar no
             # documento de fora, porque os dois são da mesma origem.
-            aberta, indice_botao = comandos_abrir[rotulo_cru]
+            aberta, indice_botao = comandos_abrir[caminho_txt]
             seta = (
                 f'<span class="seta comando{" aberta" if aberta else ""}" '
                 f'data-botao="{indice_botao}" '
@@ -8870,12 +9028,12 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
                 celulas.append(f'<td class="{sinal} pct">{formata_pct_tabela(numero)}</td>')
                 continue
             chave_celula = f"{rotulo_cru}||{coluna}"
-            # Linha filha: primeiro a chave COMPOSTA "mãe › filha", que separa
-            # a LOJA das contas a pagar da LOJA das contas a receber; sem ela
-            # no mapa, vale a chave simples (é o que o Diário Consolidado usa).
+            # Linha filha: primeiro a chave COMPOSTA do caminho inteiro
+            # ("mãe › filha", "mãe › grupo › PROVISÃO"), que separa a LOJA das
+            # contas a pagar da LOJA das contas a receber; sem ela no mapa,
+            # vale a chave simples (é o que o Diário Consolidado usa nas filhas).
             if pais[posicao] is not None and detalhes_por_celula:
-                rotulo_mae = str(df.index[pais[posicao]]).replace("\u200b", "").strip()
-                chave_composta = f"{rotulo_mae} › {rotulo_cru}||{coluna}"
+                chave_composta = f"{caminho_txt}||{coluna}"
                 if chave_composta in detalhes_por_celula:
                     chave_celula = chave_composta
             tem_detalhe = bool(detalhes_por_celula) and chave_celula in detalhes_por_celula
@@ -8958,6 +9116,8 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
   .linha-movimento td {{ background:{FUNDO_TABELA_FLUXO}; }}
   .linha-filha th.rotulo {{ padding-left:34px; color:{COLORS['text_muted']}; }}
   .linha-filha td {{ color:{COLORS['text_muted']}; }}
+  .linha-neta th.rotulo {{ padding-left:60px; font-size:12px; }}
+  .linha-neta td {{ font-size:12px; }}
   .seta {{ display:inline-block; width:16px; cursor:pointer; user-select:none;
            color:{COLORS['text_muted']}; }}
   .seta.vazia {{ cursor:default; }}
@@ -9391,7 +9551,7 @@ def tabela_selecionavel(df, chave, tipos_linha=None, linhas_visiveis=None, rotul
     exportavel.index = [str(r).replace("\u200b", "").strip() for r in df.index]
     exportavel.index.name = rotulo_canto or "Linha"
     botao_excel(exportavel, nome_arquivo=nome_excel or chave, colunas_percentual=colunas_percentual,
-                recuos=[1 if p is not None else 0 for p in pais])
+                recuos=niveis)
 
 
 def _peso_ordem_movimento_fin(nome_movimento):
@@ -10857,8 +11017,21 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 return COL_FIN_CANAL
 
             abriveis_m = [str(m) for m in pivot_m.index if _classificar_movimento_fin(m) != "meta"]
+            # 29/10/2026: cada grupo de despesa também abre (PROVISÃO x NF). A
+            # lista leva TODOS os grupos possíveis, abertos ou não e qualquer
+            # que seja a escolha "Detalhe/Canal": o botão é achado pelo índice,
+            # e o índice não pode mudar de uma execução para a outra.
+            if COL_FIN_GRUPO_DESPESA in df_m.columns:
+                for _mov_g in pivot_m.index:
+                    if _classificar_movimento_fin(_mov_g) != "saida":
+                        continue
+                    _rot_g, _ordem_g = rotulos_de_abertura(
+                        df_m.loc[df_m[COL_FIN_MOVIMENTO].astype(str) == str(_mov_g), COL_FIN_GRUPO_DESPESA],
+                        COL_FIN_GRUPO_DESPESA)
+                    abriveis_m += [f"{_mov_g}{SEPARADOR_CAMINHO}{_g}" for _g in _ordem_g]
             comandos_m = botoes_de_abrir(abriveis_m, "fm_linhas_abertas", "fmabrir_")
             abertas_m = [linha for linha, (aberta, _i) in comandos_m.items() if aberta]
+            grupos_abertos_m = [linha for linha in abertas_m if SEPARADOR_CAMINHO in linha]
 
             linhas_exib_m = [linha_saldo_inicial_m]
             indices_exib_m, tipos_exib_m, pais_exib_m = ["SALDO INICIAL"], ["saldo_inicial"], [None]
@@ -10874,11 +11047,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     continue
                 # Título sem valor na coluna vira a filha "(sem ...)", no fim:
                 # assim as filhas somam exatamente a mãe.
-                _sem_m = rotulo_sem_detalhe(coluna_abertura_m)
-                _detalhes_m = (recorte_mae[coluna_abertura_m].astype("object")
-                               .where(recorte_mae[coluna_abertura_m].notna(), "").astype(str).str.strip())
-                _detalhes_m = _detalhes_m.where(_detalhes_m.ne(""), _sem_m)
-                _ordem_m = sorted(set(_detalhes_m) - {_sem_m}) + ([_sem_m] if (_detalhes_m == _sem_m).any() else [])
+                _detalhes_m, _ordem_m = rotulos_de_abertura(recorte_mae[coluna_abertura_m], coluna_abertura_m)
                 for detalhe in _ordem_m:
                     filho = recorte_mae[_detalhes_m == detalhe]
                     piv_filho = _pivot_fluxo_fin(
@@ -10890,8 +11059,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     serie_filho.index = [rotulos_meses_m[p] for p in serie_filho.index]
                     if not serie_filho.any():
                         continue
+                    posicao_filha_m = len(linhas_exib_m)
                     linhas_exib_m.append(serie_filho)
                     indices_exib_m.append(detalhe); tipos_exib_m.append("movimento"); pais_exib_m.append(posicao_mae_m)
+                    # Grupo de despesa aberto: PROVISÃO e NF logo abaixo dele.
+                    if (coluna_abertura_m == COL_FIN_GRUPO_DESPESA
+                            and f"{movimento}{SEPARADOR_CAMINHO}{detalhe}" in grupos_abertos_m):
+                        _doc_m = (tipo_documento_fin(filho[COL_FIN_NUMERO]) if COL_FIN_NUMERO in filho.columns
+                                  else pd.Series(ROTULO_NF, index=filho.index))
+                        for _documento in DOCUMENTOS_FIN:
+                            _neto = filho[_doc_m == _documento]
+                            _piv_neto = (_pivot_fluxo_fin(
+                                _neto, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses_ordenados_m,
+                                posicao_saldo="primeira") if not _neto.empty else pd.DataFrame())
+                            if _piv_neto.empty:
+                                serie_neto = pd.Series(0.0, index=colunas_meses_m)
+                            else:
+                                serie_neto = _piv_neto.iloc[0]
+                                serie_neto.index = [rotulos_meses_m[p] for p in serie_neto.index]
+                            linhas_exib_m.append(serie_neto)
+                            indices_exib_m.append(_documento); tipos_exib_m.append("movimento")
+                            pais_exib_m.append(posicao_filha_m)
             linhas_exib_m.append(linha_total_geral_m)
             indices_exib_m.append(rotulo_total_geral_m); tipos_exib_m.append("total"); pais_exib_m.append(None)
             pivot_m_exibicao = pd.DataFrame(linhas_exib_m)
@@ -10907,7 +11095,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # ficam sem detalhe.
             lancamentos_m, _cortou_m = montar_lancamentos_do_mes_por_celula(
                 df_m, rotulos_meses_m,
-                colunas_detalhe=sorted({_coluna_de_abertura_m(m) for m in abertas_m}))
+                colunas_detalhe=sorted({_coluna_de_abertura_m(m) for m in abertas_m
+                                        if SEPARADOR_CAMINHO not in m}),
+                grupos_abertos=grupos_abertos_m if abrir_por_m != "Canal" else ())
             tabela_selecionavel(
                 pivot_m_exibicao, chave="tabela_mensal", nome_excel="Fluxo Mensal",
                 tipos_linha=tipos_exib_m,
@@ -10922,7 +11112,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             st.caption(
                 "Clique no **▸** da linha para abrir o detalhe logo abaixo dela (a tabela cresce junto); "
                 "contas a receber abre por modalidade e contas a pagar por grupo de despesa, ou tudo por canal, "
-                "conforme a escolha acima. "
+                "conforme a escolha acima. Cada **grupo de despesa** tem a sua seta, que abre o grupo em "
+                "**PROVISÃO** (títulos com \"PROVISÃO\" na coluna Número) e **NF** (todo o resto). "
                 "**Dois cliques num valor** abrem, numa aba nova, todos os lançamentos daquele mês que formam o "
                 "número, com documento, fornecedor e vencimento, e dá para baixar em CSV por lá. As células com "
                 "detalhe aparecem sublinhadas; caixa e banco mostram os lançamentos do primeiro dia do mês, que é "
@@ -12159,19 +12350,27 @@ if st.session_state["painel_escolhido"] == "financeiro":
         # escondido e a tabela precisa nascer já com o estado novo. O contas
         # a pagar nasce ABERTO (pedido de 28/10/2026): a semente entra na
         # sessão antes do botão existir, e a seta fecha quando quiser.
+        # 29/10/2026: cada grupo da projeção também abre (PROVISÃO x NF);
+        # os grupos nascem fechados.
         st.session_state.setdefault("pxr_linhas_abertas", [LINHA_PAGAR_PROJETADO])
-        comandos_pxr = botoes_de_abrir([LINHA_PAGAR_PROJETADO], "pxr_linhas_abertas", "pxrabrir_")
+        comandos_pxr = botoes_de_abrir(
+            [LINHA_PAGAR_PROJETADO] + [f"{LINHA_PAGAR_PROJETADO}{SEPARADOR_CAMINHO}{g}" for g in grupos_do_projetado()],
+            "pxr_linhas_abertas", "pxrabrir_")
         aberta_pxr = bool(comandos_pxr[LINHA_PAGAR_PROJETADO][0])
-        rotulos_pxr, tipos_pxr, pais_pxr = linhas_exibidas_projetado_x_realizado(aberta_pxr)
+        grupos_abertos_pxr = [g for g in grupos_do_projetado()
+                              if comandos_pxr[f"{LINHA_PAGAR_PROJETADO}{SEPARADOR_CAMINHO}{g}"][0]]
+        rotulos_pxr, tipos_pxr, pais_pxr = linhas_exibidas_projetado_x_realizado(aberta_pxr, grupos_abertos_pxr)
 
         if modo_pxr == "Lado a lado por mês":
             _abrev = lambda p, sufixo: f"{MESES_PT_ABREV_FIN[p.month - 1]} {sufixo}"   # noqa: E731
             rot_proj = {p: _abrev(p, "Proj.") for p in _meses_projetado()}
             rot_real = {p: _abrev(p, "Real.") for p in _meses_projetado()}
-            projetado_pxr = tabela_projetada_fin(rot_proj).rename(
-                columns={COLUNA_TOTAL_PROJETADO: "Total Proj."})
-            realizado_pxr = tabela_realizada_fin(df_fin, rot_real).rename(
-                columns={COLUNA_TOTAL_PROJETADO: "Total Real."})
+            projetado_pxr = quadro_exibicao_pxr(tabela_projetada_fin(rot_proj).rename(
+                columns={COLUNA_TOTAL_PROJETADO: "Total Proj."}), rotulos_pxr)
+            realizado_pxr = quadro_exibicao_pxr(
+                tabela_realizada_fin(df_fin, rot_real).rename(columns={COLUNA_TOTAL_PROJETADO: "Total Real."}),
+                rotulos_pxr,
+                realizado_por_documento_pxr(df_fin, rot_real).rename(columns={COLUNA_TOTAL_PROJETADO: "Total Real."}))
             variacao_pxr = pd.DataFrame(
                 variacao_percentual_pxr(realizado_pxr, projetado_pxr), index=projetado_pxr.index,
                 columns=[c.replace("Real.", "Var.%") for c in realizado_pxr.columns])
@@ -12179,21 +12378,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
             for cp, cr, cv in zip(projetado_pxr.columns, realizado_pxr.columns, variacao_pxr.columns):
                 colunas_lado += [cp, cr, cv]
             lado_pxr = pd.concat([projetado_pxr, realizado_pxr, variacao_pxr], axis=1)
-            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, rot_real)
+            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, rot_real, grupos_abertos_pxr)
             tabela_selecionavel(
-                lado_pxr.loc[rotulos_pxr, colunas_lado], chave="tabela_pxr_lado", nome_excel="Projetado x Realizado",
+                lado_pxr[colunas_lado], chave="tabela_pxr_lado", nome_excel="Projetado x Realizado",
                 tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                 comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                 detalhes_por_celula=lancamentos_pxr, rotulo_canto="Linha",
                 colunas_percentual=set(variacao_pxr.columns),
             )
         else:
-            projetado_pxr = tabela_projetada_fin()
-            realizado_pxr = tabela_realizada_fin(df_fin)
+            projetado_pxr = quadro_exibicao_pxr(tabela_projetada_fin(), rotulos_pxr)
+            realizado_pxr = quadro_exibicao_pxr(tabela_realizada_fin(df_fin), rotulos_pxr,
+                                                realizado_por_documento_pxr(df_fin))
             variacao_pxr = pd.DataFrame(
                 variacao_percentual_pxr(realizado_pxr, projetado_pxr),
                 index=projetado_pxr.index, columns=projetado_pxr.columns)
-            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin)
+            lancamentos_pxr, _cortou_pxr = lancamentos_projetado_x_realizado(df_fin, None, grupos_abertos_pxr)
             for titulo, quadro, chave_q, detalhes, percentual in (
                 ("Projetado", projetado_pxr, "tabela_pxr_proj", None, None),
                 ("Realizado", realizado_pxr, "tabela_pxr_real", lancamentos_pxr, None),
@@ -12201,7 +12401,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             ):
                 st.markdown(f"**{titulo}**")
                 tabela_selecionavel(
-                    quadro.loc[rotulos_pxr], chave=chave_q, nome_excel=f"Projetado x Realizado - {titulo}",
+                    quadro, chave=chave_q, nome_excel=f"Projetado x Realizado - {titulo}",
                     tipos_linha=tipos_pxr, pais=pais_pxr, filhas_abertas=True,
                     comandos_abrir=comandos_pxr, prefixo_botao="st-key-pxrabrir_",
                     detalhes_por_celula=detalhes, rotulo_canto=titulo,
@@ -12209,7 +12409,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 )
         st.caption(
             "O *4 - Contas a Pagar* já vem aberto nos grupos da projeção; clique no **▾** para fechar (vale para os "
-            "quadros ao mesmo tempo). **Dois cliques num valor do Realizado** abrem, numa aba nova, os lançamentos "
+            "quadros ao mesmo tempo). Cada grupo tem a sua seta, que abre o realizado dele em **PROVISÃO** e "
+            "**NF** (no projetado essas linhas ficam em branco — a projeção não separa). **Dois cliques num valor do Realizado** abrem, numa aba nova, os lançamentos "
             "do mês que formam o número — na filha, só os do grupo; dá para baixar em CSV por lá. A **Var.%** é "
             "(Realizado − Projetado) ÷ Projetado: negativo é pior que o projetado (recebeu menos ou pagou mais) e "
             "positivo é melhor; fica em branco quando o projetado é zero."
@@ -12407,8 +12608,20 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 abriveis_dc = list(movimentos_dc)
                 if not df_dc_metas.empty:
                     abriveis_dc.append(MOV_RECEBER_META)
+                # 29/10/2026: cada grupo de despesa também abre (PROVISÃO x NF).
+                # Todos os grupos possíveis entram na lista, abertos ou não,
+                # para o índice do botão não mudar entre uma execução e outra.
+                if COL_FIN_GRUPO_DESPESA in df_dc_real.columns:
+                    for _mov_g in movimentos_dc:
+                        if _classificar_movimento_fin(_mov_g) != "saida":
+                            continue
+                        _grupos_dc = sorted(
+                            df_dc_real.loc[df_dc_real[COL_FIN_MOVIMENTO] == _mov_g, COL_FIN_GRUPO_DESPESA]
+                            .dropna().astype(str).str.strip().unique())
+                        abriveis_dc += [f"{_mov_g}{SEPARADOR_CAMINHO}{_g}" for _g in _grupos_dc if _g]
                 comandos_dc = botoes_de_abrir(abriveis_dc, "dc_linhas_abertas")
                 abertas_dc = [linha for linha, (aberta, _i) in comandos_dc.items() if aberta]
+                grupos_abertos_dc = [linha for linha in abertas_dc if SEPARADOR_CAMINHO in linha]
                 for movimento in movimentos_dc:
                     recorte = df_dc_real[df_dc_real[COL_FIN_MOVIMENTO] == movimento]
                     posicao_mae = len(linhas_dc)
@@ -12430,10 +12643,22 @@ if st.session_state["painel_escolhido"] == "financeiro":
                             serie_filho = _serie_por_dia(filho)
                             if not serie_filho.any():
                                 continue
+                            posicao_filha_dc = len(linhas_dc)
                             linhas_dc.append(serie_filho)
                             indices_dc.append(detalhe)
                             tipos_dc.append("movimento")
                             pais_dc.append(posicao_mae)
+                            # Grupo de despesa aberto: PROVISÃO e NF logo abaixo.
+                            if (coluna_abertura == COL_FIN_GRUPO_DESPESA
+                                    and f"{movimento}{SEPARADOR_CAMINHO}{detalhe}" in grupos_abertos_dc):
+                                _doc_dc = (tipo_documento_fin(filho[COL_FIN_NUMERO])
+                                           if COL_FIN_NUMERO in filho.columns
+                                           else pd.Series(ROTULO_NF, index=filho.index))
+                                for _documento in DOCUMENTOS_FIN:
+                                    linhas_dc.append(_serie_por_dia(filho[_doc_dc == _documento]))
+                                    indices_dc.append(_documento)
+                                    tipos_dc.append("movimento")
+                                    pais_dc.append(posicao_filha_dc)
 
                 # Linha da meta (quanto falta no dia), com as filhas quando aberta.
                 if serie_falta_dc is not None:
@@ -12507,6 +12732,23 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     for _chave, _linhas in _parcial.items():
                         lancamentos_dc.setdefault(_chave, _linhas)
                     _cortou_dc = _cortou_dc or _cortou_parcial
+                # Netas dos grupos abertos: "movimento › grupo › PROVISÃO||dia".
+                if grupos_abertos_dc and abrir_por_dc != "Canal" and COL_FIN_GRUPO_DESPESA in df_dc_real.columns:
+                    _grupo_dc = (df_dc_real[COL_FIN_GRUPO_DESPESA].astype("object")
+                                 .where(df_dc_real[COL_FIN_GRUPO_DESPESA].notna(), "").astype(str).str.strip())
+                    _chave_grupo_dc = _por_movimento + SEPARADOR_CAMINHO + _grupo_dc
+                    _escolhidos_dc = _chave_grupo_dc.isin(grupos_abertos_dc)
+                    if _escolhidos_dc.any():
+                        _numeros_dc = (df_dc_real.loc[_escolhidos_dc, COL_FIN_NUMERO]
+                                       if COL_FIN_NUMERO in df_dc_real.columns
+                                       else pd.Series("", index=df_dc_real.index[_escolhidos_dc]))
+                        _parcial, _cortou_parcial = montar_lancamentos_por_celula(
+                            df_dc_real[_escolhidos_dc], rotulos_dias_dc,
+                            _chave_grupo_dc[_escolhidos_dc] + SEPARADOR_CAMINHO
+                            + tipo_documento_fin(_numeros_dc).values)
+                        for _chave, _linhas in _parcial.items():
+                            lancamentos_dc.setdefault(_chave, _linhas)
+                        _cortou_dc = _cortou_dc or _cortou_parcial
                 lancamentos_dc.pop("||", None)
                 _rotulos_dc = _por_movimento
                 # Diagnóstico à vista: quando o duplo clique não responde, a
@@ -12561,7 +12803,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
                     "**▸** da linha para abrir o detalhe — a tabela cresce junto, sem rolagem. "
                     "Contas a receber abre por "
                     "modalidade, contas a pagar por grupo de despesa, ou tudo por canal, "
-                    "conforme a escolha acima. **Dois cliques num valor** abrem, numa aba nova, "
+                    "conforme a escolha acima; cada **grupo de despesa** abre ainda em **PROVISÃO** e **NF** "
+                    "pela sua própria seta. **Dois cliques num valor** abrem, numa aba nova, "
                     "os lançamentos que formam aquele número, com documento e fornecedor — as "
                     "células com detalhe aparecem sublinhadas"
                     + (" (com muitos lançamentos no período, cada célula traz os maiores)"
