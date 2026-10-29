@@ -2615,6 +2615,45 @@ def _lojas_individuais_das_abas(abas):
     return list(dict.fromkeys(lojas))
 
 
+# ---------------------------------------------------------------------------
+# PAINEL EXECUTIVO DENTRO DA CONTROLADORIA (29/10/2026)
+# ---------------------------------------------------------------------------
+# A aba "Painel Executivo" desenha o foco despesas do Painel de TV dentro da
+# própria Controladoria. As duas cargas pesadas (carregar_dados_abas e
+# carregar_dados_por_loja) guardam UMA entrada só, por memória; com a TV e o
+# resto da Controladoria na mesma página, uma visão diferente em cada lugar
+# faria cada clique reler o Excel duas vezes, uma derrubando a outra. Por
+# isso a aba tem caches PRÓPRIOS e pequenos -- e, quando ela pede exatamente o
+# que o resto da página já carregou, usa o cache comum (sem cópia).
+CHAVE_CONTAINER_PAINEL_EXECUTIVO = "painel_executivo_tv"
+
+
+@st.cache_data(ttl=None, max_entries=2, show_spinner=False)
+def carregar_aba_painel_executivo(path_o, path_r, aba):
+    """Orçado e Realizado de UMA aba, para a aba Painel Executivo. Uma aba só
+    pesa pouco; duas entradas cobrem ir e voltar entre duas visões."""
+    ler = getattr(carregar_dados_abas, "__wrapped__", None)
+    return ler(path_o, path_r, [aba]) if ler else carregar_dados_abas(path_o, path_r, [aba])
+
+
+@st.cache_data(ttl=None, max_entries=1, show_spinner=False)
+def carregar_lojas_painel_executivo(path_o, path_r, lojas):
+    """As lojas de uma visão, para o bloco por loja da aba Painel Executivo."""
+    ler = getattr(carregar_dados_por_loja, "__wrapped__", None)
+    return ler(path_o, path_r, list(lojas)) if ler else carregar_dados_por_loja(path_o, path_r, list(lojas))
+
+
+def carregar_lojas_tv(path_o, path_r, lojas, embutido=False):
+    """Lojas para o bloco por loja do foco despesas. No Painel de TV
+    (página própria) é o cache comum, como sempre foi. Na aba da
+    Controladoria, a lista das 21 unidades -- a mesma que a Visão Geral
+    carrega -- continua no cache comum (sem cópia); qualquer outra visão vai
+    para o cache próprio da aba, para não derrubar o da Visão Geral."""
+    if not embutido or list(lojas) == list(VISOES_CONSOLIDADAS.get("DRE CONSOLIDADO", [])):
+        return carregar_dados_por_loja(path_o, path_r, lojas)
+    return carregar_lojas_painel_executivo(path_o, path_r, tuple(lojas))
+
+
 def _planos_sem_linha_dre(df_diario):
     """Os planos de contas do DIÁRIO que não têm linha da DRE correspondente.
     São lançamentos que nenhuma linha da DRE alcança -- se ninguém os
@@ -4021,18 +4060,22 @@ def _linha_por_numero_tv(linhas, numero):
 
 def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                        meses_ativos, por_mes, rec_liq, path_orc=None,
-                       path_real=None, abas_visao=None):
+                       path_real=None, abas_visao=None, embutido=False):
     """A ramificação de despesas: KPIs, gráficos e o aluguel loja a loja.
 
     NÃO lista a DRE inteira -- a árvore para no nível 2. E TODO bloco muda de
     forma no modo mês a mês: um bloco que mostra o mesmo número acumulado nos
     dois modos é um bloco que ignora o filtro.
+
+    `embutido` (29/10/2026): desenhado dentro da aba Painel Executivo da
+    Controladoria. Aí não há para onde "voltar" -- o botão some.
     """
-    st.markdown(
-        '<a href="?modo=tv" target="_self" class="tv-btn-voltar">'
-        '<span class="seta">‹</span> Painel executivo</a>',
-        unsafe_allow_html=True,
-    )
+    if not embutido:
+        st.markdown(
+            '<a href="?modo=tv" target="_self" class="tv-btn-voltar">'
+            '<span class="seta">‹</span> Painel executivo</a>',
+            unsafe_allow_html=True,
+        )
     col_nome = "Nome" if "Nome" in df_ref.columns else df_ref.columns[0]
     linhas_dre = list(df_ref[col_nome].dropna().unique().astype(str))
     cols_mes = [m_map[m] for m in meses_ativos]
@@ -4438,7 +4481,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
 
     # As lojas são carregadas uma vez, para o bloco do aluguel.
     _lojas = _lojas_individuais_das_abas(abas_visao or [])
-    _dados_loja = (carregar_dados_por_loja(path_orc, path_real, _lojas)
+    _dados_loja = (carregar_lojas_tv(path_orc, path_real, _lojas, embutido)
                    if (_lojas and path_real) else {})
 
     def _da_loja(df_loja, chaves, colunas):
@@ -4750,7 +4793,15 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 _vaga_mensal.markdown("".join(tabela), unsafe_allow_html=True)
 
 
-def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
+def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", embutido=False):
+    """Painel de TV (?modo=tv) e a ramificação de despesas (foco="despesas").
+
+    `embutido` (29/10/2026): a mesma tela desenhada DENTRO da aba Painel
+    Executivo da Controladoria, num st.container com a chave
+    CHAVE_CONTAINER_PAINEL_EXECUTIVO. Muda só o que é de página inteira: não
+    esconde barra lateral nem cabeçalho, o CSS dos seletores vale só dentro do
+    contêiner, não há tela cheia, rodapé de TV nem redesenho automático (o
+    sono de uma hora travaria a página), e as cargas usam os caches da aba."""
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
         "07/2026", "08/2026", "09/2026", "10/2026", "11/2026", "12/2026",
@@ -4776,11 +4827,14 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     # O CSS abaixo é global de propósito: esta função renderiza a página
     # inteira do modo TV e retorna antes do painel normal, então não há
     # risco de afetar o painel principal -- e um seletor global funciona de
-    # forma bem mais confiável do que tentar mirar a coluna específica. ----
+    # forma bem mais confiável do que tentar mirar a coluna específica.
+    # EMBUTIDO na Controladoria (29/10/2026) ele vale só dentro do contêiner
+    # da aba: global, mudaria os seletores da barra lateral e das outras abas. ----
+    _escopo = f".st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} " if embutido else ""
     st.markdown(
         f"""
         <style>
-            div[data-baseweb="select"] > div {{
+            {_escopo}div[data-baseweb="select"] > div {{
                 min-height: 30px !important;
                 font-size: 11px !important; letter-spacing: 0.2px;
                 padding: 2px 8px !important;
@@ -4792,12 +4846,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             }}
             /* O texto do valor selecionado precisa de linha cheia, senão as
                letras com descida (g, ç, p) ficam cortadas na borda de baixo. */
-            div[data-baseweb="select"] div[data-baseweb="select"] > div > div,
-            div[data-baseweb="select"] > div > div {{
+            {_escopo}div[data-baseweb="select"] div[data-baseweb="select"] > div > div,
+            {_escopo}div[data-baseweb="select"] > div > div {{
                 line-height: 1.5 !important; overflow: visible !important;
             }}
-            div[data-baseweb="select"] svg {{ width: 13px !important; height: 13px !important; opacity: 0.5; }}
-            div[data-testid="stSelectbox"] {{ margin-bottom: 0 !important; }}
+            {_escopo}div[data-baseweb="select"] svg {{ width: 13px !important; height: 13px !important; opacity: 0.5; }}
+            {_escopo}div[data-testid="stSelectbox"] {{ margin-bottom: 0 !important; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -4884,7 +4938,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
         st.session_state["_tv_modo"] = tipo_visao_tv
 
     abas_para_tv = [aba_escolhida]
-    list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
+    if embutido:
+        list_df_orc_tv, list_df_real_tv = carregar_aba_painel_executivo(path_orc, path_real, aba_escolhida)
+    else:
+        list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
 
     df_ref_tv = list_df_real_tv[0] if list_df_real_tv else pd.DataFrame()
     colunas_validas_tv = [m for m in meses_cols_tv if m in df_ref_tv.columns]
@@ -4925,9 +4982,21 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
         m_map_ate_hoje = dict(m_map_tv)
 
     # ---- CSS "quiosque tech": some com sidebar/header, grade de fundo, glow ----
-    st.markdown(
-        f"""
-        <style>
+    # A parte de PÁGINA INTEIRA (esconder barra lateral e cabeçalho, margens,
+    # fundo) só existe no Painel de TV; embutido na Controladoria ela sumiria
+    # com a barra lateral da Controladoria. O espaçamento entre blocos vale
+    # só dentro do contêiner da aba.
+    _css_pagina_tv = (f"""
+            .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} div[data-testid="stVerticalBlock"] {{ gap: 0.5rem !important; }}
+            /* Na Controladoria a área é mais estreita que a TV (a barra
+               lateral fica aberta): com o nome da conta numa linha só e os
+               110px fixos das colunas de número, a última coluna de
+               estouros/economias saía do quadro. Aqui o nome quebra em duas
+               linhas e os números ficam com a largura que precisam. */
+            .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} .tv-estouros td:not(.rot),
+            .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} .tv-estouros th:not(.rot) {{ width:auto; min-width:68px; }}
+            .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} .tv-estouros td.rot {{ white-space:normal; }}
+    """ if embutido else f"""
             [data-testid="stSidebar"], header[data-testid="stHeader"], footer {{ display: none !important; }}
             div[data-testid="stAppViewContainer"] {{ padding-top: 0 !important; }}
             div[data-testid="stAppViewContainer"] > .main {{ padding-top: 0 !important; }}
@@ -4942,6 +5011,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             .stApp {{
                 background: {COLORS["bg"]} !important;
             }}
+    """)
+    st.markdown(
+        f"""
+        <style>
+            {_css_pagina_tv}
             @keyframes tv-pulse {{ 0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} }}
             @keyframes tv-marquee {{ 0% {{ transform: translateX(100%); }} 100% {{ transform: translateX(-100%); }} }}
             .tv-header {{
@@ -5346,6 +5420,10 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
     total_saidas_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
     total_custos_desp_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi
 
+    # Embutido na Controladoria não há redesenho automático: o subtítulo não
+    # pode prometer um.
+    _sub_tv = (legenda_periodo_tv if embutido
+               else f"{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}")
     with col_head_a:
         st.markdown(
             html_compacto(f"""
@@ -5354,7 +5432,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
                     <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
                     <div>
                         <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}</div>
+                        <div class="sub">{_sub_tv}</div>
                     </div>
                 </div>
             </div>
@@ -5430,6 +5508,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
             list_df_real_tv, list_df_orc_tv, df_ref_tv, cols_ytd, m_map_tv,
             meses_ativos_tv, _abrir_por_mes_tv_kpi, rec_liq_real,
             path_orc=path_orc, path_real=path_real, abas_visao=[aba_escolhida],
+            embutido=embutido,
         )
     else:
         st.markdown(
@@ -6176,17 +6255,12 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
         _vaga_limpa.empty()          # apaga o fantasma da coluna anterior
         if _html_grupos_tv:
             with _vaga_usada.container():
-                # O TÍTULO É O LINK para a ramificação. Botão solto ao lado
-                # ocuparia espaço numa tela que já disputa cada pixel, e o
-                # título já diz exatamente do que a outra tela trata. A seta
-                # indica que dá para clicar -- sem ela ninguém descobriria.
+                # 29/10/2026: o título DEIXOU de ser link para a ramificação.
+                # O detalhe das despesas mora agora na aba Painel Executivo da
+                # Controladoria, que é por onde se entra nele.
                 st.markdown(
-                    '<a href="?modo=tv&foco=despesas" target="_self" '
-                    'style="text-decoration:none;">'
-                    '<div class="tv-section-title tv-link">'
-                    '🏢 Despesas Operacionais — Principais Grupos'
-                    f'<span style="color:{COLORS["primary"]};font-size:11px;'
-                    'margin-left:8px;">abrir detalhe ›</span></div></a>',
+                    '<div class="tv-section-title">'
+                    '🏢 Despesas Operacionais — Principais Grupos</div>',
                     unsafe_allow_html=True)
                 st.markdown(_html_grupos_tv, unsafe_allow_html=True)
 
@@ -6226,6 +6300,11 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral"):
         f"""<div class="tv-ticker-wrap"><div class="tv-ticker">{ticker_html}</div></div>""",
         unsafe_allow_html=True,
     )
+    # Embutido na Controladoria, a tela acaba no letreiro: tela cheia, rodapé
+    # de TV ("Sair do modo TV") e o redesenho automático são da TV de parede.
+    # O sono de uma hora, aqui, travaria a página inteira da Controladoria.
+    if embutido:
+        return
 
     # Botão de tela cheia + aviso -- tudo dentro do MESMO componente (só ele
     # roda JavaScript de verdade). O aviso/botão somem sozinhos assim que a
@@ -14480,22 +14559,8 @@ if st.sidebar.button("🔄 Atualizar Dados", width="stretch"):
 
 st.sidebar.caption(f"Última atualização: {datetime.now(FUSO_BR).strftime('%d/%m/%Y às %H:%M')}")
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**🖥️ Painel para TV**")
-st.sidebar.caption("Abre uma visão executiva (somente leitura, atualização automática) para deixar exibida numa tela/TV da empresa.")
-st.sidebar.markdown(
-    f"""
-    <a href="?modo=tv" target="_blank" style="text-decoration:none;">
-        <div style="
-            background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
-            border-radius:8px; padding:8px 12px; text-align:center; font-weight:600; font-size:13.5px;
-            margin-bottom: 6px;">
-            📺 Abrir Painel de TV
-        </div>
-    </a>
-    """,
-    unsafe_allow_html=True,
-)
+# 29/10/2026: o botão do Painel de TV saiu daqui -- mora agora no topo da
+# aba Painel Executivo, junto da tela que ele abre em tamanho de parede.
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔀 Trocar Painel", width="stretch"):
@@ -19511,6 +19576,7 @@ if departamento_ativo:
         f"📤 Emitir Relatório — {_nome_dept_abas}",
     ])
     tab6 = None
+    tab_exec = None  # Painel Executivo é visão de companhia, como o Diagnóstico
     tab_diag = None  # Diagnóstico Executivo é visão de companhia, não de departamento
     tab_fech = None  # Checklist de fechamento é operação da Controladoria
     tab_orc = None   # O orçamento é montado pela Controladoria, visão inteira
@@ -19521,6 +19587,7 @@ else:
         "📊 Visão Geral & Charts",
         "📋 DRE Orçado X Realizado",
         "📅 Histórico Mensal",
+        "🖥️ Painel Executivo",
         "🔬 Diagnóstico Executivo",
         "🔮 Previsões & Trends",
         "📤 Emitir Relatório",
@@ -19531,9 +19598,9 @@ else:
     ]
     if eh_admin:
         _nomes_abas.append("👥 Usuários")
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int, tab6 = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_exec, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int, tab6 = st.tabs(_nomes_abas)
     else:
-        tab1, tab2, tab3, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int = st.tabs(_nomes_abas)
+        tab1, tab2, tab3, tab_exec, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int = st.tabs(_nomes_abas)
         tab6 = None
 
 # ---------------------------------------------------------------------------
@@ -21287,6 +21354,41 @@ if departamento_ativo:
 # ---------------------------------------------------------------------------
 # ABA: DIAGNÓSTICO EXECUTIVO (break-even, curva ABC, anomalias, forecast)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# ABA: PAINEL EXECUTIVO (29/10/2026)
+# ---------------------------------------------------------------------------
+# O foco despesas do Painel de TV (?modo=tv&foco=despesas), INTEIRO e como
+# está -- filtros próprios de visão, meses e Acumulado/Mês a mês, KPIs,
+# gráficos, estouros e economias, despesa por loja e o letreiro -- desenhado
+# aqui dentro, sem abrir aba nova do navegador. É a MESMA função do Painel de
+# TV (renderizar_painel_tv com embutido=True): uma tela só, mantida num
+# lugar só. No topo, o botão que abre o Painel de TV na aba nova, como a
+# barra lateral fazia.
+if not departamento_ativo and tab_exec is not None:
+    with tab_exec:
+        _col_exec_txt, _col_exec_botao = st.columns([3, 1], vertical_alignment="center")
+        with _col_exec_txt:
+            st.caption("O detalhe das despesas do Painel de TV, com os filtros próprios dele (visão, meses e "
+                       "Acumulado/Mês a mês) — independentes da barra lateral. O botão ao lado abre o Painel de TV "
+                       "completo numa aba nova, para deixar exibido na tela da empresa.")
+        with _col_exec_botao:
+            st.markdown(
+                f"""
+                <a href="?modo=tv" target="_blank" style="text-decoration:none;">
+                    <div style="
+                        background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
+                        border-radius:8px; padding:8px 12px; text-align:center; font-weight:600; font-size:13.5px;
+                        margin-bottom: 6px;">
+                        📺 Abrir Painel de TV
+                    </div>
+                </a>
+                """,
+                unsafe_allow_html=True,
+            )
+        with st.container(key=CHAVE_CONTAINER_PAINEL_EXECUTIVO):
+            renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="despesas", embutido=True)
+
 if not departamento_ativo and tab_diag is not None:
     with tab_diag:
         st.markdown(

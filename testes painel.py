@@ -6410,12 +6410,14 @@ class TesteRamificacaoDeDespesas(unittest.TestCase):
 class TesteTelaDaRamificacao(unittest.TestCase):
     """Travas do roteamento e do corpo da ramificacao."""
 
-    def test_o_titulo_dos_grupos_leva_a_ramificacao(self):
-        """Botao solto ao lado ocuparia espaco numa tela que ja disputa cada
-        pixel, e o titulo ja diz do que a outra tela trata."""
-        self.assertIn('href="?modo=tv&foco=despesas"', FONTE)
-        self.assertIn("abrir detalhe ›", FONTE)
-        self.assertIn('href="?modo=tv"', FONTE, "sumiu o caminho de volta")
+    def test_o_titulo_dos_grupos_nao_e_mais_link(self):
+        """29/10/2026: o detalhe das despesas mora na aba Painel Executivo da
+        Controladoria, e e por la que se entra nele. O titulo do bloco no
+        Painel de TV deixou de levar a ramificacao."""
+        self.assertNotIn('href="?modo=tv&foco=despesas"', FONTE)
+        self.assertNotIn("abrir detalhe ›", FONTE)
+        self.assertIn("🏢 Despesas Operacionais — Principais Grupos</div>", FONTE)
+        self.assertIn('href="?modo=tv"', FONTE, "sumiu o caminho para o Painel de TV")
 
     def test_a_ramificacao_reusa_o_cabecalho_e_o_rodape(self):
         """Duplicar o cabecalho numa funcao nova seria manter dois filtros que
@@ -6617,7 +6619,10 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         vezes seriam 21 abas lidas em dobro a cada desenho."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        self.assertEqual(corpo.count("carregar_dados_por_loja("), 1)
+        # 29/10/2026: a carga passa por carregar_lojas_tv (cache proprio da
+        # aba Painel Executivo quando embutido) -- continua UMA chamada so.
+        self.assertEqual(corpo.count("carregar_lojas_tv("), 1)
+        self.assertEqual(corpo.count("carregar_dados_por_loja("), 0)
         self.assertEqual(corpo.count("def _da_loja("), 1)
 
 
@@ -9961,6 +9966,88 @@ class TestePlanilhaDeMetas(unittest.TestCase):
         self.assertIn('@st.cache_data(ttl=None, show_spinner=False, max_entries=2)\ndef ler_metas_recebimento(', FONTE)
         i = FONTE.index("# ---- Conferência das metas em vigor")
         self.assertIn("if eh_admin:", FONTE[i:i + 300], "a conferencia e so para admin")
+
+
+class TestePainelExecutivoNaControladoria(unittest.TestCase):
+    """29/10/2026: a aba Painel Executivo (entre Historico Mensal e
+    Diagnostico Executivo) desenha o foco despesas do Painel de TV dentro da
+    Controladoria; o botao do Painel de TV saiu da barra lateral para o topo
+    dessa aba."""
+
+    def test_aba_no_lugar_pedido(self):
+        i = FONTE.index("    _nomes_abas = [")
+        lista = FONTE[i:FONTE.index("]", i)]
+        ordem = [n for n in ("📅 Histórico Mensal", "🖥️ Painel Executivo", "🔬 Diagnóstico Executivo") if n in lista]
+        self.assertEqual(ordem, ["📅 Histórico Mensal", "🖥️ Painel Executivo", "🔬 Diagnóstico Executivo"])
+        self.assertLess(lista.index("📅 Histórico Mensal"), lista.index("🖥️ Painel Executivo"))
+        self.assertLess(lista.index("🖥️ Painel Executivo"), lista.index("🔬 Diagnóstico Executivo"))
+        self.assertEqual(FONTE.count("tab1, tab2, tab3, tab_exec, tab_diag, tab4, tab5, tab_fech, tab_orc, tab_rev, tab_int"), 2,
+                         "as duas desmontagens (admin e nao admin) levam a aba nova na posicao certa")
+        self.assertIn("tab_exec = None  # Painel Executivo", FONTE, "no modo departamento ela nao existe")
+
+    def test_aba_desenha_o_foco_despesas_embutido_e_o_botao_no_topo(self):
+        i = FONTE.index("if not departamento_ativo and tab_exec is not None:")
+        bloco = FONTE[i:FONTE.index("if not departamento_ativo and tab_diag is not None:", i)]
+        i_botao = bloco.index('<a href="?modo=tv" target="_blank"')
+        i_cont = bloco.index("with st.container(key=CHAVE_CONTAINER_PAINEL_EXECUTIVO):")
+        self.assertLess(i_botao, i_cont, "o botao fica no topo da aba, antes da tela")
+        self.assertIn('renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="despesas", embutido=True)',
+                      bloco[i_cont:])
+
+    def test_botao_saiu_da_barra_lateral_da_controladoria(self):
+        # Sobra um so: o da barra lateral do Financeiro.
+        self.assertEqual(FONTE.count('st.sidebar.markdown("**🖥️ Painel para TV**")'), 1)
+        i_fin = FONTE.index('if st.session_state["painel_escolhido"] == "financeiro":')
+        i_ctrl = FONTE.index("# Se chegou até aqui, painel_escolhido == \"controladoria\"")
+        self.assertIn('st.sidebar.markdown("**🖥️ Painel para TV**")', FONTE[i_fin:i_ctrl])
+
+    def test_embutido_nao_mexe_na_pagina_nem_trava(self):
+        i = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[i:FONTE.index("\nif ", i)]
+        self.assertIn("def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco=\"geral\", embutido=False):", corpo)
+        # a parte de pagina inteira do CSS so existe fora da aba
+        i_css = corpo.index("_css_pagina_tv = (")
+        trecho_css = corpo[i_css:corpo.index("st.markdown(", i_css)]
+        partes = trecho_css.split(" if embutido else ")
+        self.assertNotIn("stSidebar", partes[0], "embutido nao pode esconder a barra lateral da Controladoria")
+        self.assertIn("stSidebar", partes[1])
+        self.assertIn('_escopo = f".st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} " if embutido else ""', corpo)
+        self.assertIn("{_escopo}div[data-baseweb=\"select\"] > div {{", corpo)
+        # na aba (mais estreita que a TV) o nome da conta quebra linha nos estouros/economias
+        self.assertIn(".tv-estouros td.rot {{ white-space:normal; }}", partes[0])
+        # a tela embutida acaba no letreiro: sem tela cheia, rodape e sono
+        i_ret = corpo.index("    if embutido:\n        return")
+        self.assertLess(corpo.index("tv-ticker-wrap"), i_ret)
+        self.assertLess(i_ret, corpo.rindex("requestFullscreen"))   # rindex: o comentario do return cita o nome
+        self.assertLess(i_ret, corpo.rindex("Sair do modo TV"))   # rindex: o comentario do return cita o nome
+        self.assertLess(i_ret, corpo.rindex("time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)"))   # rindex: o comentario do return cita o nome
+        self.assertIn("carregar_aba_painel_executivo(path_orc, path_real, aba_escolhida)", corpo)
+        self.assertIn("embutido=embutido,", corpo, "o corpo das despesas sabe que esta embutido")
+        j = FONTE.index("def _corpo_despesas_tv(")
+        desp = FONTE[j:FONTE.index("\ndef ", j + 10)]
+        self.assertLess(desp.index("if not embutido:"), desp.index('class="tv-btn-voltar"'),
+                        "dentro da Controladoria nao ha para onde voltar")
+
+    def test_lojas_da_aba_nao_derrubam_o_cache_da_visao_geral(self):
+        chamadas = []
+        ns = carregar(["carregar_lojas_tv"], ["VISOES_CONSOLIDADAS", "GRUPO_ABPR", "GRUPO_VD", "GRUPO_LJ_GA",
+                                              "GRUPO_LJ_CONSOLIDADO"],
+                      extras={"carregar_dados_por_loja": lambda o, r, l: chamadas.append(("comum", tuple(l))) or {},
+                              "carregar_lojas_painel_executivo": lambda o, r, l: chamadas.append(("aba", l)) or {}})
+        unidades = list(ns["VISOES_CONSOLIDADAS"]["DRE CONSOLIDADO"])
+        ns["carregar_lojas_tv"]("o", "r", ["LJ X"])
+        ns["carregar_lojas_tv"]("o", "r", unidades, embutido=True)
+        ns["carregar_lojas_tv"]("o", "r", ["LJ X", "LJ Y"], embutido=True)
+        self.assertEqual([c[0] for c in chamadas], ["comum", "comum", "aba"])
+        self.assertEqual(chamadas[2][1], ("LJ X", "LJ Y"), "cache proprio recebe tupla (chave de cache)")
+
+    def test_caches_da_aba_sao_pequenos(self):
+        for funcao, teto in (("carregar_aba_painel_executivo", "max_entries=2"),
+                             ("carregar_lojas_painel_executivo", "max_entries=1")):
+            i = FONTE.index(f"def {funcao}(")
+            self.assertIn(teto, FONTE[FONTE.rindex("@st.cache", 0, i):i])
+        # e existem antes de o Painel de TV ser desenhado (ele roda no meio do arquivo)
+        self.assertLess(FONTE.index("def carregar_lojas_tv("), FONTE.index('if st.query_params.get("modo") == "tv":'))
 
 
 if __name__ == "__main__":
