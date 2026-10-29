@@ -6602,6 +6602,15 @@ EMAILS_FINANCEIRO_PERMITIDOS = {
     "diretoria.financeira@grupobeea.com.br",
     "analista.gestaofinanceira@grupobeea.com.br",
     "analista.60371@grupobeea.com.br",
+    "analista.60376@grupobeea.com.br",
+}
+
+# Quem entra SÓ no Financeiro (29/10/2026): o acesso criado para o
+# fechamento de caixa não vê a Controladoria. No hub o cartão da
+# Controladoria aparece bloqueado, e a URL direta é devolvida ao hub.
+# Quem está aqui precisa estar também em EMAILS_FINANCEIRO_PERMITIDOS.
+EMAILS_SO_FINANCEIRO = {
+    "analista.60376@grupobeea.com.br",
 }
 
 # ============================================================================
@@ -6617,6 +6626,7 @@ if st.session_state["painel_escolhido"] is None:
     _usuario_hub = st.session_state.get("usuario_logado") or {}
     _email_hub = str(_usuario_hub.get("email", "")).strip().lower()
     _pode_financeiro = _email_hub in EMAILS_FINANCEIRO_PERMITIDOS
+    _pode_controladoria = _email_hub not in EMAILS_SO_FINANCEIRO
 
     st.markdown(
         html_compacto(f"""
@@ -6762,13 +6772,19 @@ if st.session_state["painel_escolhido"] is None:
     # pelo CSS, então elas só espremiam os cartões.
     col_hub_a, col_hub_b = st.columns(2, gap="medium")
     with col_hub_a:
+        _classe_ctrl = "hub-card" if _pode_controladoria else "hub-card bloqueado"
+        _texto_ctrl = (
+            "Orçado x realizado da DRE, evolução mensal, diagnóstico e emissão "
+            "de relatórios por departamento."
+            if _pode_controladoria else
+            "Acesso restrito. Este usuário entra só no Painel Financeiro."
+        )
         st.markdown(
             html_compacto(f"""
-            <div class="hub-card" style="--hub-cor:{COLORS['primary']};">
+            <div class="{_classe_ctrl}" style="--hub-cor:{COLORS['primary']};">
                 <div class="marca"></div>
                 <h3>Controladoria</h3>
-                <p>Orçado x realizado da DRE, evolução mensal, diagnóstico e emissão
-                   de relatórios por departamento.</p>
+                <p>{_texto_ctrl}</p>
                 <div class="hub-tags">
                     <span>DRE</span><span>Histórico</span><span>Previsões</span><span>Relatórios</span>
                 </div>
@@ -6776,7 +6792,11 @@ if st.session_state["painel_escolhido"] is None:
             """),
             unsafe_allow_html=True,
         )
-        if st.button("Acessar Controladoria", width="stretch", key="btn_hub_controladoria"):
+        if st.button(
+            "Acessar Controladoria" if _pode_controladoria else "Sem acesso",
+            width="stretch", key="btn_hub_controladoria",
+            disabled=not _pode_controladoria,
+        ):
             st.session_state["painel_escolhido"] = "controladoria"
             st.rerun()
 
@@ -10158,6 +10178,13 @@ def preparar_fluxo_caixa(base_data):
     return df, None, total_lido, sem_data, diagnostico
 
 
+# Porta dos fundos fechada: quem é só do Financeiro e chegar aqui com a
+# Controladoria escolhida (sessão antiga, URL) volta para o hub.
+if (st.session_state["painel_escolhido"] == "controladoria"
+        and str(usuario_atual.get("email", "")).strip().lower() in EMAILS_SO_FINANCEIRO):
+    st.session_state["painel_escolhido"] = None
+    st.rerun()
+
 if st.session_state["painel_escolhido"] == "financeiro":
     # Nada é escondido aqui: a barra lateral e o cabeçalho nativo do
     # Streamlit ficam como na Controladoria. É no cabeçalho nativo que mora
@@ -10309,9 +10336,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
     )
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🔀 Trocar Painel", width="stretch", key="fin_btn_trocar"):
-        st.session_state["painel_escolhido"] = None
-        st.rerun()
+    if email_atual_financeiro not in EMAILS_SO_FINANCEIRO:
+        if st.sidebar.button("🔀 Trocar Painel", width="stretch", key="fin_btn_trocar"):
+            st.session_state["painel_escolhido"] = None
+            st.rerun()
 
     st.sidebar.markdown("---")
     _perfil_label_fin = "Administrador" if eh_admin else "Visualização"

@@ -9633,6 +9633,32 @@ class TestePefXVendaRealizada(unittest.TestCase):
         self.assertEqual(origem, ""); self.assertTrue(tabela.empty)
 
 
+class TesteUsuarioSoDoFinanceiro(unittest.TestCase):
+    """29/10/2026: o acesso do fechamento de caixa entra so no Painel
+    Financeiro. A lista EMAILS_SO_FINANCEIRO fecha a Controladoria nas tres
+    portas: o cartao do hub, a URL direta e o botao Trocar Painel."""
+
+    def test_lista_e_coerente_com_a_de_permitidos(self):
+        ns = carregar([], ["EMAILS_SO_FINANCEIRO", "EMAILS_FINANCEIRO_PERMITIDOS"])
+        self.assertIn("analista.60376@grupobeea.com.br", ns["EMAILS_SO_FINANCEIRO"])
+        self.assertTrue(ns["EMAILS_SO_FINANCEIRO"] <= ns["EMAILS_FINANCEIRO_PERMITIDOS"],
+                        "quem e so do Financeiro precisa poder entrar no Financeiro")
+        self.assertNotIn("controladoria@grupobeea.com.br", ns["EMAILS_SO_FINANCEIRO"])
+
+    def test_as_tres_portas_da_controladoria_fecham(self):
+        i = FONTE.index('if st.session_state["painel_escolhido"] is None:')
+        hub = FONTE[i:i + 14000]
+        self.assertIn("_pode_controladoria = _email_hub not in EMAILS_SO_FINANCEIRO", hub)
+        self.assertIn("disabled=not _pode_controladoria", hub, "o botao da Controladoria nasce desligado")
+        self.assertIn('"Acessar Controladoria" if _pode_controladoria else "Sem acesso"', hub)
+        self.assertIn('if (st.session_state["painel_escolhido"] == "controladoria"\n'
+                      '        and str(usuario_atual.get("email", "")).strip().lower() in EMAILS_SO_FINANCEIRO):', FONTE,
+                      "URL direta volta ao hub")
+        j = FONTE.index('key="fin_btn_trocar"')
+        self.assertIn("if email_atual_financeiro not in EMAILS_SO_FINANCEIRO:", FONTE[j - 200:j],
+                      "sem Trocar Painel para quem so tem um painel")
+
+
 if __name__ == "__main__":
     print(f"Testando: {CAMINHO_APP}\n" + "=" * 62)
     unittest.main(argv=[sys.argv[0]], verbosity=2, exit=True)
