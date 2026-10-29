@@ -9972,7 +9972,8 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
     """29/10/2026: a aba Painel Executivo (entre Historico Mensal e
     Diagnostico Executivo) desenha o foco despesas do Painel de TV dentro da
     Controladoria; o botao do Painel de TV saiu da barra lateral para o topo
-    dessa aba."""
+    dessa aba. 29/10/2026 (tarde): sem o cabecalho da TV na aba; visao e
+    periodo seguem a barra lateral; so o Acumulado/Mes a mes e da aba."""
 
     def test_aba_no_lugar_pedido(self):
         i = FONTE.index("    _nomes_abas = [")
@@ -9988,11 +9989,83 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
     def test_aba_desenha_o_foco_despesas_embutido_e_o_botao_no_topo(self):
         i = FONTE.index("if not departamento_ativo and tab_exec is not None:")
         bloco = FONTE[i:FONTE.index("if not departamento_ativo and tab_diag is not None:", i)]
-        i_botao = bloco.index('<a href="?modo=tv" target="_blank"')
         i_cont = bloco.index("with st.container(key=CHAVE_CONTAINER_PAINEL_EXECUTIVO):")
-        self.assertLess(i_botao, i_cont, "o botao fica no topo da aba, antes da tela")
-        self.assertIn('renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="despesas", embutido=True)',
-                      bloco[i_cont:])
+        i_botao = bloco.index('<a href="?modo=tv" target="_blank"')
+        i_tela = bloco.index("renderizar_painel_tv(")
+        self.assertLess(i_cont, i_botao)
+        self.assertLess(i_botao, i_tela, "o botao fica no topo da aba, antes da tela")
+        self.assertIn('foco="despesas", embutido=True,', bloco[i_tela:])
+
+    def test_botao_do_painel_de_tv_ficou_pequeno(self):
+        # 29/10/2026 (tarde): antes era um bloco de largura cheia, 13,5px e
+        # 8px de folga; agora e um botao do tamanho do texto, alinhado a direita.
+        i = FONTE.index("if not departamento_ativo and tab_exec is not None:")
+        bloco = FONTE[i:FONTE.index("if not departamento_ativo and tab_diag is not None:", i)]
+        botao = bloco[bloco.index('<a href="?modo=tv"'):bloco.index("</a>", bloco.index('<a href="?modo=tv"'))]
+        self.assertIn("display:inline-block", botao)
+        self.assertIn("font-size:12px", botao)
+        self.assertIn("padding:3px 10px", botao)
+        self.assertNotIn("font-size:13.5px", botao)
+        self.assertIn('text-align:right;', bloco)
+
+    def test_aba_segue_a_barra_lateral(self):
+        # Visao e periodo da aba sao os da barra lateral da Controladoria; os
+        # dados sao os que a pagina ja carregou (nenhuma leitura nova).
+        i = FONTE.index("if not departamento_ativo and tab_exec is not None:")
+        bloco = FONTE[i:FONTE.index("if not departamento_ativo and tab_diag is not None:", i)]
+        self.assertIn('filtros_externos={"vaga_tipo": _col_exec_tipo, "orc": list_df_orc, "real": list_df_real,', bloco)
+        self.assertIn('"abas": abas_para_carregar, "colunas": cols_kpi})', bloco)
+        self.assertIn("{label_visao}** · {label_periodo_kpi}", bloco, "a aba diz o que esta mostrando")
+        self.assertNotIn("independentes da barra lateral", bloco)
+        j = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[j:FONTE.index("\nif ", j)]
+        self.assertIn('list_df_orc_tv, list_df_real_tv = filtros_externos["orc"], filtros_externos["real"]', corpo)
+        self.assertIn('abas_visao_tv = list(filtros_externos["abas"])', corpo)
+        self.assertIn("abas_visao=abas_visao_tv,", corpo, "o bloco por loja usa as lojas da visao da barra lateral")
+        self.assertNotIn("abas_visao=[aba_escolhida]", corpo)
+
+    def test_meses_da_aba_vem_do_periodo_da_barra_lateral(self):
+        j = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[j:FONTE.index("\nif ", j)]
+        linha = "meses_escolhidos_tv = [n for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in _colunas_externas]"
+        self.assertIn(linha, corpo)
+        nomes = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO",
+                 "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
+        cols = [f"{m:02d}/2026" for m in range(1, 13)]
+        for periodo, esperado in ((cols[:10], nomes[:10]),                  # Mes Selecionado: YTD
+                                  (["03/2026", "01/2026"], ["JANEIRO", "MARÇO"]),   # Multiplos, em ordem
+                                  (cols, nomes),                            # Ano completo
+                                  ([], [])):
+            ns = {"nomes_meses_tv": nomes, "meses_cols_tv": cols, "_colunas_externas": set(periodo)}
+            exec(linha, ns)
+            self.assertEqual(ns["meses_escolhidos_tv"], esperado)
+
+    def test_aba_sem_o_cabecalho_da_tv(self):
+        j = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[j:FONTE.index("\nif ", j)]
+        i_ext = corpo.index("    if filtros_externos is not None:\n        # Aba Painel Executivo")
+        i_else = corpo.index("\n    else:\n", i_ext)
+        externo = corpo[i_ext:i_else]
+        self.assertIn("col_head_a = col_head_b = None", externo)
+        self.assertIn('col_head_tipo = filtros_externos["vaga_tipo"]', externo)
+        for widget in ('key="tv_sel_visao"', 'key="tv_sel_meses"', "st.popover("):
+            self.assertNotIn(widget, externo)
+            self.assertGreater(corpo.index(widget), i_else, "visao e meses so existem no Painel de TV")
+        # o Acumulado/Mes a mes continua (na vaga que a aba reservou)
+        self.assertIn('key="tv_sel_tipo_visao"', corpo)
+        # marca e relogio so quando ha cabecalho
+        i_se = corpo.index("    if col_head_a is not None:\n")
+        self.assertLess(i_se, corpo.index('<div class="tv-header">'))
+        self.assertLess(i_se, corpo.index("tvClockLive"))
+        self.assertLess(corpo.index("tvClockLive"), corpo.index("    def _tv_kpi("))
+
+    def test_painel_de_tv_continua_igual(self):
+        j = FONTE.index("def renderizar_painel_tv(")
+        corpo = FONTE[j:FONTE.index("\nif ", j)]
+        self.assertIn("st.columns(\n            [2.4, 1.15, 1.5, 1.0, 1.1], vertical_alignment=\"center\"", corpo)
+        self.assertIn('_sub_tv = f"{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}"', corpo)
+        self.assertIn("list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)", corpo)
+        self.assertIn("renderizar_painel_tv(path_orc, path_real, abas_disponiveis,\n                         foco=str(st.query_params.get(\"foco\") or \"geral\"))", FONTE)
 
     def test_botao_saiu_da_barra_lateral_da_controladoria(self):
         # Sobra um so: o da barra lateral do Financeiro.
@@ -10004,7 +10077,8 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
     def test_embutido_nao_mexe_na_pagina_nem_trava(self):
         i = FONTE.index("def renderizar_painel_tv(")
         corpo = FONTE[i:FONTE.index("\nif ", i)]
-        self.assertIn("def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco=\"geral\", embutido=False):", corpo)
+        self.assertIn("def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco=\"geral\", embutido=False,\n"
+                      "                         filtros_externos=None):", corpo)
         # a parte de pagina inteira do CSS so existe fora da aba
         i_css = corpo.index("_css_pagina_tv = (")
         trecho_css = corpo[i_css:corpo.index("st.markdown(", i_css)]
@@ -10021,7 +10095,7 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
         self.assertLess(i_ret, corpo.rindex("requestFullscreen"))   # rindex: o comentario do return cita o nome
         self.assertLess(i_ret, corpo.rindex("Sair do modo TV"))   # rindex: o comentario do return cita o nome
         self.assertLess(i_ret, corpo.rindex("time.sleep(SEGUNDOS_ENTRE_ATUALIZACOES_TV)"))   # rindex: o comentario do return cita o nome
-        self.assertIn("carregar_aba_painel_executivo(path_orc, path_real, aba_escolhida)", corpo)
+        self.assertNotIn("carregar_aba_painel_executivo", FONTE, "a aba usa os dados que a pagina ja carregou")
         self.assertIn("embutido=embutido,", corpo, "o corpo das despesas sabe que esta embutido")
         j = FONTE.index("def _corpo_despesas_tv(")
         desp = FONTE[j:FONTE.index("\ndef ", j + 10)]
@@ -10042,8 +10116,7 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
         self.assertEqual(chamadas[2][1], ("LJ X", "LJ Y"), "cache proprio recebe tupla (chave de cache)")
 
     def test_caches_da_aba_sao_pequenos(self):
-        for funcao, teto in (("carregar_aba_painel_executivo", "max_entries=2"),
-                             ("carregar_lojas_painel_executivo", "max_entries=1")):
+        for funcao, teto in (("carregar_lojas_painel_executivo", "max_entries=1"),):
             i = FONTE.index(f"def {funcao}(")
             self.assertIn(teto, FONTE[FONTE.rindex("@st.cache", 0, i):i])
         # e existem antes de o Painel de TV ser desenhado (ele roda no meio do arquivo)

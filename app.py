@@ -2619,21 +2619,12 @@ def _lojas_individuais_das_abas(abas):
 # PAINEL EXECUTIVO DENTRO DA CONTROLADORIA (29/10/2026)
 # ---------------------------------------------------------------------------
 # A aba "Painel Executivo" desenha o foco despesas do Painel de TV dentro da
-# própria Controladoria. As duas cargas pesadas (carregar_dados_abas e
-# carregar_dados_por_loja) guardam UMA entrada só, por memória; com a TV e o
-# resto da Controladoria na mesma página, uma visão diferente em cada lugar
-# faria cada clique reler o Excel duas vezes, uma derrubando a outra. Por
-# isso a aba tem caches PRÓPRIOS e pequenos -- e, quando ela pede exatamente o
-# que o resto da página já carregou, usa o cache comum (sem cópia).
+# própria Controladoria, com a visão e o período da BARRA LATERAL -- então ela
+# usa os dados que a página já carregou (sem leitura nova). Só o bloco por
+# loja lê as lojas da visão: carregar_dados_por_loja guarda UMA entrada, e a
+# Visão Geral já guarda ali as 21 unidades; outra visão na aba derrubaria a
+# entrada da Visão Geral a cada clique. Por isso existe o cache próprio abaixo.
 CHAVE_CONTAINER_PAINEL_EXECUTIVO = "painel_executivo_tv"
-
-
-@st.cache_data(ttl=None, max_entries=2, show_spinner=False)
-def carregar_aba_painel_executivo(path_o, path_r, aba):
-    """Orçado e Realizado de UMA aba, para a aba Painel Executivo. Uma aba só
-    pesa pouco; duas entradas cobrem ir e voltar entre duas visões."""
-    ler = getattr(carregar_dados_abas, "__wrapped__", None)
-    return ler(path_o, path_r, [aba]) if ler else carregar_dados_abas(path_o, path_r, [aba])
 
 
 @st.cache_data(ttl=None, max_entries=1, show_spinner=False)
@@ -4793,7 +4784,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 _vaga_mensal.markdown("".join(tabela), unsafe_allow_html=True)
 
 
-def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", embutido=False):
+def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", embutido=False,
+                         filtros_externos=None):
     """Painel de TV (?modo=tv) e a ramificação de despesas (foco="despesas").
 
     `embutido` (29/10/2026): a mesma tela desenhada DENTRO da aba Painel
@@ -4801,7 +4793,13 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
     CHAVE_CONTAINER_PAINEL_EXECUTIVO. Muda só o que é de página inteira: não
     esconde barra lateral nem cabeçalho, o CSS dos seletores vale só dentro do
     contêiner, não há tela cheia, rodapé de TV nem redesenho automático (o
-    sono de uma hora travaria a página), e as cargas usam os caches da aba."""
+    sono de uma hora travaria a página).
+
+    `filtros_externos` (29/10/2026): na aba da Controladoria não há cabeçalho
+    de TV (marca, visão, meses e relógio). A visão e os meses vêm da barra
+    lateral -- {"orc", "real": as listas já carregadas pela página, "abas": as
+    abas da visão, "colunas": os meses do período (cols_kpi)} -- e o seletor
+    Acumulado/Mês a mês é desenhado na vaga "vaga_tipo" que a aba reservou."""
     meses_cols_tv = [
         "01/2026", "02/2026", "03/2026", "04/2026", "05/2026", "06/2026",
         "07/2026", "08/2026", "09/2026", "10/2026", "11/2026", "12/2026",
@@ -4857,61 +4855,71 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
         unsafe_allow_html=True,
     )
 
-    col_head_a, col_head_filtro_visao, col_head_filtro_mes, col_head_tipo, col_head_b = st.columns(
-        [2.4, 1.15, 1.5, 1.0, 1.1], vertical_alignment="center"
-    )
-    with col_head_filtro_visao:
-        aba_escolhida = st.selectbox(
-            "Visão", abas_disponiveis,
-            index=abas_disponiveis.index(aba_padrao_tv) if aba_padrao_tv in abas_disponiveis else 0,
-            key="tv_sel_visao", label_visibility="collapsed",
+    if filtros_externos is not None:
+        # Aba Painel Executivo da Controladoria: sem cabeçalho de TV. Visão e
+        # meses são os da barra lateral; aqui só se traduz o período dela
+        # ("10/2026") para os nomes de mês que o resto da função usa.
+        col_head_a = col_head_b = None
+        col_head_tipo = filtros_externos["vaga_tipo"]
+        aba_escolhida = None
+        _colunas_externas = set(filtros_externos.get("colunas") or [])
+        meses_escolhidos_tv = [n for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in _colunas_externas]
+    else:
+        col_head_a, col_head_filtro_visao, col_head_filtro_mes, col_head_tipo, col_head_b = st.columns(
+            [2.4, 1.15, 1.5, 1.0, 1.1], vertical_alignment="center"
         )
-    with col_head_filtro_mes:
-        # O SELETOR MORA DENTRO DE UM POPOVER, e não solto no cabeçalho.
-        # A primeira versão era um multiselect aberto: com oito meses
-        # escolhidos, as pílulas ocupavam meia tela e cobriam os cartões de
-        # KPI. Num painel de parede o filtro é o que menos importa -- ele tem
-        # de caber num botão e sair da frente. O botão mostra o recorte já
-        # resolvido ("Jan–Ago"), que é a única coisa que quem olha de longe
-        # precisa saber.
-        if "tv_sel_meses" not in st.session_state:
-            st.session_state["tv_sel_meses"] = nomes_meses_tv[: idx_mes_atual + 1]
-        _escolha_atual = [m for m in nomes_meses_tv
-                          if m in set(st.session_state.get("tv_sel_meses") or [])]
-        _rotulo_botao = (
-            "Sem mês" if not _escolha_atual
-            else _escolha_atual[0].capitalize()[:3] if len(_escolha_atual) == 1
-            else f"{_escolha_atual[0].capitalize()[:3]}–{_escolha_atual[-1].capitalize()[:3]}"
-            + (f" ({len(_escolha_atual)})" if len(_escolha_atual) > 2 else "")
-        )
-        with st.popover(f"📅 {_rotulo_botao}", width="stretch"):
-            st.caption("Atalhos")
-            _a1, _a2, _a3, _a4 = st.columns(4)
-            _atalhos = [
-                (_a1, "Mês", nomes_meses_tv[idx_mes_atual: idx_mes_atual + 1]),
-                (_a2, "Tri", nomes_meses_tv[max(0, idx_mes_atual - 2): idx_mes_atual + 1]),
-                (_a3, "YTD", nomes_meses_tv[: idx_mes_atual + 1]),
-                (_a4, "Ano", list(nomes_meses_tv)),
-            ]
-            for _col_at, _rot_at, _meses_at in _atalhos:
-                with _col_at:
-                    if st.button(_rot_at, key=f"tv_atalho_{_rot_at}", width="stretch"):
-                        # SEM st.rerun() aqui, de propósito. O clique do botão
-                        # já provoca um rerun, e o estado escrito antes de o
-                        # multiselect ser criado já vale nesta execução.
-                        #
-                        # Com o rerun, o script abortava AQUI -- antes de o
-                        # seletor de tipo (que vem depois no cabeçalho) ser
-                        # criado. O Streamlit descarta o estado de widget que
-                        # não foi desenhado na execução, então "Mês a mês" era
-                        # apagado e a tela voltava a Acumulado sozinha, com o
-                        # seletor junto. Levou duas rodadas para eu achar.
-                        st.session_state["tv_sel_meses"] = list(_meses_at)
-            st.multiselect(
-                "Meses", nomes_meses_tv, key="tv_sel_meses",
-                label_visibility="collapsed", placeholder="Escolha os meses",
+        with col_head_filtro_visao:
+            aba_escolhida = st.selectbox(
+                "Visão", abas_disponiveis,
+                index=abas_disponiveis.index(aba_padrao_tv) if aba_padrao_tv in abas_disponiveis else 0,
+                key="tv_sel_visao", label_visibility="collapsed",
             )
-        meses_escolhidos_tv = st.session_state.get("tv_sel_meses") or []
+        with col_head_filtro_mes:
+            # O SELETOR MORA DENTRO DE UM POPOVER, e não solto no cabeçalho.
+            # A primeira versão era um multiselect aberto: com oito meses
+            # escolhidos, as pílulas ocupavam meia tela e cobriam os cartões de
+            # KPI. Num painel de parede o filtro é o que menos importa -- ele tem
+            # de caber num botão e sair da frente. O botão mostra o recorte já
+            # resolvido ("Jan–Ago"), que é a única coisa que quem olha de longe
+            # precisa saber.
+            if "tv_sel_meses" not in st.session_state:
+                st.session_state["tv_sel_meses"] = nomes_meses_tv[: idx_mes_atual + 1]
+            _escolha_atual = [m for m in nomes_meses_tv
+                              if m in set(st.session_state.get("tv_sel_meses") or [])]
+            _rotulo_botao = (
+                "Sem mês" if not _escolha_atual
+                else _escolha_atual[0].capitalize()[:3] if len(_escolha_atual) == 1
+                else f"{_escolha_atual[0].capitalize()[:3]}–{_escolha_atual[-1].capitalize()[:3]}"
+                + (f" ({len(_escolha_atual)})" if len(_escolha_atual) > 2 else "")
+            )
+            with st.popover(f"📅 {_rotulo_botao}", width="stretch"):
+                st.caption("Atalhos")
+                _a1, _a2, _a3, _a4 = st.columns(4)
+                _atalhos = [
+                    (_a1, "Mês", nomes_meses_tv[idx_mes_atual: idx_mes_atual + 1]),
+                    (_a2, "Tri", nomes_meses_tv[max(0, idx_mes_atual - 2): idx_mes_atual + 1]),
+                    (_a3, "YTD", nomes_meses_tv[: idx_mes_atual + 1]),
+                    (_a4, "Ano", list(nomes_meses_tv)),
+                ]
+                for _col_at, _rot_at, _meses_at in _atalhos:
+                    with _col_at:
+                        if st.button(_rot_at, key=f"tv_atalho_{_rot_at}", width="stretch"):
+                            # SEM st.rerun() aqui, de propósito. O clique do botão
+                            # já provoca um rerun, e o estado escrito antes de o
+                            # multiselect ser criado já vale nesta execução.
+                            #
+                            # Com o rerun, o script abortava AQUI -- antes de o
+                            # seletor de tipo (que vem depois no cabeçalho) ser
+                            # criado. O Streamlit descarta o estado de widget que
+                            # não foi desenhado na execução, então "Mês a mês" era
+                            # apagado e a tela voltava a Acumulado sozinha, com o
+                            # seletor junto. Levou duas rodadas para eu achar.
+                            st.session_state["tv_sel_meses"] = list(_meses_at)
+                st.multiselect(
+                    "Meses", nomes_meses_tv, key="tv_sel_meses",
+                    label_visibility="collapsed", placeholder="Escolha os meses",
+                )
+            meses_escolhidos_tv = st.session_state.get("tv_sel_meses") or []
     with col_head_tipo:
         # O modo vive numa chave COMUM (_tv_modo), não só na do widget: o
         # Streamlit recolhe o estado de widget que não foi desenhado numa
@@ -4937,13 +4945,19 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
         )
         st.session_state["_tv_modo"] = tipo_visao_tv
 
-    abas_para_tv = [aba_escolhida]
-    if embutido:
-        list_df_orc_tv, list_df_real_tv = carregar_aba_painel_executivo(path_orc, path_real, aba_escolhida)
+    if filtros_externos is not None:
+        # Os dados que a Controladoria JÁ carregou para a visão da barra
+        # lateral: nenhuma leitura nova de planilha.
+        list_df_orc_tv, list_df_real_tv = filtros_externos["orc"], filtros_externos["real"]
+        abas_visao_tv = list(filtros_externos["abas"])
     else:
+        abas_para_tv = [aba_escolhida]
         list_df_orc_tv, list_df_real_tv = carregar_dados_abas(path_orc, path_real, abas_para_tv)
+        abas_visao_tv = abas_para_tv
 
-    df_ref_tv = list_df_real_tv[0] if list_df_real_tv else pd.DataFrame()
+    # A primeira aba COM conteúdo (com várias unidades, a primeira pode vir vazia).
+    df_ref_tv = next((df for df in (list_df_real_tv or [])
+                      if df is not None and not df.empty and len(df.columns)), pd.DataFrame())
     colunas_validas_tv = [m for m in meses_cols_tv if m in df_ref_tv.columns]
     m_map_tv = {n: c for n, c in zip(nomes_meses_tv, meses_cols_tv) if c in colunas_validas_tv}
 
@@ -4987,6 +5001,9 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
     # com a barra lateral da Controladoria. O espaçamento entre blocos vale
     # só dentro do contêiner da aba.
     _css_pagina_tv = (f"""
+            /* O próprio contêiner também: os blocos de estilo (altura zero)
+               somavam 16px de folga cada um entre a linha do topo e os KPIs. */
+            .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO},
             .st-key-{CHAVE_CONTAINER_PAINEL_EXECUTIVO} div[data-testid="stVerticalBlock"] {{ gap: 0.5rem !important; }}
             /* Na Controladoria a área é mais estreita que a TV (a barra
                lateral fica aberta): com o nome da conta numa linha só e os
@@ -5420,59 +5437,59 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
     total_saidas_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi + deprec_tv
     total_custos_desp_tv = cmv_tv + desp_var_tv + desp_op_tv_kpi
 
-    # Embutido na Controladoria não há redesenho automático: o subtítulo não
-    # pode prometer um.
-    _sub_tv = (legenda_periodo_tv if embutido
-               else f"{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}")
-    with col_head_a:
-        st.markdown(
-            html_compacto(f"""
-            <div class="tv-header">
-                <div class="brand">
-                    <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
-                    <div>
-                        <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
-                        <div class="sub">{_sub_tv}</div>
+    # Marca e relógio são do cabeçalho da TV; na aba da Controladoria eles
+    # não existem (29/10/2026).
+    if col_head_a is not None:
+        _sub_tv = f"{legenda_periodo_tv} · atualiza sozinho a cada {ROTULO_INTERVALO_TV}"
+        with col_head_a:
+            st.markdown(
+                html_compacto(f"""
+                <div class="tv-header">
+                    <div class="brand">
+                        <img class="logo" src="data:image/jpeg;base64,{LOGO_BEEA_B64}" alt="Grupo Beea" />
+                        <div>
+                            <h1>Grupo B&amp;A · Painel Executivo <span class="tv-live-pill"><span class="dot"></span>AO VIVO</span></h1>
+                            <div class="sub">{_sub_tv}</div>
+                        </div>
                     </div>
                 </div>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
-    with col_head_b:
-        # Relógio de verdade "ao vivo": roda dentro de um componente (só ele
-        # consegue executar JavaScript de fato) e atualiza a cada segundo.
-        html_embutido(
-            f"""
-            <!-- overflow:hidden e margem zerada no proprio documento do
-                 iframe: sem isso o conteudo fica alguns pixels mais alto que
-                 a altura pedida e o navegador desenha uma barra de rolagem ao
-                 lado do relogio. Nao adianta so aumentar a altura -- a barra
-                 volta em qualquer tela com fonte ou escala diferente. -->
-            <style>html,body{{margin:0;padding:0;overflow:hidden;}}</style>
-            <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
-                        color:{COLORS['text_muted']}; padding-top:2px; overflow:hidden;">
-                <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:24px; font-weight:800; letter-spacing:2px;">--:--:--</div>
-                <div id="tvDateLive" style="font-size:11px;"></div>
-            </div>
-            <script>
-            function _tvAtualizarRelogio() {{
-                var agora = new Date();
-                function pad(n) {{ return String(n).padStart(2, '0'); }}
-                var elC = document.getElementById('tvClockLive');
-                var elD = document.getElementById('tvDateLive');
-                if (elC) {{ elC.textContent = pad(agora.getHours()) + ':' + pad(agora.getMinutes()) + ':' + pad(agora.getSeconds()); }}
-                if (elD) {{
-                    var dias = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
-                    elD.textContent = dias[agora.getDay()] + ', ' + pad(agora.getDate()) + '/' + pad(agora.getMonth() + 1) + '/' + agora.getFullYear();
+                """),
+                unsafe_allow_html=True,
+            )
+        with col_head_b:
+            # Relógio de verdade "ao vivo": roda dentro de um componente (só ele
+            # consegue executar JavaScript de fato) e atualiza a cada segundo.
+            html_embutido(
+                f"""
+                <!-- overflow:hidden e margem zerada no proprio documento do
+                     iframe: sem isso o conteudo fica alguns pixels mais alto que
+                     a altura pedida e o navegador desenha uma barra de rolagem ao
+                     lado do relogio. Nao adianta so aumentar a altura -- a barra
+                     volta em qualquer tela com fonte ou escala diferente. -->
+                <style>html,body{{margin:0;padding:0;overflow:hidden;}}</style>
+                <div style="text-align:right; font-family:'Consolas','Courier New',monospace;
+                            color:{COLORS['text_muted']}; padding-top:2px; overflow:hidden;">
+                    <div id="tvClockLive" style="color:{COLORS['primary']}; font-size:24px; font-weight:800; letter-spacing:2px;">--:--:--</div>
+                    <div id="tvDateLive" style="font-size:11px;"></div>
+                </div>
+                <script>
+                function _tvAtualizarRelogio() {{
+                    var agora = new Date();
+                    function pad(n) {{ return String(n).padStart(2, '0'); }}
+                    var elC = document.getElementById('tvClockLive');
+                    var elD = document.getElementById('tvDateLive');
+                    if (elC) {{ elC.textContent = pad(agora.getHours()) + ':' + pad(agora.getMinutes()) + ':' + pad(agora.getSeconds()); }}
+                    if (elD) {{
+                        var dias = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+                        elD.textContent = dias[agora.getDay()] + ', ' + pad(agora.getDate()) + '/' + pad(agora.getMonth() + 1) + '/' + agora.getFullYear();
+                    }}
                 }}
-            }}
-            _tvAtualizarRelogio();
-            setInterval(_tvAtualizarRelogio, 1000);
-            </script>
-            """,
-            altura=62,
-        )
+                _tvAtualizarRelogio();
+                setInterval(_tvAtualizarRelogio, 1000);
+                </script>
+                """,
+                altura=62,
+            )
 
     def _tv_kpi(cor_var, label, valor, sub, accent, icone=""):
         return (
@@ -5507,7 +5524,7 @@ def renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="geral", em
         _corpo_despesas_tv(
             list_df_real_tv, list_df_orc_tv, df_ref_tv, cols_ytd, m_map_tv,
             meses_ativos_tv, _abrir_por_mes_tv_kpi, rec_liq_real,
-            path_orc=path_orc, path_real=path_real, abas_visao=[aba_escolhida],
+            path_orc=path_orc, path_real=path_real, abas_visao=abas_visao_tv,
             embutido=embutido,
         )
     else:
@@ -21358,36 +21375,42 @@ if departamento_ativo:
 # ---------------------------------------------------------------------------
 # ABA: PAINEL EXECUTIVO (29/10/2026)
 # ---------------------------------------------------------------------------
-# O foco despesas do Painel de TV (?modo=tv&foco=despesas), INTEIRO e como
-# está -- filtros próprios de visão, meses e Acumulado/Mês a mês, KPIs,
+# O foco despesas do Painel de TV (?modo=tv&foco=despesas) -- KPIs,
 # gráficos, estouros e economias, despesa por loja e o letreiro -- desenhado
-# aqui dentro, sem abrir aba nova do navegador. É a MESMA função do Painel de
+# aqui dentro, sem abrir aba nova do navegador. Sem o cabeçalho da TV: visão
+# e período são os da barra lateral, e a única escolha própria da aba é
+# Acumulado/Mês a mês. É a MESMA função do Painel de
 # TV (renderizar_painel_tv com embutido=True): uma tela só, mantida num
 # lugar só. No topo, o botão que abre o Painel de TV na aba nova, como a
 # barra lateral fazia.
 if not departamento_ativo and tab_exec is not None:
     with tab_exec:
-        _col_exec_txt, _col_exec_botao = st.columns([3, 1], vertical_alignment="center")
-        with _col_exec_txt:
-            st.caption("O detalhe das despesas do Painel de TV, com os filtros próprios dele (visão, meses e "
-                       "Acumulado/Mês a mês) — independentes da barra lateral. O botão ao lado abre o Painel de TV "
-                       "completo numa aba nova, para deixar exibido na tela da empresa.")
-        with _col_exec_botao:
-            st.markdown(
-                f"""
-                <a href="?modo=tv" target="_blank" style="text-decoration:none;">
-                    <div style="
-                        background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
-                        border-radius:8px; padding:8px 12px; text-align:center; font-weight:600; font-size:13.5px;
-                        margin-bottom: 6px;">
-                        📺 Abrir Painel de TV
-                    </div>
-                </a>
-                """,
-                unsafe_allow_html=True,
-            )
         with st.container(key=CHAVE_CONTAINER_PAINEL_EXECUTIVO):
-            renderizar_painel_tv(path_orc, path_real, abas_disponiveis, foco="despesas", embutido=True)
+            # Uma linha só no topo (29/10/2026): o seletor Acumulado/Mês a mês
+            # (a única escolha própria da aba), o que está sendo mostrado e o
+            # botão do Painel de TV, pequeno. Visão e período são os da barra
+            # lateral. Dentro do contêiner, o seletor pega o estilo compacto
+            # dos seletores da TV.
+            _col_exec_tipo, _col_exec_txt, _col_exec_botao = st.columns(
+                [1.1, 4.2, 1.2], vertical_alignment="center")
+            with _col_exec_txt:
+                st.caption(f"**{label_visao}** · {label_periodo_kpi} — visão e período seguem a barra lateral.")
+            with _col_exec_botao:
+                st.markdown(
+                    f"""
+                    <div style="text-align:right;">
+                    <a href="?modo=tv" target="_blank" style="display:inline-block; text-decoration:none;
+                        background:{COLORS['primary_soft']}; color:{COLORS['primary']}; border:1px solid {COLORS['primary']};
+                        border-radius:6px; padding:3px 10px; font-weight:600; font-size:12px; white-space:nowrap;">
+                        📺 Abrir Painel de TV</a>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            renderizar_painel_tv(
+                path_orc, path_real, abas_disponiveis, foco="despesas", embutido=True,
+                filtros_externos={"vaga_tipo": _col_exec_tipo, "orc": list_df_orc, "real": list_df_real,
+                                  "abas": abas_para_carregar, "colunas": cols_kpi})
 
 if not departamento_ativo and tab_diag is not None:
     with tab_diag:
