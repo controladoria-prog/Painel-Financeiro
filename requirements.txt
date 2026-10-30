@@ -9,3 +9,4 @@ google-auth
 streamlit>=1.38.0
 starlette<0.38.0
 python-pptx
+python-calamine

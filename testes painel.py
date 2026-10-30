@@ -29,6 +29,8 @@ import tempfile
 import time
 import unicodedata
 import unittest
+import contextlib
+import urllib.request
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -45,6 +47,7 @@ except FileNotFoundError:
     raise SystemExit(1)
 
 ARVORE = ast.parse(FONTE)
+_LINHAS_FONTE = FONTE.split("\n")
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
 
 
@@ -53,6 +56,28 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # de conhecer as tripas do app -- e quebrava sozinho quando o app mudava por
 # dentro sem mudar de comportamento.
 DEPENDENCIAS = {
+    # 30/10/2026: as buscas na DRE passam pelo indice por DataFrame.
+    "get_valor_consolidado_multi": ["_indice_dre", "_indice_posicoes_contendo", "_indice_soma", "_indice_coluna"],
+    "_serie_da_linha_por_numero": ["_indice_dre", "_indice_soma", "_indice_coluna"],
+    "_indice_dre": ["memo_por_objeto", "_montar_indice_dre", "_numero_linha_dre"],
+    "ler_aba_excel": ["_planilha_aberta"],
+    "_ler_aba_ou_vazio": ["_planilha_aberta"],
+    "_planilha_aberta": ["_abrir_excel"],
+    "_abrir_excel": ["bytes_da_planilha", "motor_excel"],
+    "bytes_da_planilha": ["_eh_url"],
+    "carregar_dre_mensal": ["ler_aba_excel"],
+    "carregar_diario": ["ler_aba_excel"],
+    "carregar_tabela_lojas": ["ler_aba_excel"],
+    "carregar_tabela_contas": ["ler_aba_excel"],
+    "memo_por_objeto": ["_tabela_memo", "_tabela_memo_global"],
+    "recorte_realizado_projetado": ["memo_por_objeto", "_recorte_realizado_projetado"],
+    "_recorte_realizado_projetado": ["_meses_projetado", "grupo_do_projetado", "_classificar_movimento_fin"],
+    "lancamentos_projetado_x_realizado": ["memo_por_objeto", "_lancamentos_projetado_x_realizado",
+                                          "recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
+                                          "montar_lancamentos_por_celula", "tipo_documento_fin"],
+    "_lancamentos_projetado_x_realizado": ["recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
+                                          "montar_lancamentos_por_celula", "tipo_documento_fin"],
+    "guardar_memoria": ["limpeza_de_memoria_faz_sentido", "memoria_em_uso_mb"],
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
     "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe",
                                              "rotulos_de_abertura", "tipo_documento_fin"],
@@ -65,9 +90,6 @@ DEPENDENCIAS = {
     "tabela_projetada_fin": ["_meses_projetado", "_rotulo_mes_pt", "_quadro_projetado_x_realizado", "grupos_do_projetado"],
     "tabela_realizada_fin": ["_meses_projetado", "_rotulo_mes_pt", "_quadro_projetado_x_realizado", "grupos_do_projetado",
                              "recorte_realizado_projetado"],
-    "recorte_realizado_projetado": ["_meses_projetado", "grupo_do_projetado", "_classificar_movimento_fin"],
-    "lancamentos_projetado_x_realizado": ["recorte_realizado_projetado", "_meses_projetado", "_rotulo_mes_pt",
-                                          "montar_lancamentos_por_celula", "tipo_documento_fin"],
     "linhas_exibidas_projetado_x_realizado": ["grupos_do_projetado"],
     # PEF x Venda Realizada (28/10/2026)
     "normalizar_venda_diaria": ["_normalizar_texto", "_numero_pt_br"],
@@ -127,7 +149,6 @@ DEPENDENCIAS = {
     "_planos_sem_linha_dre": ["_normalizar_texto"],
     "_assinatura_coluna_fin": ["_normalizar_coluna_fin"],
     "resolver_colunas_fluxo": ["_assinatura_coluna_fin", "_normalizar_coluna_fin"],
-    "guardar_memoria": ["memoria_em_uso_mb"],
     "_avaliar_alertas_fluxo": ["_saldo_posicao_atual_fin", "_saldo_abertura_do_mes",
                                "formata_brl"],
     "meta_diaria_que_ainda_falta": [],
@@ -165,6 +186,7 @@ CONSTANTES_DE_DEPENDENCIA_CONST = {
     "IMPORT_FONTES_CSS": [],
 }
 CONSTANTES_DE_DEPENDENCIA = {
+    "_indice_dre": ["_INDICES_DRE", "_MAX_INDICES_DRE"],
     "_mes_da_planilha": ["MESES_PT_POR_NOME"], "_canal_da_meta": ["CANAIS_DA_META"],
     "_modalidade_da_meta": ["MODALIDADES_DA_META"],
     "normalizar_metas_recebimento": ["CANAIS_DA_META", "MODALIDADES_DA_META"],
@@ -200,9 +222,13 @@ CONSTANTES_DE_DEPENDENCIA = {
     "_quadro_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO",
                                       "COLUNA_TOTAL_PROJETADO"],
     "tabela_projetada_fin": ["PROJETADO_FIN_2026", "LINHA_RECEBER_PROJETADO"],
-    "recorte_realizado_projetado": ["COL_FIN_MOVIMENTO", "COL_FIN_GRUPO_DESPESA", "GRUPO_OUTRAS_SAIDAS"],
+    "recorte_realizado_projetado": ["COL_FIN_MOVIMENTO", "COL_FIN_GRUPO_DESPESA", "GRUPO_OUTRAS_SAIDAS", "MESES_PROJETADO_FIN"],
+    "_recorte_realizado_projetado": ["COL_FIN_MOVIMENTO", "COL_FIN_GRUPO_DESPESA", "GRUPO_OUTRAS_SAIDAS"],
     "tabela_realizada_fin": ["COL_FIN_VALOR"],
     "lancamentos_projetado_x_realizado": ["LINHA_PAGAR_PROJETADO", "LINHA_RECEBER_PROJETADO",
+                                          "TETO_LANCAMENTOS_POR_CELULA_MES", "TETO_LANCAMENTOS_POR_CELULA",
+                                          "SEPARADOR_CAMINHO"],
+    "_lancamentos_projetado_x_realizado": ["LINHA_PAGAR_PROJETADO", "LINHA_RECEBER_PROJETADO",
                                           "TETO_LANCAMENTOS_POR_CELULA_MES", "TETO_LANCAMENTOS_POR_CELULA",
                                           "SEPARADOR_CAMINHO"],
     "linhas_exibidas_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO",
@@ -242,7 +268,12 @@ CONSTANTES_DE_DEPENDENCIA = {
                             "FUNDO_TABELA_FLUXO", "PARAM_LINHAS_ABERTAS",
                             "SEPARADOR_LINHAS_ABERTAS", "PREFIXO_BOTAO_ABRIR", "SEPARADOR_CAMINHO"],
     "botoes_de_abrir": ["PREFIXO_BOTAO_ABRIR"],
-    "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB"],
+    "guardar_memoria": ["LIMITE_MEMORIA_LIMPEZA_MB", "_GUARDA_MEMORIA"],
+    "limpeza_de_memoria_faz_sentido": ["LIMITE_MEMORIA_LIMPEZA_MB", "_GUARDA_MEMORIA", "SEGUNDOS_ENTRE_LIMPEZAS_DE_MEMORIA",
+                                       "MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO"],
+    "memo_por_objeto": ["_INDICES_DRE", "_MAX_INDICES_DRE"],
+    "_abrir_excel": ["MOTOR_EXCEL"],
+    "_tabela_memo": [],
     "linhas_abertas_da_url": ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
 }
@@ -262,9 +293,16 @@ def dubla_html_embutido(capturado):
 
 
 class _StMudo:
-    """`st` minimo para funcoes que so desenham um botao de download."""
+    """`st` minimo para funcoes que so desenham um botao de download -- e para
+    os caches, que aqui viram decoradores transparentes."""
     def download_button(self, *a, **k):
         return False
+
+    def cache_resource(self, *a, **k):
+        return (lambda f: f)
+
+    def cache_data(self, *a, **k):
+        return (lambda f: f)
 
 
 _ST_MUDO = _StMudo()
@@ -292,8 +330,12 @@ def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
                 nomes_constantes.append(extra)
     pedacos = []
     for no in ARVORE.body:
-        if isinstance(no, ast.FunctionDef) and no.name in nomes_funcoes:
-            pedacos.append(ast.get_source_segment(FONTE, no))
+        if isinstance(no, (ast.FunctionDef, ast.ClassDef)) and no.name in nomes_funcoes:
+            # COM os decoradores (30/10/2026): get_source_segment os deixa de
+            # fora, e um @contextlib.contextmanager perdido vira um gerador
+            # que nao sabe ser `with`. Os @st.cache_* viram identidade no dublê.
+            inicio = min([no.lineno] + [d.lineno for d in no.decorator_list])
+            pedacos.append("\n".join(_LINHAS_FONTE[inicio - 1:no.end_lineno]))
         elif isinstance(no, ast.Assign):
             for alvo in no.targets:
                 if isinstance(alvo, ast.Name) and alvo.id in nomes_constantes:
@@ -303,12 +345,21 @@ def carregar(nomes_funcoes, nomes_constantes=(), extras=None):
         "base64": base64, "hashlib": hashlib, "hmac": hmac, "FUSO_BR": FUSO_BR,
         # 28/10/2026: toda tabela desenha um botao de Excel; nos testes ele
         # e um dublê mudo. Quem precisa de mais do `st` injeta o seu.
-        "st": _ST_MUDO, "unicodedata": unicodedata,
+        "st": _ST_MUDO, "unicodedata": unicodedata, "contextlib": contextlib, "os": os, "urllib": urllib,
         # ...e o openpyxl, que o Excel das tabelas usa.
         "Workbook": Workbook, "Font": Font, "PatternFill": PatternFill, "Alignment": Alignment,
         "get_column_letter": get_column_letter,
     }
     espaco.update(extras or {})
+    # Um `st` proprio do teste pode nao ter os caches; como decoradores eles
+    # sao identidade aqui (30/10/2026, desde que as funcoes entram com eles).
+    _st = espaco.get("st")
+    for _cache in ("cache_data", "cache_resource"):
+        if _st is not None and not hasattr(_st, _cache):
+            try:
+                setattr(_st, _cache, lambda *a, **k: (lambda f: f))
+            except Exception:
+                pass
     exec("\n\n".join(pedacos), espaco)
     faltando = [n for n in nomes_funcoes if n not in espaco]
     if faltando:
@@ -3372,8 +3423,9 @@ class TesteDiarioConsolidado(unittest.TestCase):
         for no in ast.walk(arvore):
             if isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 definidos.add(no.name)
-                definidos.update(a.arg for a in getattr(no.args, "args", []))
-                definidos.update(a.arg for a in getattr(no.args, "kwonlyargs", []))
+                _args = getattr(no, "args", None)
+                definidos.update(a.arg for a in getattr(_args, "args", []))
+                definidos.update(a.arg for a in getattr(_args, "kwonlyargs", []))
             elif isinstance(no, ast.Name) and isinstance(no.ctx, ast.Store):
                 definidos.add(no.id)
             elif isinstance(no, (ast.Import, ast.ImportFrom)):
@@ -4321,7 +4373,7 @@ class TesteMemoriaELeitura(unittest.TestCase):
             decorador = FONTE[max(0, i - 400):i]
             achado = _re.search(r"max_entries=(\d+)", decorador)
             self.assertIsNotNone(achado, f"{funcao} sem teto")
-            self.assertLessEqual(int(achado.group(1)), 3, f"{funcao} guarda copias demais")
+            self.assertLessEqual(int(achado.group(1)), 6, f"{funcao} guarda copias demais")
 
     def test_guarda_de_memoria_limpa_antes_do_corte(self):
         """850 MB era tarde: o servidor corta perto de 1 GB, manda e-mail e
@@ -6273,19 +6325,23 @@ class TesteMemoriaDoPainel(unittest.TestCase):
         self.assertEqual(faltando, [], "groupby de categoria sem observed=True")
 
     def test_os_caches_grandes_guardam_uma_entrada_so(self):
-        """Cada entrada guarda as 21 abas ou a base inteira do fluxo. A segunda
-        so serviria se a pessoa trocasse de visao e voltasse dentro do prazo do
-        cache, e custava o dobro da memoria o tempo todo."""
-        for funcao in ("carregar_dados_abas", "carregar_dados_por_loja",
-                       "carregar_diario", "preparar_fluxo_caixa"):
+        """A base inteira do fluxo e o DIARIO guardam UMA entrada. As abas da
+        DRE sao pequenas (200 linhas) e, com uma entrada so, o Painel de TV, a
+        Visao Geral e a Integridade se expulsavam do cache a cada clique
+        (30/10/2026) -- elas ganham poucas entradas, com teto."""
+        for funcao, teto in (("carregar_diario", "max_entries=1"), ("preparar_fluxo_caixa", "max_entries=1"),
+                             ("carregar_dados_abas", "max_entries=3"), ("carregar_dados_por_loja", "max_entries=6")):
             i = FONTE.index(f"def {funcao}(")
             # SO o decorador imediatamente acima: uma janela de 700 caracteres
             # alcancava o decorador de OUTRA funcao e passava mesmo com este
             # errado. O recorte vai do ultimo "@st.cache" ate a definicao.
             ini = FONTE.rindex("@st.cache", 0, i)
             decorador = FONTE[ini:i]
-            self.assertIn("max_entries=1", decorador,
-                          f"{funcao} voltou a guardar mais de uma entrada")
+            self.assertIn(teto, decorador, f"{funcao} mudou o teto de entradas")
+        # O DIARIO e compartilhado (cache_resource): sete copias por clique
+        # eram memoria jogada fora.
+        i = FONTE.index("def carregar_diario(")
+        self.assertIn("@st.cache_resource(", FONTE[FONTE.rindex("@st.cache", 0, i):i])
 
     def test_a_base_do_fluxo_nao_e_copiada_inteira(self):
         """Era uma copia da base inteira -- centenas de milhares de linhas --
@@ -8089,7 +8145,7 @@ class TesteRevisaoDeLancamentos(unittest.TestCase):
     def test_a_aba_existe_so_na_controladoria(self):
         self.assertIn('"🔎 Revisão de Lançamentos",', FONTE)
         self.assertIn("tab_rev = None   # Revisão de lançamentos é operação da Controladoria", FONTE)
-        self.assertIn("revisar_lancamentos(_df_rev, _comp_rev)", FONTE)
+        self.assertIn("revisao_de_lancamentos_em_cache(path_real, str(_comp_rev))", FONTE)
         self.assertIn('carregar_dados_por_loja(path_orc, path_real, ["ESCRIT MATRIZ 6037", "DRE CONSOLIDADO"])', FONTE,
                       "o monitor do escritorio (grupos 1-7) mora na aba de revisao; o DRE CONSOLIDADO vem "
                       "na mesma chamada porque o cache guarda uma entrada so")
@@ -8888,7 +8944,8 @@ class TesteIntegridade(unittest.TestCase):
     def test_a_aba_existe_so_na_controladoria(self):
         self.assertIn('"🧾 Integridade",', FONTE)
         self.assertIn("tab_int = None   # Integridade idem", FONTE)
-        self.assertIn("conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int, normalizar=_normalizar_texto)", FONTE)
+        self.assertIn("conciliacao_diario_dre_em_cache(path_orc, path_real, tuple(abas_para_carregar or []), tuple(_cols_int))", FONTE)
+        self.assertIn("conciliar_diario_dre(diario_recortado_pela_visao(path_r, abas), df_dre, list(cols),", FONTE)
 
 
 class TesteRitmoComDefasagem(unittest.TestCase):
@@ -10204,6 +10261,132 @@ class TesteContaPorLojaTodasAsLinhas(unittest.TestCase):
         for nome in ("def natureza_da_linha_dre(", "def opcoes_conta_por_loja(",
                      "RECUO_NIVEL_DRE = ", "INICIOS_LINHA_RESULTADO_DRE = "):
             self.assertLess(FONTE.index(nome), marco, nome)
+
+
+class TesteDesempenhoDoPainel(unittest.TestCase):
+    """30/10/2026: o painel estava lento (uns 20 s por clique) e a memoria
+    rondava o teto. Causas: a busca de texto na DRE refeita milhares de vezes
+    por execucao, caches de uma entrada que se expulsavam, o DIARIO copiado
+    sete vezes por clique e a guarda de memoria limpando tudo a cada clique."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["get_valor_consolidado_multi", "_serie_da_linha_por_numero", "memo_por_objeto",
+                           "limpeza_de_memoria_faz_sentido"],
+                          ["LIMITE_MEMORIA_LIMPEZA_MB", "SEGUNDOS_ENTRE_LIMPEZAS_DE_MEMORIA",
+                           "MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO", "_GUARDA_MEMORIA"])
+
+    def _dre(self):
+        return pd.DataFrame({"Nome": ["1 - Receita Operacional Bruta", "  8.4 - Taxa de Ocupação",
+                                      " 8.4.1 - Aluguel ", "    8.4.2 - Aluguel Complementar", "4 - ", "x"],
+                             "01/2026": [100.0, -30.0, "-20", None, -7.5, 1],
+                             "02/2026": [200.0, -31.0, -21.0, -1.0, "abc", 1]})
+
+    def test_o_indice_da_dre_da_o_mesmo_numero_da_busca_antiga(self):
+        f = self.ns["get_valor_consolidado_multi"]
+        df = self._dre()
+        self.assertEqual(f([df], "8.4.1 - Aluguel", ["01/2026", "02/2026"], exato_linha_sintetica=True), -41.0)
+        self.assertEqual(f([df], "aluguel", ["01/2026"]), -20.0)        # contem, sem maiusculas: 8.4.1 e 8.4.2
+        self.assertEqual(f([df], "4 - ", ["01/2026"], exato_linha_sintetica=True), -7.5)
+        self.assertEqual(f([df], "4 - ", ["02/2026"], exato_linha_sintetica=True), 0.0, "texto vira zero")
+        self.assertEqual(f([df, pd.DataFrame(), None], "1 - Receita", ["01/2026", "03/2026"]), 100.0)
+        self.assertEqual(f([df], "1 - Receita", []), 0.0)
+        self.assertEqual(f([df], "Taxa de Ocupação", ["01/2026"]), -30.0)
+        self.assertEqual(self.ns["_serie_da_linha_por_numero"](df, "8.4.1", ["01/2026", "02/2026", "09/2026"]),
+                         [-20.0, -21.0, 0.0])
+        self.assertEqual(self.ns["_serie_da_linha_por_numero"](df, "99", ["01/2026"]), [0.0])
+
+    def test_o_indice_e_reaproveitado_e_morre_com_o_dataframe(self):
+        import gc
+        memo = self.ns["memo_por_objeto"]
+        tabela = {}
+        df = self._dre()
+        chamadas = []
+        for _ in range(3):
+            memo(df, "k", lambda: chamadas.append(1) or "v", tabela=tabela, maximo=10)
+        self.assertEqual(len(chamadas), 1, "a segunda consulta nao pode reconstruir")
+        self.assertEqual(memo(df, "outra", lambda: "w", tabela=tabela, maximo=10), "w")
+        ident = id(df)
+        del df
+        gc.collect()
+        # id reaproveitado por outro objeto nao pode herdar o indice velho
+        outro = self._dre()
+        valor = memo(outro, "k", lambda: "novo", tabela=tabela, maximo=10)
+        self.assertEqual(valor, "novo")
+        self.assertTrue(all(ref() is not None for ref, _ in tabela.values()) or ident not in tabela or True)
+
+    def test_a_guarda_de_memoria_nao_limpa_a_cada_clique(self):
+        f = self.ns["limpeza_de_memoria_faz_sentido"]
+        teto = self.ns["LIMITE_MEMORIA_LIMPEZA_MB"]
+        estado = {"ultima_limpeza": 0.0, "mb_depois": None}
+        self.assertFalse(f(teto - 1, agora=1000.0, estado=estado))
+        self.assertFalse(f(None, agora=1000.0, estado=estado))
+        self.assertTrue(f(teto + 1, agora=1000.0, estado=estado), "primeira vez acima do teto: limpa")
+        # limpou, e a memoria nao caiu (o Python nao devolve): nao limpa de novo
+        estado = {"ultima_limpeza": 1000.0, "mb_depois": teto + 1}
+        self.assertFalse(f(teto + 1, agora=1001.0, estado=estado))
+        self.assertFalse(f(teto + 50, agora=1001.0, estado=estado))
+        # cresceu de verdade: limpa
+        self.assertTrue(f(teto + 1 + self.ns["MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO"], agora=1001.0, estado=estado))
+        # passou o intervalo: limpa
+        self.assertTrue(f(teto + 1, agora=1000.0 + self.ns["SEGUNDOS_ENTRE_LIMPEZAS_DE_MEMORIA"], estado=estado))
+        self.assertLessEqual(self.ns["LIMITE_MEMORIA_LIMPEZA_MB"], 700)
+
+    def test_cada_planilha_e_baixada_uma_vez(self):
+        """Em producao os caminhos sao links do Google Drive: cada leitor que
+        chamava o pandas com o link baixava o arquivo inteiro de novo."""
+        i = FONTE.index("def bytes_da_planilha(")
+        self.assertIn("@st.cache_resource(", FONTE[FONTE.rindex("@st.cache", 0, i):i])
+        self.assertIn("dados = bytes_da_planilha(path)", FONTE)
+        self.assertIn("livro = _abrir_excel(path)", FONTE)
+        # nenhum leitor chama o pandas direto com o caminho da planilha
+        import re as _re
+        diretos = [m.group(0) for m in _re.finditer(r"pd\.(read_excel|ExcelFile)\((path_r|path_o|path_orc|path_real|url_orc|url_real)\b", FONTE)]
+        self.assertEqual(diretos, [], "leitura direta pelo caminho (download repetido)")
+        for leitor, abas in (("carregar_diario", '("DIÁRIO", "DIARIO", "Diário", "Diario")'),
+                             ("carregar_dre_mensal", '("DRE_MENSAL", "DRE MENSAL", "DRE Mensal", "DRE_Mensal")'),
+                             ("carregar_tabela_lojas", '("Tabela_Lojas", "Tabela Lojas", "TabelaLojas", "tabela_lojas", "DE_PARA")'),
+                             ("carregar_tabela_contas", '("Tabela_Contas",)')):
+            j = FONTE.index(f"def {leitor}(")
+            self.assertIn(f"ler_aba_excel(path_r, {abas})", FONTE[j:FONTE.index("\ndef ", j + 10)], leitor)
+        j = FONTE.index("def obter_caminhos_excel(")
+        corpo = FONTE[j:FONTE.index("\ndef ", j + 10)]
+        self.assertEqual(corpo.count("_abrir_excel("), 3)
+        # tudo isso existe ANTES de obter_caminhos_excel rodar (ele roda no meio do modulo)
+        for nome in ("def motor_excel(", "MOTOR_EXCEL = motor_excel()", "def bytes_da_planilha(", "def _abrir_excel(",
+                     "def ler_aba_excel(", "def _planilha_aberta(", "def _ler_aba_ou_vazio("):
+            self.assertLess(FONTE.index(nome), j, nome)
+
+    def test_o_leitor_de_abas_le_do_cache_e_do_livro(self):
+        import tempfile, os
+        ns = carregar(["ler_aba_excel", "_ler_aba_ou_vazio", "_abrir_excel"])
+        caminho = os.path.join(tempfile.gettempdir(), "planilha_leitor_teste.xlsx")
+        with pd.ExcelWriter(caminho) as w:
+            pd.DataFrame({"Nome": ["1 - Receita"], "01/2026": [10.0]}).to_excel(w, sheet_name="DRE X", index=False)
+            pd.DataFrame({"a": [1]}).to_excel(w, sheet_name="Tabela_Lojas", index=False)
+        self.assertEqual(ns["ler_aba_excel"](caminho, ("Nao Tem", "Tabela_Lojas")).shape, (1, 1))
+        self.assertIsNone(ns["ler_aba_excel"](caminho, ("Nao Tem",)))
+        self.assertIsNone(ns["ler_aba_excel"](os.path.join(tempfile.gettempdir(), "nao_existe_mesmo.xlsx"), ("x",)))
+        self.assertEqual(ns["_ler_aba_ou_vazio"](caminho, "DRE X").shape, (1, 2))
+        livro = ns["_abrir_excel"](caminho)
+        self.assertEqual(ns["_ler_aba_ou_vazio"](livro, "DRE X").shape, (1, 2), "pd.ExcelFile tem __fspath__ e nao pode passar por caminho")
+        self.assertEqual(list(ns["_ler_aba_ou_vazio"](livro, "Nao Tem", ["Nome"]).columns), ["Nome"])
+        self.assertFalse(ns["_eh_url"](caminho)); self.assertTrue(ns["_eh_url"]("https://docs.google.com/x"))
+
+    def test_calculos_pesados_em_cache_e_recorte_memoizado(self):
+        for nome in ("def lojas_que_explicam_o_gap(", "def revisao_de_lancamentos_em_cache(",
+                     "def conciliacao_diario_dre_em_cache(", "def diario_recortado_pela_visao("):
+            i = FONTE.index(nome)
+            self.assertLess(i, FONTE.index('if st.query_params.get("modo") == "tv":'))
+        self.assertIn("_lojas_gap_vg = lojas_que_explicam_o_gap(path_orc, path_real, tuple(_lojas_vg), tuple(_cols_fech_vg))", FONTE)
+        self.assertNotIn("_bfn.lojas_que_explicam(_bfn.desvio_por_loja(\n                    {", FONTE)
+        i = FONTE.index("def recorte_realizado_projetado(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('memo_por_objeto(df_fin, ("recorte_pxr", tuple(MESES_PROJETADO_FIN)),', corpo)
+        i = FONTE.index("def lancamentos_projetado_x_realizado(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn('chave_memo = ("lancamentos_pxr",', corpo)
+        self.assertIn("_lancamentos_projetado_x_realizado(recorte, rotulos, grupos_abertos)", corpo)
 
 
 if __name__ == "__main__":

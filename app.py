@@ -257,28 +257,164 @@ def render_kpi_row(cards):
 # de TV, que é montado antes da barra lateral -- por isso ficam aqui perto do
 # topo, e não mais lá embaixo na seção 6 original).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ÍNDICE DA DRE (30/10/2026) -- a razão de o painel ter ficado lento.
+#
+# get_valor_consolidado_multi é chamada MILHARES de vezes por execução (cada
+# KPI, cada célula de tabela, cada mês de cada conta das anomalias), e cada
+# chamada refazia a busca de texto na coluna Nome da DRE: astype(str), strip,
+# lower, comparação, máscara, to_numeric... uns 7 ms por chamada, 20 segundos
+# por clique. A DRE de uma aba tem 200 linhas e NÃO muda entre uma chamada e
+# outra -- então ela é indexada UMA vez por DataFrame (nome normalizado ->
+# posições das linhas; número -> posições; e cada coluna de mês já convertida
+# para número), e cada busca vira uma consulta em dicionário.
+#
+# O índice fica numa tabela guardada pelo id() do DataFrame, com uma
+# referência fraca para conferir que o objeto ainda é o mesmo: o Python reusa
+# ids de objetos já recolhidos, e um índice velho num DataFrame novo daria
+# número errado em silêncio. Se a referência não bate, o índice é refeito.
+# ---------------------------------------------------------------------------
+@st.cache_resource(ttl=None, show_spinner=False)
+def _tabela_memo_global():
+    """A tabela do memo, UMA por processo. Um dicionário de módulo não
+    serviria: o Streamlit reexecuta o script inteiro a cada clique e o
+    dicionário renasceria vazio -- só st.cache_resource atravessa execuções."""
+    return {}
+
+
+def _tabela_memo():
+    """A tabela do processo; sem o Streamlit de verdade (testes, briefing das
+    7h), uma tabela por carga do módulo."""
+    try:
+        return _tabela_memo_global()
+    except Exception:
+        return {}
+
+
+_INDICES_DRE = _tabela_memo()
+_MAX_INDICES_DRE = 256
+
+
+def memo_por_objeto(objeto, chave, construir, tabela=None, maximo=None):
+    """Guarda `construir()` amarrado a UM objeto (um DataFrame) e a uma chave.
+
+    É o mesmo mecanismo do índice da DRE, para qualquer derivado caro de um
+    DataFrame que o painel reaproveita entre execuções: a tabela é
+    {id(objeto): (referência fraca, {chave: valor})}, e a referência fraca
+    garante que o id ainda é daquele objeto. Serve para objetos que vivem
+    entre execuções -- os de st.cache_resource, como a base do fluxo de
+    caixa -- e, nos de st.cache_data (cópia nova a cada execução), ao menos
+    evita refazer a mesma conta várias vezes na mesma execução."""
+    tabela = _INDICES_DRE if tabela is None else tabela
+    maximo = _MAX_INDICES_DRE if maximo is None else maximo
+    ident = id(objeto)
+    guardado = tabela.get(ident)
+    if guardado is None or guardado[0]() is not objeto:
+        # Entradas de objetos já recolhidos saem a cada 32 inserções (os
+        # DataFrames do cache_data morrem a cada execução); cheia mesmo
+        # assim, a tabela é zerada -- é só cache, refaz-se.
+        if len(tabela) % 32 == 31 or len(tabela) >= maximo:
+            for k in [k for k, (ref, _) in tabela.items() if ref() is None]:
+                del tabela[k]
+            if len(tabela) >= maximo:
+                tabela.clear()
+        import weakref
+        try:
+            guardado = (weakref.ref(objeto), {})
+            tabela[ident] = guardado
+        except TypeError:
+            return construir()
+    valores = guardado[1]
+    if chave not in valores:
+        valores[chave] = construir()
+    return valores[chave]
+
+
+def _montar_indice_dre(df):
+    """O índice de uma aba da DRE: nomes das linhas, posições por nome exato
+    (strip + lower) e por número, e as colunas de mês convertidas sob
+    demanda. Um dicionário, e não uma classe, de propósito: o briefing das 7h
+    extrai do app só funções e constantes."""
+    import weakref
+    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
+    nomes = [str(v) for v in df[col_nome].tolist()]
+    exatos, numeros = {}, {}
+    for pos, nome in enumerate(nomes):
+        exatos.setdefault(nome.strip().lower(), []).append(pos)
+        numero = _numero_linha_dre(nome)
+        if numero is not None:
+            numeros.setdefault(numero, []).append(pos)
+    # As colunas de mês ("MM/AAAA") já convertidas. O índice NÃO guarda o
+    # DataFrame (só uma referência fraca, para alguma coluna fora do padrão):
+    # senão ele seguraria na memória cada cópia que o cache_data devolve.
+    colunas = {}
+    for c in df.columns:
+        if re.fullmatch(r"\d{2}/\d{4}", str(c)):
+            colunas[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).to_numpy(dtype=float)
+    try:
+        ref = weakref.ref(df)
+    except TypeError:
+        ref = lambda: None   # noqa: E731
+    return {"df_ref": ref, "nomes": nomes, "exatos": exatos, "numeros": numeros, "colunas": colunas, "contem": {}}
+
+
+def _indice_posicoes_contendo(indice, termo):
+    """Linhas cujo nome CONTÉM o termo (sem diferenciar maiúsculas) -- a
+    mesma regra do str.contains(re.escape(termo), case=False) de antes."""
+    chave = str(termo)
+    contem = indice["contem"]
+    if chave not in contem:
+        padrao = re.compile(re.escape(chave), re.IGNORECASE)
+        contem[chave] = [p for p, n in enumerate(indice["nomes"]) if padrao.search(n)]
+    return contem[chave]
+
+
+def _indice_coluna(indice, nome_coluna):
+    """A coluna já convertida para número (texto e vazio viram 0), ou None
+    se a aba não tem a coluna."""
+    colunas = indice["colunas"]
+    if nome_coluna not in colunas:
+        df = indice["df_ref"]()
+        if df is not None and nome_coluna in df.columns:
+            colunas[nome_coluna] = pd.to_numeric(df[nome_coluna], errors="coerce").fillna(0).to_numpy(dtype=float)
+        else:
+            colunas[nome_coluna] = None
+    return colunas[nome_coluna]
+
+
+def _indice_soma(indice, posicoes, colunas):
+    total = 0.0
+    if not posicoes:
+        return total
+    for c in colunas:
+        arr = _indice_coluna(indice, c)
+        if arr is not None:
+            total += float(arr[posicoes].sum())
+    return total
+
+
+def _indice_dre(df):
+    """O índice daquele DataFrame, montado na primeira vez que ele é visto."""
+    return memo_por_objeto(df, "indice_dre", lambda: _montar_indice_dre(df))
+
+
 def get_valor_consolidado_multi(list_dfs, termo_conta, colunas, exato_linha_sintetica=False):
+    """Soma, em todas as abas da lista, as colunas pedidas das linhas cujo
+    nome bate com `termo_conta` -- exatamente (strip + lower) quando
+    exato_linha_sintetica, ou por "contém" (sem diferenciar maiúsculas)."""
     total = 0.0
     if not colunas:
         return total
-
+    termo_limpo = str(termo_conta).strip().lower()
     for df in list_dfs:
-        if df.empty:
+        if df is None or df.empty:
             continue
-        col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
-
+        indice = _indice_dre(df)
         if exato_linha_sintetica:
-            termo_limpo = str(termo_conta).strip().lower()
-            mask = df[col_nome].astype(str).str.strip().str.lower() == termo_limpo
+            posicoes = indice["exatos"].get(termo_limpo, ())
         else:
-            termo_escapado = re.escape(str(termo_conta))
-            mask = df[col_nome].astype(str).str.contains(termo_escapado, case=False, na=False, regex=True)
-
-        sub_df = df[mask]
-        if not sub_df.empty:
-            cols_existentes = [c for c in colunas if c in sub_df.columns]
-            dados_num = sub_df[cols_existentes].apply(pd.to_numeric, errors="coerce").fillna(0)
-            total += dados_num.sum().sum()
+            posicoes = _indice_posicoes_contendo(indice, termo_conta)
+        total += _indice_soma(indice, posicoes, colunas)
     return total
 
 
@@ -1860,6 +1996,126 @@ def checar_login():
 # "🔄 Atualizar Dados", que limpa todos os caches de uma vez. O preço é que o
 # painel mostra o dado do último clique -- inclusive na TV da parede, onde
 # ninguém clica. Quem atualizar a planilha precisa clicar para o painel ver.
+# ---------------------------------------------------------------------------
+# LEITURA DAS PLANILHAS: um download por arquivo, motor rápido quando há
+# ---------------------------------------------------------------------------
+def motor_excel():
+    """"calamine" quando o pacote python-calamine está instalado, senão None
+    (o openpyxl padrão do pandas). O calamine lê a mesma planilha cinco vezes
+    mais rápido, com as mesmas colunas, tipos e valores -- conferido aba a
+    aba na base real em 30/10/2026. Basta pôr `python-calamine` no
+    requirements.txt para ele entrar; sem ele, nada muda."""
+    try:
+        import importlib.util
+        return "calamine" if importlib.util.find_spec("python_calamine") else None
+    except Exception:
+        return None
+
+
+MOTOR_EXCEL = motor_excel()
+
+
+def _eh_url(caminho):
+    return str(caminho).lower().startswith(("http://", "https://"))
+
+
+@st.cache_resource(ttl=None, max_entries=4, show_spinner=False)
+def bytes_da_planilha(path):
+    """Os bytes de UMA planilha, baixados (ou lidos do disco) uma vez só.
+
+    Em produção os caminhos do Orçado e do Realizado são links de exportação
+    do Google Drive. Cada leitor (abas da DRE, lojas, DIÁRIO, DRE_MENSAL,
+    tabelas auxiliares...) chamava o pandas direto com o link, e cada chamada
+    BAIXAVA O ARQUIVO INTEIRO de novo: o Realizado, de 7 MB, descia umas sete
+    vezes num carregamento frio -- e, enquanto os caches se expulsavam, a
+    cada clique. Agora o arquivo desce uma vez e fica aqui (cache_resource:
+    um objeto só, sem cópias); "Atualizar Dados" limpa e baixa de novo."""
+    if _eh_url(path):
+        with urllib.request.urlopen(str(path), timeout=180) as resposta:
+            return resposta.read()
+    with open(path, "rb") as arquivo:
+        return arquivo.read()
+
+
+def _abrir_excel(path):
+    """pd.ExcelFile a partir dos bytes em cache, no motor disponível. Se o
+    calamine engasgar em algum arquivo, cai para o openpyxl."""
+    dados = bytes_da_planilha(path)
+    if MOTOR_EXCEL:
+        try:
+            return pd.ExcelFile(io.BytesIO(dados), engine=MOTOR_EXCEL)
+        except Exception:
+            pass
+    return pd.ExcelFile(io.BytesIO(dados))
+
+
+def ler_aba_excel(path, nomes_possiveis):
+    """A primeira aba da planilha cujo nome está em `nomes_possiveis`, ou None
+    se nenhuma existe. Abre a planilha (dos bytes em cache) uma vez e olha a
+    lista de abas, em vez de tentar ler nome por nome -- que, com link do
+    Google, era um download por tentativa."""
+    try:
+        with _planilha_aberta(path) as livro:
+            if livro is None:
+                return None
+            for nome in nomes_possiveis:
+                if nome in livro.sheet_names:
+                    return pd.read_excel(livro, sheet_name=nome)
+    except Exception:
+        return None
+    return None
+
+
+@contextlib.contextmanager
+def _planilha_aberta(path):
+    """Abre a planilha UMA vez e devolve o handle para ler várias abas.
+
+    Antes cada aba era lida com `pd.read_excel(path, sheet_name=aba)`, e cada
+    uma dessas chamadas reabria e reprocessava o arquivo INTEIRO. Carregar as
+    13 lojas dos dois arquivos eram 26 leituras completas -- 26 picos de
+    memória, num servidor que mata o app quando a memória estoura. É a causa
+    mais provável do "Oh não" que só voltava reiniciando o app.
+
+    Se o arquivo não abrir, devolve None e quem chama trata como aba
+    inexistente, que é o comportamento de sempre."""
+    livro = None
+    try:
+        livro = _abrir_excel(path)
+        yield livro
+    except Exception:
+        yield None
+    finally:
+        if livro is not None:
+            try:
+                livro.close()
+            except Exception:
+                pass
+
+
+def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
+    """Lê uma aba de uma planilha. Aceita o caminho ou uma planilha já aberta
+    (o segundo caso evita reprocessar o arquivo a cada aba).
+
+    Se a aba não existir naquele arquivo específico (ex.: loja nova que só
+    tem aba no Realizado, ainda sem aba correspondente no Orçado), retorna um
+    DataFrame vazio com as mesmas colunas do modelo de referência, em vez de
+    derrubar a loja inteira do relatório/painel."""
+    if path_ou_livro is None:
+        return pd.DataFrame(columns=colunas_modelo) if colunas_modelo is not None else pd.DataFrame()
+    try:
+        # pd.ExcelFile tem __fspath__ e passaria por caminho: o teste é pelo tipo.
+        if isinstance(path_ou_livro, pd.ExcelFile):
+            return pd.read_excel(path_ou_livro, sheet_name=aba)
+        with _planilha_aberta(path_ou_livro) as livro:
+            if livro is None:
+                raise ValueError("planilha não abriu")
+            return pd.read_excel(livro, sheet_name=aba)
+    except Exception:
+        if colunas_modelo is not None:
+            return pd.DataFrame(columns=colunas_modelo)
+        return pd.DataFrame()
+
+
 @st.cache_resource(ttl=None)
 def obter_caminhos_excel():
     url_orc = "https://docs.google.com/spreadsheets/d/1x68Eg_6LlSKeFJEGmfhyBfcGgheSrVsl/export?format=xlsx"
@@ -1869,16 +2125,18 @@ def obter_caminhos_excel():
     path_orc_local = os.path.join(caminho_base, "ORCAMENTO 2026 - REV.1.xlsx")
     path_real_local = os.path.join(caminho_base, "REALIZADO 2026.xlsx")
 
+    # Os bytes baixados aqui ficam em bytes_da_planilha: todo leitor do app
+    # lê desta mesma cópia, sem baixar de novo (30/10/2026).
     try:
-        xls_orc = pd.ExcelFile(url_orc)
+        xls_orc = _abrir_excel(url_orc)
         path_orc = url_orc
         path_real = url_real
     except Exception:
         path_orc = path_orc_local if os.path.exists(path_orc_local) else "ORCAMENTO 2026 - REV.1.xlsx"
         path_real = path_real_local if os.path.exists(path_real_local) else "REALIZADO 2026.xlsx"
-        xls_orc = pd.ExcelFile(path_orc)
+        xls_orc = _abrir_excel(path_orc)
 
-    xls_real = pd.ExcelFile(path_real)
+    xls_real = _abrir_excel(path_real)
 
     # Abas auxiliares/de referência: usadas para buscar dados (DE_PARA de
     # loja x centro de custo, lançamentos do DIÁRIO, mapeamento de plano de
@@ -2205,20 +2463,55 @@ def memoria_em_uso_mb():
     return None
 
 
+# Estado da guarda, do processo inteiro (não da sessão): quando foi a última
+# limpeza e quanta memória ficou depois dela.
+_GUARDA_MEMORIA = {"ultima_limpeza": 0.0, "mb_depois": None}
+SEGUNDOS_ENTRE_LIMPEZAS_DE_MEMORIA = 600
+MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO = 120
+
+
+def limpeza_de_memoria_faz_sentido(mb, agora=None, estado=None):
+    """Se vale esvaziar os caches de novo.
+
+    30/10/2026: a guarda limpava os caches toda vez que a memória residente
+    passava do teto. Só que o Python quase nunca devolve memória ao sistema
+    depois de liberar objetos -- o número NÃO cai depois da limpeza. Com o
+    processo parado acima do teto, CADA clique esvaziava os caches e relia
+    todas as planilhas: o painel ficava lento sem parar, com o aviso de
+    memória aparecendo sempre. Era a lentidão que a limpeza devia evitar.
+
+    Agora, depois de uma limpeza, só se limpa de novo se a memória CRESCEU
+    de verdade desde então (mais de MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO) ou
+    se já passou o intervalo mínimo entre limpezas."""
+    estado = _GUARDA_MEMORIA if estado is None else estado
+    agora = time.time() if agora is None else agora
+    if mb is None or mb < LIMITE_MEMORIA_LIMPEZA_MB:
+        return False
+    mb_depois = estado.get("mb_depois")
+    if mb_depois is None:
+        return True
+    if agora - estado.get("ultima_limpeza", 0.0) >= SEGUNDOS_ENTRE_LIMPEZAS_DE_MEMORIA:
+        return True
+    return mb - mb_depois >= MB_DE_CRESCIMENTO_PARA_LIMPAR_DE_NOVO
+
+
 def guardar_memoria():
     """Se a memória passar do limite, esvazia os caches de dados e chama o
     coletor. Devolve (mb_antes, limpou) para a barra lateral mostrar.
 
     Limpar cache custa uma releitura das planilhas -- alguns segundos. Deixar
-    estourar custa o app inteiro e um reinício manual. A escolha é fácil."""
+    estourar custa o app inteiro e um reinício manual. A escolha é fácil --
+    desde que não se limpe a cada clique (ver limpeza_de_memoria_faz_sentido)."""
     mb = memoria_em_uso_mb()
-    if mb is None or mb < LIMITE_MEMORIA_LIMPEZA_MB:
+    if not limpeza_de_memoria_faz_sentido(mb):
         return mb, False
     try:
         st.cache_data.clear()
     except Exception:
         pass
     gc.collect()
+    _GUARDA_MEMORIA["ultima_limpeza"] = time.time()
+    _GUARDA_MEMORIA["mb_depois"] = memoria_em_uso_mb() or mb
     return mb, True
 
 
@@ -2257,60 +2550,17 @@ def painel_de_memoria_na_barra():
             st.rerun()
 
 
-@contextlib.contextmanager
-def _planilha_aberta(path):
-    """Abre a planilha UMA vez e devolve o handle para ler várias abas.
-
-    Antes cada aba era lida com `pd.read_excel(path, sheet_name=aba)`, e cada
-    uma dessas chamadas reabria e reprocessava o arquivo INTEIRO. Carregar as
-    13 lojas dos dois arquivos eram 26 leituras completas -- 26 picos de
-    memória, num servidor que mata o app quando a memória estoura. É a causa
-    mais provável do "Oh não" que só voltava reiniciando o app.
-
-    Se o arquivo não abrir, devolve None e quem chama trata como aba
-    inexistente, que é o comportamento de sempre."""
-    livro = None
-    try:
-        livro = pd.ExcelFile(path)
-        yield livro
-    except Exception:
-        yield None
-    finally:
-        if livro is not None:
-            try:
-                livro.close()
-            except Exception:
-                pass
-
-
-def _ler_aba_ou_vazio(path_ou_livro, aba, colunas_modelo=None):
-    """Lê uma aba de uma planilha. Aceita o caminho ou uma planilha já aberta
-    (o segundo caso evita reprocessar o arquivo a cada aba).
-
-    Se a aba não existir naquele arquivo específico (ex.: loja nova que só
-    tem aba no Realizado, ainda sem aba correspondente no Orçado), retorna um
-    DataFrame vazio com as mesmas colunas do modelo de referência, em vez de
-    derrubar a loja inteira do relatório/painel."""
-    if path_ou_livro is None:
-        return pd.DataFrame(columns=colunas_modelo) if colunas_modelo is not None else pd.DataFrame()
-    try:
-        return pd.read_excel(path_ou_livro, sheet_name=aba)
-    except Exception:
-        if colunas_modelo is not None:
-            return pd.DataFrame(columns=colunas_modelo)
-        return pd.DataFrame()
-
-
 # max_entries: cada combinação de abas guarda uma cópia dos dados. Sem
 # teto, trocar de visão algumas vezes empilha cópias até o servidor
 # derrubar o app -- e o cache existe para poupar leitura, não para
 # guardar tudo que já foi aberto.
-# max_entries=1 e nao 2 (27/08/2026): cada entrada guarda as 21 abas de
-# Orçado e Realizado. A segunda entrada só serviria se a pessoa trocasse de
-# visão e voltasse dentro de 60 segundos, e custava o dobro da memória o tempo
-# todo. O servidor derruba o app quando a memória estoura, e derrubar é pior
-# que reler.
-@st.cache_data(ttl=None, max_entries=1)
+#
+# 30/10/2026: de 1 para 3 entradas. Com UMA, o Painel de TV (que roda no
+# mesmo servidor, com a visão dele) e a Controladoria se expulsavam do cache
+# e cada clique voltava a ler o Excel. Uma entrada de visão consolidada são
+# duas tabelas de 200 linhas (menos de 1 MB); a memória que derrubava o app
+# nunca esteve aqui.
+@st.cache_data(ttl=None, max_entries=3)
 def carregar_dados_abas(path_o, path_r, lista_abas):
     """Carrega Orçado e Realizado de cada aba/loja. Cada lado é lido de forma
     INDEPENDENTE: se a loja não existir no Orçado (ex.: loja nova, ainda sem
@@ -2335,7 +2585,12 @@ def carregar_dados_abas(path_o, path_r, lista_abas):
     return dfs_o, dfs_r
 
 
-@st.cache_data(ttl=None, max_entries=1)
+# 30/10/2026: de 1 para 6 entradas. A Visão Geral pede as 21 lojas, a
+# Integridade e o Orçamento pedem ["ESCRIT MATRIZ 6037", "DRE CONSOLIDADO"], o
+# relatório pede as lojas escolhidas -- com UMA entrada, cada um expulsava o
+# anterior e TODOS reliam o Excel a cada clique (uns 3 segundos por rerun só
+# nisso). As 21 lojas pesam uns 3 MB; seis entradas cabem folgadas.
+@st.cache_data(ttl=None, max_entries=6)
 def carregar_dados_por_loja(path_o, path_r, lista_lojas):
     """Carrega os dados de Orçado/Realizado de cada loja SEPARADAMENTE (uma aba
     por loja), para permitir a divisão por loja no relatório Excel — independente
@@ -2361,9 +2616,8 @@ def carregar_dados_por_loja(path_o, path_r, lista_lojas):
 def carregar_tabela_contas(path_r):
     """Lê a aba Tabela_Contas da planilha Realizado 2026: relação entre
     Natureza Financeira (plano de contas) e Linha DRE."""
-    try:
-        df = pd.read_excel(path_r, sheet_name="Tabela_Contas")
-    except Exception:
+    df = ler_aba_excel(path_r, ("Tabela_Contas",))
+    if df is None:
         return pd.DataFrame(columns=["Natureza Financeira", "Linha DRE"])
     df.columns = [str(c).strip() for c in df.columns]
     return df
@@ -2392,13 +2646,7 @@ def montar_mapa_planos_por_dre(df_tabela_contas):
 def carregar_tabela_lojas(path_r):
     """Lê a aba Tabela_Lojas da planilha Realizado 2026: relação (DE_PARA)
     entre o nome da Loja e o Centro de Custos correspondente."""
-    df = None
-    for nome_aba in ("Tabela_Lojas", "Tabela Lojas", "TabelaLojas", "tabela_lojas", "DE_PARA"):
-        try:
-            df = pd.read_excel(path_r, sheet_name=nome_aba)
-            break
-        except Exception:
-            continue
+    df = ler_aba_excel(path_r, ("Tabela_Lojas", "Tabela Lojas", "TabelaLojas", "tabela_lojas", "DE_PARA"))
     if df is None:
         return pd.DataFrame(columns=["Loja", "Centro de Custos"])
     df.columns = [str(c).strip() for c in df.columns]
@@ -2444,7 +2692,15 @@ def montar_mapa_loja_centro_custo(df_tabela_lojas):
 # 4.2 DIÁRIO — lançamentos detalhados, fonte principal da aba "Plano de Contas"
 # ---------------------------------------------------------------------------
 # O DIÁRIO é a maior tabela do painel: uma entrada só.
-@st.cache_data(ttl=None, max_entries=1)
+#
+# cache_RESOURCE, e não cache_data (30/10/2026): o cache_data guarda a tabela
+# serializada e devolve uma CÓPIA nova a cada chamada -- e a Controladoria
+# chama isto até sete vezes por execução (revisão, integridade, escritório,
+# rascunho, relatório...). Eram sete cópias de 35 mil lançamentos por
+# clique, só para serem jogadas fora, e a memória do processo subia a cada
+# uma. Com cache_resource há UM objeto, compartilhado. Ninguém escreve nele:
+# todo uso é leitura, filtro (que cria tabela nova) ou .copy() explícito.
+@st.cache_resource(ttl=None, max_entries=1, show_spinner=False)
 def carregar_diario(path_r):
     """Lê a aba DIÁRIO da planilha Realizado 2026: lançamentos detalhados,
     com Valor Bruto, Competência (data do lançamento), Plano de Contas,
@@ -2485,13 +2741,7 @@ def carregar_diario(path_r):
         "aba": "Nome Aba",
     }
 
-    df = None
-    for nome_aba in ("DIÁRIO", "DIARIO", "Diário", "Diario"):
-        try:
-            df = pd.read_excel(path_r, sheet_name=nome_aba)
-            break
-        except Exception:
-            continue
+    df = ler_aba_excel(path_r, ("DIÁRIO", "DIARIO", "Diário", "Diario"))
     if df is None:
         return pd.DataFrame(columns=colunas_saida)
 
@@ -2643,6 +2893,53 @@ def carregar_lojas_tv(path_o, path_r, lojas, embutido=False):
     if not embutido or list(lojas) == list(VISOES_CONSOLIDADAS.get("DRE CONSOLIDADO", [])):
         return carregar_dados_por_loja(path_o, path_r, lojas)
     return carregar_lojas_painel_executivo(path_o, path_r, tuple(lojas))
+
+
+# ---------------------------------------------------------------------------
+# CÁLCULOS PESADOS EM CACHE (30/10/2026)
+# ---------------------------------------------------------------------------
+# Cada um destes varria o DIÁRIO (35 mil lançamentos) ou as 21 lojas a CADA
+# clique em qualquer lugar da página, e devolve um resultado pequeno que só
+# muda quando os dados ou os filtros mudam. A chave é (caminho, filtros), não
+# o DataFrame: os dados por trás vêm dos caches de leitura, que só mudam no
+# "Atualizar Dados" -- e esse botão limpa estes caches junto.
+@st.cache_data(ttl=None, max_entries=8, show_spinner=False)
+def lojas_que_explicam_o_gap(path_o, path_r, lojas, cols_fechadas):
+    """As lojas que explicam o desvio da rede, para a narrativa da Visão Geral."""
+    import briefing as _bfn
+    return _bfn.lojas_que_explicam(_bfn.desvio_por_loja(
+        {"get_valor_consolidado_multi": get_valor_consolidado_multi,
+         "VISOES_CONSOLIDADAS": VISOES_CONSOLIDADAS},
+        carregar_dados_por_loja(path_o, path_r, list(lojas)), list(cols_fechadas)))
+
+
+@st.cache_data(ttl=None, max_entries=4, show_spinner=False)
+def revisao_de_lancamentos_em_cache(path_r, competencia_txt):
+    """revisar_lancamentos(DIÁRIO, competência) -- a competência vai como
+    texto "2026-10" para a chave do cache."""
+    return revisar_lancamentos(carregar_diario(path_r), pd.Period(competencia_txt, freq="M"))
+
+
+def diario_recortado_pela_visao(path_r, abas):
+    """O DIÁRIO inteiro na Visão Geral; recortado pelos centros de custo das
+    lojas da visão quando ela é parcial -- a regra da aba Integridade."""
+    df = carregar_diario(path_r)
+    abas = list(abas or [])
+    if abas and "DRE CONSOLIDADO" not in [str(a).upper() for a in abas]:
+        mapa = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_r))
+        lojas = _lojas_individuais_das_abas(abas)
+        centros = {str(c).strip() for l in lojas for c in (mapa.get(l), l) if c}
+        df = df[df["Centro de Custos"].astype(str).str.strip().isin(centros)]
+    return df
+
+
+@st.cache_data(ttl=None, max_entries=4, show_spinner=False)
+def conciliacao_diario_dre_em_cache(path_o, path_r, abas, cols):
+    """A conciliação DIÁRIO x DRE da aba Integridade, para a visão e os meses."""
+    _, reais = carregar_dados_abas(path_o, path_r, list(abas))
+    df_dre = next((d for d in reais if d is not None and not d.empty), None)
+    return conciliar_diario_dre(diario_recortado_pela_visao(path_r, abas), df_dre, list(cols),
+                                normalizar=_normalizar_texto)
 
 
 def _planos_sem_linha_dre(df_diario):
@@ -8492,9 +8789,20 @@ def recorte_realizado_projetado(df_fin):
     """Títulos da base que entram no realizado da comparação: entradas
     (a vencer e liquidado -- a meta não é dinheiro) e saídas, nos meses da
     projeção, com "PeriodoMes" e "Grupo Projetado" (a linha do projetado
-    em que a saída cai; vazio nas entradas)."""
+    em que a saída cai; vazio nas entradas).
+
+    Memoizado por base (30/10/2026): o quadro realizado, o PROVISÃO x NF e
+    os lançamentos por célula pediam este recorte três vezes por execução,
+    cada uma varrendo a base inteira. A base vem de st.cache_resource, então
+    o mesmo objeto atravessa as execuções e o recorte é feito uma vez só.
+    Quem recebe o recorte só lê, filtra ou faz .assign (tabela nova)."""
     if df_fin is None or df_fin.empty or "Data Efetiva" not in df_fin.columns:
         return pd.DataFrame()
+    return memo_por_objeto(df_fin, ("recorte_pxr", tuple(MESES_PROJETADO_FIN)),
+                           lambda: _recorte_realizado_projetado(df_fin))
+
+
+def _recorte_realizado_projetado(df_fin):
     periodo = df_fin["Data Efetiva"].dt.to_period("M")
     if "Tipo Movimento" in df_fin.columns:
         tipo = df_fin["Tipo Movimento"].astype(str)
@@ -8545,6 +8853,15 @@ def lancamentos_projetado_x_realizado(df_fin, rotulos_meses=None, grupos_abertos
         return {}, False
     meses = _meses_projetado()
     rotulos = rotulos_meses or {p: _rotulo_mes_pt(p) for p in meses}
+    # O mapa por célula é o mais caro da aba e só depende da base, dos
+    # rótulos e dos grupos abertos -- memoizado junto da base (30/10/2026).
+    chave_memo = ("lancamentos_pxr", tuple(sorted((str(p), r) for p, r in rotulos.items())),
+                  tuple(sorted(str(g) for g in (grupos_abertos or ()))))
+    return memo_por_objeto(df_fin, chave_memo,
+                           lambda: _lancamentos_projetado_x_realizado(recorte, rotulos, grupos_abertos))
+
+
+def _lancamentos_projetado_x_realizado(recorte, rotulos, grupos_abertos=()):
     por_mes = lambda serie: serie.dt.to_period("M")   # noqa: E731
     eh_saida = recorte["Tipo Movimento"].eq("saida")
     rotulo_mae = pd.Series(LINHA_RECEBER_PROJETADO, index=recorte.index).where(~eh_saida, LINHA_PAGAR_PROJETADO)
@@ -17476,14 +17793,11 @@ def _serie_da_linha_por_numero(df, numero, colunas):
     """Lista de valores (um por coluna) da linha cujo número é exatamente `numero`."""
     if df is None or df.empty:
         return [0.0] * len(colunas)
-    col_nome = "Nome" if "Nome" in df.columns else df.columns[0]
-    sub = df[df[col_nome].astype(str).map(lambda n: _numero_linha_dre(n) == numero)]
-    if sub.empty:
+    indice = _indice_dre(df)
+    posicoes = indice["numeros"].get(numero, ())
+    if not posicoes:
         return [0.0] * len(colunas)
-    saida = []
-    for c in colunas:
-        saida.append(float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum()) if c in sub.columns else 0.0)
-    return saida
+    return [_indice_soma(indice, posicoes, [c]) for c in colunas]
 
 
 def diario_por_linha_e_plano(df_diario, meses_ano):
@@ -17811,13 +18125,7 @@ def carregar_dre_mensal(path_r):
     (pedido de 12/10/2026). Devolve DataFrame com Mês, Linha, Aba, Valor; vazio
     se a aba não existir."""
     colunas = ["Mês", "Linha", "Aba", "Valor"]
-    df = None
-    for nome in ("DRE_MENSAL", "DRE MENSAL", "DRE Mensal", "DRE_Mensal"):
-        try:
-            df = pd.read_excel(path_r, sheet_name=nome)
-            break
-        except Exception:   # noqa: BLE001
-            continue
+    df = ler_aba_excel(path_r, ("DRE_MENSAL", "DRE MENSAL", "DRE Mensal", "DRE_Mensal"))
     if df is None or df.empty:
         return pd.DataFrame(columns=colunas)
     df.columns = [str(c).strip() for c in df.columns]
@@ -20177,16 +20485,14 @@ with tab1:
 
         # Quais lojas explicam o gap (uma aba por loja no mesmo Excel) e ano a
         # ano (acorda quando a planilha tiver as colunas do ano anterior).
-        import briefing as _bfn
+        # Em cache (30/10/2026): são 21 lojas varridas conta a conta, e o
+        # resultado é uma lista curta que só muda com os dados ou o período.
         _cols_fech_vg = [c for c in cols_kpi if c != _col_corrente_vg]
         _lojas_gap_vg = None
         try:
             _lojas_vg = list(VISOES_CONSOLIDADAS["DRE CONSOLIDADO"])   # as 21 unidades, nunca uma visão consolidada
             if _lojas_vg and _cols_fech_vg:
-                _lojas_gap_vg = _bfn.lojas_que_explicam(_bfn.desvio_por_loja(
-                    {"get_valor_consolidado_multi": get_valor_consolidado_multi,
-                     "VISOES_CONSOLIDADAS": VISOES_CONSOLIDADAS},
-                    carregar_dados_por_loja(path_orc, path_real, _lojas_vg), _cols_fech_vg))
+                _lojas_gap_vg = lojas_que_explicam_o_gap(path_orc, path_real, tuple(_lojas_vg), tuple(_cols_fech_vg))
         except Exception as _erro_lojas:   # noqa: BLE001 -- loja sem aba não derruba a Visão Geral
             _lojas_gap_vg = None
         _cols_ano_ant_vg = [f"{c[:2]}/{int(c[3:]) - 1}" for c in _cols_fech_vg]
@@ -23378,7 +23684,7 @@ if tab_orc is not None:
             else:
                 _comp_rev = _disponiveis[-1]
                 _n_total = int((_pers_rev == _comp_rev).sum())
-                _rev = revisar_lancamentos(_df_rev, _comp_rev)
+                _rev = revisao_de_lancamentos_em_cache(path_real, str(_comp_rev))
                 _valor_rev = float(pd.to_numeric(_rev["Valor Bruto"], errors="coerce").abs().sum()) if not _rev.empty else 0.0
                 st.markdown(render_kpi_row([
                     dict(label="COMPETÊNCIA MONITORADA", value=_comp_rev.strftime("%m/%Y"), value_color=COLORS["primary"],
@@ -23588,13 +23894,7 @@ if tab_orc is not None:
                    "Só linhas que o DIÁRIO alimenta entram; CMV/Mercadorias e receita vêm de outra fonte. Aparecem só as diferenças "
                    "acima de R$ 1 e as linhas sem par na DRE. Numa visão parcial, o DIÁRIO é recortado pelos centros de custo das lojas dela.")
         try:
-            _dia_int = carregar_diario(path_real)
-            if abas_para_carregar and "DRE CONSOLIDADO" not in [str(a).upper() for a in abas_para_carregar]:
-                _mapa_int = montar_mapa_loja_centro_custo(carregar_tabela_lojas(path_real))
-                _lojas_int = _lojas_individuais_das_abas(abas_para_carregar)
-                _centros_int = {str(c).strip() for l in _lojas_int for c in (_mapa_int.get(l), l) if c}
-                _dia_int = _dia_int[_dia_int["Centro de Custos"].astype(str).str.strip().isin(_centros_int)]
-            _conc = conciliar_diario_dre(_dia_int, _df_dre_int, _cols_int, normalizar=_normalizar_texto)
+            _conc = conciliacao_diario_dre_em_cache(path_orc, path_real, tuple(abas_para_carregar or []), tuple(_cols_int))
         except Exception as _erro_int:   # noqa: BLE001
             _conc = None
             st.info(f"Não consegui conciliar: {_erro_int}")
@@ -23616,11 +23916,18 @@ if tab_orc is not None:
                     _m[_c] = _m[_c].map(lambda v: formata_brl(v) if pd.notna(v) else "—")
                 mostrar_tabela(_m, hide_index=True, width="stretch", height=min(38 + 35 * (len(_m) + 1), 500))
                 _pares = {(str(r["Linha DRE"]), str(r["Mês"])) for _, r in _conc.iterrows()}
-                _dl = _dia_int.copy()
+                _dl = diario_recortado_pela_visao(path_real, abas_para_carregar).copy()
                 _dl["_mes"] = pd.to_datetime(_dl["Competência"], errors="coerce").dt.strftime("%m/%Y")
                 _dl["_num"] = _dl["Linha DRE"].astype(str).map(lambda n: _numero_linha_dre(n) or "")
                 _nums = {(_numero_linha_dre(l) or l, m) for l, m in _pares}
-                _dl = _dl[[(n, m) in _nums or any(n.startswith(k + ".") and m == mm for k, mm in _nums) for n, m in zip(_dl["_num"], _dl["_mes"])]]
+                # Prefixos por mês numa tupla: str.startswith(tupla) roda em C, em vez
+                # de um laço Python por lançamento x linha (35 mil x dezenas).
+                _prefixos_mes = {}
+                for _k, _mm in _nums:
+                    _prefixos_mes.setdefault(_mm, []).append(_k + ".")
+                _prefixos_mes = {mm: tuple(ks) for mm, ks in _prefixos_mes.items()}
+                _dl = _dl[[(n, m) in _nums or n.startswith(_prefixos_mes.get(m, ()))
+                           for n, m in zip(_dl["_num"], _dl["_mes"])]]
                 if not _dl.empty:
                     st.download_button("⬇️ Baixar os lançamentos por trás das diferenças (CSV)",
                                        _dl.drop(columns=["_mes", "_num"]).to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
