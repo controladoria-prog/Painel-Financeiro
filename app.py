@@ -4049,6 +4049,63 @@ def _linha_por_numero_tv(linhas, numero):
     return None
 
 
+# Recuo do seletor de conta por loja: um espaço "eme" por nível abaixo do 1.
+# Não é espaço comum de propósito -- o HTML junta espaços comuns em um só, e o
+# recuo sumiria na lista.
+RECUO_NIVEL_DRE = "\u2003"
+
+# Começo do nome (sem número) das linhas de topo que são RECEITA ou RESULTADO.
+# Por começo, e não por "contém": "Deduções da Receita..." e "Impostos sobre o
+# Lucro" têm a palavra no meio e são saídas.
+INICIOS_LINHA_RESULTADO_DRE = ("RECEITA", "MARGEM", "RESULTADO", "EBITDA", "LUCRO")
+
+
+def natureza_da_linha_dre(numero, nomes_por_numero):
+    """'despesa' ou 'resultado' para uma linha da DRE, pelo número dela.
+
+    Despesa (deduções, custos, despesas, depreciação, impostos) chega
+    NEGATIVA na planilha: o bloco por loja mostra o módulo, e quanto MAIOR o
+    percentual, PIOR. Receita, margem e resultado chegam com sinal (EBITDA de
+    loja pode ser negativo): o bloco mostra o sinal, e quanto MAIOR, MELHOR.
+    Os grupos "(+/-)" (resultado financeiro, não operacionais) são mistos: a
+    linha de topo é resultado, e cada ramo segue o subgrupo de nível 2 --
+    "Despesas Financeiras" é despesa, "Receitas Financeiras" é resultado.
+    `nomes_por_numero`: {número: nome da linha} da DRE da visão."""
+    if not numero:
+        return "despesa"
+    partes = str(numero).split(".")
+    nome_topo = _nome_sem_numero_dre(nomes_por_numero.get(partes[0], "")).upper()
+    if nome_topo.startswith("(+/-)"):
+        if len(partes) == 1:
+            return "resultado"
+        nome_ramo = _nome_sem_numero_dre(nomes_por_numero.get(".".join(partes[:2]), "")).upper()
+        return "despesa" if "DESPESA" in nome_ramo else "resultado"
+    return "resultado" if nome_topo.startswith(INICIOS_LINHA_RESULTADO_DRE) else "despesa"
+
+
+def opcoes_conta_por_loja(linhas_dre):
+    """Rótulos e linhas do seletor do bloco por loja do foco despesas (a
+    despesa sobre o faturamento de cada loja): TODAS as linhas numeradas da DRE, na ordem da DRE, com recuo
+    por nível (30/10/2026 -- antes eram só os níveis 2 e 3 dos grupos 6 e 8).
+    Devolve (rótulos, {rótulo: linha}, {número: nome})."""
+    rotulos, opcoes, nomes_por_numero = [], {}, {}
+    for linha in linhas_dre or []:
+        numero = _numero_linha_dre(linha)
+        if numero and numero not in nomes_por_numero:
+            nomes_por_numero[numero] = str(linha).strip()
+    for linha in linhas_dre or []:
+        numero = _numero_linha_dre(linha)
+        if not numero:
+            continue
+        nivel = len(numero.split("."))
+        rotulo = f"{RECUO_NIVEL_DRE * (nivel - 1)}{_nome_sem_numero_dre(linha)} ({numero})"
+        if rotulo in opcoes:
+            continue
+        rotulos.append(rotulo)
+        opcoes[rotulo] = linha
+    return rotulos, opcoes, nomes_por_numero
+
+
 def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                        meses_ativos, por_mes, rec_liq, path_orc=None,
                        path_real=None, abas_visao=None, embutido=False):
@@ -4475,12 +4532,14 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
     _dados_loja = (carregar_lojas_tv(path_orc, path_real, _lojas, embutido)
                    if (_lojas and path_real) else {})
 
-    def _da_loja(df_loja, chaves, colunas):
+    def _da_loja(df_loja, chaves, colunas, com_sinal=False):
+        # com_sinal: receita, margem e resultado (EBITDA de loja pode ser
+        # negativo, e o módulo esconderia isso). Despesa segue em módulo.
         if df_loja is None or df_loja.empty:
             return 0.0
-        return sum(abs(get_valor_consolidado_multi(
-            [df_loja], chave, colunas, exato_linha_sintetica=True))
-            for chave in chaves)
+        valores = (get_valor_consolidado_multi(
+            [df_loja], chave, colunas, exato_linha_sintetica=True) for chave in chaves)
+        return sum(valores) if com_sinal else sum(abs(v) for v in valores)
 
     # =====================================================================
     # Despesa sobre o faturamento, por loja (conta selecionável)
@@ -4490,34 +4549,23 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 unsafe_allow_html=True)
 
     # O bloco nasceu para o aluguel e ficava preso nele: comparar a Taxa de
-    # Ocupação (ou qualquer outra conta) exigia mudar o código. A conta agora
-    # vem de um SELETOR: qualquer subgrupo de nível 2 das despesas (6 e 8) e
-    # qualquer conta de nível 3 entram na mesma leitura -- faturamento,
-    # despesa e o percentual -- no acumulado e no mês a mês (01/09/2026). O
-    # padrão segue sendo o aluguel (8.4.1), e SÓ com ele selecionado existe a
-    # caixa de somar o complementar: nas outras contas ela não significa
-    # nada, e um grupo como o 8.4 já carrega o 8.4.2 dentro de si.
+    # Ocupação (ou qualquer outra conta) exigia mudar o código. A conta vem de
+    # um SELETOR (01/09/2026), e desde 30/10/2026 ele lista TODAS as linhas da
+    # DRE, de qualquer grupo e nível, na ordem da DRE e com recuo por nível --
+    # antes eram só os níveis 2 e 3 das despesas (6 e 8). Receita, margem e
+    # resultado entram com sinal e com a leitura invertida (ver
+    # natureza_da_linha_dre). O padrão segue sendo o aluguel (8.4.1), e SÓ com
+    # ele selecionado existe a caixa de somar o complementar: nas outras
+    # contas ela não significa nada, e um grupo como o 8.4 já carrega o 8.4.2
+    # dentro de si.
     linha_complementar = _linha_por_numero_tv(linhas_dre, "8.4.2")
-    rotulos_conta, opcoes_conta = [], {}
-    for linha_dre_opc in linhas_dre:
-        numero_opc = _numero_linha_dre(linha_dre_opc)
-        partes_opc = numero_opc.split(".") if numero_opc else []
-        if not partes_opc or partes_opc[0] not in ("6", "8"):
-            continue
-        if len(partes_opc) not in (2, 3):
-            continue
-        recuo_opc = "· " if len(partes_opc) == 3 else ""
-        rotulo_opc = f"{recuo_opc}{_nome_sem_numero_dre(linha_dre_opc)} ({numero_opc})"
-        if rotulo_opc in opcoes_conta:
-            continue
-        rotulos_conta.append(rotulo_opc)
-        opcoes_conta[rotulo_opc] = linha_dre_opc
+    rotulos_conta, opcoes_conta, nomes_por_numero_dre = opcoes_conta_por_loja(linhas_dre)
 
     if not rotulos_conta:
         st.markdown(
             '<div class="tv-panel" style="padding:14px;">'
-            f'<span style="color:{COLORS["text_muted"]};">Não achei subgrupos de '
-            "despesa (6 e 8) na DRE desta visão.</span></div>",
+            f'<span style="color:{COLORS["text_muted"]};">Não achei linhas '
+            "numeradas na DRE desta visão.</span></div>",
             unsafe_allow_html=True)
     elif not _lojas or not path_real:
         st.markdown(
@@ -4544,6 +4592,13 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         numero_conta = _numero_linha_dre(linha_conta)
         nome_conta = _nome_sem_numero_dre(linha_conta)
         chaves_conta = [linha_conta]
+        # Despesa: módulo, e percentual MAIOR é PIOR. Receita/resultado: com
+        # sinal, e percentual MAIOR é MELHOR -- as cores se invertem.
+        eh_resultado = natureza_da_linha_dre(numero_conta, nomes_por_numero_dre) == "resultado"
+        rotulo_valor = "Valor" if eh_resultado else "Despesa"
+
+        def _pior_que_a_rede(pct):
+            return pct < media_rede if eh_resultado else pct > media_rede
         # A caixa mora numa VAGA própria: com outra conta escolhida ela some,
         # e vaga esvaziada não deixa fantasma para trás.
         _vaga_chk = _col_chk.empty()
@@ -4561,7 +4616,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
         for loja in _lojas:
             _df_o, df_r = _dados_loja.get(loja, (pd.DataFrame(), pd.DataFrame()))
             faturamento = _da_loja(df_r, [CHAVE_FATURAMENTO], cols_periodo)
-            despesa = _da_loja(df_r, chaves_conta, cols_periodo)
+            despesa = _da_loja(df_r, chaves_conta, cols_periodo, com_sinal=eh_resultado)
             if not faturamento and not despesa:
                 continue
             if not despesa:
@@ -4596,7 +4651,7 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 + _ind("Média da rede", f"{media_rede:.2f}%".replace(".", ","),
                        COLORS["primary"])
                 + _ind("Acima da média", f"{len(acima)} de {len(registros)}",
-                       COLORS["negative"] if acima else COLORS["positive"])
+                       COLORS["negative"] if (acima and not eh_resultado) else COLORS["positive"])
                 + "</div>",
                 unsafe_allow_html=True,
             )
@@ -4625,7 +4680,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
             else:
                 _vaga_mensal.empty()
             if registros and not abrir_por_mes:
-                teto = max(r["pct"] for r in registros) or 1.0
+                # Módulo: com receita/resultado o percentual pode ser negativo.
+                teto = max(abs(r["pct"]) for r in registros) or 1.0
 
                 def _tabela_acum(regs, rodape, com_rede):
                     partes = ['<div class="tv-panel" style="padding:8px 12px;">',
@@ -4633,13 +4689,13 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                               '<table class="tv-matriz tv-matriz-fixa tv-aluguel" '
                               'style="min-width:100%;">',
                               '<thead><tr><th class="rot">Loja</th>'
-                              '<th>Faturamento</th><th>Despesa</th>'
+                              f'<th>Faturamento</th><th>{rotulo_valor}</th>'
                               '<th class="tot">%</th></tr></thead><tbody>']
                     for reg in regs:
-                        cor = (COLORS["negative"] if reg["pct"] > media_rede
+                        cor = (COLORS["negative"] if _pior_que_a_rede(reg["pct"])
                                else COLORS["positive"])
-                        alfa = 0.08 + (reg["pct"] / teto) * 0.20
-                        tom = ("224,133,133" if reg["pct"] > media_rede
+                        alfa = 0.08 + (abs(reg["pct"]) / teto) * 0.20
+                        tom = ("224,133,133" if _pior_que_a_rede(reg["pct"])
                                else "87,190,146")
                         partes.append(
                             f'<tr><td class="rot" title="{reg["loja"]}">{reg["loja"]}</td>'
@@ -4704,7 +4760,8 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                         f'<div style="font-size:9.5px;letter-spacing:0.9px;'
                         f'text-transform:uppercase;color:{COLORS["text_muted"]};'
                         'margin-bottom:6px;">'
-                        f"Pagam {nome_conta} e não faturam</div>"
+                        + (f"Têm {nome_conta} e não faturam</div>" if eh_resultado
+                           else f"Pagam {nome_conta} e não faturam</div>")
                         + _chips(sem_faturamento, COLORS["warning"],
                                  lambda i: formata_valor_curto(i["despesa"])))
                 if sem_despesa:
@@ -4713,13 +4770,16 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                         f'<div style="font-size:9.5px;letter-spacing:0.9px;'
                         f'text-transform:uppercase;color:{COLORS["text_muted"]};'
                         'margin:7px 0 6px 0;">'
-                        f"Faturam e não pagam {nome_conta}</div>"
+                        + (f"Faturam e não têm {nome_conta}</div>" if eh_resultado
+                           else f"Faturam e não pagam {nome_conta}</div>")
                         + _chips(sem_despesa, COLORS["positive"],
                                  lambda i: formata_valor_curto(i["faturamento"])))
                 _partes_exc.append(
                     f'<div style="font-size:9.5px;color:{COLORS["text_muted"]};'
                     'margin-top:2px;">Fora do percentual: sem faturamento não há '
-                    "o que dividir; sem a despesa o índice é zero.</div></div>")
+                    "o que dividir; sem "
+                    + ("valor na conta" if eh_resultado else "a despesa")
+                    + " o índice é zero.</div></div>")
                 # No acumulado as exceções ficam ao lado da tabela; no mês a
                 # mês elas descem para a faixa larga. A vaga não usada é
                 # esvaziada.
@@ -4740,10 +4800,10 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                 # para a célula dizer sozinha o que é o quê (01/09/2026).
                 legenda_mensal = (
                     f'<div style="font-size:10px;color:{COLORS["text_muted"]};'
-                    'margin:0 0 6px 0;">Em cada célula: <b>percentual</b> da '
-                    "despesa sobre a receita bruta do mês e, embaixo, "
+                    'margin:0 0 6px 0;">Em cada célula: <b>percentual</b> '
+                    f"{'do valor' if eh_resultado else 'da despesa'} sobre a receita bruta do mês e, embaixo, "
                     f'<b style="color:{COLORS["primary"]};">faturamento</b> · '
-                    f'<b style="color:{COLORS["warning"]};">despesa</b> '
+                    f'<b style="color:{COLORS["warning"]};">{rotulo_valor.lower()}</b> '
                     "daquele mês.</div>")
                 cab = "".join(f"<th>{m}</th>" for m in rot_mes)
                 tabela = ['<div class="tv-panel" style="padding:8px 12px;">',
@@ -4756,12 +4816,12 @@ def _corpo_despesas_tv(list_df_real, list_df_orc, df_ref, cols_periodo, m_map,
                     celulas = ""
                     for coluna in cols_mes:
                         fat_m = _da_loja(reg["df"], [CHAVE_FATURAMENTO], [coluna])
-                        desp_m = _da_loja(reg["df"], chaves_conta, [coluna])
+                        desp_m = _da_loja(reg["df"], chaves_conta, [coluna], com_sinal=eh_resultado)
                         if not fat_m:
                             celulas += f'<td style="color:{COLORS["text_muted"]};">—</td>'
                             continue
                         pct_m = desp_m / fat_m * 100
-                        cor_m = (COLORS["negative"] if pct_m > media_rede
+                        cor_m = (COLORS["negative"] if _pior_que_a_rede(pct_m)
                                  else COLORS["positive"])
                         celulas += (
                             f'<td style="color:{cor_m};">'

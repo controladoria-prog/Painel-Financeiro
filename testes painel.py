@@ -6657,7 +6657,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         vendeu menos -- que sao problemas diferentes."""
         i = FONTE.index("def _corpo_despesas_tv(")
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
-        j = corpo.index("desp_m = _da_loja(reg[\"df\"], chaves_conta, [coluna])")
+        j = corpo.index("desp_m = _da_loja(reg[\"df\"], chaves_conta, [coluna], com_sinal=eh_resultado)")
         trecho = corpo[j:j + 1600]
         self.assertIn("formata_valor_curto(fat_m)", trecho)
         self.assertIn("formata_valor_curto(desp_m)", trecho)
@@ -6772,7 +6772,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn("Faturam e não pagam {nome_conta}", corpo)
         # A regua e a media DA REDE, nao uma meta de fora.
         self.assertIn("media_rede", corpo)
-        self.assertIn('COLORS["negative"] if reg["pct"] > media_rede', corpo)
+        self.assertIn('COLORS["negative"] if _pior_que_a_rede(reg["pct"])', corpo)
         # O padrao e achado pelo NUMERO embutido no rotulo, e o complementar
         # pelo numero direto: "8.4.1" nao muda quando alguem renomeia a conta
         # na planilha, e a busca por texto ja falhou neste painel uma vez.
@@ -6784,7 +6784,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn('key="tv_alug_compl"', corpo)
         self.assertIn("value=False, key=\"tv_alug_compl\"", corpo)
         # A tabela mostra os TRES numeros pedidos.
-        self.assertIn("<th>Faturamento</th><th>Despesa</th>", corpo)
+        self.assertIn("<th>Faturamento</th><th>{rotulo_valor}</th>", corpo)
         self.assertIn('<th class="tot">%</th>', corpo)
         # SEM barra: ao lado de tres numeros ela nao acrescentava leitura.
         i_tab = corpo.index("<th>Faturamento</th>")
@@ -6839,7 +6839,7 @@ class TesteTelaDaRamificacao(unittest.TestCase):
         self.assertIn("if not fat_m:", trecho)
         # Faturamento e despesa do PERIODO na coluna final, e os tres numeros
         # em cada mes -- percentual em cima, faturamento e despesa embaixo.
-        self.assertIn("<th>Faturamento</th><th>Despesa</th>", trecho)
+        self.assertIn("<th>Faturamento</th><th>{rotulo_valor}</th>", trecho)
 
     def test_a_loja_sem_percentual_vai_para_o_fim(self):
         """Modelo da ordenacao: quem esta sufocando o resultado aparece
@@ -6880,8 +6880,8 @@ class TesteContaSelecionavelEEconomias(unittest.TestCase):
         corpo = self._corpo()
         self.assertIn('r.endswith("(8.4.1)")', corpo,
                       "o padrao do seletor deixou de ser o aluguel")
-        self.assertIn('partes_opc[0] not in ("6", "8")', corpo)
-        self.assertIn("len(partes_opc) not in (2, 3)", corpo)
+        # 30/10/2026: as opcoes sao TODAS as linhas da DRE (TesteContaPorLojaTodasAsLinhas).
+        self.assertIn("rotulos_conta, opcoes_conta, nomes_por_numero_dre = opcoes_conta_por_loja(linhas_dre)", corpo)
         # Semear ANTES de criar o widget: selectbox com key IGNORA o index
         # quando a sessao ja guarda valor, e valor que saiu da lista derruba o
         # widget -- mesma armadilha ja pega no seletor_periodo_meses.
@@ -6940,7 +6940,7 @@ class TesteContaSelecionavelEEconomias(unittest.TestCase):
                         trecho.index("<table class="),
                         "a legenda voltou para o rodape")
         self.assertIn('<b style="color:{COLORS["primary"]};">faturamento</b>', trecho)
-        self.assertIn('<b style="color:{COLORS["warning"]};">despesa</b>', trecho)
+        self.assertIn('<b style="color:{COLORS["warning"]};">{rotulo_valor.lower()}</b>', trecho)
         # As cores valem DENTRO das celulas, nao so na legenda.
         self.assertIn("formata_valor_curto(fat_m)", trecho)
         self.assertIn("formata_valor_curto(desp_m)", trecho)
@@ -10121,6 +10121,89 @@ class TestePainelExecutivoNaControladoria(unittest.TestCase):
             self.assertIn(teto, FONTE[FONTE.rindex("@st.cache", 0, i):i])
         # e existem antes de o Painel de TV ser desenhado (ele roda no meio do arquivo)
         self.assertLess(FONTE.index("def carregar_lojas_tv("), FONTE.index('if st.query_params.get("modo") == "tv":'))
+
+
+class TesteContaPorLojaTodasAsLinhas(unittest.TestCase):
+    """30/10/2026: o seletor do bloco "Despesa sobre o faturamento, por loja"
+    (Painel de TV foco despesas e aba Painel Executivo) lista TODAS as linhas
+    da DRE -- antes, so os niveis 2 e 3 dos grupos 6 e 8. Receita, margem e
+    resultado entram com sinal e com a leitura invertida."""
+
+    DRE = ["1 - Receita Operacional Bruta", "  1.1 - Vendas de mercadorias",
+           "2 - Deduções da Receita Operacional Bruta", "    2.1.3 - ICMS sobre Receita Bruta",
+           "3 - Receita Operacional Liquida", "4 - Custo das Vendas",
+           "  4.1 - Custo da Mercadoria Vendida - CMV", "6 - Despesas Variáveis",
+           "        6.24.1.1.1 - MKT-REG: 01. Mídia e Ativação (Gestão do GB)",
+           "8 - Despesas Operacionais", "  8.4 - Taxa de Ocupação", "    8.4.1 - Aluguel",
+           "    8.4.2 - Aluguel Complementar", "      8.3.1.1 - Salário", "11 - EBITDA",
+           "12 - (+/-) Resultado Financeiro Líquido", "  12.1 - Receitas Financeiras",
+           "    12.1.4 - Rendimento de Aplicações", "  12.2 - Despesas Financeiras",
+           "    12.2.5 - Taxa de Antecipação de Cartões", "13 - Depreciação e Amortização",
+           "14 - (+/-) Receitas e Despesas não Operacionais",
+           "  14.1 - Ganho na Alienação do Ativo Permanente",
+           "  14.4 - Outras Despesas não Operacionais", "15 - Resultado Antes do Imposto",
+           "16 - Impostos sobre o Lucro", "  16.1 - IRPJ", "17 - Resultado Gerencial do Período",
+           "Linha sem numero"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["opcoes_conta_por_loja", "natureza_da_linha_dre",
+                           "_numero_linha_dre", "_nome_sem_numero_dre"],
+                          ["RECUO_NIVEL_DRE", "INICIOS_LINHA_RESULTADO_DRE"])
+
+    def test_todas_as_linhas_numeradas_na_ordem_da_dre(self):
+        rotulos, opcoes, nomes = self.ns["opcoes_conta_por_loja"](self.DRE)
+        numerados = [l for l in self.DRE if l != "Linha sem numero"]
+        self.assertEqual(len(rotulos), len(numerados), "toda linha numerada entra, de qualquer grupo e nivel")
+        self.assertEqual([opcoes[r] for r in rotulos], numerados, "na ordem da DRE")
+        self.assertEqual(nomes["8.4.1"], "8.4.1 - Aluguel")
+        for numero in ("1", "2", "4.1", "6.24.1.1.1", "8.3.1.1", "11", "12.2.5", "16.1", "17"):
+            self.assertTrue(any(r.endswith(f"({numero})") for r in rotulos), f"faltou a {numero}")
+
+    def test_recuo_por_nivel_e_o_padrao_continua_o_aluguel(self):
+        rotulos, _, _ = self.ns["opcoes_conta_por_loja"](self.DRE)
+        recuo = self.ns["RECUO_NIVEL_DRE"]
+        self.assertNotEqual(recuo, " ", "espaco comum some no HTML")
+        por_numero = {r[r.rindex("(") + 1:-1]: r for r in rotulos}
+        self.assertEqual(por_numero["8"], "Despesas Operacionais (8)")
+        self.assertEqual(por_numero["8.4"], recuo + "Taxa de Ocupação (8.4)")
+        self.assertEqual(por_numero["8.4.1"], recuo * 2 + "Aluguel (8.4.1)")
+        self.assertTrue(por_numero["6.24.1.1.1"].startswith(recuo * 4 + "MKT-REG"))
+        self.assertEqual([r for r in rotulos if r.endswith("(8.4.1)")], [recuo * 2 + "Aluguel (8.4.1)"],
+                         "o padrao (8.4.1) e achado pelo fim do rotulo, e e um so")
+
+    def test_natureza_de_cada_linha(self):
+        _, _, nomes = self.ns["opcoes_conta_por_loja"](self.DRE)
+        nat = lambda n: self.ns["natureza_da_linha_dre"](n, nomes)
+        for numero in ("1", "1.1", "3", "11", "12", "12.1", "12.1.4", "14", "14.1", "15", "17"):
+            self.assertEqual(nat(numero), "resultado", numero)
+        for numero in ("2", "2.1.3", "4", "4.1", "6", "6.24.1.1.1", "8", "8.4.1", "8.3.1.1",
+                       "12.2", "12.2.5", "13", "14.4", "16", "16.1"):
+            self.assertEqual(nat(numero), "despesa", numero)
+        self.assertEqual(nat(None), "despesa")
+        self.assertEqual(nat("99.1"), "despesa", "sem a linha de topo, fica como sempre foi")
+
+    def test_resultado_entra_com_sinal_e_a_leitura_inverte(self):
+        i = FONTE.index("def _corpo_despesas_tv(")
+        corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
+        self.assertIn("def _da_loja(df_loja, chaves, colunas, com_sinal=False):", corpo)
+        self.assertIn("return sum(valores) if com_sinal else sum(abs(v) for v in valores)", corpo)
+        self.assertIn("despesa = _da_loja(df_r, chaves_conta, cols_periodo, com_sinal=eh_resultado)", corpo)
+        self.assertIn('eh_resultado = natureza_da_linha_dre(numero_conta, nomes_por_numero_dre) == "resultado"', corpo)
+        self.assertIn("return pct < media_rede if eh_resultado else pct > media_rede", corpo)
+        self.assertIn('rotulo_valor = "Valor" if eh_resultado else "Despesa"', corpo)
+        # faturamento nunca muda: e o denominador
+        self.assertIn("faturamento = _da_loja(df_r, [CHAVE_FATURAMENTO], cols_periodo)", corpo)
+        # percentual negativo (EBITDA de loja no vermelho) nao quebra o tom do fundo
+        self.assertIn('teto = max(abs(r["pct"]) for r in registros) or 1.0', corpo)
+        self.assertIn('alfa = 0.08 + (abs(reg["pct"]) / teto) * 0.20', corpo)
+        self.assertNotIn("Não achei subgrupos de", corpo)
+
+    def test_helpers_existem_antes_do_painel_de_tv(self):
+        marco = FONTE.index('if st.query_params.get("modo") == "tv":')
+        for nome in ("def natureza_da_linha_dre(", "def opcoes_conta_por_loja(",
+                     "RECUO_NIVEL_DRE = ", "INICIOS_LINHA_RESULTADO_DRE = "):
+            self.assertLess(FONTE.index(nome), marco, nome)
 
 
 if __name__ == "__main__":
