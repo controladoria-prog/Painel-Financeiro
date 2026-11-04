@@ -1,5 +1,5 @@
 {
- "data": "2026-11-03",
+ "data": "2026-11-04",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.2,
@@ -356,7 +356,7 @@
    "3 - Receita Operacional Liquida": 11309542.94,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
    "4 - Custo das Vendas": -4870616.28,
-   "11 - EBITDA": 4179302.75,
+   "11 - EBITDA": 4161070.88,
    "6.1 - Comissões sobre Vendas": 0.0,
    "6.2 - Taxa com Cartão de Crédito / Débito": -75215.38,
    "6.3 - POS Cartões": -77079.96,
@@ -372,7 +372,7 @@
    "6.13 - Amostras": 0.0,
    "6.14 - Flaconetes": -81.46,
    "6.15 - Displays": 0.0,
-   "6.16 - Vitrines": -42166.28,
+   "6.16 - Vitrines": -42912.79000000001,
    "6.17 - Precificadores": 0.0,
    "6.18 - Aplicadores Descartáveis": 0.0,
    "6.19 - Perdas de Estoque": 0.0,
@@ -382,14 +382,14 @@
    "6.23 - Infra Estrutura Tecnológica (VSAT)": 0.0,
    "6.24 - Esforços de Marketing": -254462.77,
    "6.25 - PDD": 0.0,
-   "8.1 - Despesas Estruturais": -122192.96,
+   "8.1 - Despesas Estruturais": -122791.78000000001,
    "8.2 - Despesas com Comunicação": -18772.18,
-   "8.3 - Pessoal": -409156.99,
+   "8.3 - Pessoal": -415330.98000000004,
    "8.4 - Taxa de Ocupação": -274704.02,
    "8.5 - Despesas com Veículos": -7217.070000000001,
-   "8.6 - Despesas Administrativas": -65031.630000000005,
-   "8.7 - Despesas Gerais": -51082.56,
-   "8.8 - Serviços de Terceiros": -338926.85
+   "8.6 - Despesas Administrativas": -65357.23000000001,
+   "8.7 - Despesas Gerais": -53560.0,
+   "8.8 - Serviços de Terceiros": -346836.36
   }
  }
 }
