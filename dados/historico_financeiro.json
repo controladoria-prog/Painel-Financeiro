@@ -399,5 +399,63 @@
    "LOJA sem recurso próprio em 29/10",
    "VENDA DIRETA sem recurso próprio em 10/11"
   ]
+ },
+ {
+  "data": "2026-10-30",
+  "saldo": 5906448.99,
+  "titulos": [
+   "Caixa fica negativo na semana de 28/12",
+   "46% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 30/10",
+   "VENDA DIRETA sem recurso próprio em 10/11"
+  ]
+ },
+ {
+  "data": "2026-11-02",
+  "saldo": 5906448.99,
+  "titulos": [
+   "Caixa fica negativo na semana de 28/12",
+   "R$ 146.097,21 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em -38% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 02/11",
+   "VENDA DIRETA sem recurso próprio em 10/11"
+  ]
+ },
+ {
+  "data": "2026-11-03",
+  "saldo": 6464528.000000001,
+  "titulos": [
+   "R$ 333.546,41 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 24% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 03/11",
+   "VENDA DIRETA sem recurso próprio em 17/11"
+  ]
+ },
+ {
+  "data": "2026-11-04",
+  "saldo": 5447850.220000001,
+  "titulos": [
+   "R$ 2.196.361,84 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 24% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 04/11",
+   "VENDA DIRETA sem recurso próprio em 10/11"
+  ]
+ },
+ {
+  "data": "2026-11-05",
+  "saldo": 5953851.55,
+  "titulos": [
+   "R$ 75.353,74 vencidos e ainda não pagos",
+   "Reserva do mês em 23% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 05/11",
+   "VENDA DIRETA sem recurso próprio em 10/11"
+  ]
  }
 ]

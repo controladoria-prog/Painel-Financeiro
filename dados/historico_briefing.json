@@ -678,5 +678,90 @@
    "Serviços de Terceiros",
    "Despesas Estruturais"
   ]
+ },
+ {
+  "data": "2026-10-30",
+  "mes_col": "10/2026",
+  "mes": "OUTUBRO",
+  "dia": 28,
+  "rec_mes": 9962340.7,
+  "ritmo_pct": 81.07285554898765,
+  "chance": 0.01,
+  "rec_ytd": 101142111.12,
+  "ebitda_ytd": 25855182.04,
+  "margem_proj": null,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Serviços de Terceiros",
+   "Despesas Estruturais"
+  ]
+ },
+ {
+  "data": "2026-11-02",
+  "mes_col": "10/2026",
+  "mes": "OUTUBRO",
+  "dia": 31,
+  "rec_mes": 9962340.7,
+  "ritmo_pct": 73.22709533456948,
+  "chance": 0.01,
+  "rec_ytd": 101142111.12,
+  "ebitda_ytd": 25855182.04,
+  "margem_proj": 24.368311538505747,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Serviços de Terceiros"
+  ]
+ },
+ {
+  "data": "2026-11-03",
+  "mes_col": "11/2026",
+  "mes": "NOVEMBRO",
+  "dia": 1,
+  "rec_mes": 67203.5,
+  "ritmo_pct": 14.241985972742507,
+  "chance": 0.01,
+  "rec_ytd": 102556516.86,
+  "ebitda_ytd": 26250991.029999997,
+  "margem_proj": 24.433450821298276,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Serviços de Terceiros"
+  ]
+ },
+ {
+  "data": "2026-11-04",
+  "mes_col": "11/2026",
+  "mes": "NOVEMBRO",
+  "dia": 2,
+  "rec_mes": 114680.07999999999,
+  "ritmo_pct": 12.151689203039934,
+  "chance": 0.01,
+  "rec_ytd": 102603993.44,
+  "ebitda_ytd": 26235787.799999997,
+  "margem_proj": 24.41323302404746,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Serviços de Terceiros"
+  ]
+ },
+ {
+  "data": "2026-11-05",
+  "mes_col": "11/2026",
+  "mes": "NOVEMBRO",
+  "dia": 3,
+  "rec_mes": 631062.86,
+  "ritmo_pct": 44.578969845512844,
+  "chance": 0.01,
+  "rec_ytd": 103120376.22,
+  "ebitda_ytd": 26402479.729999997,
+  "margem_proj": 24.471709559316455,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Serviços de Terceiros"
+  ]
  }
 ]
