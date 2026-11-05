@@ -7802,6 +7802,52 @@ def consolidar_metas(linhas):
     return tupla, quadro
 
 
+def pares_de_meta_visiveis_por_mes(quadro):
+    """{(ano, mês): {(canal, modalidade), ...}} SÓ dos meses em que alguma
+    meta está com Mostrar = NÃO -- o conjunto é o das metas que ficaram à
+    mostra (com valor) naquele mês. Mês sem meta escondida não entra.
+
+    05/11/2026: com Mostrar = NÃO em algumas modalidades de novembro (para
+    ver só a de Débito), a linha de meta zerou o mês inteiro. A conta do
+    "quanto falta" era sempre da EMPRESA: meta do mês menos TODO o
+    recebimento do mês -- e o recebimento de crédito, boleto e PIX cobria
+    a meta de Débito sozinho. Nos meses em que a meta está parcial, só o
+    recebimento do mesmo canal × modalidade conta para cobri-la (ver
+    recorte_realizado_para_meta). Nos outros, nada muda."""
+    pares = {}
+    if quadro is None or len(quadro) == 0 or "Mostrar" not in quadro.columns:
+        return pares
+    for mes, grupo in quadro.groupby("Mês"):
+        if bool(grupo["Mostrar"].astype(bool).all()):
+            continue
+        chave = (int(mes.year), int(mes.month))
+        visiveis = grupo[grupo["Mostrar"].astype(bool) & (pd.to_numeric(grupo["Meta (R$)"], errors="coerce").fillna(0) > 0)]
+        pares[chave] = {(_canal_da_meta(c) or _so_letras(c), _so_letras(m))
+                        for c, m in zip(visiveis["Canal"], visiveis["Modalidade"])}
+    return pares
+
+
+def recorte_realizado_para_meta(df_real, pares_por_mes, coluna_data="Data Efetiva"):
+    """Dos recebimentos, os que CONTAM para cobrir a meta: todos nos meses
+    com a meta completa; nos meses com meta escondida (pares_por_mes), só os
+    do canal × modalidade cuja meta está à mostra. Canal e modalidade são
+    comparados sem acento nem maiúsculas ("Crédito à vista" = "Crédito à
+    Vista"; "VD" = "VENDA DIRETA")."""
+    if df_real is None or df_real.empty or not pares_por_mes:
+        return df_real
+    datas = pd.to_datetime(df_real[coluna_data], errors="coerce")
+    chaves_mes = list(zip(datas.dt.year, datas.dt.month))
+    canais = [(_canal_da_meta(c) or _so_letras(c)) for c in df_real[COL_FIN_CANAL].astype(str)] \
+        if COL_FIN_CANAL in df_real.columns else [""] * len(df_real)
+    modalidades = [_so_letras(m) for m in df_real[COL_FIN_MODALIDADE].astype(str)] \
+        if COL_FIN_MODALIDADE in df_real.columns else [""] * len(df_real)
+    mascara = []
+    for chave, canal, modalidade in zip(chaves_mes, canais, modalidades):
+        visiveis = pares_por_mes.get(chave)
+        mascara.append(True if visiveis is None else (canal, modalidade) in visiveis)
+    return df_real[pd.Series(mascara, index=df_real.index)]
+
+
 def metas_da_tupla(tupla):
     """De volta ao formato {canal: {modalidade: {(ano, mês): valor}}}."""
     metas = {}
@@ -10378,7 +10424,19 @@ def _periodo_mensal(valor):
         return None
 
 
-def _aplicar_meta_como_falta(pivot, mes_corrente=None):
+def realizado_que_cobre_a_meta(df, pares_por_mes, coluna_periodo="PeriodoMes"):
+    """Soma, por período, de a vencer + liquidado que contam para cobrir a
+    meta (ver recorte_realizado_para_meta)."""
+    if df is None or df.empty or coluna_periodo not in df.columns:
+        return None
+    recebimentos = df[df[COL_FIN_MOVIMENTO].isin([MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])]
+    recebimentos = recorte_realizado_para_meta(recebimentos, pares_por_mes)
+    if recebimentos is None or recebimentos.empty:
+        return pd.Series(dtype="float64")
+    return recebimentos.groupby(coluna_periodo)[COL_FIN_VALOR].sum().abs()
+
+
+def _aplicar_meta_como_falta(pivot, mes_corrente=None, realizado=None):
     """Substitui a linha de META pelo que AINDA FALTA receber no período:
     meta menos o que já está a vencer e o que já foi liquidado, com piso em
     zero.
@@ -10398,15 +10456,23 @@ def _aplicar_meta_como_falta(pivot, mes_corrente=None):
     do mês corrente em diante. Esconder a meta de um mês inteiro é com a
     coluna Mostrar da planilha de metas (29/10/2026) -- a meta nem chega.
 
+    `realizado` (05/11/2026): a série, por coluna, do recebimento que conta
+    para cobrir a meta -- já recortada por recorte_realizado_para_meta quando
+    há meta escondida no mês. Sem ela, vale o que está no pivô (a vencer +
+    liquidado, a empresa inteira).
+
     Devolve (pivot ajustado, série da meta cheia) -- a meta original ainda
     serve para a legenda dizer qual era o alvo."""
     if MOV_RECEBER_META not in pivot.index:
         return pivot, None
     meta_cheia = pivot.loc[MOV_RECEBER_META].copy()
-    realizado = pd.Series(0.0, index=pivot.columns)
-    for linha in (MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO):
-        if linha in pivot.index:
-            realizado = realizado + pivot.loc[linha].abs()
+    if realizado is not None:
+        realizado = pd.Series(realizado, dtype="float64").reindex(pivot.columns, fill_value=0.0).fillna(0.0).abs()
+    else:
+        realizado = pd.Series(0.0, index=pivot.columns)
+        for linha in (MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO):
+            if linha in pivot.index:
+                realizado = realizado + pivot.loc[linha].abs()
     ajustado = pivot.copy()
     falta = (meta_cheia.abs() - realizado).clip(lower=0)
     if mes_corrente is not None:
@@ -10427,7 +10493,7 @@ def _total_geral_sem_meta(pivot):
     return pivot.loc[linhas].sum(axis=0)
 
 
-def saldo_anterior_ao_periodo_mensal(df_base, primeiro_mes, mes_corrente, incluir_meta=False):
+def saldo_anterior_ao_periodo_mensal(df_base, primeiro_mes, mes_corrente, incluir_meta=False, pares_meta=None):
     """Com quanto o Fluxo Mensal ENTRA no primeiro mês da tela (28/10/2026).
 
     Antes era `soma de tudo antes do primeiro mês` -- e caixa e banco são
@@ -10453,7 +10519,8 @@ def saldo_anterior_ao_periodo_mensal(df_base, primeiro_mes, mes_corrente, inclui
     meses = sorted(antes["PeriodoMes"].unique())
     pivot = _pivot_fluxo_fin(antes, "PeriodoMes", COL_FIN_VALOR, COL_FIN_MOVIMENTO, meses,
                              posicao_saldo="primeira")
-    pivot, _meta = _aplicar_meta_como_falta(pivot, mes_corrente=mes_corrente)
+    pivot, _meta = _aplicar_meta_como_falta(pivot, mes_corrente=mes_corrente,
+                                            realizado=realizado_que_cobre_a_meta(antes, pares_meta))
     movimentos = _total_geral_fin(pivot, incluir_meta=incluir_meta)
     acumulado = 0.0
     for mes in meses:
@@ -11303,6 +11370,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
     # Metas de recebimento da planilha (29/10/2026): lidas antes, e a tupla
     # vai junto na chave do cache do fluxo.
     metas_vigor_fin = metas_em_vigor()
+    # Meses com meta escondida em parte (05/11/2026): neles, só o recebimento
+    # do canal x modalidade à mostra cobre a meta.
+    pares_meta_fin = pares_de_meta_visiveis_por_mes(metas_vigor_fin["quadro"])
     df_fin, erro_fluxo, total_linhas_lidas, linhas_sem_data, diag_fluxo = preparar_fluxo_caixa(
         base_data_fin, metas_vigor_fin["tupla"])
 
@@ -11665,7 +11735,8 @@ if st.session_state["painel_escolhido"] == "financeiro":
             # Mês que já acabou zera a meta (batida ou não): "quanto falta" só
             # vale do mês corrente em diante.
             pivot_m, meta_cheia_m = _aplicar_meta_como_falta(
-                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M"))
+                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M"),
+                realizado=realizado_que_cobre_a_meta(df_m, pares_meta_fin))
             pivot_m = pivot_m.reindex(_ordenar_movimentos_fin(pivot_m.index))
 
             # A coluna final tem significado diferente conforme o tipo de linha:
@@ -11727,7 +11798,7 @@ if st.session_state["painel_escolhido"] == "financeiro":
             saldo_anterior_ao_periodo_m = saldo_anterior_ao_periodo_mensal(
                 df_fin, meses_ordenados_m[0] if meses_ordenados_m else None,
                 pd.Timestamp(datetime.now(FUSO_BR).date()).to_period("M"),
-                incluir_meta=total_geral_com_meta_m)
+                incluir_meta=total_geral_com_meta_m, pares_meta=pares_meta_fin)
 
             # O saldo inicial só vale para PREVISÃO. Mês que já passou, e o
             # mês corrente, têm as posições de caixa e banco reais dentro
@@ -11962,7 +12033,9 @@ if st.session_state["painel_escolhido"] == "financeiro":
                                        nome_excel="Metas de recebimento em vigor")
                     if _ocultas_metas:
                         st.caption("**Ocultas (Mostrar = NÃO)** — não aparecem em nenhuma tabela: "
-                                   + " · ".join(_ocultas_metas))
+                                   + " · ".join(_ocultas_metas)
+                                   + ". Nesses meses, a linha de meta é coberta só pelo recebimento do mesmo "
+                                     "canal e modalidade das metas à mostra (o das outras não conta).")
 
             # ---- Aplicações: fora de todos os totais, só pra conhecimento. Fica logo
             # abaixo de Movimentos por Mês (22/10/2026): lá embaixo ninguém via. ----
@@ -12685,10 +12758,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
                 # deixava valor futuro na tela com a meta geral já superada.
                 _fator_meta_d = None
                 if not df_d_metas.empty:
-                    _real_geral_d = df_d_completo[
+                    _real_geral_d = recorte_realizado_para_meta(df_d_completo[
                         df_d_completo[COL_FIN_MOVIMENTO].isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
-                    ]
+                    ], pares_meta_fin)
                     _fator_meta_d = fracao_da_meta_ainda_nao_coberta(
                         _agrega_no_mes_cheio(df_d_metas),
                         _agrega_no_mes_cheio(_real_geral_d),
@@ -13333,10 +13406,10 @@ if st.session_state["painel_escolhido"] == "financeiro":
 
                     serie_meta = _por_dia_mes_cheio(
                         _do_mes_cheio[_do_mes_cheio["Tipo Movimento"] == "meta"]).abs()
-                    realizado_receber = _do_mes_cheio[
+                    realizado_receber = recorte_realizado_para_meta(_do_mes_cheio[
                         _do_mes_cheio[COL_FIN_MOVIMENTO].isin(
                             [MOV_RECEBER_AVENCER, MOV_RECEBER_LIQUIDADO])
-                    ]
+                    ], pares_meta_fin)
                     falta = meta_diaria_que_ainda_falta(
                         serie_meta,
                         fracao_da_meta_ainda_nao_coberta(

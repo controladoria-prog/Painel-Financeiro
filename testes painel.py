@@ -79,6 +79,10 @@ DEPENDENCIAS = {
                                           "montar_lancamentos_por_celula", "tipo_documento_fin"],
     "guardar_memoria": ["limpeza_de_memoria_faz_sentido", "memoria_em_uso_mb"],
     "_aplicar_meta_como_falta": ["_periodo_mensal"],
+    "pares_de_meta_visiveis_por_mes": ["_canal_da_meta", "_so_letras"],
+    "recorte_realizado_para_meta": ["_canal_da_meta", "_so_letras"],
+    "realizado_que_cobre_a_meta": ["recorte_realizado_para_meta"],
+    "saldo_anterior_ao_periodo_mensal": ["realizado_que_cobre_a_meta"],
     "montar_lancamentos_do_mes_por_celula": ["montar_lancamentos_por_celula", "rotulo_sem_detalhe",
                                              "rotulos_de_abertura", "tipo_documento_fin"],
     "rotulos_de_abertura": ["rotulo_sem_detalhe"],
@@ -191,6 +195,8 @@ CONSTANTES_DE_DEPENDENCIA = {
     "_modalidade_da_meta": ["MODALIDADES_DA_META"],
     "normalizar_metas_recebimento": ["CANAIS_DA_META", "MODALIDADES_DA_META"],
     "consolidar_metas": ["COLUNAS_PLANILHA_METAS"],
+    "recorte_realizado_para_meta": ["COL_FIN_CANAL", "COL_FIN_MODALIDADE"],
+    "realizado_que_cobre_a_meta": ["COL_FIN_MOVIMENTO", "COL_FIN_VALOR", "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO"],
     "metas_do_codigo": ["METAS_RECEBER", "METAS_OCULTAS_NO_CODIGO"],
     "fontes_csv_metas": ["ID_PLANILHA_METAS_PADRAO", "ABA_PLANILHA_METAS"],
     # PROVISÃO x NF (29/10/2026): a tabela monta o caminho "mãe › filha › neta".
@@ -2204,7 +2210,7 @@ class TesteMetasDeRecebimento(unittest.TestCase):
         x, _ = self.ns["_aplicar_meta_como_falta"](pivo_x, mes_corrente=out)
         self.assertAlmostEqual(x.loc[chave, "Total"], 133_142.05, places=2)
         # E a tela passa o mes corrente de verdade.
-        self.assertIn("_aplicar_meta_como_falta(" + chr(10) + "                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period(\"M\"))",
+        self.assertIn("_aplicar_meta_como_falta(" + chr(10) + "                pivot_m, mes_corrente=pd.Timestamp(datetime.now(FUSO_BR).date()).to_period(\"M\"),",
                       FONTE.replace(chr(13), ""))
 
     def test_interruptor_desligado_total_geral_e_o_de_sempre(self):
@@ -9262,7 +9268,7 @@ class TesteSaldoAnteriorAoPeriodoMensal(unittest.TestCase):
         i = FONTE.index("📋 Movimentos por Mês")
         trecho = FONTE[i:i + 6000]
         self.assertIn("saldo_anterior_ao_periodo_m = saldo_anterior_ao_periodo_mensal(", trecho)
-        self.assertIn("incluir_meta=total_geral_com_meta_m)", trecho[trecho.index("saldo_anterior_ao_periodo_mensal("):])
+        self.assertIn("incluir_meta=total_geral_com_meta_m, pares_meta=pares_meta_fin)", trecho[trecho.index("saldo_anterior_ao_periodo_mensal("):])
         self.assertNotIn("_antes_do_periodo_m[COL_FIN_VALOR].sum()", FONTE, "a soma crua voltou")
 
 
@@ -10387,6 +10393,87 @@ class TesteDesempenhoDoPainel(unittest.TestCase):
         corpo = FONTE[i:FONTE.index("\ndef ", i + 10)]
         self.assertIn('chave_memo = ("lancamentos_pxr",', corpo)
         self.assertIn("_lancamentos_projetado_x_realizado(recorte, rotulos, grupos_abertos)", corpo)
+
+
+class TesteMetaParcialNaoZeraOMes(unittest.TestCase):
+    """05/11/2026: com Mostrar = NAO em parte das modalidades de um mes (para
+    ver so a meta de Debito), a linha de meta zerava o mes inteiro -- o
+    recebimento das OUTRAS modalidades cobria a meta que sobrou. Nos meses
+    com meta parcial, so o recebimento do mesmo canal x modalidade conta."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["pares_de_meta_visiveis_por_mes", "recorte_realizado_para_meta", "realizado_que_cobre_a_meta",
+                           "_aplicar_meta_como_falta", "normalizar_metas_recebimento"],
+                          ["MOV_RECEBER_META", "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO", "COL_FIN_MOVIMENTO",
+                           "COL_FIN_CANAL", "COL_FIN_MODALIDADE", "COL_FIN_VALOR"])
+
+    def _quadro(self):
+        linhas = [["10/2026", "LOJA", "Débito", "100", "SIM"], ["10/2026", "LOJA", "Crédito à Vista", "200", "sim"],
+                  ["11/2026", "LOJA", "Débito", "100", "SIM"], ["11/2026", "LOJA", "Crédito à Vista", "200", "NÃO"],
+                  ["11/2026", "VD", "Boleto Garantido", "50", "Não"], ["11/2026", "HUB", "Débito", "0", "SIM"],
+                  ["12/2026", "LOJA", "Débito", "100", ""]]
+        _t, quadro, _a, erro = self.ns["normalizar_metas_recebimento"](
+            pd.DataFrame(linhas, columns=["Mês", "Canal", "Modalidade", "Meta (R$)", "Mostrar"]))
+        self.assertEqual(erro, "")
+        return quadro
+
+    def test_so_os_meses_com_meta_escondida_entram(self):
+        pares = self.ns["pares_de_meta_visiveis_por_mes"](self._quadro())
+        self.assertEqual(set(pares), {(2026, 11)}, "outubro e dezembro estao completos: nao entram")
+        self.assertEqual(pares[(2026, 11)], {("LOJA", "DEBITO")}, "meta zerada do HUB nao conta como a mostra")
+        self.assertEqual(self.ns["pares_de_meta_visiveis_por_mes"](None), {})
+        self.assertEqual(self.ns["pares_de_meta_visiveis_por_mes"](pd.DataFrame()), {})
+
+    def _recebimentos(self):
+        ns = self.ns
+        return pd.DataFrame({
+            "Data Efetiva": pd.to_datetime(["2026-11-03", "2026-11-03", "2026-11-04", "2026-11-05", "2026-10-03", "2026-10-03"]),
+            ns["COL_FIN_MOVIMENTO"]: [ns["MOV_RECEBER_LIQUIDADO"], ns["MOV_RECEBER_AVENCER"], ns["MOV_RECEBER_LIQUIDADO"],
+                                      ns["MOV_RECEBER_AVENCER"], ns["MOV_RECEBER_LIQUIDADO"], ns["MOV_RECEBER_AVENCER"]],
+            ns["COL_FIN_CANAL"]: ["LOJA", "LOJA", "VENDA DIRETA", "LOJA", "LOJA", "LOJA"],
+            ns["COL_FIN_MODALIDADE"]: ["Débito", "Crédito à vista", "Débito", "PIX", "Crédito à vista", "PIX"],
+            ns["COL_FIN_VALOR"]: [30.0, 500.0, 40.0, 900.0, 150.0, 700.0],
+        })
+
+    def test_no_mes_parcial_so_o_recebimento_da_meta_a_mostra_cobre(self):
+        pares = self.ns["pares_de_meta_visiveis_por_mes"](self._quadro())
+        df = self.ns["recorte_realizado_para_meta"](self._recebimentos(), pares)
+        self.assertEqual(df[self.ns["COL_FIN_VALOR"]].tolist(), [30.0, 150.0, 700.0],
+                         "novembro: so Debito da LOJA; outubro: tudo (meta completa)")
+        # sem meta escondida nada muda
+        self.assertEqual(len(self.ns["recorte_realizado_para_meta"](self._recebimentos(), {})), 6)
+        self.assertIsNone(self.ns["recorte_realizado_para_meta"](None, pares))
+
+    def test_quanto_falta_usa_o_realizado_recortado(self):
+        ns = self.ns
+        pares = ns["pares_de_meta_visiveis_por_mes"](self._quadro())
+        df = self._recebimentos()
+        df["PeriodoMes"] = df["Data Efetiva"].dt.to_period("M")
+        realizado = ns["realizado_que_cobre_a_meta"](df, pares)
+        out, nov = pd.Period("2026-10", "M"), pd.Period("2026-11", "M")
+        self.assertAlmostEqual(float(realizado[nov]), 30.0)
+        self.assertAlmostEqual(float(realizado[out]), 850.0)
+        pivot = pd.DataFrame({out: [300.0, 150.0, 700.0], nov: [100.0, 70.0, 1400.0]},
+                             index=[ns["MOV_RECEBER_META"], ns["MOV_RECEBER_LIQUIDADO"], ns["MOV_RECEBER_AVENCER"]])
+        ajustado, cheia = ns["_aplicar_meta_como_falta"](pivot, mes_corrente=out, realizado=realizado)
+        self.assertAlmostEqual(float(ajustado.loc[ns["MOV_RECEBER_META"], nov]), 70.0,
+                               "novembro: meta de Debito 100 menos os 30 de Debito -- nao os 1.470 do mes")
+        self.assertAlmostEqual(float(ajustado.loc[ns["MOV_RECEBER_META"], out]), 0.0, "outubro: a empresa cobriu")
+        # sem `realizado`, a conta antiga (a empresa inteira, pelo pivo)
+        antigo, _ = ns["_aplicar_meta_como_falta"](pivot, mes_corrente=out)
+        self.assertAlmostEqual(float(antigo.loc[ns["MOV_RECEBER_META"], nov]), 0.0)
+        # realizado sem a coluna do mes: nada coberto
+        so_out, _ = ns["_aplicar_meta_como_falta"](pivot, mes_corrente=out, realizado=pd.Series({out: 850.0}))
+        self.assertAlmostEqual(float(so_out.loc[ns["MOV_RECEBER_META"], nov]), 100.0)
+
+    def test_as_tres_tabelas_usam_o_recorte(self):
+        self.assertIn('pares_meta_fin = pares_de_meta_visiveis_por_mes(metas_vigor_fin["quadro"])', FONTE)
+        self.assertIn("realizado=realizado_que_cobre_a_meta(df_m, pares_meta_fin))", FONTE, "Fluxo Mensal")
+        self.assertIn("incluir_meta=total_geral_com_meta_m, pares_meta=pares_meta_fin)", FONTE, "saldo anterior")
+        self.assertIn("realizado=realizado_que_cobre_a_meta(antes, pares_meta))", FONTE)
+        self.assertEqual(FONTE.count("], pares_meta_fin)"), 2, "Fluxo Diario e Diario Consolidado")
+        self.assertIn("canal e modalidade das metas à mostra", FONTE, "a legenda explica a regra")
 
 
 if __name__ == "__main__":
