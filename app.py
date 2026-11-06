@@ -17458,6 +17458,205 @@ def ler_estrutura_orcamento(arquivo):
     return estrutura, abas_de_preencher
 
 
+# ---------------------------------------------------------------------------
+# RESULTADO DAS FÓRMULAS GRAVADO NA PLANILHA (06/11/2026)
+#
+# O openpyxl grava a FÓRMULA de cada célula, mas não o resultado dela: o
+# arquivo sai com as 88 mil fórmulas intactas e as células de fórmula sem
+# valor guardado. O Excel recalcula ao abrir -- mas só em modo de edição.
+# No modo protegido (arquivo baixado), no visualizador do Drive, no celular
+# ou em quem abre sem recalcular, toda linha de fórmula aparece VAZIA, e
+# a planilha "parece" que perdeu as somas. A solução é a mesma do Excel:
+# gravar o resultado junto com a fórmula. As fórmulas da planilha modelo
+# são de duas famílias só (SUM de células e faixas da própria aba, e o
+# SUMPRODUCT(SUMIFS(INDIRECT(...))) das abas consolidadas, que soma as abas
+# listadas na coluna Z pela linha da coluna A), e as duas são calculadas
+# aqui, com memória, e injetadas no XML de cada aba. Fórmula de outra forma
+# fica sem valor guardado, como antes -- nunca errada.
+# ---------------------------------------------------------------------------
+_PADRAO_SUMIFS_INDIRECT = re.compile(
+    r"""^=?SUMPRODUCT\(SUMIFS\(INDIRECT\("'"&(\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)&"'!(\$?[A-Z]{1,3}):\$?[A-Z]{1,3}"\),\s*"""
+    r"""INDIRECT\("'"&\1&"'!(\$?[A-Z]{1,3}):\$?[A-Z]{1,3}"\),\s*(\$?[A-Z]{1,3}\$?\d+)\)\)$""")
+_PADRAO_SUM = re.compile(r"^=?SUM\((.*)\)$", re.IGNORECASE | re.DOTALL)
+_PADRAO_REF = re.compile(r"^\$?([A-Z]{1,3})\$?(\d+)$")
+_PADRAO_FAIXA = re.compile(r"^\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)$")
+
+
+def _texto_da_formula(valor):
+    """O texto da fórmula, seja ela comum (str) ou de matriz (ArrayFormula)."""
+    texto = getattr(valor, "text", valor)
+    return str(texto or "").strip()
+
+
+def calcular_valores_das_formulas(livro):
+    """{aba: {coordenada: número}} com o resultado de cada fórmula que o
+    painel sabe calcular, e o total das que não soube (ficam sem valor)."""
+    from openpyxl.utils import column_index_from_string, get_column_letter
+
+    memoria, nao_calculadas = {}, [0]
+    indices = {}
+    calculando = set()
+
+    def numero(v):
+        if isinstance(v, bool) or v is None:
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        return 0.0
+
+    def valor(aba, coord):
+        chave = (aba, coord)
+        if chave in memoria:
+            return memoria[chave]
+        if chave in calculando:
+            return 0.0   # referência circular: não trava
+        ws = livro[aba]
+        celula = ws[coord]
+        if celula.data_type != "f":
+            memoria[chave] = numero(celula.value)
+            return memoria[chave]
+        calculando.add(chave)
+        resultado = avaliar(aba, celula)
+        calculando.discard(chave)
+        memoria[chave] = resultado
+        return resultado
+
+    def soma_faixa(aba, c1, r1, c2, r2):
+        total = 0.0
+        ini, fim = column_index_from_string(c1), column_index_from_string(c2)
+        for col in range(min(ini, fim), max(ini, fim) + 1):
+            letra = get_column_letter(col)
+            for r in range(min(r1, r2), max(r1, r2) + 1):
+                v = valor(aba, f"{letra}{r}")
+                if v is not None:
+                    total += v
+        return total
+
+    def indice_da_coluna(aba, col):
+        """{texto em minúsculas: [linhas]} da coluna `col` da aba -- o SUMIFS
+        compara texto sem diferenciar maiúsculas."""
+        chave = (aba, col)
+        if chave not in indices:
+            ws = livro[aba]
+            idx = column_index_from_string(col)
+            tabela = {}
+            for r in range(1, ws.max_row + 1):
+                v = ws.cell(row=r, column=idx).value
+                texto = "" if v is None else str(v).strip().lower()
+                tabela.setdefault(texto, []).append(r)
+            indices[chave] = tabela
+        return indices[chave]
+
+    def avaliar(aba, celula):
+        texto = _texto_da_formula(celula.value)
+        m = _PADRAO_SUMIFS_INDIRECT.match(texto)
+        if m:
+            faixa_abas, col_valor, col_chave, ref_chave = m.groups()
+            fm = _PADRAO_FAIXA.match(faixa_abas)
+            ws = livro[aba]
+            abas_listadas = []
+            if fm:
+                for r in range(int(fm.group(2)), int(fm.group(4)) + 1):
+                    nome = ws[f"{fm.group(1)}{r}"].value
+                    if nome is not None and str(nome).strip() and str(nome).strip() in livro.sheetnames:
+                        abas_listadas.append(str(nome).strip())
+            rm = _PADRAO_REF.match(ref_chave)
+            chave_celula = ws[f"{rm.group(1)}{rm.group(2)}"].value if rm else None
+            chave = "" if chave_celula is None else str(chave_celula).strip().lower()
+            col_v, col_k = col_valor.replace("$", ""), col_chave.replace("$", "")
+            total = 0.0
+            for outra in abas_listadas:
+                for r in indice_da_coluna(outra, col_k).get(chave, []):
+                    total += valor(outra, f"{col_v}{r}")
+            return total
+        m = _PADRAO_SUM.match(texto)
+        if m:
+            total = 0.0
+            for pedaco in m.group(1).split(","):
+                pedaco = pedaco.strip()
+                if not pedaco:
+                    continue
+                if "!" in pedaco:
+                    nao_calculadas[0] += 1
+                    return None
+                fm = _PADRAO_FAIXA.match(pedaco)
+                if fm:
+                    total += soma_faixa(aba, fm.group(1), int(fm.group(2)), fm.group(3), int(fm.group(4)))
+                    continue
+                rm = _PADRAO_REF.match(pedaco)
+                if rm:
+                    v = valor(aba, f"{rm.group(1)}{rm.group(2)}")
+                    if v is None:
+                        return None
+                    total += v
+                    continue
+                nao_calculadas[0] += 1
+                return None
+            return total
+        nao_calculadas[0] += 1
+        return None
+
+    saida = {}
+    for aba in livro.sheetnames:
+        ws = livro[aba]
+        por_aba = {}
+        for linha in ws.iter_rows():
+            for celula in linha:
+                if celula.data_type == "f":
+                    v = valor(aba, celula.coordinate)
+                    if v is not None:
+                        por_aba[celula.coordinate] = v
+        saida[aba] = por_aba
+    return saida, nao_calculadas[0]
+
+
+def gravar_valores_calculados(xlsx_bytes, valores):
+    """Injeta o resultado de cada fórmula (`valores` = {aba: {coord: número}})
+    no XML das abas do arquivo salvo pelo openpyxl, que deixa <v></v> vazio.
+    Devolve (bytes, células gravadas)."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    if not valores or not any(valores.values()):
+        return xlsx_bytes, 0
+    entrada = zipfile.ZipFile(io.BytesIO(xlsx_bytes))
+    ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ns_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns_pkg = "http://schemas.openxmlformats.org/package/2006/relationships"
+    livro_xml = ET.fromstring(entrada.read("xl/workbook.xml"))
+    rels = ET.fromstring(entrada.read("xl/_rels/workbook.xml.rels"))
+    alvo_por_id = {r.get("Id"): r.get("Target") for r in rels.findall(f"{{{ns_pkg}}}Relationship")}
+    caminho_por_aba = {}
+    for folha in livro_xml.find(f"{{{ns_main}}}sheets").findall(f"{{{ns_main}}}sheet"):
+        alvo = alvo_por_id.get(folha.get(f"{{{ns_rel}}}id"), "")
+        alvo = alvo.lstrip("/")
+        if not alvo.startswith("xl/"):
+            alvo = "xl/" + alvo
+        caminho_por_aba[folha.get("name")] = alvo
+    padrao = re.compile(r'(<c r="([A-Z]{1,3}\d+)"[^>]*>(?:<f[^>]*>.*?</f>|<f[^>]*/>))(?:<v></v>|<v/>)?(</c>)', re.DOTALL)
+    gravadas = 0
+    saida = io.BytesIO()
+    with zipfile.ZipFile(saida, "w", zipfile.ZIP_DEFLATED) as destino:
+        for item in entrada.infolist():
+            dados = entrada.read(item.filename)
+            aba = next((a for a, c in caminho_por_aba.items() if c == item.filename), None)
+            if aba is not None and valores.get(aba):
+                por_coord = valores[aba]
+                texto = dados.decode("utf-8")
+
+                def repor(m):
+                    nonlocal gravadas
+                    v = por_coord.get(m.group(2))
+                    if v is None:
+                        return m.group(0)
+                    gravadas += 1
+                    return f"{m.group(1)}<v>{repr(float(v))}</v>{m.group(3)}"
+                texto = padrao.sub(repor, texto)
+                dados = texto.encode("utf-8")
+            destino.writestr(item, dados)
+    return saida.getvalue(), gravadas
+
+
 def gerar_excel_orcamento(arquivo_modelo, valores_por_aba):
     """Devolve os bytes da planilha modelo PREENCHIDA.
 
@@ -17491,9 +17690,18 @@ def gerar_excel_orcamento(arquivo_modelo, valores_por_aba):
                 escritas += 1
     memoria = io.BytesIO()
     livro.save(memoria)
-    livro.close()
     memoria.seek(0)
-    return memoria.getvalue(), escritas
+    conteudo = memoria.getvalue()
+    # O resultado de cada fórmula vai junto (06/11/2026): sem ele, quem abre
+    # sem recalcular vê as linhas de fórmula vazias. Qualquer tropeço aqui
+    # devolve o arquivo como era -- com as fórmulas, sem os resultados.
+    try:
+        valores, _ = calcular_valores_das_formulas(livro)
+        conteudo, _ = gravar_valores_calculados(conteudo, valores)
+    except Exception:
+        pass
+    livro.close()
+    return conteudo, escritas
 
 
 def realizado_por_conta_e_loja(df_diario, meses_fechados_cols):

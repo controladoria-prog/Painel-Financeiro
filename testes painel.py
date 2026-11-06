@@ -141,6 +141,8 @@ DEPENDENCIAS = {
     "_contexto_rascunho": [],
     "tabela_de_completados_rascunho": [],
     "excel_do_rascunho": ["rascunho_por_linha"],
+    "gerar_excel_orcamento": ["calcular_valores_das_formulas", "gravar_valores_calculados"],
+    "calcular_valores_das_formulas": ["_texto_da_formula"],
     "relatorio_das_retiradas": ["colunas_relatorio_retiradas"],
     "planos_da_linha_no_diario": ["_numero_linha_dre"],
     "maiores_lancamentos_da_linha": ["_numero_linha_dre"],
@@ -203,6 +205,7 @@ CONSTANTES_DE_DEPENDENCIA = {
     "consolidar_metas": ["COLUNAS_PLANILHA_METAS"],
     "recorte_realizado_para_meta": ["COL_FIN_CANAL", "COL_FIN_MODALIDADE"],
     "excel_do_rascunho": ["RESIDUO_SEM_PLANO"],
+    "calcular_valores_das_formulas": ["_PADRAO_SUMIFS_INDIRECT", "_PADRAO_SUM", "_PADRAO_REF", "_PADRAO_FAIXA"],
     "realizado_que_cobre_a_meta": ["COL_FIN_MOVIMENTO", "COL_FIN_VALOR", "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO"],
     "metas_do_codigo": ["METAS_RECEBER", "METAS_OCULTAS_NO_CODIGO"],
     "fontes_csv_metas": ["ID_PLANILHA_METAS_PADRAO", "ABA_PLANILHA_METAS"],
@@ -10636,6 +10639,105 @@ class TesteMesEmFechamentoEReceitaPorLoja(TesteRascunhoPorUnidade):
         xlsx0 = self.ns3["excel_do_rascunho"](df, tot, self.meses, {"receita": 0.05}, self.meses[:10], 2026, pd.DataFrame())
         regras0 = dict(zip(*[pd.read_excel(_io.BytesIO(xlsx0), sheet_name="Premissas")[c] for c in ("Premissa", "Regra")]))
         self.assertEqual(regras0["Mês em fechamento"], "nenhum"); self.assertIn("nenhuma loja", regras0["Receita por loja"])
+
+
+class TesteResultadoDasFormulasGravado(unittest.TestCase):
+    """06/11/2026: a planilha preenchida saia com as formulas certas e SEM o
+    resultado guardado em cada uma (o openpyxl nao calcula). Quem abria sem
+    recalcular -- modo protegido do Excel, visualizador do Drive, celular --
+    via toda linha de formula vazia e achou que o painel tinha apagado as
+    formulas. Agora o resultado vai gravado junto, como o Excel faz."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["gerar_excel_orcamento", "calcular_valores_das_formulas", "gravar_valores_calculados",
+                           "_texto_da_formula"],
+                          ["_PADRAO_SUMIFS_INDIRECT", "_PADRAO_SUM", "_PADRAO_REF", "_PADRAO_FAIXA"])
+
+    def _modelo(self):
+        """A planilha real em miniatura: duas unidades com SUM de celulas e
+        faixas, uma consolidada que soma as unidades listadas na coluna Z pela
+        linha da coluna A (SUMPRODUCT/SUMIFS/INDIRECT, formula de matriz), e
+        a coluna Total. Com nome repetido na coluna A e uma formula de forma
+        desconhecida, que tem de ficar sem valor (nunca errada)."""
+        from openpyxl import Workbook
+        from openpyxl.worksheet.formula import ArrayFormula
+        wb = Workbook()
+        cons = wb.active; cons.title = "CONSOLIDADO"
+        a, b = wb.create_sheet("LJ A"), wb.create_sheet("LJ B")
+        nomes = ["1 - Receita", "  Venda", "  Servico", "2 - Despesas", "  Aluguel", "  Pessoal", "3 - Resultado"]
+        for ws in (cons, a, b):
+            ws["A1"] = "Nome"; ws["B1"] = "01/2027"; ws["C1"] = "02/2027"; ws["D1"] = "Total"
+            for i, n in enumerate(nomes, start=2):
+                ws.cell(row=i, column=1, value=n)
+        for ws, f in ((a, 1.0), (b, 10.0)):
+            for col in ("B", "C"):
+                ws[f"{col}2"] = f"=SUM({col}3:{col}4)"
+                ws[f"{col}5"] = f"=SUM({col}6,{col}7,)"
+                ws[f"{col}8"] = f"=SUM({col}2,{col}5)"
+            a_, b_ = (100.0 * f, 20.0 * f), (-30.0 * f, -50.0 * f)
+            for col, k in (("B", 0), ("C", 1)):
+                ws[f"{col}3"] = a_[k]; ws[f"{col}4"] = 5.0 * f; ws[f"{col}6"] = b_[k]; ws[f"{col}7"] = -1.0 * f
+            for r in range(2, 9):
+                ws[f"D{r}"] = f"=SUM(B{r}:C{r})"
+        cons["Z1"] = "LJ A"; cons["Z2"] = "LJ B"; cons["Z3"] = None
+        for col in ("B", "C", "D"):
+            for r in range(2, 9):
+                ref = f"{col}{r}"
+                cons[ref] = ArrayFormula(ref, f'=SUMPRODUCT(SUMIFS(INDIRECT("\'"&$Z$1:$Z$3&"\'!{col}:{col}"), INDIRECT("\'"&$Z$1:$Z$3&"\'!A:A"), $A{r}))')
+        # forma desconhecida: fica sem valor gravado, sem quebrar o resto
+        a["F2"] = "=B2*2"
+        caminho = os.path.join(tempfile.gettempdir(), "modelo_formulas_teste.xlsx")
+        wb.save(caminho)
+        return caminho
+
+    def test_calcula_as_duas_familias_de_formula(self):
+        from openpyxl import load_workbook
+        livro = load_workbook(self._modelo())
+        valores, nao = self.ns["calcular_valores_das_formulas"](livro)
+        a, c = valores["LJ A"], valores["CONSOLIDADO"]
+        self.assertEqual(a["B2"], 105.0); self.assertEqual(a["C2"], 25.0)
+        self.assertEqual(a["B5"], -31.0, "SUM com argumento vazio no fim (B6,B7,)")
+        self.assertEqual(a["B8"], 74.0); self.assertEqual(a["D8"], 74.0 + (25.0 - 51.0))
+        self.assertEqual(c["B2"], 105.0 + 1050.0, "a consolidada soma as abas da coluna Z pela linha da coluna A")
+        self.assertEqual(c["B8"], 74.0 + 740.0); self.assertEqual(c["D3"], (100.0 + 20.0) + (1000.0 + 200.0))
+        self.assertEqual(nao, 1, "a forma desconhecida (=B2*2) fica de fora")
+        self.assertNotIn("F2", a)
+
+    def test_o_arquivo_gerado_sai_com_o_resultado_em_toda_formula(self):
+        from openpyxl import load_workbook
+        caminho = self._modelo()
+        saida, _ = self.ns["gerar_excel_orcamento"](caminho, {"LJ A": {3: [200.0, 40.0]}})
+        _saida = os.path.join(tempfile.gettempdir(), "saida_formulas_teste.xlsx")
+        with open(_saida, "wb") as arq:
+            arq.write(saida)
+        com_formula = load_workbook(_saida); so_valores = load_workbook(_saida, data_only=True)
+        formulas = sem_valor = 0
+        for aba in com_formula.sheetnames:
+            for linha in com_formula[aba].iter_rows():
+                for cel in linha:
+                    if cel.data_type == "f":
+                        formulas += 1
+                        if so_valores[aba][cel.coordinate].value is None:
+                            sem_valor += 1
+        self.assertEqual(formulas, 7 * 3 + (6 + 7) * 2 + 1, "nenhuma formula destruida: 21 da consolidada, 13 por loja, a desconhecida")
+        self.assertEqual(sem_valor, 1, "so a forma desconhecida fica sem resultado gravado")
+        # o resultado e o da planilha JA preenchida (B3 virou 200, nao 100)
+        self.assertEqual(so_valores["LJ A"]["B2"].value, 205.0)
+        self.assertEqual(so_valores["LJ A"]["B8"].value, 174.0)
+        self.assertEqual(so_valores["CONSOLIDADO"]["B2"].value, 205.0 + 1050.0)
+        self.assertEqual(so_valores["CONSOLIDADO"]["D8"].value, (174.0 + (45.0 - 51.0)) + (740.0 + (250.0 - 510.0)))
+        # a formula continua la, de matriz onde era de matriz
+        from openpyxl.worksheet.formula import ArrayFormula
+        self.assertIsInstance(com_formula["CONSOLIDADO"]["B2"].value, ArrayFormula)
+        self.assertEqual(com_formula["LJ A"]["B2"].value, "=SUM(B3:B4)")
+
+    def test_gravar_sem_valores_devolve_o_arquivo_como_esta(self):
+        from openpyxl import Workbook
+        wb = Workbook(); wb.active["A1"] = "=SUM(B1:B2)"
+        mem = io.BytesIO(); wb.save(mem)
+        conteudo, n = self.ns["gravar_valores_calculados"](mem.getvalue(), {})
+        self.assertEqual(n, 0); self.assertEqual(conteudo, mem.getvalue())
 
 
 if __name__ == "__main__":
