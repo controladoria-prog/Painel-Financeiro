@@ -17840,17 +17840,38 @@ def linhas_proprias_da_dre(df_dre):
     return saida
 
 
-def premissa_automatica_rascunho(numero, nome, premissas, plano=""):
+PREMISSAS_QUE_SEGUEM_A_RECEITA = ("Base realizada (sem meta da indústria)", "Acompanha a receita")
+
+
+def crescimento_da_receita_da_loja(premissas, aba=None):
+    """O % de crescimento da receita que vale para a loja `aba`: o dela em
+    premissas["receita_por_loja"] quando foi informado (não None), senão o
+    geral em premissas["receita"] (06/11/2026)."""
+    premissas = premissas or {}
+    geral = float(premissas.get("receita", 0.0) or 0.0)
+    if aba is None:
+        return geral
+    proprio = (premissas.get("receita_por_loja") or {}).get(aba)
+    if proprio is None or (isinstance(proprio, float) and proprio != proprio):
+        return geral
+    return float(proprio)
+
+
+def premissa_automatica_rascunho(numero, nome, premissas, plano="", aba=None):
     """(nome da premissa, percentual) escolhidos pela NATUREZA da linha (e do
     plano de contas), sem ninguém ter de clicar: receita fica na base
     realizada (não há meta da indústria ainda); deduções, CMV e variáveis
     acompanham a receita; pessoal segue dissídio; as demais despesas
     operacionais seguem IPCA; o que fica abaixo do EBITDA e os impostos
-    mantêm a base. O percentual sai junto para a tela e o Excel explicarem."""
+    mantêm a base. O percentual sai junto para a tela e o Excel explicarem.
+
+    `aba` (06/11/2026): com a loja informada, o crescimento da receita (e o
+    das linhas que a acompanham) é o DAQUELA loja, quando ela tem um % só
+    dela em premissas["receita_por_loja"]."""
     premissas = premissas or {}
     grupo = str(numero or "").split(".")[0]
     texto = _normalizar_coluna_fin(f"{nome} {plano or ''}")
-    receita = float(premissas.get("receita", 0.0) or 0.0)
+    receita = crescimento_da_receita_da_loja(premissas, aba)
     if grupo == "1":
         return "Base realizada (sem meta da indústria)", receita
     if grupo in ("2", "4", "6"):
@@ -18017,15 +18038,18 @@ def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx,
     retirada, premissa, rascunho e os 12 meses. `ctx` carrega o que é comum
     a todas (meses, índices fechados/abertos, retiradas, premissas)."""
     idx_f, idx_a, n_f = ctx["idx_f"], ctx["idx_a"], ctx["n_f"]
+    # Mês em fechamento: a linha que ainda não entrou nele leva a média (06/11/2026).
+    real_m, completado = completar_mes_parcial(real_m, ctx)
     soma_fech = sum(real_m[i] for i in idx_f)
-    media = soma_fech / n_f if n_f else 0.0
+    n_media = ctx.get("n_fc", n_f) or n_f
+    media = media_dos_fechados(real_m, ctx) if ctx.get("idx_p") is not None else (soma_fech / n_f if n_f else 0.0)
     orc_ab_tem = any(abs(orc_m[i]) >= 0.005 for i in idx_a)
     if ctx["projecao"] == "orcado" or (abs(soma_fech) < 0.005 and orc_ab_tem):
         proj_m = {i: orc_m[i] for i in idx_a}
         origem = "orçado do ano" if orc_ab_tem else "sem base"
     else:
         proj_m = {i: media for i in idx_a}
-        origem = f"média dos {n_f} meses fechados" if n_f else "sem base"
+        origem = f"média dos {n_media} meses fechados" if n_media else "sem base"
     projecao_total = sum(proj_m.values())
     base = soma_fech + projecao_total
     orcado_ano = sum(orc_m)
@@ -18058,6 +18082,8 @@ def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx,
         "chave": chave, "numero": numero, "linha": nome, "plano": plano, "origem_plano": origem_plano,
         "linha_modelo": linha_modelo, "grupo": str(numero).split(".")[0],
         "realizado_fechado": soma_fech, "projecao_abertos": projecao_total, "origem_projecao": origem,
+        "realizado_completo": sum(real_m[i] for i in ctx.get("idx_fc", idx_f)),
+        "completados": ([dict(completado, aba="")] if completado else []), "n_completados": (1 if completado else 0),
         "base": base, "orcado_ano": orcado_ano, "retirada_mensal": retirada_mensal, "retirado": retirado,
         "motivo": motivo, "loja_retirada": loja_ret,
         "base_ajustada": base_ajustada, "premissa": nome_premissa, "pct": pct, "rascunho": rascunho,
@@ -18067,15 +18093,56 @@ def _monta_linha_rascunho(numero, nome, plano, real_m, orc_m, origem_plano, ctx,
     }
 
 
-def _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao):
+def _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao, mes_parcial=None, limiar_parcial=0.0):
+    """O que é comum a todas as linhas do rascunho. `mes_parcial` (06/11/2026)
+    é um mês FECHADO que ainda está em fechamento: o realizado dele vale, mas
+    a linha que ainda não entrou nele (zerada, ou abaixo de `limiar_parcial`
+    × a média dos outros fechados) é completada pela média -- ver
+    completar_mes_parcial. A média dos fechados, para os meses que faltam,
+    passa a ser a dos fechados COMPLETOS (idx_fc), para o mês pela metade
+    não puxá-la para baixo."""
     meses_ano = list(meses_ano)
     set_fech = set(meses_fechados)
+    idx_f = [i for i, m in enumerate(meses_ano) if m in set_fech]
+    idx_p = meses_ano.index(mes_parcial) if (mes_parcial in meses_ano and mes_parcial in set_fech) else None
+    idx_fc = [i for i in idx_f if i != idx_p]
     return {
         "meses_ano": meses_ano, "projecao": projecao, "retiradas": retiradas or {}, "premissas": premissas or {},
-        "idx_f": [i for i, m in enumerate(meses_ano) if m in set_fech],
+        "idx_f": idx_f,
         "idx_a": [i for i, m in enumerate(meses_ano) if m not in set_fech],
-        "n_f": len([m for m in meses_ano if m in set_fech]),
+        "n_f": len(idx_f),
+        "idx_p": idx_p, "idx_fc": idx_fc, "n_fc": len(idx_fc),
+        "limiar_parcial": max(0.0, float(limiar_parcial or 0.0)),
+        "mes_parcial": meses_ano[idx_p] if idx_p is not None else None,
     }
+
+
+def media_dos_fechados(real_m, ctx):
+    """Média da série nos meses fechados COMPLETOS (sem o mês em fechamento)."""
+    idx = ctx.get("idx_fc", ctx["idx_f"])
+    return (sum(real_m[i] for i in idx) / len(idx)) if idx else 0.0
+
+
+def completar_mes_parcial(real_m, ctx):
+    """Devolve (série, info): a série com o mês em fechamento completado pela
+    média dos outros fechados quando a linha ainda não entrou nele, e info =
+    {"estava", "media"} quando completou (None quando não mexeu).
+
+    Regra: completa quando |valor no mês| <= limiar × |média| -- com limiar 0
+    (padrão), só o que está ZERADO. Linha sem movimento nos outros fechados
+    (média zero) não é completada: nada indica que ela devia ter valor."""
+    idx_p = ctx.get("idx_p")
+    if idx_p is None or not ctx.get("idx_fc"):
+        return list(real_m), None
+    media = media_dos_fechados(real_m, ctx)
+    if abs(media) < 0.005:
+        return list(real_m), None
+    estava = float(real_m[idx_p])
+    if abs(estava) > ctx.get("limiar_parcial", 0.0) * abs(media) + 1e-9:
+        return list(real_m), None
+    serie = list(real_m)
+    serie[idx_p] = media
+    return serie, {"estava": estava, "media": media}
 
 
 def _valor_proprio_da_linha(df, numero, filhas, meses_ano):
@@ -18102,7 +18169,7 @@ def _ratear_orcado_entre_linhas(linhas_da_linha, orc_linha, idx_f, ctx, numero, 
 
 
 def montar_rascunho_orcamento(df_real, df_orc, meses_ano, meses_fechados, retiradas=None, premissas=None,
-                              projecao="media", df_diario=None):
+                              projecao="media", df_diario=None, mes_parcial=None, limiar_parcial=0.0):
     """O rascunho do ano seguinte, LINHA DA DRE × PLANO DE CONTAS, a partir do
     que este ano realizou (pedido da diretoria, 09/10/2026) -- versão guiada
     pela DRE do realizado (sem a planilha modelo).
@@ -18127,7 +18194,7 @@ def montar_rascunho_orcamento(df_real, df_orc, meses_ano, meses_fechados, retira
     as filhas diretas): somar pai e filha contaria duas vezes.
 
     Devolve (DataFrame com uma linha por (linha, plano), dict de totais)."""
-    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao)
+    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao, mes_parcial, limiar_parcial)
     meses_ano, idx_f = ctx["meses_ano"], ctx["idx_f"]
     por_linha = diario_por_linha_e_plano(df_diario, meses_ano)
     linhas = []
@@ -18150,6 +18217,22 @@ def montar_rascunho_orcamento(df_real, df_orc, meses_ano, meses_fechados, retira
         linhas.extend(novas)
     df = pd.DataFrame(linhas)
     return df, totais_do_rascunho(df)
+
+
+def tabela_de_completados_rascunho(df, mes_parcial):
+    """O que foi completado pela média no mês em fechamento: uma linha por
+    (loja, linha da DRE, plano), com o que estava e a média aplicada."""
+    linhas = []
+    if df is None or df.empty or "completados" not in df.columns:
+        return pd.DataFrame(columns=["Loja", "Linha da DRE", "Plano de contas", f"Estava em {mes_parcial}", "Média aplicada"])
+    for _, r in df.iterrows():
+        for c in (r.get("completados") or []):
+            linhas.append({"Loja": c.get("aba") or "(empresa)", "Linha da DRE": r["linha"], "Plano de contas": r["plano"],
+                           f"Estava em {mes_parcial}": float(c.get("estava", 0.0)), "Média aplicada": float(c.get("media", 0.0))})
+    saida = pd.DataFrame(linhas, columns=["Loja", "Linha da DRE", "Plano de contas", f"Estava em {mes_parcial}", "Média aplicada"])
+    if not saida.empty:
+        saida = saida.reindex(saida["Média aplicada"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+    return saida
 
 
 def rascunho_por_linha(df):
@@ -18307,7 +18390,8 @@ def _plano_mais_parecido(nome_linha, planos):
 
 
 def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura, abas, meses_ano, meses_fechados,
-                                retiradas=None, premissas=None, projecao="orcado", mapa_loja_cc=None, ajustes=None):
+                                retiradas=None, premissas=None, projecao="orcado", mapa_loja_cc=None, ajustes=None,
+                                mes_parcial=None, limiar_parcial=0.0):
     """O rascunho do ano seguinte calculado UNIDADE a UNIDADE, MÊS a MÊS, na
     estrutura da planilha modelo (12/10/2026). É o que a diretoria pediu:
     "replicar o realizado de 2026 nos meses fechados e o orçado de 2026 nos
@@ -18350,10 +18434,18 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
     natureza da linha/plano. rascunho_mes = base_ajustada × (1 + %), unidade
     a unidade -- a empresa é a soma.
 
+    06/11/2026: `mes_parcial` é o mês fechado ainda em fechamento -- em cada
+    unidade, a linha que ainda não entrou nele é completada pela média dos
+    outros fechados (completar_mes_parcial), e a lista do que foi completado
+    sai em "completados". E premissas["receita_por_loja"] = {aba: %} dá a
+    cada loja o seu crescimento de receita (em branco: o geral).
+
     Devolve (DataFrame de linhas da empresa, com a coluna "unidades" trazendo
     {aba: {"base": [12], "rascunho": [12], "origem": texto}}, totais, avisos)."""
-    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao)
+    ctx = _contexto_rascunho(meses_ano, meses_fechados, retiradas, premissas, projecao, mes_parcial, limiar_parcial)
     meses_ano, idx_f, idx_a, n_f = ctx["meses_ano"], ctx["idx_f"], ctx["idx_a"], ctx["n_f"]
+    idx_fc, n_media = ctx["idx_fc"], (ctx["n_fc"] or n_f)
+    completados_por_chave = {}   # chave -> [{"aba", "estava", "media"}]
     abas = list(abas or [])
     n_m = len(meses_ano)
     zero = [0.0] * n_m
@@ -18486,11 +18578,17 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
                 ajust, lista_aj, n_m, sinal_padrao=(1.0 if str(numero).split(".")[0] == "1" else -1.0))
         plano_prem = "" if plano in (RESIDUO_SEM_PLANO, LINHA_SEM_PLANO_NO_MODELO, FORA_DO_MODELO) else plano
         nome_premissa, pct = premissa_automatica_rascunho(numero, nome_linha, ctx["premissas"], plano_prem)
-        unidades = {}
+        unidades, pct_por_loja = {}, {}
         for aba in ajust:
             base_u = list(por_aba_base.get(aba, zero))
-            rasc_u = [round(v * (1.0 if aba in fixadas else 1.0 + pct), 2) for v in ajust[aba]]
+            # Crescimento da receita DA LOJA (06/11/2026): só muda nas linhas
+            # que seguem a receita, e só nas lojas com % próprio.
+            _, pct_u = premissa_automatica_rascunho(numero, nome_linha, ctx["premissas"], plano_prem, aba=aba)
+            rasc_u = [round(v * (1.0 if aba in fixadas else 1.0 + pct_u), 2) for v in ajust[aba]]
             origem_u = por_aba_origem.get(aba, "") or ("sem base na unidade" if aba in fixadas else "")
+            if abs(pct_u - pct) >= 1e-9:
+                pct_por_loja[aba] = pct_u
+                origem_u = (origem_u + " · " if origem_u else "") + f"receita {pct_u * 100:+.2f}% (desta loja)"
             if textos_aj.get(aba):
                 origem_u = (origem_u + " · " if origem_u else "") + "ajuste: " + textos_aj[aba]
             unidades[aba] = {"base": base_u, "rascunho": rasc_u, "origem": origem_u}
@@ -18503,9 +18601,12 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             "chave": chave, "numero": numero, "linha": nome_linha, "plano": plano, "origem_plano": origem_plano,
             "linha_modelo": linha_modelo, "grupo": str(numero).split(".")[0],
             "realizado_fechado": soma(base_meses, idx_f), "projecao_abertos": soma(base_meses, idx_a),
-            "origem_projecao": ("orçado do ano" if projecao == "orcado" else f"média dos {n_f} meses fechados"),
+            "realizado_completo": soma(base_meses, idx_fc),
+            "completados": list(completados_por_chave.get(chave, [])), "n_completados": len(completados_por_chave.get(chave, [])),
+            "origem_projecao": ("orçado do ano" if projecao == "orcado" else f"média dos {n_media} meses fechados"),
             "base": base, "orcado_ano": None, "retirada_mensal": mensal, "retirado": abs(base) - abs(base_aj) if (mensal or lista_aj) else 0.0,
             "motivo": motivo, "loja_retirada": loja_ret, "base_ajustada": base_aj, "premissa": nome_premissa, "pct": pct,
+            "pct_por_loja": pct_por_loja,
             "ajustes": descrever_ajustes_por_unidade(lista_aj), "n_ajustes": len(lista_aj),
             "rascunho": rascunho, "var_vs_base": (rascunho / base - 1.0) if abs(base) >= 0.005 else None,
             "var_vs_orcado": None, "base_meses": base_meses, "orcado_meses": None, "rascunho_meses": rasc_meses,
@@ -18561,25 +18662,32 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             # fechados, senão setembro a dezembro sairiam zerados numa linha que
             # tem realizado todo mês. Fica registrado na origem.
             orc_abertos_zerado = projecao == "orcado" and not any(abs(orc_u[i]) >= 0.005 for i in idx_a)
-            def projetar(real_m, fatia):
+            def projetar(real_m, fatia, chave_comp=None):
                 # Regras por grupo (pedido da diretoria): 10 sempre zerado; 16 só o realizado.
                 if regra_grupo == "zero":
                     return list(zero), "grupo 10 sempre zerado no rascunho (como no realizado consolidado)"
                 if regra_grupo == "so_realizado":
                     return [real_m[i] if i in set(idx_f) else 0.0 for i in range(n_m)], "só o realizado (meses que faltam zerados)"
-                media = sum(real_m[i] for i in idx_f) / n_f if n_f else 0.0
+                # Mês em fechamento: o que ainda não entrou nele leva a média dos outros fechados.
+                real_m, comp = completar_mes_parcial(real_m, ctx)
+                texto_comp = ""
+                if comp is not None:
+                    if chave_comp is not None:
+                        completados_por_chave.setdefault(chave_comp, []).append(dict(comp, aba=aba))
+                    texto_comp = f" · {ctx['mes_parcial']} completado pela média ({formata_brl(comp['media'])}; estava {formata_brl(comp['estava'])})"
+                media = media_dos_fechados(real_m, ctx) if ctx["idx_p"] is not None else (sum(real_m[i] for i in idx_f) / n_f if n_f else 0.0)
                 if projecao == "orcado" and not (orc_abertos_zerado and abs(media) >= 0.005):
-                    return [real_m[i] if i in set(idx_f) else orc_u[i] * fatia for i in range(n_m)], f"orçado da unidade ({fatia * 100:.0f}% da linha)"
+                    return [real_m[i] if i in set(idx_f) else orc_u[i] * fatia for i in range(n_m)], f"orçado da unidade ({fatia * 100:.0f}% da linha)" + texto_comp
                 return [real_m[i] if i in set(idx_f) else media for i in range(n_m)], (
-                    f"média dos {n_f} fechados (linha sem orçado nesta unidade)" if projecao == "orcado" else f"média dos {n_f} fechados")
+                    f"média dos {n_media} fechados (linha sem orçado nesta unidade)" if projecao == "orcado" else f"média dos {n_media} fechados") + texto_comp
             for p, (serie, origem) in reais.items():
                 fatia = pesos.get(p, 0.0) / total_peso
-                base_por_plano[p][aba], como = projetar(serie, fatia)
+                base_por_plano[p][aba], como = projetar(serie, fatia, chave_comp=f"{numero}|{p}")
                 orig_por_plano[p][aba] = origem + (f" · meses abertos: {como}" if any(abs(v) >= 0.005 for v in base_por_plano[p][aba]) else "")
                 orc_por_plano_emp[p] = [a + b * fatia for a, b in zip(orc_por_plano_emp[p], orc_u)]
             if proprias:
                 fatia = pesos.get("__propria__", 0.0) / total_peso
-                base_propria[aba], como = projetar(propria_real, fatia)
+                base_propria[aba], como = projetar(propria_real, fatia, chave_comp=f"{numero}|{LINHA_SEM_PLANO_NO_MODELO}")
                 orig_propria[aba] = "DRE_MENSAL da unidade" + (" − planos" if planos_modelo else "") + f" · meses abertos: {como}"
                 orc_propria_emp = [a + b * fatia for a, b in zip(orc_propria_emp, orc_u)]
             elif planos_modelo and regra_grupo != "zero" and any(abs(v) >= 0.005 for v in [propria_real[i] for i in idx_f]):
@@ -18624,7 +18732,10 @@ def montar_rascunho_por_unidade(dre_mensal, orcado_por_aba, df_diario, estrutura
             if regra_fora == "so_realizado":
                 return [v[i] if i in set(idx_f) else 0.0 for i in range(n_m)]
             o = orc_propria(aba, num)
-            media = sum(v[j] for j in idx_f) / n_f if n_f else 0.0
+            v, comp = completar_mes_parcial(v, ctx)
+            if comp is not None:
+                completados_por_chave.setdefault(f"{num}|{FORA_DO_MODELO}", []).append(dict(comp, aba=aba))
+            media = media_dos_fechados(v, ctx) if ctx["idx_p"] is not None else (sum(v[j] for j in idx_f) / n_f if n_f else 0.0)
             usa_orc = projecao == "orcado" and any(abs(o[i]) >= 0.005 for i in idx_a)
             return [v[i] if i in set(idx_f) else (o[i] if usa_orc else media) for i in range(n_m)]
         base_fora = {aba: _proj_fora(aba, v) for aba, v in por_aba.items()}
@@ -18657,7 +18768,10 @@ def diferencas_unidades_vs_consolidado(df_rasc, df_consolidado, meses_fechados, 
     colunas = ["Nº", "Linha da DRE", "Soma das unidades", "DRE CONSOLIDADO", "Diferença", "Grupo"]
     if df_rasc is None or df_rasc.empty or df_consolidado is None or df_consolidado.empty:
         return pd.DataFrame(columns=colunas)
-    por_num = df_rasc.groupby("numero")["realizado_fechado"].sum().to_dict()
+    # "realizado_completo" (06/11/2026): só os fechados completos -- o mês em
+    # fechamento, completado pela média, não bate com a DRE de propósito.
+    col_real = "realizado_completo" if "realizado_completo" in df_rasc.columns else "realizado_fechado"
+    por_num = df_rasc.groupby("numero")[col_real].sum().to_dict()
     nomes = df_rasc.groupby("numero")["linha"].first().to_dict()
     proprias = {num: (nome, filhas) for num, nome, filhas in linhas_proprias_da_dre(df_consolidado)}
     cons = {}
@@ -18722,10 +18836,13 @@ def totais_do_rascunho(df):
     (grupo 1), custos e despesas até o EBITDA (2, 4, 6, 8 e o que mais houver
     até o 10) e o EBITDA (soma de tudo até o grupo 10, com sinal). Para cada
     um, base, orçado do ano, retirado e rascunho."""
-    chaves = ("base", "orcado_ano", "retirado", "rascunho", "realizado_fechado", "projecao_abertos", "base_ajustada")
+    chaves = ("base", "orcado_ano", "retirado", "rascunho", "realizado_fechado", "projecao_abertos", "base_ajustada",
+              "realizado_completo")
     vazio = {k: 0.0 for k in chaves}
     if df is None or df.empty:
         return {"por_grupo": {}, "receita": dict(vazio), "custos": dict(vazio), "ebitda": dict(vazio)}
+    if "realizado_completo" not in df.columns:
+        df = df.assign(realizado_completo=df["realizado_fechado"])
     por_grupo = {}
     for grupo, bloco in df.groupby("grupo", sort=False):
         por_grupo[str(grupo)] = {k: float(bloco[k].sum()) for k in chaves}
@@ -18906,6 +19023,11 @@ def excel_do_rascunho(df, totais, meses_ano, premissas, meses_fechados, ano_base
         (retiradas_df if retiradas_df is not None else pd.DataFrame()).to_excel(escritor, sheet_name="Retiradas", index=False)
         pd.DataFrame([
             {"Premissa": "Receita (grupo 1)", "Regra": "base realizada, sem crescimento — não há meta da indústria ainda", "%": premissas.get("receita", 0.0)},
+            {"Premissa": "Receita por loja", "Regra": ("; ".join(f"{aba}: {float(p) * 100:+.2f}%" for aba, p in sorted((premissas.get("receita_por_loja") or {}).items())
+                                                           if p is not None) or "nenhuma loja com % próprio (todas usam o geral)"), "%": None},
+            {"Premissa": "Mês em fechamento", "Regra": (f"{premissas.get('mes_parcial')}: linha que ainda não entrou nele (zerada"
+                                                        + (f" ou abaixo de {float(premissas.get('limiar_parcial', 0.0)) * 100:.0f}% da média" if premissas.get("limiar_parcial") else "")
+                                                        + ") completada pela média dos outros fechados" if premissas.get("mes_parcial") else "nenhum"), "%": None},
             {"Premissa": "Deduções, CMV e despesas variáveis (2, 4, 6)", "Regra": "acompanham a receita", "%": premissas.get("receita", 0.0)},
             {"Premissa": "Pessoal (8.3 e linhas de folha)", "Regra": "dissídio / salário mínimo", "%": premissas.get("dissidio", 0.0)},
             {"Premissa": "Demais despesas operacionais (8)", "Regra": "IPCA", "%": premissas.get("ipca", 0.0)},
@@ -24119,6 +24241,55 @@ if tab_orc is not None:
         _meses_ano_rasc = [f"{m:02d}/{_ano_rasc}" for m in range(1, 13)]
         _meses_fech_rasc = _meses_ano_rasc[:int(_n_fech_rasc)]
 
+        # ---- Mês em fechamento (06/11/2026): o último "fechado" ainda não está 100%. ----
+        _ult_fech_rasc = _meses_fech_rasc[-1]
+        _rp1, _rp2, _rp3 = st.columns([1.6, 1.2, 2.2], vertical_alignment="center")
+        with _rp1:
+            _parcial_rasc = st.checkbox(
+                f"{_ult_fech_rasc} ainda está em fechamento", value=False, key="rasc_parcial",
+                help=f"Marque quando {_ult_fech_rasc} já entra como realizado mas ainda faltam lançamentos. O que já está lançado "
+                     "vale; o plano que ainda não entrou no mês (zerado, ou abaixo do corte ao lado) é completado pela média "
+                     "dos outros meses fechados, loja a loja. A lista do que foi completado aparece logo abaixo dos números.")
+        with _rp2:
+            _limiar_rasc = st.number_input(
+                "Conta como não fechado se estiver abaixo de (% da média)", min_value=0, max_value=100, value=0, step=5,
+                key="rasc_limiar", disabled=not _parcial_rasc,
+                help="0% = só o que está zerado no mês é completado. 50% = um plano que no mês está com menos da metade da sua "
+                     "média também é considerado ainda não fechado e vai para a média.") / 100
+        with _rp3:
+            if _parcial_rasc:
+                st.caption(f"Realizado até **{_ult_fech_rasc}** ({_ult_fech_rasc} completado pela média onde ainda não entrou) e, "
+                           f"de {_meses_ano_rasc[int(_n_fech_rasc)] if int(_n_fech_rasc) < 12 else '—'} em diante, "
+                           + ("o **orçado** da unidade." if _proj_rasc.startswith("Orçado") else "a **média** dos meses fechados completos."))
+        _mes_parcial_rasc = _ult_fech_rasc if _parcial_rasc else None
+        _premissas_rasc["mes_parcial"] = _mes_parcial_rasc
+        _premissas_rasc["limiar_parcial"] = float(_limiar_rasc) if _parcial_rasc else 0.0
+
+        # ---- Crescimento da receita por loja (06/11/2026): em branco = o % geral. ----
+        _receita_por_loja_rasc = {}
+        if _abas_rasc:
+            # O título diz quantas lojas têm % próprio: a caixa fecha a cada
+            # edição, e o número fica à vista mesmo com ela fechada.
+            _editadas_lojas = (st.session_state.get("rasc_receita_lojas") or {}).get("edited_rows", {}) or {}
+            _n_proprio = sum(1 for _ed in _editadas_lojas.values()
+                             if _ed.get("Crescimento (%)") is not None and not pd.isna(_ed.get("Crescimento (%)")))
+            with st.expander(f"📈 Crescimento da receita por loja (geral: {_rec_rasc * 100:+.2f}%"
+                             + (f" · {_n_proprio} loja(s) com % próprio)" if _n_proprio else " · todas no geral)"), expanded=False):
+                st.caption("Informe o % só nas lojas que fogem do geral; em branco, a loja usa o % geral acima. Vale para a receita "
+                           "e para as linhas que a acompanham (deduções, CMV, variáveis) daquela loja.")
+                _ed_lojas = st.data_editor(
+                    pd.DataFrame({"Loja": list(_abas_rasc), "Crescimento (%)": [None] * len(_abas_rasc)}),
+                    hide_index=True, width="stretch", key="rasc_receita_lojas", num_rows="fixed",
+                    column_config={"Loja": st.column_config.TextColumn(disabled=True),
+                                   "Crescimento (%)": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0, step=0.5, format="%.2f")},
+                    height=min(38 + 35 * (len(_abas_rasc) + 1), 420))
+                for _loja_ed, _pct_ed in zip(_ed_lojas["Loja"], _ed_lojas["Crescimento (%)"]):
+                    if _pct_ed is not None and not pd.isna(_pct_ed):
+                        _receita_por_loja_rasc[str(_loja_ed)] = float(_pct_ed) / 100
+                if _receita_por_loja_rasc:
+                    st.caption("Com % próprio: " + " · ".join(f"**{a}** {p * 100:+.2f}%" for a, p in _receita_por_loja_rasc.items()))
+        _premissas_rasc["receita_por_loja"] = _receita_por_loja_rasc
+
         # DRE CONSOLIDADO sempre -- o rascunho é da empresa inteira, qualquer
         # que seja a visão escolhida na barra lateral.
         if [str(a).upper() for a in (abas_para_carregar or [])] == ["DRE CONSOLIDADO"] and list_df_real:
@@ -24165,19 +24336,23 @@ if tab_orc is not None:
                 _df_rasc, _tot_rasc, _avisos_rasc = montar_rascunho_por_unidade(
                     _dre_mensal_rasc, _orc_un_rasc, _diario_rasc, _estrutura_rasc, _abas_rasc, _meses_ano_rasc, _meses_fech_rasc,
                     retiradas=_retiradas_rasc, premissas=_premissas_rasc, projecao=_modo_proj_rasc, mapa_loja_cc=_mapa_cc_rasc,
-                    ajustes=_ajustes_rasc)
+                    ajustes=_ajustes_rasc, mes_parcial=_mes_parcial_rasc, limiar_parcial=_premissas_rasc["limiar_parcial"])
             else:
                 _df_rasc, _tot_rasc = montar_rascunho_orcamento(
                     _real_rasc, _orc_rasc, _meses_ano_rasc, _meses_fech_rasc, retiradas=_retiradas_rasc,
-                    premissas=_premissas_rasc, projecao=_modo_proj_rasc, df_diario=_diario_rasc)
+                    premissas=_premissas_rasc, projecao=_modo_proj_rasc, df_diario=_diario_rasc,
+                    mes_parcial=_mes_parcial_rasc, limiar_parcial=_premissas_rasc["limiar_parcial"])
             if _df_rasc.empty:
                 st.info("Não encontrei linhas numeradas na DRE CONSOLIDADO.")
             else:
                 # Conferência: a soma do valor próprio das linhas até o grupo 10
                 # (planos + resíduo) tem de bater com a linha 11 - EBITDA do
                 # realizado nos meses fechados.
-                _ebitda_dre_fech = sum(_serie_da_linha_por_numero(_real_rasc, "11", _meses_fech_rasc))
-                _ebitda_folhas_fech = float(_tot_rasc["ebitda"]["realizado_fechado"])
+                # Com mês em fechamento, a conferência olha só os fechados COMPLETOS:
+                # o mês completado pela média não bate com a DRE de propósito.
+                _meses_conf_rasc = [m for m in _meses_fech_rasc if m != _mes_parcial_rasc]
+                _ebitda_dre_fech = sum(_serie_da_linha_por_numero(_real_rasc, "11", _meses_conf_rasc))
+                _ebitda_folhas_fech = float(_tot_rasc["ebitda"]["realizado_completo"])
                 # O grupo 10 (rateio do escritório) sai zerado no rascunho, como no DRE
                 # CONSOLIDADO; o que sobra de diferença são ajustes de consolidação.
                 _dif_ebitda_rasc = _ebitda_folhas_fech - _ebitda_dre_fech
@@ -24185,6 +24360,22 @@ if tab_orc is not None:
                 _n_linhas_rasc = int(_df_rasc["numero"].nunique())
                 for _aviso_r in _avisos_rasc:
                     st.info(_aviso_r)
+                if _mes_parcial_rasc:
+                    _comp_rasc = tabela_de_completados_rascunho(_df_rasc, _mes_parcial_rasc)
+                    _soma_comp = float(_comp_rasc["Média aplicada"].sum()) if not _comp_rasc.empty else 0.0
+                    with st.expander(f"🧩 {len(_comp_rasc)} linha(s) completada(s) pela média em {_mes_parcial_rasc} "
+                                     f"({formata_brl(abs(_soma_comp))} no total)", expanded=False):
+                        if _comp_rasc.empty:
+                            st.caption(f"Nada a completar: tudo que tem média nos outros meses fechados já tem valor em {_mes_parcial_rasc}.")
+                        else:
+                            st.caption("Cada linha abaixo estava zerada (ou abaixo do corte) no mês em fechamento e tem movimento nos "
+                                       "outros meses fechados: entrou pela média deles. Se algum desses planos de fato não vai ter "
+                                       "lançamento no mês, retire-o na análise linha a linha.")
+                            _cm = _comp_rasc.copy()
+                            for _c in (f"Estava em {_mes_parcial_rasc}", "Média aplicada"):
+                                _cm[_c] = _cm[_c].map(formata_brl)
+                            mostrar_tabela(_cm, hide_index=True, width="stretch", height=min(38 + 35 * (len(_cm) + 1), 520),
+                                           nome_excel=f"Completados pela média em {_mes_parcial_rasc.replace('/', '-')}")
                 if _estrutura_rasc:
                     _sem_par_rasc = planos_do_diario_sem_par_no_modelo(_diario_rasc, _estrutura_rasc, _meses_ano_rasc)
                     _n_residuo_rasc = int((_df_rasc["plano"] == RESIDUO_SEM_PLANO).sum())
@@ -24225,11 +24416,12 @@ if tab_orc is not None:
                               if (_df_rasc['plano'] == RESIDUO_SEM_PLANO).any() else "."))
                 if abs(_dif_ebitda_rasc) < 1.0:
                     st.caption(f"✅ Conferência: a soma de todos os planos e resíduos até o grupo 10 bate com a linha 11 - EBITDA do realizado "
-                               f"nos {len(_meses_fech_rasc)} meses fechados ({formata_brl(_ebitda_dre_fech)}).")
+                               f"nos {len(_meses_conf_rasc)} meses fechados ({formata_brl(_ebitda_dre_fech)})."
+                               + (f" {_mes_parcial_rasc} fica fora da conferência: está em fechamento." if _mes_parcial_rasc else ""))
                 elif _estrutura_rasc:
-                    _difs_cons = diferencas_unidades_vs_consolidado(_df_rasc, _real_rasc, _meses_fech_rasc)
+                    _difs_cons = diferencas_unidades_vs_consolidado(_df_rasc, _real_rasc, _meses_conf_rasc)
                     _ajustes_cons = float(_difs_cons[(_difs_cons["Grupo"] != "10") & (_difs_cons["Grupo"].map(lambda g: g.isdigit() and int(g) <= 10))]["Diferença"].sum()) if not _difs_cons.empty else 0.0
-                    st.caption(f"ℹ️ Conferência: a soma das unidades (DRE_MENSAL) até o grupo 10 nos {len(_meses_fech_rasc)} meses fechados é "
+                    st.caption(f"ℹ️ Conferência: a soma das unidades (DRE_MENSAL) até o grupo 10 nos {len(_meses_conf_rasc)} meses fechados é "
                                f"{formata_brl(_ebitda_folhas_fech)}; a linha 11 - EBITDA do DRE CONSOLIDADO é {formata_brl(_ebitda_dre_fech)}. "
                                f"Diferença {formata_brl(_dif_ebitda_rasc)}: são ajustes de consolidação linha a linha ({formata_brl(_ajustes_cons)} "
                                "até o grupo 10); o grupo 10 (rateio do escritório) sai zerado no rascunho, como no consolidado. "

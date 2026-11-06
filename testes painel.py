@@ -118,8 +118,10 @@ DEPENDENCIAS = {
     "montar_rascunho_orcamento": ["linhas_proprias_da_dre", "_serie_da_linha_por_numero", "premissa_automatica_rascunho",
                                   "totais_do_rascunho", "distribuir_no_ano", "curva_do_ano", "_numero_linha_dre",
                                   "_eh_linha_de_resultado", "_normalizar_texto", "_normalizar_coluna_fin", "diario_por_linha_e_plano",
-                                  "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas"],
+                                  "_monta_linha_rascunho", "_contexto_rascunho", "_valor_proprio_da_linha", "_ratear_orcado_entre_linhas",
+                                  "completar_mes_parcial", "media_dos_fechados"],
     "montar_rascunho_por_unidade": ["_contexto_rascunho", "_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin",
+                                    "completar_mes_parcial", "media_dos_fechados",
                                     "_mask_loja_por_centro_custo", "_normalizar_texto", "_numero_linha_dre", "_series_por_aba_e_numero",
                                     "_filhas_diretas", "_serie_da_linha_por_numero", "premissa_automatica_rascunho", "_plano_mais_parecido",
                                     "_eh_linha_de_resultado", "totais_do_rascunho", "formata_brl", "aplicar_ajustes_por_unidade",
@@ -134,7 +136,11 @@ DEPENDENCIAS = {
     "planos_do_diario_sem_par_no_modelo": ["_chave_frouxa", "chave_conta_orcamento", "_normalizar_coluna_fin"],
     "linhas_proprias_da_dre": ["_numero_linha_dre", "_eh_linha_de_resultado", "_normalizar_texto"],
     "diario_por_linha_e_plano": ["_numero_linha_dre"],
-    "premissa_automatica_rascunho": ["_normalizar_coluna_fin"],
+    "premissa_automatica_rascunho": ["_normalizar_coluna_fin", "crescimento_da_receita_da_loja"],
+    "_monta_linha_rascunho": ["completar_mes_parcial", "media_dos_fechados"],
+    "_contexto_rascunho": [],
+    "tabela_de_completados_rascunho": [],
+    "excel_do_rascunho": ["rascunho_por_linha"],
     "relatorio_das_retiradas": ["colunas_relatorio_retiradas"],
     "planos_da_linha_no_diario": ["_numero_linha_dre"],
     "maiores_lancamentos_da_linha": ["_numero_linha_dre"],
@@ -196,6 +202,7 @@ CONSTANTES_DE_DEPENDENCIA = {
     "normalizar_metas_recebimento": ["CANAIS_DA_META", "MODALIDADES_DA_META"],
     "consolidar_metas": ["COLUNAS_PLANILHA_METAS"],
     "recorte_realizado_para_meta": ["COL_FIN_CANAL", "COL_FIN_MODALIDADE"],
+    "excel_do_rascunho": ["RESIDUO_SEM_PLANO"],
     "realizado_que_cobre_a_meta": ["COL_FIN_MOVIMENTO", "COL_FIN_VALOR", "MOV_RECEBER_AVENCER", "MOV_RECEBER_LIQUIDADO"],
     "metas_do_codigo": ["METAS_RECEBER", "METAS_OCULTAS_NO_CODIGO"],
     "fontes_csv_metas": ["ID_PLANILHA_METAS_PADRAO", "ABA_PLANILHA_METAS"],
@@ -240,7 +247,7 @@ CONSTANTES_DE_DEPENDENCIA = {
     "linhas_exibidas_projetado_x_realizado": ["LINHA_RECEBER_PROJETADO", "LINHA_PAGAR_PROJETADO", "LINHA_TOTAL_PROJETADO",
                                               "DOCUMENTOS_FIN", "SEPARADOR_CAMINHO"],
     "linhas_proprias_da_dre": ["PALAVRAS_LINHA_DE_RESULTADO"],
-    "premissa_automatica_rascunho": ["PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN"],
+    "premissa_automatica_rascunho": ["PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "PREMISSAS_QUE_SEGUEM_A_RECEITA"],
     "montar_rascunho_orcamento": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
                                   "LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"],
     "montar_rascunho_pelo_modelo": ["PALAVRAS_LINHA_DE_RESULTADO", "PALAVRAS_PESSOAL_RASCUNHO", "_ACENTOS_FIN", "RESIDUO_SEM_PLANO",
@@ -8429,7 +8436,7 @@ class TesteRascunhoOrcamento(unittest.TestCase):
         self.assertLess(i, FONTE.index("Prova de fogo — o orçamento proposto contra o ritmo real deste ano"))
         trecho = FONTE[i:i + 60000]
         self.assertIn('== ["DRE CONSOLIDADO"] and list_df_real', trecho)
-        self.assertIn("df_diario=_diario_rasc)", trecho, "a base desce aos planos de contas do DIARIO")
+        self.assertIn("df_diario=_diario_rasc,", trecho, "a base desce aos planos de contas do DIARIO")
         self.assertIn('"rasc_retiradas"', trecho, "as retiradas vivem na sessao e saem/entram por CSV")
         self.assertIn("Guardar retiradas e ajustes (CSV)", trecho)
         self.assertIn("excel_do_rascunho(", trecho)
@@ -10474,6 +10481,160 @@ class TesteMetaParcialNaoZeraOMes(unittest.TestCase):
         self.assertIn("realizado=realizado_que_cobre_a_meta(antes, pares_meta))", FONTE)
         self.assertEqual(FONTE.count("], pares_meta_fin)"), 2, "Fluxo Diario e Diario Consolidado")
         self.assertIn("canal e modalidade das metas à mostra", FONTE, "a legenda explica a regra")
+
+
+class TesteMesEmFechamentoEReceitaPorLoja(TesteRascunhoPorUnidade):
+    """06/11/2026: (1) o ultimo mes fechado ainda em fechamento -- a linha que
+    ainda nao entrou nele e completada pela media dos outros fechados, loja a
+    loja, com a lista do que foi completado; (2) crescimento da receita POR
+    LOJA (em branco = o geral)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.ns3 = carregar(["completar_mes_parcial", "_contexto_rascunho", "media_dos_fechados", "tabela_de_completados_rascunho",
+                            "crescimento_da_receita_da_loja", "premissa_automatica_rascunho", "excel_do_rascunho"],
+                           ["LINHA_SEM_PLANO_NO_MODELO", "FORA_DO_MODELO"])
+
+    def _ctx(self, fechados=9, parcial="09/2026", limiar=0.0):
+        return self.ns3["_contexto_rascunho"](self.meses, self.meses[:fechados], {}, {}, "orcado", mes_parcial=parcial, limiar_parcial=limiar)
+
+    def test_contexto_separa_o_mes_parcial_dos_fechados_completos(self):
+        ctx = self._ctx()
+        self.assertEqual(ctx["idx_p"], 8); self.assertEqual(ctx["idx_fc"], list(range(8))); self.assertEqual(ctx["n_fc"], 8)
+        self.assertEqual(ctx["idx_f"], list(range(9)), "o mes parcial continua FECHADO (o realizado dele vale)")
+        self.assertEqual(ctx["mes_parcial"], "09/2026")
+        # mes parcial que nao esta entre os fechados: ignorado
+        ctx2 = self._ctx(fechados=8, parcial="09/2026")
+        self.assertIsNone(ctx2["idx_p"]); self.assertEqual(ctx2["idx_fc"], ctx2["idx_f"]); self.assertIsNone(ctx2["mes_parcial"])
+        ctx3 = self._ctx(parcial=None)
+        self.assertIsNone(ctx3["idx_p"])
+
+    def test_completa_so_o_que_ainda_nao_entrou(self):
+        f = self.ns3["completar_mes_parcial"]
+        serie = [-90.0] * 8 + [0.0] + [0.0] * 3
+        nova, info = f(serie, self._ctx())
+        self.assertEqual(nova[8], -90.0); self.assertEqual(info, {"estava": 0.0, "media": -90.0})
+        self.assertEqual(serie[8], 0.0, "nao mexe na serie original")
+        # ja tem valor no mes: fica
+        nova, info = f([-90.0] * 8 + [-70.0] + [0.0] * 3, self._ctx())
+        self.assertEqual(nova[8], -70.0); self.assertIsNone(info)
+        # abaixo do corte (50% da media): completa
+        nova, info = f([-90.0] * 8 + [-40.0] + [0.0] * 3, self._ctx(limiar=0.5))
+        self.assertEqual(nova[8], -90.0); self.assertEqual(info["estava"], -40.0)
+        nova, info = f([-90.0] * 8 + [-46.0] + [0.0] * 3, self._ctx(limiar=0.5))
+        self.assertIsNone(info, "acima do corte fica como esta")
+        # sem movimento nos outros fechados: nada indica que devia ter valor
+        nova, info = f([0.0] * 12, self._ctx())
+        self.assertIsNone(info)
+        # sem mes parcial: nunca mexe
+        nova, info = f([-90.0] * 8 + [0.0] * 4, self._ctx(parcial=None))
+        self.assertIsNone(info); self.assertEqual(nova[8], 0.0)
+        # a media dos fechados e a dos COMPLETOS: o mes pela metade nao a puxa
+        self.assertEqual(self.ns3["media_dos_fechados"]([-90.0] * 8 + [-10.0] + [0.0] * 3, self._ctx()), -90.0)
+
+    def test_por_unidade_completa_loja_a_loja_e_lista_o_que_completou(self):
+        propria, fora = self.ns3["LINHA_SEM_PLANO_NO_MODELO"], self.ns3["FORA_DO_MODELO"]
+        # 9 meses fechados, setembro em fechamento. No DIARIO os planos vao ate agosto
+        # (setembro zerado); a DRE_MENSAL tem setembro.
+        df, tot, _ = self.ns2["montar_rascunho_por_unidade"](
+            self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS, self.meses, self.meses[:9],
+            premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="orcado", mes_parcial="09/2026")
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        sal = por["8.3.1|Salários"]
+        self.assertEqual(sal["unidades"]["LJ MARECHAL 6039"]["base"][8], -90.0, "setembro completado pela media da MARECHAL")
+        self.assertEqual(sal["unidades"]["LJ SETE 6052"]["base"][8], -60.0, "e pela media da SETE -- loja a loja")
+        self.assertIn("09/2026 completado pela média", sal["unidades"]["LJ SETE 6052"]["origem"])
+        self.assertEqual(sal["n_completados"], 2)
+        self.assertEqual(sorted(c["aba"] for c in sal["completados"]), self.ABAS)
+        cx = por["8.8.3|Consultoria X"]
+        self.assertAlmostEqual(cx["unidades"]["LJ MARECHAL 6039"]["base"][8], -(7 * 15.0 + 115.0) / 8)
+        self.assertEqual(cx["unidades"]["LJ SETE 6052"]["base"][8], 0.0, "SETE nunca teve Consultoria X: nao inventa")
+        self.assertEqual(cx["n_completados"], 1)
+        # linha da DRE_MENSAL com setembro lancado: fica como esta
+        rec = por["1.1|" + propria]
+        self.assertAlmostEqual(rec["unidades"]["LJ MARECHAL 6039"]["base"][8], 600.0)
+        self.assertEqual(rec["n_completados"], 0)
+        # a projecao dos meses abertos segue o orcado; a conferencia usa so os 8 completos
+        self.assertAlmostEqual(sal["realizado_completo"], -150.0 * 8)
+        self.assertAlmostEqual(sal["realizado_fechado"], -150.0 * 9)
+        self.assertAlmostEqual(tot["ebitda"]["realizado_completo"], sum(r["realizado_completo"] for _, r in df.iterrows() if int(r["grupo"]) <= 10))
+        # a tabela do que foi completado
+        tab = self.ns3["tabela_de_completados_rascunho"](df, "09/2026")
+        self.assertEqual(list(tab.columns), ["Loja", "Linha da DRE", "Plano de contas", "Estava em 09/2026", "Média aplicada"])
+        self.assertEqual(len(tab), int(df["n_completados"].sum()))
+        self.assertEqual(tab.iloc[0]["Plano de contas"], "Salários", "ordenada pela maior media")
+        # sem mes parcial: nada muda em relacao a antes
+        df0, _, _ = self.ns2["montar_rascunho_por_unidade"](
+            self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS, self.meses, self.meses[:9],
+            premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="orcado")
+        por0 = {r["chave"]: r for _, r in df0.iterrows()}
+        self.assertEqual(por0["8.3.1|Salários"]["unidades"]["LJ MARECHAL 6039"]["base"][8], 0.0)
+        self.assertEqual(int(df0["n_completados"].sum()), 0)
+        self.assertTrue(self.ns3["tabela_de_completados_rascunho"](df0, "09/2026").empty)
+
+    def test_media_dos_meses_abertos_usa_so_os_fechados_completos(self):
+        df, _, _ = self.ns2["montar_rascunho_por_unidade"](
+            self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS, self.meses, self.meses[:9],
+            premissas={"ipca": 0.0, "dissidio": 0.0, "receita": 0.0}, projecao="media", mes_parcial="09/2026")
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        sal = por["8.3.1|Salários"]["unidades"]["LJ MARECHAL 6039"]
+        self.assertEqual(sal["base"][9], -90.0, "outubro = media dos 8 completos (setembro zerado nao a puxa)")
+        self.assertEqual(por["8.3.1|Salários"]["origem_projecao"], "média dos 8 meses fechados")
+
+    def test_crescimento_da_receita_por_loja(self):
+        prem = {"ipca": 0.0, "dissidio": 0.0, "receita": 0.05, "receita_por_loja": {"LJ SETE 6052": 0.10, "LJ MARECHAL 6039": None}}
+        f = self.ns3["crescimento_da_receita_da_loja"]
+        self.assertEqual(f(prem), 0.05); self.assertEqual(f(prem, "LJ SETE 6052"), 0.10)
+        self.assertEqual(f(prem, "LJ MARECHAL 6039"), 0.05, "em branco = o geral"); self.assertEqual(f(prem, "LJ X"), 0.05)
+        self.assertEqual(f({"receita": 0.05}, "LJ SETE 6052"), 0.05)
+        p = self.ns3["premissa_automatica_rascunho"]
+        self.assertEqual(p("1.1", "1.1 - Vendas", prem, "", aba="LJ SETE 6052")[1], 0.10)
+        self.assertEqual(p("4.1", "4.1 - CMV", prem, "", aba="LJ SETE 6052")[1], 0.10, "o que acompanha a receita acompanha a da loja")
+        self.assertEqual(p("8.4", "8.4 - Taxa de Ocupação", prem, "Ocupação", aba="LJ SETE 6052")[1], 0.0, "IPCA nao e por loja")
+        self.assertEqual(p("1.1", "1.1 - Vendas", prem, "")[1], 0.05, "sem loja: o geral (caminho consolidado)")
+        propria = self.ns3["LINHA_SEM_PLANO_NO_MODELO"]
+        df, _, _ = self.ns2["montar_rascunho_por_unidade"](
+            self._dre_mensal(), self._orc_por_aba(), self._diario_abas(), self._estrutura(), self.ABAS, self.meses, self.meses[:8],
+            premissas=prem, projecao="orcado")
+        por = {r["chave"]: r for _, r in df.iterrows()}
+        rec = por["1.1|" + propria]
+        self.assertAlmostEqual(rec["unidades"]["LJ MARECHAL 6039"]["rascunho"][0], round(600.0 * 1.05, 2))
+        self.assertAlmostEqual(rec["unidades"]["LJ SETE 6052"]["rascunho"][0], round(400.0 * 1.10, 2))
+        self.assertEqual(rec["pct"], 0.05); self.assertEqual(rec["pct_por_loja"], {"LJ SETE 6052": 0.10})
+        self.assertIn("receita +10.00% (desta loja)", rec["unidades"]["LJ SETE 6052"]["origem"])
+        self.assertAlmostEqual(rec["rascunho"], sum(rec["unidades"][a]["rascunho"][i] for a in self.ABAS for i in range(12)), places=2)
+        sal = por["8.3.1|Salários"]
+        self.assertEqual(sal["pct_por_loja"], {}, "pessoal nao muda por loja")
+        self.assertAlmostEqual(sal["unidades"]["LJ SETE 6052"]["rascunho"][0], -60.0)
+
+    def test_tela_e_excel_levam_as_duas_escolhas(self):
+        i = FONTE.index("with tab_orc:")
+        trecho = FONTE[i:FONTE.index("Prova de fogo — o orçamento proposto contra o ritmo real deste ano")]
+        self.assertIn('key="rasc_parcial"', trecho); self.assertIn('key="rasc_limiar"', trecho)
+        self.assertIn('key="rasc_receita_lojas"', trecho)
+        self.assertIn('_premissas_rasc["receita_por_loja"] = _receita_por_loja_rasc', trecho)
+        self.assertEqual(trecho.count("mes_parcial=_mes_parcial_rasc, limiar_parcial="), 2, "os dois caminhos do rascunho")
+        self.assertIn("tabela_de_completados_rascunho(_df_rasc, _mes_parcial_rasc)", trecho)
+        self.assertIn('_ebitda_folhas_fech = float(_tot_rasc["ebitda"]["realizado_completo"])', trecho, "a conferencia ignora o mes em fechamento")
+        self.assertIn("diferencas_unidades_vs_consolidado(_df_rasc, _real_rasc, _meses_conf_rasc)", trecho)
+        # o Excel de memoria registra as duas premissas
+        import io as _io
+        df = pd.DataFrame([{"chave": "1.1|x", "numero": "1.1", "linha": "1.1 - Vendas", "plano": "x", "origem_plano": "DIÁRIO", "grupo": "1",
+                            "realizado_fechado": 10.0, "projecao_abertos": 2.0, "origem_projecao": "o", "base": 12.0, "orcado_ano": 11.0,
+                            "retirada_mensal": 0.0, "retirado": 0.0, "motivo": "", "loja_retirada": "", "base_ajustada": 12.0,
+                            "premissa": "p", "pct": 0.05, "rascunho": 12.6, "var_vs_base": 0.05, "var_vs_orcado": 0.1,
+                            "base_meses": [1.0] * 12, "orcado_meses": [1.0] * 12, "rascunho_meses": [1.05] * 12, "realizado_completo": 9.0}])
+        tot = self.ns["totais_do_rascunho"](df)
+        prem = {"ipca": 0.04, "dissidio": 0.07, "receita": 0.05, "receita_por_loja": {"LJ A": 0.10, "LJ B": None}, "mes_parcial": "10/2026", "limiar_parcial": 0.5}
+        xlsx = self.ns3["excel_do_rascunho"](df, tot, self.meses, prem, self.meses[:10], 2026, pd.DataFrame(), projecao="orcado")
+        premissas = pd.read_excel(_io.BytesIO(xlsx), sheet_name="Premissas")
+        regras = dict(zip(premissas["Premissa"], premissas["Regra"]))
+        self.assertEqual(regras["Receita por loja"], "LJ A: +10.00%")
+        self.assertIn("10/2026", regras["Mês em fechamento"]); self.assertIn("abaixo de 50% da média", regras["Mês em fechamento"])
+        xlsx0 = self.ns3["excel_do_rascunho"](df, tot, self.meses, {"receita": 0.05}, self.meses[:10], 2026, pd.DataFrame())
+        regras0 = dict(zip(*[pd.read_excel(_io.BytesIO(xlsx0), sheet_name="Premissas")[c] for c in ("Premissa", "Regra")]))
+        self.assertEqual(regras0["Mês em fechamento"], "nenhum"); self.assertIn("nenhuma loja", regras0["Receita por loja"])
 
 
 if __name__ == "__main__":
