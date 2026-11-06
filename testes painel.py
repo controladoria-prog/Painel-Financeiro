@@ -10613,6 +10613,7 @@ class TesteMesEmFechamentoEReceitaPorLoja(TesteRascunhoPorUnidade):
         trecho = FONTE[i:FONTE.index("Prova de fogo — o orçamento proposto contra o ritmo real deste ano")]
         self.assertIn('key="rasc_parcial"', trecho); self.assertIn('key="rasc_limiar"', trecho)
         self.assertIn('key="rasc_receita_lojas"', trecho)
+        self.assertIn('step=0.01, format="%.2f"', trecho, "o passo da coluna e o que limita as casas digitadas: 6,06 precisa entrar")
         self.assertIn('_premissas_rasc["receita_por_loja"] = _receita_por_loja_rasc', trecho)
         self.assertEqual(trecho.count("mes_parcial=_mes_parcial_rasc, limiar_parcial="), 2, "os dois caminhos do rascunho")
         self.assertIn("tabela_de_completados_rascunho(_df_rasc, _mes_parcial_rasc)", trecho)

@@ -24281,7 +24281,7 @@ if tab_orc is not None:
                     pd.DataFrame({"Loja": list(_abas_rasc), "Crescimento (%)": [None] * len(_abas_rasc)}),
                     hide_index=True, width="stretch", key="rasc_receita_lojas", num_rows="fixed",
                     column_config={"Loja": st.column_config.TextColumn(disabled=True),
-                                   "Crescimento (%)": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0, step=0.5, format="%.2f")},
+                                   "Crescimento (%)": st.column_config.NumberColumn(min_value=-50.0, max_value=100.0, step=0.01, format="%.2f")},
                     height=min(38 + 35 * (len(_abas_rasc) + 1), 420))
                 for _loja_ed, _pct_ed in zip(_ed_lojas["Loja"], _ed_lojas["Crescimento (%)"]):
                     if _pct_ed is not None and not pd.isna(_pct_ed):
