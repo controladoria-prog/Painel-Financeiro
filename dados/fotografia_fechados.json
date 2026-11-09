@@ -1,5 +1,5 @@
 {
- "data": "2026-11-06",
+ "data": "2026-11-09",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.2,
@@ -356,7 +356,7 @@
    "3 - Receita Operacional Liquida": 11309542.94,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
    "4 - Custo das Vendas": -4870616.28,
-   "11 - EBITDA": 4014882.5,
+   "11 - EBITDA": 3915316.79,
    "6.1 - Comissões sobre Vendas": 0.0,
    "6.2 - Taxa com Cartão de Crédito / Débito": -75215.38,
    "6.3 - POS Cartões": -77079.96,
@@ -380,14 +380,14 @@
    "6.21 - Fidelidade Marketplace (Meu Clube Multi)": -14160.74,
    "6.22 - Taxa de Remuneração de Esforços de Tech (RET)": -174.57999999999998,
    "6.23 - Infra Estrutura Tecnológica (VSAT)": 0.0,
-   "6.24 - Esforços de Marketing": -256482.40999999997,
+   "6.24 - Esforços de Marketing": -340636.12000000005,
    "6.25 - PDD": 0.0,
-   "8.1 - Despesas Estruturais": -125925.33000000002,
+   "8.1 - Despesas Estruturais": -126025.08000000002,
    "8.2 - Despesas com Comunicação": -18962.08,
-   "8.3 - Pessoal": -436713.79000000004,
+   "8.3 - Pessoal": -451121.85000000003,
    "8.4 - Taxa de Ocupação": -274704.02,
    "8.5 - Despesas com Veículos": -8510.590000000002,
-   "8.6 - Despesas Administrativas": -68869.59000000001,
+   "8.6 - Despesas Administrativas": -69773.78,
    "8.7 - Despesas Gerais": -53560.0,
    "8.8 - Serviços de Terceiros": -384501.45999999996
   }
