@@ -58,6 +58,15 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 DEPENDENCIAS = {
     # 30/10/2026: as buscas na DRE passam pelo indice por DataFrame.
     "get_valor_consolidado_multi": ["_indice_dre", "_indice_posicoes_contendo", "_indice_soma", "_indice_coluna"],
+    # Lançamentos que compõem a linha da DRE (10/11/2026).
+    "lancamentos_da_linha_dre": ["numeros_das_linhas_dre", "_texto_do_diario", "_numero_linha_dre", "_normalizar_texto"],
+    "numeros_das_linhas_dre": ["_numero_linha_dre"],
+    "filtrar_lancamentos_por_texto": ["_sem_acentos_maiusculo"],
+    "_sem_acentos_maiusculo": ["_normalizar_texto"],
+    "linha_marcada_para_abrir": ["eh_grupo_sintetico"],
+    "bloco_lancamentos_da_linha_dre": ["lancamentos_da_linha_dre", "filtrar_lancamentos_por_texto",
+                                      "resumo_dos_lancamentos_dre", "formata_brl", "cor_valor", "cor_variacao",
+                                      "mostrar_tabela", "botao_excel", "render_kpi_row", "kpi_card_html"],
     "_serie_da_linha_por_numero": ["_indice_dre", "_indice_soma", "_indice_coluna"],
     "_indice_dre": ["memo_por_objeto", "_montar_indice_dre", "_numero_linha_dre"],
     "ler_aba_excel": ["_planilha_aberta"],
@@ -292,6 +301,9 @@ CONSTANTES_DE_DEPENDENCIA = {
     "_tabela_memo": [],
     "linhas_abertas_da_url": ["PARAM_LINHAS_ABERTAS", "SEPARADOR_LINHAS_ABERTAS"],
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
+    # Lançamentos que compõem a linha da DRE (10/11/2026).
+    "lancamentos_da_linha_dre": ["COLUNAS_LANCAMENTOS_DRE"],
+    "bloco_lancamentos_da_linha_dre": ["TETO_LANCAMENTOS_DRE_NA_TELA", "COLORS"],
 }
 
 
@@ -7374,7 +7386,7 @@ class TesteDreAberturaMensal(unittest.TestCase):
     def test_a_chave_da_tabela_muda_com_o_modo(self):
         """Sem isso o Streamlit reaproveita a selecao de linhas feita no outro
         desenho, que tinha outras colunas."""
-        self.assertIn("f\"{'mensal' if abrir_dre_por_mes else 'acumulado'}\"", FONTE)
+        self.assertIn("f\"{'mensal' if abrir_dre_por_mes else 'acumulado'}__\"", FONTE)
 
     def test_os_kpis_de_desvio_nao_quebram_no_modo_mensal(self):
         """A coluna "Desvio (R$)" NAO existe na abertura mensal -- la cada mes
@@ -10738,6 +10750,197 @@ class TesteResultadoDasFormulasGravado(unittest.TestCase):
         mem = io.BytesIO(); wb.save(mem)
         conteudo, n = self.ns["gravar_valores_calculados"](mem.getvalue(), {})
         self.assertEqual(n, 0); self.assertEqual(conteudo, mem.getvalue())
+
+
+class TesteLancamentosDaLinhaDre(unittest.TestCase):
+    """10/11/2026: a Controladoria abre a lista de lançamentos do DIÁRIO que
+    compõem o valor de uma linha da DRE -- como o fluxo de caixa abre os
+    títulos. A linha marcada na tabela (o checkbox que já existia) abre o
+    bloco abaixo dela; a lista é montada no servidor, só para aquela linha."""
+
+    class _StFalso:
+        class _Bloco:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def __init__(self):
+            self.chamadas = []
+            self.session_state = {}
+            self.respostas = {"button": False, "multiselect": None, "text_input": ""}
+
+            class _Config:
+                @staticmethod
+                def TextColumn(*a, **k):
+                    return ("Text", a, k)
+            self.column_config = _Config()
+
+        def columns(self, quantas, **k):
+            n = quantas if isinstance(quantas, int) else len(quantas)
+            return [self._Bloco() for _ in range(n)]
+
+        def markdown(self, texto, **k):
+            self.chamadas.append(("markdown", texto))
+
+        def caption(self, texto, **k):
+            self.chamadas.append(("caption", texto))
+
+        def info(self, texto, **k):
+            self.chamadas.append(("info", texto))
+
+        def button(self, rotulo, **k):
+            self.chamadas.append(("button", rotulo, k.get("key")))
+            return self.respostas["button"]
+
+        def multiselect(self, rotulo, options=(), default=None, key=None, **k):
+            self.chamadas.append(("multiselect", list(options), key))
+            return list(default or []) if self.respostas["multiselect"] is None else self.respostas["multiselect"]
+
+        def text_input(self, rotulo, **k):
+            self.chamadas.append(("text_input", k.get("key")))
+            return self.respostas["text_input"]
+
+        def dataframe(self, df, *a, **k):
+            self.chamadas.append(("dataframe", df))
+            return None
+
+        def download_button(self, rotulo, **k):
+            self.chamadas.append(("download", rotulo, k.get("key")))
+            return False
+
+    @classmethod
+    def setUpClass(cls):
+        cls.st = cls._StFalso()
+        cls.ns = carregar(["lancamentos_da_linha_dre", "numeros_das_linhas_dre", "resumo_dos_lancamentos_dre",
+                           "linha_marcada_para_abrir", "linhas_marcadas_no_evento", "filtrar_lancamentos_por_texto",
+                           "bloco_lancamentos_da_linha_dre", "fechar_bloco_de_lancamentos"],
+                          extras={"st": cls.st})
+
+    def setUp(self):
+        self.st.chamadas.clear()
+        self.st.session_state.clear()
+        self.st.respostas.update({"button": False, "multiselect": None, "text_input": ""})
+        self.ns["_CONTADOR_EXCEL"]["n"] = 0
+
+    def _diario(self):
+        d = pd.DataFrame({
+            "Valor Bruto": [-600.0, -300.0, -100.0, -50.0, -250.0, -999.0, 10.0],
+            "Competência": pd.to_datetime(["2026-08-05", "2026-08-06", "2026-09-07", "2026-08-08",
+                                           "2026-08-09", "2026-08-10", "2026-08-11"]),
+            "Plano de Contas": pd.Categorical(["Salários", "Salários", "Encargos", "Pró-labore", "Mídia", "Outra", "Juros"]),
+            "Centro de Custos": pd.Categorical(["6039"] * 7),
+            "Linha DRE": pd.Categorical(["8.3 - Pessoal", "8.3.1 - Salários", "8.3.1 - Salários", "8.30 - Pegadinha",
+                                         "6.24 - Marketing", "8.3.2 - Encargos", "Receita Financeira"]),
+            "Número": ["1", "2", "3", "4", "5", "6", "7"],
+            "Cliente / Fornecedor": pd.Categorical(["A", "B", "C", "D", "E", "F", "G"]),
+            "Histórico": pd.Categorical(["folha agosto", "folha agosto", "folha setembro", "x", "anúncio", "INSS", "juros"]),
+            "Nome Aba": pd.Categorical([""] * 7),
+        })
+        d["Mês"] = d["Competência"].dt.strftime("%m/%Y").astype("category")
+        return d
+
+    def test_a_linha_leva_as_filhas_pelo_numero_e_nao_a_prima_de_prefixo_parecido(self):
+        r = self.ns["lancamentos_da_linha_dre"](self._diario(), "8.3 - Pessoal", ["08/2026"])
+        self.assertEqual(list(r.columns), self.ns["COLUNAS_LANCAMENTOS_DRE"])
+        self.assertEqual(r["Linha DRE"].tolist(), ["8.3.2 - Encargos", "8.3 - Pessoal", "8.3.1 - Salários"],
+                         "propria + filhas, maiores primeiro; 8.30 fica fora; setembro fica fora")
+        self.assertEqual(r["Competência"].tolist(), ["10/08/2026", "05/08/2026", "06/08/2026"])
+        self.assertEqual(r["Mês"].tolist(), ["08/2026"] * 3)
+        self.assertEqual(r["Unidade"].tolist(), ["", "", ""], "Nome Aba vazio nao vira 'nan'")
+        todos = self.ns["lancamentos_da_linha_dre"](self._diario(), "8.3 - Pessoal")
+        self.assertEqual(todos["Valor (R$)"].tolist(), [-999.0, -600.0, -300.0, -100.0], "sem meses = todos")
+        self.assertTrue(self.ns["lancamentos_da_linha_dre"](self._diario(), "11 - EBITDA").empty, "linha calculada: vazio")
+        self.assertEqual(self.ns["lancamentos_da_linha_dre"](self._diario(), "receita financeira")["Valor (R$)"].tolist(), [10.0],
+                         "sem numero casa pelo nome normalizado")
+        self.assertTrue(self.ns["lancamentos_da_linha_dre"](pd.DataFrame(), "8 - x").empty)
+        self.assertEqual(self.ns["numeros_das_linhas_dre"](pd.Categorical(["8.3 - x", None, "abc"])).tolist(), ["8.3", "", ""])
+
+    def test_resumo_busca_e_regra_da_linha_marcada(self):
+        r = self.ns["lancamentos_da_linha_dre"](self._diario(), "8.3 - Pessoal", ["08/2026"])
+        resumo = self.ns["resumo_dos_lancamentos_dre"](r, 1899.0)
+        self.assertEqual((resumo["n"], resumo["soma"], resumo["diferenca"]), (3, -1899.0, 0.0), "diferenca em MODULO")
+        self.assertEqual(self.ns["resumo_dos_lancamentos_dre"](pd.DataFrame(columns=["Valor (R$)"]), 5.0)["diferenca"], -5.0)
+        busca = self.ns["filtrar_lancamentos_por_texto"](r, "salarios")
+        self.assertEqual(busca["Plano de Contas"].tolist(), ["Salários", "Salários"], "sem acento e sem caixa; nao olha o valor")
+        self.assertIs(self.ns["filtrar_lancamentos_por_texto"](r, "  "), r)
+        regra = self.ns["linha_marcada_para_abrir"]
+        tabela = ["8 - Despesas", "8.3 - Pessoal", "8.3.1 - Salários"]
+        self.assertEqual(regra(["8.3 - Pessoal"], None, tabela), "8.3 - Pessoal")
+        self.assertEqual(regra(["8.3 - Pessoal", "8.3.1 - Salários"], "8.3 - Pessoal", tabela), "8.3.1 - Salários",
+                         "a mais nova e a que nao estava guardada")
+        self.assertEqual(regra(["8.3 - Pessoal"], "8.3 - Pessoal", tabela), "8.3 - Pessoal")
+        self.assertEqual(regra([], "8 - Despesas", tabela), "8 - Despesas", "grupo sobrevive ao redesenho da tabela")
+        self.assertIsNone(regra([], "8.3 - Pessoal", tabela), "linha comum desmarcada fecha")
+        self.assertIsNone(regra([], "8 - Despesas", ["6 - Variaveis"]), "grupo que saiu da tabela fecha")
+        fechar = self.ns["fechar_bloco_de_lancamentos"]
+        self.st.session_state.update({"dre_lanc_linha": "8 - Despesas", "dre_lanc_geracao": 2})
+        fechar("dre_lanc")
+        self.assertEqual(self.st.session_state, {"dre_lanc_geracao": 3}, "Fechar esquece a linha e avanca a geracao da tabela")
+        fechar("hist_lanc"); self.assertEqual(self.st.session_state["hist_lanc_geracao"], 1)
+        self.assertIsNone(regra(["9 - Fora"], None, tabela), "linha que nao esta na tabela nao abre")
+
+        class _Sel:
+            rows = [0, 2, 9]
+
+        class _Ev:
+            selection = _Sel()
+        df = pd.DataFrame({"Conta / Linha DRE": ["", "8 - A", "8.3 - B"]})
+        self.assertEqual(self.ns["linhas_marcadas_no_evento"](df, _Ev()), ["8.3 - B"], "faixa de cabecalho e indice fora ficam de fora")
+        self.assertEqual(self.ns["linhas_marcadas_no_evento"](df, None), [])
+
+    def test_o_bloco_desenha_kpis_tabela_e_excel_e_o_fechar_volta_true(self):
+        meses = {"AGOSTO": "08/2026", "SETEMBRO": "09/2026"}
+        valores = {"08/2026": 1899.0, "09/2026": 100.0}
+        bloco = self.ns["bloco_lancamentos_da_linha_dre"]
+        fechou = bloco("8.3 - Pessoal", self._diario(), meses, valores, "dre_lanc", rotulo_periodo="ANO")
+        self.assertFalse(fechou)
+        tipos = [c[0] for c in self.st.chamadas]
+        self.assertEqual(tipos.count("dataframe"), 1); self.assertEqual(tipos.count("download"), 1)
+        kpis = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "LANÇAMENTOS" in c[1])
+        self.assertIn("R$ -1.999,00", kpis, "soma dos 4 lancamentos de agosto e setembro")
+        self.assertIn("R$ 1.999,00", kpis, "valor na DRE = soma dos meses escolhidos")
+        self.assertIn("fecha", kpis)
+        titulo = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "Lançamentos que compõem" in c[1])
+        self.assertIn("«8.3 - Pessoal» — ANO", titulo)
+        df = next(c[1] for c in self.st.chamadas if c[0] == "dataframe").data
+        self.assertNotIn("Unidade", df.columns, "coluna de texto toda vazia sai da tela")
+        self.assertEqual(len(df), 4)
+        # so agosto + busca
+        self.st.chamadas.clear(); self.st.respostas.update({"multiselect": ["AGOSTO"], "text_input": "SALÁRIOS", "button": True})
+        self.assertTrue(bloco("8.3 - Pessoal", self._diario(), meses, valores, "dre_lanc"), "Fechar devolve True")
+        kpis = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "LANÇAMENTOS" in c[1])
+        self.assertIn("de 3 no período (com a busca)", kpis)
+        self.assertIn("R$ 1.899,00", kpis)
+        df = next(c[1] for c in self.st.chamadas if c[0] == "dataframe").data
+        self.assertEqual(df["Plano de Contas"].tolist(), ["Salários", "Salários"])
+        # linha calculada: aviso em vez de tabela
+        self.st.chamadas.clear(); self.st.respostas.update({"multiselect": None, "text_input": "", "button": False})
+        bloco("11 - EBITDA", self._diario(), meses, {}, "dre_lanc")
+        tipos = [c[0] for c in self.st.chamadas]
+        self.assertIn("info", tipos); self.assertNotIn("dataframe", tipos)
+
+    def test_as_duas_abas_ligam_a_marcacao_ao_bloco(self):
+        i2 = FONTE.index("with tab2:"); i3 = FONTE.index("with tab3:")
+        dre = FONTE[i2:i3]; hist = FONTE[i3:FONTE.index("# ABA 4", i3) if "# ABA 4" in FONTE[i3:] else i3 + 60000]
+        for bloco, chave, df in ((dre, "dre_lanc", "df_dre_final"), (hist, "hist_lanc", "df_hist")):
+            self.assertIn(f"linhas_marcadas_no_evento({df}, ", bloco)
+            self.assertIn(f'st.session_state["{chave}_linha"]', bloco)
+            self.assertIn(f'"{chave}",', bloco)
+            self.assertIn("diario_recortado_pela_visao(path_real, abas_para_carregar)", bloco)
+            self.assertIn("bloco_lancamentos_da_linha_dre(", bloco)
+            self.assertLess(bloco.index("_processar_clique_expansao("), bloco.index("linha_marcada_para_abrir("),
+                            "o grupo abre/fecha antes de decidir o que mostrar")
+        self.assertIn('if tipo_hist == "Realizado" else None', hist, "no Historico so a base Realizado tem lancamentos")
+        # Fechar renasce a tabela: a geracao entra na chave do st.dataframe das duas abas
+        self.assertIn("f\"g{st.session_state.get('dre_lanc_geracao', 0)}\"", dre)
+        self.assertIn("f\"g{st.session_state.get('hist_lanc_geracao', 0)}\"", hist)
+        self.assertIn('fechar_bloco_de_lancamentos("dre_lanc")', dre); self.assertIn('fechar_bloco_de_lancamentos("hist_lanc")', hist)
+        self.assertNotIn("_ignorada", FONTE)
+        self.assertIn("os lançamentos do DIÁRIO que compõem o valor dela", dre)
+        # o modo mensal e o acumulado passam o MESMO recorte de meses da tabela
+        self.assertIn("_cols_lanc_dre = set(cols_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else cols_graficos)", dre)
 
 
 if __name__ == "__main__":
