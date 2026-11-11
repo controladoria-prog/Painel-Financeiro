@@ -3075,59 +3075,69 @@ def linhas_marcadas_no_evento(df_tabela, evento, col_nome_linha="Conta / Linha D
     return saida
 
 
-def linha_marcada_para_abrir(marcadas, guardada, disponiveis):
-    """Qual linha da DRE abre os lançamentos, a partir dos checkboxes marcados
-    na tabela (`marcadas`), da linha guardada da interação anterior e das
-    linhas que a tabela mostra agora.
-
-    - marcou alguma: a mais nova (a que não é a guardada); senão a última;
-    - nada marcado: a guardada continua aberta só se for linha de GRUPO que
-      ainda está na tabela. O clique num grupo redesenha a tabela (abre ou
-      fecha as filhas) e apaga a marcação -- sem isto o bloco fecharia no
-      mesmo clique que o abriu. Linha comum desmarcada fecha o bloco.
-    O botão Fechar não passa por aqui: ele esquece a linha guardada e
-    redesenha a tabela sem marcação (ver geração da tabela)."""
+def linha_pedida_pelo_checkbox(marcadas, anteriores, guardada, disponiveis):
+    """A linha que a pessoa acabou de marcar na tabela (checkbox), se alguma:
+    a marcação NOVA (que não estava marcada no desenho anterior); senão a
+    linha de grupo guardada pelo clique que redesenhou a tabela (o redesenho
+    apaga a marcação). None quando não houve marcação nova -- aí o seletor
+    do bloco fica como está, e dá para trocar de linha nele sem a marcação
+    antiga puxar de volta."""
     conjunto = set(disponiveis or [])
-    marcadas = [m for m in (marcadas or []) if m in conjunto]
-    if marcadas:
-        novas = [m for m in marcadas if m != guardada]
-        return novas[-1] if novas else marcadas[-1]
-    if guardada and guardada in conjunto and eh_grupo_sintetico(guardada):
+    antes = set(anteriores or [])
+    novas = [m for m in (marcadas or []) if m in conjunto and m not in antes]
+    if novas:
+        return novas[-1]
+    if guardada and guardada in conjunto:
         return guardada
     return None
 
 
-def fechar_bloco_de_lancamentos(chave):
-    """O botão Fechar (10/11/2026): esquece a linha guardada e avança a
-    GERAÇÃO da tabela, que entra na chave do st.dataframe -- a tabela
-    renasce sem marcação nenhuma. Só tirar a linha da sessão não bastava: o
-    checkbox continuava marcado, e o primeiro clique nele depois disso era
-    engolido pela grade (ela só re-sincroniza a seleção no clique seguinte).
-    Com a tabela nova, o próximo clique é uma marcação nova, como sempre."""
-    st.session_state.pop(f"{chave}_linha", None)
-    st.session_state[f"{chave}_geracao"] = int(st.session_state.get(f"{chave}_geracao", 0)) + 1
+def linha_padrao_para_lancamentos(linhas):
+    """Com que linha o bloco abre quando ninguém escolheu: o primeiro grupo
+    de despesa (8, depois 6) -- é onde moram os lançamentos --, senão a
+    primeira linha da tabela."""
+    linhas = [l for l in (linhas or []) if str(l).strip()]
+    if not linhas:
+        return None
+    for prefixo in ("8 -", "8-", "6 -", "6-"):
+        for l in linhas:
+            if str(l).strip().startswith(prefixo):
+                return l
+    return linhas[0]
 
 
-def bloco_lancamentos_da_linha_dre(linha, df_diario, meses_por_rotulo, valor_dre_por_mes, chave,
-                                  rotulo_periodo=""):
-    """Desenha, abaixo da tabela da DRE, os lançamentos do DIÁRIO que compõem
-    `linha`. `meses_por_rotulo` é {"JANEIRO": "01/2026", ...} do período da
-    tabela; `valor_dre_por_mes` é {"01/2026": realizado da linha}. Devolve
-    True quando a pessoa clicou em Fechar."""
+def bloco_lancamentos_da_linha_dre(linhas, linha_pedida, df_diario, meses_por_rotulo, valor_dre_por_mes_de,
+                                  chave, rotulo_periodo=""):
+    """Parte fixa das abas DRE e Histórico (11/11/2026): abaixo da tabela,
+    os lançamentos do DIÁRIO que compõem a linha escolhida no seletor.
+    `linhas` são as linhas que a tabela mostra; `linha_pedida` é a que a
+    pessoa acabou de marcar no checkbox (atalho -- None se nenhuma);
+    `meses_por_rotulo` é {"JANEIRO": "01/2026", ...} do período da tabela;
+    `valor_dre_por_mes_de(linha)` devolve {"01/2026": realizado da linha}.
+    Devolve a linha escolhida (None sem linhas)."""
     import html as _html
 
+    linhas = [l for l in (linhas or []) if str(l).strip()]
+    if not linhas:
+        return None
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    c_titulo, c_fechar = st.columns([6, 1], vertical_alignment="center")
-    with c_titulo:
-        st.markdown(
-            f'<div class="section-title">🧾 Lançamentos que compõem '
-            f'«{_html.escape(str(linha))}»' + (f" — {_html.escape(str(rotulo_periodo))}" if rotulo_periodo else "")
-            + "</div>", unsafe_allow_html=True)
-    with c_fechar:
-        fechar = st.button("✕ Fechar", key=f"{chave}_fechar", width="stretch",
-                           help="Fecha a lista. Desmarcar a linha na tabela também fecha.")
+    st.markdown(
+        '<div class="section-title">🧾 Lançamentos que compõem a linha'
+        + (f" — {_html.escape(str(rotulo_periodo))}" if rotulo_periodo else "") + "</div>",
+        unsafe_allow_html=True)
+    # O seletor guarda a escolha entre redesenhos (chave fixa). O checkbox da
+    # tabela só a sobrescreve quando é marcação NOVA; e uma escolha que
+    # saiu da tabela (mudou o nível, a visão, o filtro) volta ao padrão.
+    chave_sel = f"{chave}_sel"
+    if linha_pedida and linha_pedida in linhas:
+        st.session_state[chave_sel] = linha_pedida
+    elif st.session_state.get(chave_sel) not in linhas:
+        st.session_state[chave_sel] = linha_padrao_para_lancamentos(linhas)
     rotulos = list(meses_por_rotulo or {})
-    c_meses, c_busca = st.columns([2, 3])
+    c_linha, c_meses, c_busca = st.columns([3, 2, 3])
+    with c_linha:
+        linha = st.selectbox("Linha da DRE", options=linhas, key=chave_sel,
+                             help="Marcar o checkbox de uma linha na tabela também escolhe aqui.")
     with c_meses:
         # A chave carrega o período: quando ele muda na barra lateral, o
         # seletor nasce de novo com todos os meses, em vez de guardar uma
@@ -3142,7 +3152,11 @@ def bloco_lancamentos_da_linha_dre(linha, df_diario, meses_por_rotulo, valor_dre
     meses = [meses_por_rotulo[r] for r in escolhidos if r in meses_por_rotulo] or list((meses_por_rotulo or {}).values())
     df_tudo = lancamentos_da_linha_dre(df_diario, linha, meses)
     df_lanc = filtrar_lancamentos_por_texto(df_tudo, busca) if str(busca or "").strip() else df_tudo
-    valor_dre = float(sum(float((valor_dre_por_mes or {}).get(m, 0.0) or 0.0) for m in meses))
+    try:
+        valor_dre_por_mes = valor_dre_por_mes_de(linha) or {}
+    except Exception:
+        valor_dre_por_mes = {}
+    valor_dre = float(sum(float(valor_dre_por_mes.get(m, 0.0) or 0.0) for m in meses))
     resumo = resumo_dos_lancamentos_dre(df_tudo, valor_dre)
     soma_lista = float(pd.to_numeric(df_lanc["Valor (R$)"], errors="coerce").fillna(0.0).sum()) if len(df_lanc) else 0.0
     com_busca = len(df_lanc) != len(df_tudo)
@@ -3163,10 +3177,10 @@ def bloco_lancamentos_da_linha_dre(linha, df_diario, meses_por_rotulo, valor_dre
         st.info("Nenhum lançamento do DIÁRIO aponta para esta linha no período. Linhas calculadas (receita "
                 "líquida, margens, EBITDA) e as que vêm de outra fonte (receita, deduções, CMV) não têm "
                 "lançamento próprio -- o valor delas nasce da DRE mensal, não do DIÁRIO.")
-        return fechar
+        return linha
     if df_lanc.empty:
         st.info("Nenhum lançamento desta linha contém o texto procurado.")
-        return fechar
+        return linha
     tela = df_lanc.head(TETO_LANCAMENTOS_DRE_NA_TELA)
     # Coluna de texto vazia na lista inteira (DIÁRIO sem Número, sem Nome
     # Aba) sai da tela em vez de ocupar espaço em branco.
@@ -3193,7 +3207,7 @@ def bloco_lancamentos_da_linha_dre(linha, df_diario, meses_por_rotulo, valor_dre
                     rotulo=f"📥 Baixar todos os {len(df_lanc):,} lançamentos em Excel".replace(",", "."))
     st.caption("Os maiores valores primeiro. Lançamento de linha-filha (número com o prefixo desta) entra "
                "porque compõe o total da linha; o valor é o do DIÁRIO, com o sinal de origem.")
-    return fechar
+    return linha
 
 
 @st.cache_data(ttl=None, max_entries=4, show_spinner=False)
@@ -21682,7 +21696,7 @@ with tab2:
             horizontal=True,
         )
     st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintética) ou fechar (Analítica/Gerencial) as contas dela. "
-               "Marcar qualquer linha também abre, abaixo da tabela, os lançamentos do DIÁRIO que compõem o valor dela.")
+               "Marcar qualquer linha também a escolhe no bloco de lançamentos do DIÁRIO, abaixo da tabela.")
 
     if "grupos_dre_expandidos" not in st.session_state:
         st.session_state["grupos_dre_expandidos"] = set()
@@ -21971,10 +21985,7 @@ with tab2:
             f"{','.join(sorted(st.session_state['grupos_dre_colapsados']))}__"
             # O MODO entra na chave: sem isso o Streamlit reaproveita a seleção
             # de linhas feita no outro desenho, que tinha outras colunas.
-            f"{'mensal' if abrir_dre_por_mes else 'acumulado'}__"
-            # A GERAÇÃO (10/11/2026): o botão Fechar do bloco de lançamentos
-            # avança este número e a tabela renasce sem marcação.
-            f"g{st.session_state.get('dre_lanc_geracao', 0)}"
+            f"{'mensal' if abrir_dre_por_mes else 'acumulado'}"
         )
         evento_dre = mostrar_tabela(
             (df_dre_final.style.apply(_estilo_linha_dre_mensal, axis=1)
@@ -21992,8 +22003,8 @@ with tab2:
         )
 
     # As linhas marcadas (10/11/2026): além de abrir/fechar o grupo, a
-    # marcação abre, abaixo da tabela, os lançamentos do DIÁRIO que compõem a
-    # linha -- o "abrir a lista" do fluxo de caixa, na Controladoria.
+    # marcação escolhe a linha do bloco de lançamentos abaixo da tabela -- o
+    # "abrir a lista" do fluxo de caixa, na Controladoria.
     _marcadas_dre = linhas_marcadas_no_evento(df_dre_final, evento_dre)
     if not filtro_manual_dre_ativo:
         grupos_alvo_dre = (
@@ -22008,23 +22019,24 @@ with tab2:
                 st.session_state["dre_lanc_linha"] = _grupos_marcados_dre[-1]
             st.rerun()
 
-    _linha_lanc_dre = linha_marcada_para_abrir(_marcadas_dre, st.session_state.get("dre_lanc_linha"), linhas_dre)
-    if _linha_lanc_dre:
-        st.session_state["dre_lanc_linha"] = _linha_lanc_dre
-        # Os meses da tabela: até o mês do filtro no modo mensal, o período
-        # dos gráficos no acumulado -- o mesmo recorte que os números na tela.
-        _cols_lanc_dre = set(cols_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else cols_graficos)
-        _meses_lanc_dre = {nome: col for nome, col in m_map.items() if col in _cols_lanc_dre}
-        _valores_lanc_dre = {col: get_valor_consolidado_multi(list_df_real, _linha_lanc_dre, [col])
-                             for col in _meses_lanc_dre.values()}
-        if bloco_lancamentos_da_linha_dre(
-                _linha_lanc_dre, diario_recortado_pela_visao(path_real, abas_para_carregar),
-                _meses_lanc_dre, _valores_lanc_dre, "dre_lanc",
-                rotulo_periodo=(label_periodo_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else label_periodo_graf)):
-            fechar_bloco_de_lancamentos("dre_lanc")
-            st.rerun()
-    else:
-        st.session_state.pop("dre_lanc_linha", None)
+    # O bloco de lançamentos é parte FIXA da aba (11/11/2026): aparece sempre,
+    # com um seletor de linha; o checkbox da tabela só atalha a escolha.
+    _pedida_lanc_dre = linha_pedida_pelo_checkbox(
+        _marcadas_dre, st.session_state.get("dre_lanc_marcadas_antes"),
+        st.session_state.pop("dre_lanc_linha", None), linhas_dre)
+    st.session_state["dre_lanc_marcadas_antes"] = list(_marcadas_dre)
+    # Os meses da tabela: até o mês do filtro no modo mensal, o período dos
+    # gráficos no acumulado -- o mesmo recorte que os números na tela.
+    _cols_lanc_dre = set(cols_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else cols_graficos)
+    _meses_lanc_dre = {nome: col for nome, col in m_map.items() if col in _cols_lanc_dre}
+
+    def _valor_dre_por_mes_lanc(linha, _cols=_meses_lanc_dre):
+        return {col: get_valor_consolidado_multi(list_df_real, linha, [col]) for col in _cols.values()}
+
+    bloco_lancamentos_da_linha_dre(
+        list(linhas_dre), _pedida_lanc_dre, diario_recortado_pela_visao(path_real, abas_para_carregar),
+        _meses_lanc_dre, _valor_dre_por_mes_lanc, "dre_lanc",
+        rotulo_periodo=(label_periodo_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else label_periodo_graf))
 
     # ---- Linhas informativas (ex.: no MKT, a gestão GB da indústria) --
     # não fazem parte da gestão do departamento, mas ficam visíveis aqui só
@@ -22080,7 +22092,7 @@ with tab3:
             horizontal=True,
         )
     st.caption("💡 Marque o checkbox de uma linha de grupo pra abrir (Sintético) ou fechar (Analítico/Gerencial) as contas dela. "
-               "Na base Realizado, marcar qualquer linha também abre, abaixo da tabela, os lançamentos do DIÁRIO que compõem o valor dela.")
+               "Na base Realizado, marcar qualquer linha também a escolhe no bloco de lançamentos do DIÁRIO, abaixo da tabela.")
 
     if "grupos_hist_expandidos" not in st.session_state:
         st.session_state["grupos_hist_expandidos"] = set()
@@ -22249,8 +22261,7 @@ with tab3:
         key_tabela_hist = (
             f"tabela_hist__{visao_hist_dre}__{tipo_hist}__{len(linhas_hist)}__"
             f"{','.join(sorted(st.session_state['grupos_hist_expandidos']))}__"
-            f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}__"
-            f"g{st.session_state.get('hist_lanc_geracao', 0)}"
+            f"{','.join(sorted(st.session_state['grupos_hist_colapsados']))}"
         )
         evento_hist = mostrar_tabela(
             df_hist.style.format(format_dict_hist).map(cor_valor, subset=colunas_numericas),
@@ -22276,21 +22287,21 @@ with tab3:
                 st.session_state["hist_lanc_linha"] = _grupos_marcados_hist[-1]
             st.rerun()
 
-    # Lançamentos da linha marcada (10/11/2026), como na aba de DRE -- só na
-    # base Realizado: o Orçado não tem lançamento.
-    _linha_lanc_hist = linha_marcada_para_abrir(
-        _marcadas_hist, st.session_state.get("hist_lanc_linha"), linhas_hist) if tipo_hist == "Realizado" else None
-    if _linha_lanc_hist:
-        st.session_state["hist_lanc_linha"] = _linha_lanc_hist
-        _valores_lanc_hist = {col: get_valor_consolidado_multi(target_dfs, _linha_lanc_hist, [col])
-                              for col in m_map.values()}
-        if bloco_lancamentos_da_linha_dre(
-                _linha_lanc_hist, diario_recortado_pela_visao(path_real, abas_para_carregar),
-                dict(m_map), _valores_lanc_hist, "hist_lanc", rotulo_periodo="ano completo"):
-            fechar_bloco_de_lancamentos("hist_lanc")
-            st.rerun()
+    # Bloco fixo de lançamentos (11/11/2026), como na aba de DRE -- só na base
+    # Realizado: o Orçado não tem lançamento.
+    _pedida_lanc_hist = linha_pedida_pelo_checkbox(
+        _marcadas_hist, st.session_state.get("hist_lanc_marcadas_antes"),
+        st.session_state.pop("hist_lanc_linha", None), linhas_hist)
+    st.session_state["hist_lanc_marcadas_antes"] = list(_marcadas_hist)
+    if tipo_hist == "Realizado":
+        def _valor_hist_por_mes_lanc(linha):
+            return {col: get_valor_consolidado_multi(target_dfs, linha, [col]) for col in m_map.values()}
+
+        bloco_lancamentos_da_linha_dre(
+            list(linhas_hist), _pedida_lanc_hist, diario_recortado_pela_visao(path_real, abas_para_carregar),
+            dict(m_map), _valor_hist_por_mes_lanc, "hist_lanc", rotulo_periodo="ano completo")
     else:
-        st.session_state.pop("hist_lanc_linha", None)
+        st.caption("🧾 Os lançamentos do DIÁRIO só existem na base Realizado.")
 
     # ---- Linhas informativas (ex.: no MKT, a gestão GB da indústria) --
     # não fazem parte da gestão do departamento, mas ficam visíveis aqui só

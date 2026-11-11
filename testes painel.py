@@ -63,10 +63,10 @@ DEPENDENCIAS = {
     "numeros_das_linhas_dre": ["_numero_linha_dre"],
     "filtrar_lancamentos_por_texto": ["_sem_acentos_maiusculo"],
     "_sem_acentos_maiusculo": ["_normalizar_texto"],
-    "linha_marcada_para_abrir": ["eh_grupo_sintetico"],
     "bloco_lancamentos_da_linha_dre": ["lancamentos_da_linha_dre", "filtrar_lancamentos_por_texto",
-                                      "resumo_dos_lancamentos_dre", "formata_brl", "cor_valor", "cor_variacao",
-                                      "mostrar_tabela", "botao_excel", "render_kpi_row", "kpi_card_html"],
+                                      "resumo_dos_lancamentos_dre", "linha_padrao_para_lancamentos", "formata_brl",
+                                      "cor_valor", "cor_variacao", "mostrar_tabela", "botao_excel", "render_kpi_row",
+                                      "kpi_card_html"],
     "_serie_da_linha_por_numero": ["_indice_dre", "_indice_soma", "_indice_coluna"],
     "_indice_dre": ["memo_por_objeto", "_montar_indice_dre", "_numero_linha_dre"],
     "ler_aba_excel": ["_planilha_aberta"],
@@ -7386,7 +7386,7 @@ class TesteDreAberturaMensal(unittest.TestCase):
     def test_a_chave_da_tabela_muda_com_o_modo(self):
         """Sem isso o Streamlit reaproveita a selecao de linhas feita no outro
         desenho, que tinha outras colunas."""
-        self.assertIn("f\"{'mensal' if abrir_dre_por_mes else 'acumulado'}__\"", FONTE)
+        self.assertIn("f\"{'mensal' if abrir_dre_por_mes else 'acumulado'}\"", FONTE)
 
     def test_os_kpis_de_desvio_nao_quebram_no_modo_mensal(self):
         """A coluna "Desvio (R$)" NAO existe na abertura mensal -- la cada mes
@@ -10798,6 +10798,13 @@ class TesteLancamentosDaLinhaDre(unittest.TestCase):
             self.chamadas.append(("multiselect", list(options), key))
             return list(default or []) if self.respostas["multiselect"] is None else self.respostas["multiselect"]
 
+        def selectbox(self, rotulo, options=(), key=None, **k):
+            # como o Streamlit: a chave na sessao manda; senao, a primeira opcao
+            opcoes = list(options)
+            self.chamadas.append(("selectbox", opcoes, key))
+            valor = self.session_state.get(key)
+            return valor if valor in opcoes else (opcoes[0] if opcoes else None)
+
         def text_input(self, rotulo, **k):
             self.chamadas.append(("text_input", k.get("key")))
             return self.respostas["text_input"]
@@ -10814,8 +10821,8 @@ class TesteLancamentosDaLinhaDre(unittest.TestCase):
     def setUpClass(cls):
         cls.st = cls._StFalso()
         cls.ns = carregar(["lancamentos_da_linha_dre", "numeros_das_linhas_dre", "resumo_dos_lancamentos_dre",
-                           "linha_marcada_para_abrir", "linhas_marcadas_no_evento", "filtrar_lancamentos_por_texto",
-                           "bloco_lancamentos_da_linha_dre", "fechar_bloco_de_lancamentos"],
+                           "linha_pedida_pelo_checkbox", "linha_padrao_para_lancamentos", "linhas_marcadas_no_evento",
+                           "filtrar_lancamentos_por_texto", "bloco_lancamentos_da_linha_dre"],
                           extras={"st": cls.st})
 
     def setUp(self):
@@ -10865,21 +10872,22 @@ class TesteLancamentosDaLinhaDre(unittest.TestCase):
         busca = self.ns["filtrar_lancamentos_por_texto"](r, "salarios")
         self.assertEqual(busca["Plano de Contas"].tolist(), ["Salários", "Salários"], "sem acento e sem caixa; nao olha o valor")
         self.assertIs(self.ns["filtrar_lancamentos_por_texto"](r, "  "), r)
-        regra = self.ns["linha_marcada_para_abrir"]
+        regra = self.ns["linha_pedida_pelo_checkbox"]
         tabela = ["8 - Despesas", "8.3 - Pessoal", "8.3.1 - Salários"]
-        self.assertEqual(regra(["8.3 - Pessoal"], None, tabela), "8.3 - Pessoal")
-        self.assertEqual(regra(["8.3 - Pessoal", "8.3.1 - Salários"], "8.3 - Pessoal", tabela), "8.3.1 - Salários",
-                         "a mais nova e a que nao estava guardada")
-        self.assertEqual(regra(["8.3 - Pessoal"], "8.3 - Pessoal", tabela), "8.3 - Pessoal")
-        self.assertEqual(regra([], "8 - Despesas", tabela), "8 - Despesas", "grupo sobrevive ao redesenho da tabela")
-        self.assertIsNone(regra([], "8.3 - Pessoal", tabela), "linha comum desmarcada fecha")
-        self.assertIsNone(regra([], "8 - Despesas", ["6 - Variaveis"]), "grupo que saiu da tabela fecha")
-        fechar = self.ns["fechar_bloco_de_lancamentos"]
-        self.st.session_state.update({"dre_lanc_linha": "8 - Despesas", "dre_lanc_geracao": 2})
-        fechar("dre_lanc")
-        self.assertEqual(self.st.session_state, {"dre_lanc_geracao": 3}, "Fechar esquece a linha e avanca a geracao da tabela")
-        fechar("hist_lanc"); self.assertEqual(self.st.session_state["hist_lanc_geracao"], 1)
-        self.assertIsNone(regra(["9 - Fora"], None, tabela), "linha que nao esta na tabela nao abre")
+        self.assertEqual(regra(["8.3 - Pessoal"], [], None, tabela), "8.3 - Pessoal", "marcacao nova escolhe")
+        self.assertEqual(regra(["8.3 - Pessoal", "8.3.1 - Salários"], ["8.3 - Pessoal"], None, tabela), "8.3.1 - Salários",
+                         "so a marcacao NOVA conta")
+        self.assertIsNone(regra(["8.3 - Pessoal"], ["8.3 - Pessoal"], None, tabela),
+                          "marcacao antiga nao puxa o seletor de volta")
+        self.assertEqual(regra([], [], "8 - Despesas", tabela), "8 - Despesas", "grupo guardado pelo redesenho")
+        self.assertIsNone(regra([], [], "8 - Despesas", ["6 - Variaveis"]), "grupo que saiu da tabela nao vale")
+        self.assertIsNone(regra(["9 - Fora"], [], None, tabela), "linha que nao esta na tabela nao vale")
+        self.assertIsNone(regra([], [], None, tabela))
+        padrao = self.ns["linha_padrao_para_lancamentos"]
+        self.assertEqual(padrao(["1 - Receita", "6 - Variaveis", "8 - Despesas"]), "8 - Despesas", "abre no grupo 8")
+        self.assertEqual(padrao(["1 - Receita", "6 - Variaveis"]), "6 - Variaveis")
+        self.assertEqual(padrao(["6.24.2 - Mkt", "6.24.2.5 - Encontro"]), "6.24.2 - Mkt", "sem grupo: a primeira")
+        self.assertIsNone(padrao([]))
 
         class _Sel:
             rows = [0, 2, 9]
@@ -10890,55 +10898,72 @@ class TesteLancamentosDaLinhaDre(unittest.TestCase):
         self.assertEqual(self.ns["linhas_marcadas_no_evento"](df, _Ev()), ["8.3 - B"], "faixa de cabecalho e indice fora ficam de fora")
         self.assertEqual(self.ns["linhas_marcadas_no_evento"](df, None), [])
 
-    def test_o_bloco_desenha_kpis_tabela_e_excel_e_o_fechar_volta_true(self):
+    def test_o_bloco_fixo_desenha_seletor_kpis_tabela_e_excel(self):
         meses = {"AGOSTO": "08/2026", "SETEMBRO": "09/2026"}
-        valores = {"08/2026": 1899.0, "09/2026": 100.0}
+        valores = {"8.3 - Pessoal": {"08/2026": 1899.0, "09/2026": 100.0}, "6.24 - Marketing": {"08/2026": 250.0}}
+        linhas = ["1 - Receita", "6.24 - Marketing", "8.3 - Pessoal", "11 - EBITDA"]
         bloco = self.ns["bloco_lancamentos_da_linha_dre"]
-        fechou = bloco("8.3 - Pessoal", self._diario(), meses, valores, "dre_lanc", rotulo_periodo="ANO")
-        self.assertFalse(fechou)
+        # 1) ninguem escolheu: abre na primeira linha "6 -"/"8 -"... aqui nao ha grupo, entao a primeira; o checkbox pede 8.3
+        escolhida = bloco(linhas, "8.3 - Pessoal", self._diario(), meses, lambda l: valores.get(l, {}), "dre_lanc", rotulo_periodo="ANO")
+        self.assertEqual(escolhida, "8.3 - Pessoal")
+        self.assertEqual(self.st.session_state["dre_lanc_sel"], "8.3 - Pessoal", "o checkbox escolheu no seletor")
         tipos = [c[0] for c in self.st.chamadas]
-        self.assertEqual(tipos.count("dataframe"), 1); self.assertEqual(tipos.count("download"), 1)
+        self.assertEqual(tipos.count("selectbox"), 1); self.assertEqual(tipos.count("dataframe"), 1); self.assertEqual(tipos.count("download"), 1)
+        self.assertNotIn("button", tipos, "nao ha mais botao Fechar: o bloco e fixo")
         kpis = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "LANÇAMENTOS" in c[1])
         self.assertIn("R$ -1.999,00", kpis, "soma dos 4 lancamentos de agosto e setembro")
         self.assertIn("R$ 1.999,00", kpis, "valor na DRE = soma dos meses escolhidos")
         self.assertIn("fecha", kpis)
         titulo = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "Lançamentos que compõem" in c[1])
-        self.assertIn("«8.3 - Pessoal» — ANO", titulo)
+        self.assertIn("compõem a linha — ANO", titulo)
         df = next(c[1] for c in self.st.chamadas if c[0] == "dataframe").data
         self.assertNotIn("Unidade", df.columns, "coluna de texto toda vazia sai da tela")
         self.assertEqual(len(df), 4)
-        # so agosto + busca
-        self.st.chamadas.clear(); self.st.respostas.update({"multiselect": ["AGOSTO"], "text_input": "SALÁRIOS", "button": True})
-        self.assertTrue(bloco("8.3 - Pessoal", self._diario(), meses, valores, "dre_lanc"), "Fechar devolve True")
+        # 2) sem pedido novo, a escolha do seletor fica (a marcacao antiga nao puxa)
+        self.st.chamadas.clear(); self.st.session_state["dre_lanc_sel"] = "6.24 - Marketing"
+        self.assertEqual(bloco(linhas, None, self._diario(), meses, lambda l: valores.get(l, {}), "dre_lanc"), "6.24 - Marketing")
+        kpis = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "LANÇAMENTOS" in c[1])
+        self.assertIn("R$ -250,00", kpis)
+        # 3) a escolha saiu da tabela (mudou o nivel): volta ao padrao (grupo 8)
+        self.st.chamadas.clear()
+        self.assertEqual(bloco(["1 - Receita", "6 - Variaveis", "8 - Despesas"], None, self._diario(), meses,
+                               lambda l: {}, "dre_lanc"), "8 - Despesas")
+        # 4) so agosto + busca
+        self.st.chamadas.clear(); self.st.session_state["dre_lanc_sel"] = "8.3 - Pessoal"
+        self.st.respostas.update({"multiselect": ["AGOSTO"], "text_input": "SALÁRIOS"})
+        bloco(linhas, None, self._diario(), meses, lambda l: valores.get(l, {}), "dre_lanc")
         kpis = next(c[1] for c in self.st.chamadas if c[0] == "markdown" and "LANÇAMENTOS" in c[1])
         self.assertIn("de 3 no período (com a busca)", kpis)
         self.assertIn("R$ 1.899,00", kpis)
         df = next(c[1] for c in self.st.chamadas if c[0] == "dataframe").data
         self.assertEqual(df["Plano de Contas"].tolist(), ["Salários", "Salários"])
-        # linha calculada: aviso em vez de tabela
-        self.st.chamadas.clear(); self.st.respostas.update({"multiselect": None, "text_input": "", "button": False})
-        bloco("11 - EBITDA", self._diario(), meses, {}, "dre_lanc")
+        # 5) linha calculada: aviso em vez de tabela; sem linhas: nada
+        self.st.chamadas.clear(); self.st.respostas.update({"multiselect": None, "text_input": ""})
+        self.assertEqual(bloco(linhas, "11 - EBITDA", self._diario(), meses, lambda l: {}, "dre_lanc"), "11 - EBITDA")
         tipos = [c[0] for c in self.st.chamadas]
         self.assertIn("info", tipos); self.assertNotIn("dataframe", tipos)
+        self.st.chamadas.clear()
+        self.assertIsNone(bloco([], None, self._diario(), meses, lambda l: {}, "dre_lanc"))
+        self.assertEqual(self.st.chamadas, [])
 
-    def test_as_duas_abas_ligam_a_marcacao_ao_bloco(self):
+    def test_as_duas_abas_tem_o_bloco_fixo_e_o_checkbox_so_atalha(self):
         i2 = FONTE.index("with tab2:"); i3 = FONTE.index("with tab3:")
         dre = FONTE[i2:i3]; hist = FONTE[i3:FONTE.index("# ABA 4", i3) if "# ABA 4" in FONTE[i3:] else i3 + 60000]
         for bloco, chave, df in ((dre, "dre_lanc", "df_dre_final"), (hist, "hist_lanc", "df_hist")):
             self.assertIn(f"linhas_marcadas_no_evento({df}, ", bloco)
-            self.assertIn(f'st.session_state["{chave}_linha"]', bloco)
+            self.assertIn(f'st.session_state["{chave}_linha"]', bloco, "o clique no grupo guarda a linha para depois do redesenho")
+            self.assertIn(f'st.session_state["{chave}_marcadas_antes"] = list(', bloco, "so marcacao NOVA escolhe")
             self.assertIn(f'"{chave}",', bloco)
             self.assertIn("diario_recortado_pela_visao(path_real, abas_para_carregar)", bloco)
             self.assertIn("bloco_lancamentos_da_linha_dre(", bloco)
-            self.assertLess(bloco.index("_processar_clique_expansao("), bloco.index("linha_marcada_para_abrir("),
+            self.assertLess(bloco.index("_processar_clique_expansao("), bloco.index("linha_pedida_pelo_checkbox("),
                             "o grupo abre/fecha antes de decidir o que mostrar")
-        self.assertIn('if tipo_hist == "Realizado" else None', hist, "no Historico so a base Realizado tem lancamentos")
-        # Fechar renasce a tabela: a geracao entra na chave do st.dataframe das duas abas
-        self.assertIn("f\"g{st.session_state.get('dre_lanc_geracao', 0)}\"", dre)
-        self.assertIn("f\"g{st.session_state.get('hist_lanc_geracao', 0)}\"", hist)
-        self.assertIn('fechar_bloco_de_lancamentos("dre_lanc")', dre); self.assertIn('fechar_bloco_de_lancamentos("hist_lanc")', hist)
+            self.assertNotIn("if _linha_lanc", bloco, "o bloco e FIXO: nao depende de linha marcada")
+        self.assertIn('if tipo_hist == "Realizado":', hist, "no Historico so a base Realizado tem lancamentos")
+        self.assertIn("só existem na base Realizado", hist)
+        self.assertNotIn("_lanc_geracao", FONTE); self.assertNotIn("fechar_bloco_de_lancamentos", FONTE)
         self.assertNotIn("_ignorada", FONTE)
-        self.assertIn("os lançamentos do DIÁRIO que compõem o valor dela", dre)
+        self.assertIn("a escolhe no bloco de lançamentos do DIÁRIO, abaixo da tabela", dre)
         # o modo mensal e o acumulado passam o MESMO recorte de meses da tabela
         self.assertIn("_cols_lanc_dre = set(cols_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else cols_graficos)", dre)
 
