@@ -17532,6 +17532,150 @@ def _deltas_pendentes_do_fechamento(df_fech, cols_periodo, cols_dados,
     return delta_rec, delta_eb, detalhes
 
 
+# ---------------------------------------------------------------------------
+# FORECAST ROLLING DO ANO — motor (12/11/2026)
+# ---------------------------------------------------------------------------
+# Até aqui o forecast tratava como "realizado" qualquer mês com valor lançado:
+# novembro pela metade entrava inteiro, puxava a média para baixo e o ano saía
+# subestimado -- e a margem do ano não aparecia em lugar nenhum. Agora:
+# - mês FECHADO = anterior ao mês dos dados (D+2) com valor lançado; entra com
+#   o realizado MENOS o que ainda falta lançar nele (ICMS, folha: processos
+#   diferentes de OK na planilha de Fechamento, estimados do mesmo jeito que
+#   o cartão da Visão Geral, por _deltas_pendentes_do_fechamento);
+# - mês EM ABERTO = o mês dos dados: a receita líquida entra no RITMO dos dias
+#   já lançados (realizado ÷ dias decorridos × dias do mês, a conta da faixa
+#   de ritmo) e o EBITDA na MARGEM MÉDIA dos meses da base -- a margem do mês
+#   parcial não presta, porque ICMS e folha chegam no fechamento;
+# - meses RESTANTES = média dos meses da base (3, 6 ou todos os fechados).
+# Função pura, com os valores injetados, para a suíte testar sem planilha.
+def deltas_de_fechamento_por_mes(detalhes):
+    """{coluna "MM/AAAA": (delta_receita_liquida, delta_ebitda)} a partir dos
+    `detalhes` de _deltas_pendentes_do_fechamento -- magnitudes a SUBTRAIR do
+    realizado do mês (ICMS derruba receita líquida e EBITDA; folha, só o
+    EBITDA)."""
+    saida = {}
+    for item in detalhes or []:
+        processo = item.get("processo")
+        efeito = IMPACTO_FECHAMENTO_EBITDA.get(processo, (None, "ebitda"))[1]
+        valor = float(item.get("valor") or 0.0)
+        rec, eb = saida.get(item.get("mes"), (0.0, 0.0))
+        saida[item.get("mes")] = (rec + (valor if efeito == "receita_liquida" else 0.0), eb + valor)
+    return saida
+
+
+def forecast_rolling_do_ano(valor_real, valor_orc, colunas_ano, hoje_dados, meses_base=3, deltas_por_mes=None):
+    """Forecast do ano de receita líquida e EBITDA, com o mês em aberto
+    projetado e os lançamentos pendentes dos meses fechados descontados.
+
+    `valor_real(linha, coluna)` / `valor_orc(linha, coluna)` são injetados;
+    `colunas_ano` são as colunas "MM/AAAA" do ano; `hoje_dados` é a data dos
+    dados (já descontado o D+2); `meses_base` 3, 6 ou 99 (todos);
+    `deltas_por_mes` vem de deltas_de_fechamento_por_mes.
+
+    Devolve, para "receita" e "ebitda": lancado (o que está na planilha nos
+    meses fechados + aberto), pendente (o que falta lançar nos fechados, em
+    negativo), aberto_restante (o que o mês em aberto ainda deve realizar),
+    restantes (projeção dos meses que não começaram), forecast, orcado,
+    desvio e pct; "margem" (%) lancado / fechados / forecast / orcado; e os
+    metadados do modelo (fechados, aberto, restantes, dias, base, médias,
+    series por mês para o gráfico)."""
+    receita, ebitda = "3 - Receita Operacional Liquida", "11 - EBITDA"
+    deltas_por_mes = deltas_por_mes or {}
+    colunas = [str(c) for c in colunas_ano]
+    col_aberto, dias_dec, dias_mes = None, 0, 0
+    if hoje_dados is not None:
+        candidata = f"{hoje_dados.month:02d}/{hoje_dados.year}"
+        if candidata in colunas:
+            col_aberto = candidata
+            dias_mes = int(pd.Period(f"{hoje_dados.year}-{hoje_dados.month:02d}", freq="M").days_in_month)
+            dias_dec = min(max(int(hoje_dados.day), 1), dias_mes)
+    idx_aberto = colunas.index(col_aberto) if col_aberto else None
+
+    rec_raw = {c: float(valor_real(receita, c) or 0.0) for c in colunas}
+    eb_raw = {c: float(valor_real(ebitda, c) or 0.0) for c in colunas}
+    candidatos = colunas[:idx_aberto] if idx_aberto is not None else colunas
+    fechados = [c for c in candidatos if rec_raw[c] != 0 or eb_raw[c] != 0]
+    ultimo_idx = idx_aberto if idx_aberto is not None else (colunas.index(fechados[-1]) if fechados else -1)
+    restantes = colunas[ultimo_idx + 1:]
+
+    def _delta(c):
+        d = deltas_por_mes.get(c) or (0.0, 0.0)
+        return float(d[0] or 0.0), float(d[1] or 0.0)
+    rec_adj = {c: rec_raw[c] - _delta(c)[0] for c in fechados}
+    eb_adj = {c: eb_raw[c] - _delta(c)[1] for c in fechados}
+
+    base_cols = list(fechados) if not meses_base or int(meses_base) >= 99 else fechados[-int(meses_base):]
+    n_base = len(base_cols)
+    media_rec = sum(rec_adj[c] for c in base_cols) / n_base if n_base else 0.0
+    media_eb = sum(eb_adj[c] for c in base_cols) / n_base if n_base else 0.0
+    soma_rec_base = sum(rec_adj[c] for c in base_cols)
+    margem_base = (sum(eb_adj[c] for c in base_cols) / soma_rec_base) if soma_rec_base else 0.0
+
+    # Mês em aberto: receita no ritmo dos dias lançados; EBITDA na margem da base.
+    rec_aberto_real = rec_raw[col_aberto] if col_aberto else 0.0
+    eb_aberto_real = eb_raw[col_aberto] if col_aberto else 0.0
+    if col_aberto:
+        if rec_aberto_real > 0 and dias_dec:
+            rec_aberto_proj = rec_aberto_real / dias_dec * dias_mes
+        else:
+            rec_aberto_proj = media_rec
+        if n_base:
+            eb_aberto_proj = rec_aberto_proj * margem_base
+        else:
+            eb_aberto_proj = (eb_aberto_real / dias_dec * dias_mes) if dias_dec else 0.0
+    else:
+        rec_aberto_proj, eb_aberto_proj = 0.0, 0.0
+
+    n_rest = len(restantes)
+
+    def _linha(raw, adj, aberto_real, aberto_proj, media, nome):
+        lancado = sum(raw[c] for c in fechados) + aberto_real
+        pendente = -sum(raw[c] - adj[c] for c in fechados)
+        aberto_restante = (aberto_proj - aberto_real) if col_aberto else 0.0
+        rest = media * n_rest
+        forecast = sum(adj[c] for c in fechados) + aberto_proj + rest
+        orcado = sum(float(valor_orc(nome, c) or 0.0) for c in colunas)
+        return {
+            "lancado": lancado, "pendente": pendente, "aberto_restante": aberto_restante,
+            "restantes": rest, "forecast": forecast, "orcado": orcado,
+            "desvio": forecast - orcado, "pct": (forecast / orcado * 100.0) if orcado else 0.0,
+            "fechados_ajustado": sum(adj[c] for c in fechados), "aberto_projetado": aberto_proj,
+            "media_base": media,
+        }
+    rec = _linha(rec_raw, rec_adj, rec_aberto_real, rec_aberto_proj, media_rec, receita)
+    eb = _linha(eb_raw, eb_adj, eb_aberto_real, eb_aberto_proj, media_eb, ebitda)
+
+    def _pct(num, den):
+        return (num / den * 100.0) if den else None
+    margem = {
+        "lancado": _pct(eb["lancado"], rec["lancado"]),
+        "fechados": _pct(eb["fechados_ajustado"], rec["fechados_ajustado"]),
+        "forecast": _pct(eb["forecast"], rec["forecast"]),
+        "orcado": _pct(eb["orcado"], rec["orcado"]),
+    }
+    series = []
+    for c in colunas:
+        if c in fechados:
+            series.append({"col": c, "lancado": eb_raw[c], "ajustado": eb_adj[c], "projetado": None, "tipo": "fechado"})
+        elif c == col_aberto:
+            series.append({"col": c, "lancado": eb_raw[c], "ajustado": None, "projetado": eb_aberto_proj, "tipo": "aberto"})
+        elif c in restantes:
+            series.append({"col": c, "lancado": None, "ajustado": None, "projetado": media_eb, "tipo": "restante"})
+        else:
+            series.append({"col": c, "lancado": None, "ajustado": None, "projetado": None, "tipo": "sem_dado"})
+    for item in series:
+        item["orcado"] = float(valor_orc(ebitda, item["col"]) or 0.0)
+    return {
+        "receita": rec, "ebitda": eb, "margem": margem,
+        "fechados": fechados, "aberto": col_aberto, "restantes": restantes,
+        "dias_decorridos": dias_dec, "dias_mes": dias_mes,
+        "base": base_cols, "margem_base": margem_base * 100.0,
+        "meses_projetados": n_rest + (1 if col_aberto else 0),
+        "pendentes": {c: _delta(c) for c in fechados if _delta(c) != (0.0, 0.0)},
+        "series": series,
+    }
+
+
 # ============================================================================
 # 7.10 ORÇAMENTO 2027 — por plano de contas
 # ============================================================================
@@ -20976,6 +21120,7 @@ with tab1:
         _cor_sub_margem = None
         _margem_proj_val = None
         _det_fech = []
+        _df_fech_kpi, _erro_fech_kpi = None, "sem_url"
         _url_fech_kpi = url_csv_do_fechamento(_segredo_com_origem("FECHAMENTO_CSV_URL")[0])
         if _url_fech_kpi:
             _df_fech_kpi, _erro_fech_kpi = carregar_planilha_fechamento(_url_fech_kpi)
@@ -20992,6 +21137,33 @@ with tab1:
                 if _margem_proj_val is not None:
                     _margem_sub = f"Projeção de fechamento: {_margem_proj_val:.1f}%"
                     _cor_sub_margem = COLORS["warning"]
+        # Margem prevista para o fechamento do ANO (12/11/2026): o mesmo motor
+        # do Forecast Rolling (base de 3 meses fechados, mês em aberto
+        # projetado, pendências da planilha de Fechamento descontadas). Entra
+        # no subtexto do cartão para a pergunta "e o ano?" ter resposta na
+        # primeira tela; o detalhe fica no Diagnóstico Executivo.
+        _margem_ano_val = None
+        try:
+            _colunas_ano_vg = list(m_map.values())
+            _deltas_ano_vg = {}
+            if _df_fech_kpi is not None and not _erro_fech_kpi and not _df_fech_kpi.empty:
+                _hoje_cal_vg = datetime.now(FUSO_BR).date()
+                _, _, _det_ano_vg = _deltas_pendentes_do_fechamento(
+                    _df_fech_kpi, _colunas_ano_vg, list(meses_cols), (_hoje_cal_vg.year, _hoje_cal_vg.month),
+                    lambda linha, col: get_valor_consolidado_multi(list_df_real, linha, [col]))
+                _deltas_ano_vg = deltas_de_fechamento_por_mes(_det_ano_vg)
+            _fc_vg = forecast_rolling_do_ano(
+                lambda linha, col: get_valor_consolidado_multi(list_df_real, linha, [col]),
+                lambda linha, col: get_valor_consolidado_multi(list_df_orc, linha, [col]),
+                _colunas_ano_vg, datetime.now(FUSO_BR).date() - timedelta(days=DIAS_DEFASAGEM_DADOS),
+                meses_base=3, deltas_por_mes=_deltas_ano_vg)
+            _margem_ano_val = _fc_vg["margem"]["forecast"]
+        except Exception:                                            # noqa: BLE001
+            _margem_ano_val = None
+        if _margem_ano_val is not None:
+            _margem_sub = ((_margem_sub if _margem_proj_val is not None else "Período")
+                           + f" · Ano previsto: {_margem_ano_val:.1f}%")
+            _cor_sub_margem = _cor_sub_margem or COLORS["warning"]
 
         st.markdown(
             render_kpi_row([
@@ -23146,7 +23318,7 @@ que ainda não entrou.
         st.caption(
             "O orçamento foi feito antes do ano começar e vai perdendo aderência com o tempo. "
             "O forecast rolling substitui os meses que ainda não aconteceram por uma projeção baseada "
-            "no que a operação vem entregando de verdade — e mostra onde o ano deve fechar."
+            "no que a operação vem entregando de verdade — e mostra onde o ano deve fechar, inclusive a margem."
         )
 
         col_fc1, col_fc2 = st.columns([1, 2])
@@ -23155,79 +23327,66 @@ que ainda não entrou.
                 "Base da projeção:",
                 ["Média dos últimos 3 meses", "Média dos últimos 6 meses", "Média de todo o realizado"],
                 key="diag_base_forecast",
-                help="Quantos meses realizados entram na média que projeta os meses restantes.",
+                help="Quantos meses FECHADOS entram na média que projeta o mês em aberto e os que faltam.",
             )
         meses_base_fc = {"Média dos últimos 3 meses": 3, "Média dos últimos 6 meses": 6,
                          "Média de todo o realizado": 99}[base_forecast]
 
         colunas_ano_fc = list(m_map.values())
+        _nome_mes_fc = {col: nome for nome, col in m_map.items()}
 
-        def _projetar_linha_fc(termo_linha, exato=False):
-            """Realizado até agora + projeção dos meses restantes.
-            Devolve (realizado, projetado, forecast_total, orcado_ano, meses_realizados)."""
-            valores_mes = [
-                get_valor_consolidado_multi(list_df_real, termo_linha, [col], exato_linha_sintetica=exato)
-                for col in colunas_ano_fc
-            ]
-            # Mês "realizado" é aquele que tem movimento; os seguintes ainda
-            # não aconteceram (ou não foram lançados).
-            indices_com_dado = [i for i, v in enumerate(valores_mes) if v != 0]
-            if not indices_com_dado:
-                return 0.0, 0.0, 0.0, 0.0, 0
-            ultimo_idx = max(indices_com_dado)
-            realizados = valores_mes[: ultimo_idx + 1]
-            meses_restantes = len(colunas_ano_fc) - (ultimo_idx + 1)
+        # O que ainda falta lançar nos meses fechados (12/11/2026): a mesma
+        # conta do cartão "Projeção de fechamento" da Visão Geral -- processos
+        # da planilha de Fechamento diferentes de OK, estimados pela média dos
+        # últimos 3 meses fechados. Sem planilha, o forecast segue sem isso.
+        _deltas_fc, _detalhes_fc = {}, []
+        _url_fech_fc = url_csv_do_fechamento(_segredo_com_origem("FECHAMENTO_CSV_URL")[0])
+        if _url_fech_fc:
+            _df_fech_fc, _erro_fech_fc = carregar_planilha_fechamento(_url_fech_fc)
+            if not _erro_fech_fc and not _df_fech_fc.empty:
+                _hoje_cal_fc = datetime.now(FUSO_BR).date()
+                _, _, _detalhes_fc = _deltas_pendentes_do_fechamento(
+                    _df_fech_fc, colunas_ano_fc, list(meses_cols),
+                    (_hoje_cal_fc.year, _hoje_cal_fc.month),
+                    lambda linha, col: get_valor_consolidado_multi(list_df_real, linha, [col]),
+                )
+                _deltas_fc = deltas_de_fechamento_por_mes(_detalhes_fc)
 
-            base = [v for v in realizados[-meses_base_fc:] if v != 0] if meses_base_fc != 99 \
-                else [v for v in realizados if v != 0]
-            media_base = (sum(base) / len(base)) if base else 0.0
+        _hoje_dados_fc = datetime.now(FUSO_BR).date() - timedelta(days=DIAS_DEFASAGEM_DADOS)
+        fc = forecast_rolling_do_ano(
+            lambda linha, col: get_valor_consolidado_multi(list_df_real, linha, [col]),
+            lambda linha, col: get_valor_consolidado_multi(list_df_orc, linha, [col]),
+            colunas_ano_fc, _hoje_dados_fc, meses_base=meses_base_fc, deltas_por_mes=_deltas_fc,
+        )
+        fc_receita, fc_ebitda, fc_margem = fc["receita"], fc["ebitda"], fc["margem"]
+        meses_fechados_fc = len(fc["fechados"])
+        meses_projetados_fc = fc["meses_projetados"]
+        _aberto_txt = (f"{_nome_mes_fc.get(fc['aberto'], fc['aberto']).capitalize()} em aberto · "
+                       f"{fc['dias_decorridos']} de {fc['dias_mes']} dias lançados (D+{DIAS_DEFASAGEM_DADOS})"
+                       if fc["aberto"] else "nenhum mês em aberto")
 
-            total_realizado = sum(realizados)
-            total_projetado = media_base * meses_restantes
-            orcado_ano = get_valor_consolidado_multi(
-                list_df_orc, termo_linha, colunas_ano_fc, exato_linha_sintetica=exato
-            )
-            return total_realizado, total_projetado, total_realizado + total_projetado, orcado_ano, ultimo_idx + 1
-
-        linhas_forecast = [
-            ("Receita Líquida", "3 - Receita Operacional Liquida", False),
-            ("EBITDA", "11 - EBITDA", False),
-        ]
-
-        dados_fc = []
-        meses_realizados_fc = 0
-        for rotulo, termo, exato in linhas_forecast:
-            real, proj, total, orc, n_meses = _projetar_linha_fc(termo, exato)
-            meses_realizados_fc = max(meses_realizados_fc, n_meses)
-            dados_fc.append({
-                "Linha": rotulo,
-                "Realizado até agora": real,
-                "Projeção do restante": proj,
-                "Forecast do ano": total,
-                "Orçado do ano": orc,
-                "Desvio vs. orçado": total - orc,
-                "% do orçado": (total / orc * 100) if orc else 0,
-            })
-
-        if meses_realizados_fc == 0:
+        if meses_fechados_fc == 0 and not fc["aberto"]:
             st.info("Ainda não há meses realizados suficientes para projetar o fechamento do ano.")
         else:
-            meses_restantes_fc = len(colunas_ano_fc) - meses_realizados_fc
-            fc_receita = dados_fc[0]
-            fc_ebitda = dados_fc[1]
+            def _pct_txt_fc(v, casas=1):
+                return "—" if v is None else f"{v:.{casas}f}%".replace(".", ",")
 
+            _cor_margem_fc = (COLORS["positive"] if (fc_margem["forecast"] or 0) >= (fc_margem["orcado"] or 0)
+                              else COLORS["negative"])
             # ---- Faixa de indicadores (sem cartões, só filetes) ----
             st.markdown(
                 faixa_metricas_html([
-                    ("Meses já realizados", f"{meses_realizados_fc} / {len(colunas_ano_fc)}",
-                     COLORS["text"], f"faltam {meses_restantes_fc} meses para projetar"),
-                    ("Forecast de receita", formata_valor_curto(fc_receita["Forecast do ano"]),
-                     COLORS["primary"], f"{fc_receita['% do orçado']:.0f}% do orçado do ano"),
-                    ("Forecast de EBITDA", formata_valor_curto(fc_ebitda["Forecast do ano"]),
-                     cor_variacao(fc_ebitda["Desvio vs. orçado"]),
-                     f"{fc_ebitda['% do orçado']:.0f}% do orçado do ano"),
-                    ("Desvio projetado", formata_valor_curto(fc_ebitda["Desvio vs. orçado"]),
-                     cor_variacao(fc_ebitda["Desvio vs. orçado"]),
+                    ("Meses fechados", f"{meses_fechados_fc} / {len(colunas_ano_fc)}",
+                     COLORS["text"], _aberto_txt),
+                    ("Forecast de receita", formata_valor_curto(fc_receita["forecast"]),
+                     COLORS["primary"], f"{fc_receita['pct']:.0f}% do orçado do ano"),
+                    ("Forecast de EBITDA", formata_valor_curto(fc_ebitda["forecast"]),
+                     cor_variacao(fc_ebitda["desvio"]),
+                     f"{fc_ebitda['pct']:.0f}% do orçado do ano"),
+                    ("EBITDA % previsto · fechamento do ano", _pct_txt_fc(fc_margem["forecast"]), _cor_margem_fc,
+                     f"orçado {_pct_txt_fc(fc_margem['orcado'])} · lançado até agora {_pct_txt_fc(fc_margem['lancado'])}"),
+                    ("Desvio projetado", formata_valor_curto(fc_ebitda["desvio"]),
+                     cor_variacao(fc_ebitda["desvio"]),
                      "forecast do ano − orçado do ano"),
                 ]),
                 unsafe_allow_html=True,
@@ -23235,49 +23394,68 @@ que ainda não entrou.
 
             # ---- Tabela em HTML: filetes finos, números monoespaçados ----
             # O st.dataframe traz grade, cabeçalho cinza e barra de rolagem
-            # para duas linhas de dados -- peso visual demais para o que é,
+            # para três linhas de dados -- peso visual demais para o que é,
             # na prática, uma tabelinha de leitura.
-            _colunas_fc = [
-                ("Realizado até agora", "Realizado até agora"),
-                ("Projeção do restante", "Projeção do restante"),
-                ("Forecast do ano", "Forecast do ano"),
-                ("Orçado do ano", "Orçado do ano"),
-                ("Desvio vs. orçado", "Desvio vs. orçado"),
-            ]
-            _cabecalho_fc = "".join(
-                f'<th style="text-align:right; font-size:9.5px; font-weight:600; '
-                f'letter-spacing:0.8px; text-transform:uppercase; color:{COLORS["text_muted"]}; '
-                f'padding:0 0 10px 18px; white-space:nowrap;">{rotulo}</th>'
-                for rotulo, _ in _colunas_fc
-            )
+            _colunas_fc = ["Lançado até agora", "Falta lançar", "Restante do mês aberto",
+                           "Meses a começar", "Forecast do ano", "Orçado do ano", "Desvio vs. orçado"]
+            _chaves_fc = ["lancado", "pendente", "aberto_restante", "restantes", "forecast", "orcado", "desvio"]
+
+            def _celula_fc(texto, cor, negrito=False):
+                return (f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:11.5px; '
+                        f'font-weight:{700 if negrito else 400}; color:{cor}; padding:12px 0 12px 12px; '
+                        f'white-space:nowrap;">{texto}</td>')
+
             _linhas_fc_html = []
-            for item_fc in dados_fc:
+            for rotulo_fc, item_fc in (("Receita Líquida", fc_receita), ("EBITDA", fc_ebitda)):
                 _celulas = []
-                for _, chave in _colunas_fc:
-                    valor_celula = item_fc[chave]
-                    cor_celula = (
-                        cor_variacao(valor_celula) if chave == "Desvio vs. orçado"
-                        else COLORS["text"]
-                    )
-                    _celulas.append(
-                        f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:12px; '
-                        f'color:{cor_celula}; padding:12px 0 12px 18px; white-space:nowrap;">'
-                        f'{formata_brl(valor_celula)}</td>'
-                    )
-                pct_fc = item_fc["% do orçado"]
-                pct_fc_texto = f"{pct_fc:.1f}%".replace(".", ",")
+                for chave in _chaves_fc:
+                    v = item_fc[chave]
+                    sem_sentido = ((chave == "aberto_restante" and not fc["aberto"])
+                                   or (chave == "restantes" and not fc["restantes"])
+                                   or (chave == "pendente" and (not fc["pendentes"] or abs(v) < 0.005)))
+                    if sem_sentido:
+                        _celulas.append(_celula_fc("—", COLORS["text_muted"]))
+                        continue
+                    cor_celula = cor_variacao(v) if chave in ("desvio", "pendente") else COLORS["text"]
+                    _celulas.append(_celula_fc(formata_brl(v), cor_celula))
+                pct_fc = item_fc["pct"]
                 cor_pct = COLORS["positive"] if pct_fc >= 100 else (
-                    COLORS["warning"] if pct_fc >= 90 else COLORS["negative"]
-                )
+                    COLORS["warning"] if pct_fc >= 90 else COLORS["negative"])
                 _linhas_fc_html.append(
                     f'<tr style="border-top:1px solid {COLORS["border"]};">'
                     f'<td style="font-size:12.5px; font-weight:600; color:{COLORS["text"]}; '
-                    f'padding:12px 0; white-space:nowrap;">{item_fc["Linha"]}</td>'
+                    f'padding:12px 0; white-space:nowrap;">{rotulo_fc}</td>'
                     + "".join(_celulas)
-                    + f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:13px; '
-                    f'font-weight:700; color:{cor_pct}; padding:12px 0 12px 22px; white-space:nowrap;">'
-                    f'{pct_fc_texto}</td></tr>'
+                    + f'<td style="text-align:right; font-family:{FONTE_MONO}; font-size:12.5px; '
+                    f'font-weight:700; color:{cor_pct}; padding:12px 0 12px 16px; white-space:nowrap;">'
+                    f'{_pct_txt_fc(pct_fc)}</td></tr>'
                 )
+            # Linha da margem: só onde a divisão faz sentido (lançado, forecast, orçado).
+            _desvio_margem_pp = (
+                (fc_margem["forecast"] - fc_margem["orcado"])
+                if fc_margem["forecast"] is not None and fc_margem["orcado"] is not None else None)
+            _celulas_margem = [
+                _celula_fc(_pct_txt_fc(fc_margem["lancado"]), COLORS["text"], True),
+                _celula_fc("—", COLORS["text_muted"]), _celula_fc("—", COLORS["text_muted"]),
+                _celula_fc("—", COLORS["text_muted"]),
+                _celula_fc(_pct_txt_fc(fc_margem["forecast"]), _cor_margem_fc, True),
+                _celula_fc(_pct_txt_fc(fc_margem["orcado"]), COLORS["text"], True),
+                _celula_fc("—" if _desvio_margem_pp is None else f"{_desvio_margem_pp:+.1f}".replace(".", ",") + " p.p.",
+                           cor_variacao(_desvio_margem_pp or 0.0), True),
+            ]
+            _linhas_fc_html.append(
+                f'<tr style="border-top:1px solid {COLORS["border"]};">'
+                f'<td style="font-size:12.5px; font-weight:600; color:{COLORS["text"]}; '
+                f'padding:12px 0; white-space:nowrap;">Margem EBITDA (%) — prevista</td>'
+                + "".join(_celulas_margem)
+                + f'<td style="text-align:right; color:{COLORS["text_muted"]}; padding:12px 0 12px 22px;">—</td></tr>'
+            )
+            _cabecalho_fc = "".join(
+                f'<th style="text-align:right; font-size:9.5px; font-weight:600; '
+                f'letter-spacing:0.6px; text-transform:uppercase; color:{COLORS["text_muted"]}; '
+                f'padding:0 0 10px 12px; white-space:nowrap;">{rotulo}</th>'
+                for rotulo in _colunas_fc
+            )
             st.markdown(
                 html_compacto(
                     f'<div style="overflow-x:auto; margin:0 4px 6px;">'
@@ -23292,49 +23470,62 @@ que ainda não entrou.
                 ),
                 unsafe_allow_html=True,
             )
+            _legenda_fc = []
+            if fc["pendentes"]:
+                _itens_pend = sorted(_detalhes_fc, key=lambda d: (d["mes"], d["processo"]))
+                _legenda_fc.append(
+                    "Falta lançar: " + " · ".join(
+                        f"{d['processo']} de {_nome_mes_fc.get(d['mes'], d['mes']).lower()} "
+                        f"({formata_valor_curto(d['valor'])})" for d in _itens_pend)
+                    + " — estimados pela média dos últimos 3 meses fechados, como no cartão da Visão Geral.")
+            elif _url_fech_fc:
+                _legenda_fc.append("Nenhum lançamento pendente nos meses fechados (planilha de Fechamento).")
+            else:
+                _legenda_fc.append("Sem a planilha de Fechamento configurada, o forecast não desconta lançamentos pendentes.")
+            if fc["aberto"]:
+                _legenda_fc.append(
+                    f"Mês em aberto ({_nome_mes_fc.get(fc['aberto'], fc['aberto']).lower()}): receita no ritmo dos "
+                    f"{fc['dias_decorridos']} dias lançados; EBITDA na margem média da base "
+                    f"({_pct_txt_fc(fc['margem_base'])}), porque ICMS e folha só chegam no fechamento.")
+            st.caption(" ".join(_legenda_fc))
 
-            # ---- Gráfico: realizado x projetado x orçado, mês a mês ----
-            valores_ebitda_mes = [
-                get_valor_consolidado_multi(list_df_real, "11 - EBITDA", [col]) for col in colunas_ano_fc
-            ]
-            valores_ebitda_orc = [
-                get_valor_consolidado_multi(list_df_orc, "11 - EBITDA", [col]) for col in colunas_ano_fc
-            ]
-            realizados_ebitda = valores_ebitda_mes[:meses_realizados_fc]
-            base_ebitda = [v for v in realizados_ebitda[-meses_base_fc:] if v != 0] if meses_base_fc != 99 \
-                else [v for v in realizados_ebitda if v != 0]
-            media_ebitda_fc = (sum(base_ebitda) / len(base_ebitda)) if base_ebitda else 0.0
-
-            serie_realizada_graf = realizados_ebitda + [None] * meses_restantes_fc
-            serie_projetada_graf = (
-                [None] * (meses_realizados_fc - 1)
-                + [realizados_ebitda[-1] if realizados_ebitda else 0]
-                + [media_ebitda_fc] * meses_restantes_fc
-            )
-            # Rótulos de três letras na horizontal: com o nome do mês inteiro,
-            # o eixo precisava girar 35 graus e virava um leque de texto.
+            # ---- Gráfico: lançado x ajustado/projetado x orçado, mês a mês ----
             rotulos_meses_fc = [nome[:3].upper() for nome in m_map.keys()]
+            serie_lancada_graf = [s["lancado"] for s in fc["series"]]
+            # A linha projetada parte do último mês fechado (ajustado) e segue
+            # pelo mês em aberto e pelos que faltam.
+            serie_projetada_graf = []
+            for i, s in enumerate(fc["series"]):
+                if s["tipo"] == "fechado":
+                    proximo = fc["series"][i + 1]["tipo"] if i + 1 < len(fc["series"]) else "sem_dado"
+                    serie_projetada_graf.append(s["ajustado"] if proximo in ("aberto", "restante") else None)
+                else:
+                    serie_projetada_graf.append(s["projetado"])
+            valores_ebitda_orc = [s["orcado"] for s in fc["series"]]
+            _ajustados_fc = [s["ajustado"] for s in fc["series"] if s["tipo"] == "fechado" and s["ajustado"] != 0]
+            media_ebitda_fc = fc_ebitda["media_base"]
 
             fig_fc = go.Figure()
             # A faixa entra primeiro para ficar ATRÁS das linhas.
-            if realizados_ebitda and meses_restantes_fc > 0:
-                _validos_graf = [v for v in realizados_ebitda if v != 0]
-                if _validos_graf:
-                    _pior, _melhor = min(_validos_graf), max(_validos_graf)
-                    banda_inf = [None] * (meses_realizados_fc - 1) + \
-                        [realizados_ebitda[-1]] + [_pior] * meses_restantes_fc
-                    banda_sup = [None] * (meses_realizados_fc - 1) + \
-                        [realizados_ebitda[-1]] + [_melhor] * meses_restantes_fc
-                    fig_fc.add_trace(go.Scatter(
-                        x=rotulos_meses_fc, y=banda_sup, mode="lines",
-                        line=dict(width=0), showlegend=False, hoverinfo="skip", connectgaps=False,
-                    ))
-                    fig_fc.add_trace(go.Scatter(
-                        name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
-                        mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor="rgba(217, 160, 84, 0.06)", connectgaps=False,
-                        hovertemplate="Faixa de cenários<extra></extra>",
-                    ))
+            if _ajustados_fc and meses_projetados_fc > 0:
+                _pior, _melhor = min(_ajustados_fc), max(_ajustados_fc)
+                _ultimo_fechado_idx = colunas_ano_fc.index(fc["fechados"][-1])
+                banda_inf = [None] * len(colunas_ano_fc)
+                banda_sup = [None] * len(colunas_ano_fc)
+                banda_inf[_ultimo_fechado_idx] = banda_sup[_ultimo_fechado_idx] = fc["series"][_ultimo_fechado_idx]["ajustado"]
+                for i in range(_ultimo_fechado_idx + 1, len(colunas_ano_fc)):
+                    if fc["series"][i]["tipo"] in ("aberto", "restante"):
+                        banda_inf[i], banda_sup[i] = _pior, _melhor
+                fig_fc.add_trace(go.Scatter(
+                    x=rotulos_meses_fc, y=banda_sup, mode="lines",
+                    line=dict(width=0), showlegend=False, hoverinfo="skip", connectgaps=False,
+                ))
+                fig_fc.add_trace(go.Scatter(
+                    name="Faixa de cenários", x=rotulos_meses_fc, y=banda_inf,
+                    mode="lines", line=dict(width=0), fill="tonexty",
+                    fillcolor="rgba(217, 160, 84, 0.06)", connectgaps=False,
+                    hovertemplate="Faixa de cenários<extra></extra>",
+                ))
             fig_fc.add_trace(go.Scatter(
                 name="Orçado", x=rotulos_meses_fc, y=valores_ebitda_orc,
                 mode="lines", line=dict(color=COLORS["muted_line"], width=1.5, dash="dash"),
@@ -23347,16 +23538,16 @@ que ainda não entrou.
                 hovertemplate="Projetado: R$ %{y:,.2f}<extra></extra>",
             ))
             fig_fc.add_trace(go.Scatter(
-                name="Realizado", x=rotulos_meses_fc, y=serie_realizada_graf,
+                name="Lançado", x=rotulos_meses_fc, y=serie_lancada_graf,
                 mode="lines+markers", line=dict(color=COLORS["primary"], width=2.5),
                 marker=dict(size=5), connectgaps=False,
-                hovertemplate="Realizado: R$ %{y:,.2f}<extra></extra>",
+                hovertemplate="Lançado: R$ %{y:,.2f}<extra></extra>",
             ))
-            # Divisor entre o que já aconteceu e o que é projeção. Em eixo de
+            # Divisor entre o que já fechou e o que é projeção. Em eixo de
             # categorias, a coordenada numérica é o índice da categoria -- por
             # isso o 0,5 cai exatamente no meio dos dois meses.
-            if 0 < meses_realizados_fc < len(rotulos_meses_fc):
-                _x_corte = meses_realizados_fc - 0.5
+            if 0 < meses_fechados_fc < len(rotulos_meses_fc):
+                _x_corte = meses_fechados_fc - 0.5
                 fig_fc.add_shape(
                     type="line", x0=_x_corte, x1=_x_corte, xref="x",
                     y0=0, y1=1, yref="paper",
@@ -23380,80 +23571,81 @@ que ainda não entrou.
                 hovermode="x unified",
             )
             st.plotly_chart(fig_fc, width="stretch", config=CONFIG_PLOTLY_TRAVADO)
-            st.caption("EBITDA mês a mês, em R$. A faixa cobre do pior ao melhor mês já entregue.")
+            st.caption("EBITDA mês a mês, em R$. A linha projetada parte do último mês fechado já com o que falta "
+                       "lançar; a faixa cobre do pior ao melhor mês fechado.")
 
             # Cenários: além da média, mostra o que aconteceria no melhor e
             # no pior ritmo já observado -- uma projeção única passa falsa
-            # sensação de precisão.
-            if realizados_ebitda:
-                meses_validos_fc = [v for v in realizados_ebitda if v != 0]
-                if meses_validos_fc and meses_restantes_fc > 0:
-                    pior_mes_fc = min(meses_validos_fc)
-                    melhor_mes_fc = max(meses_validos_fc)
-                    fc_pessimista = fc_ebitda["Realizado até agora"] + pior_mes_fc * meses_restantes_fc
-                    fc_otimista = fc_ebitda["Realizado até agora"] + melhor_mes_fc * meses_restantes_fc
-                    orcado_ano_fc = fc_ebitda["Orçado do ano"]
+            # sensação de precisão. O mês em aberto conta como mês projetado.
+            if _ajustados_fc and meses_projetados_fc > 0:
+                pior_mes_fc = min(_ajustados_fc)
+                melhor_mes_fc = max(_ajustados_fc)
+                fc_pessimista = fc_ebitda["fechados_ajustado"] + pior_mes_fc * meses_projetados_fc
+                fc_otimista = fc_ebitda["fechados_ajustado"] + melhor_mes_fc * meses_projetados_fc
+                orcado_ano_fc = fc_ebitda["orcado"]
 
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">🎲 Cenários de Fechamento do EBITDA</div>',
-                                unsafe_allow_html=True)
-                    dentro_da_faixa = fc_pessimista <= orcado_ano_fc <= fc_otimista
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="section-title">🎲 Cenários de Fechamento do EBITDA</div>',
+                            unsafe_allow_html=True)
+                dentro_da_faixa = fc_pessimista <= orcado_ano_fc <= fc_otimista
+                st.markdown(
+                    faixa_metricas_html([
+                        ("Pessimista", formata_valor_curto(fc_pessimista), COLORS["negative"],
+                         f"repetindo o pior mês ({formata_valor_curto(pior_mes_fc)}/mês)"),
+                        ("Base", formata_valor_curto(fc_ebitda["forecast"]), COLORS["primary"],
+                         base_forecast.lower()),
+                        ("Otimista", formata_valor_curto(fc_otimista), COLORS["positive"],
+                         f"repetindo o melhor mês ({formata_valor_curto(melhor_mes_fc)}/mês)"),
+                        ("Orçado do ano", formata_valor_curto(orcado_ano_fc), COLORS["text_muted"],
+                         "dentro da faixa de cenários" if dentro_da_faixa
+                         else "fora da faixa projetada"),
+                    ]),
+                    unsafe_allow_html=True,
+                )
+                if orcado_ano_fc > fc_otimista:
                     st.markdown(
-                        faixa_metricas_html([
-                            ("Pessimista", formata_valor_curto(fc_pessimista), COLORS["negative"],
-                             f"repetindo o pior mês ({formata_valor_curto(pior_mes_fc)}/mês)"),
-                            ("Base", formata_valor_curto(fc_ebitda["Forecast do ano"]), COLORS["primary"],
-                             base_forecast.lower()),
-                            ("Otimista", formata_valor_curto(fc_otimista), COLORS["positive"],
-                             f"repetindo o melhor mês ({formata_valor_curto(melhor_mes_fc)}/mês)"),
-                            ("Orçado do ano", formata_valor_curto(orcado_ano_fc), COLORS["text_muted"],
-                             "dentro da faixa de cenários" if dentro_da_faixa
-                             else "fora da faixa projetada"),
-                        ]),
+                        aviso_html(
+                            "Meta fora de alcance",
+                            "O orçamento do ano está "
+                            + destaque_html("acima do melhor mês já fechado")
+                            + " repetido até dezembro. Sem uma mudança relevante na operação, a meta "
+                            "não é alcançável — vale rediscutir o orçamento ou o plano de ação.",
+                            COLORS["negative"],
+                        ),
                         unsafe_allow_html=True,
                     )
-                    if orcado_ano_fc > fc_otimista:
-                        st.markdown(
-                            aviso_html(
-                                "Meta fora de alcance",
-                                "O orçamento do ano está "
-                                + destaque_html("acima do melhor mês já entregue")
-                                + " repetido até dezembro. Sem uma mudança relevante na operação, a meta "
-                                "não é alcançável — vale rediscutir o orçamento ou o plano de ação.",
-                                COLORS["negative"],
-                            ),
-                            unsafe_allow_html=True,
-                        )
-                    elif orcado_ano_fc > fc_ebitda["Forecast do ano"]:
-                        esforco_mensal = (orcado_ano_fc - fc_ebitda["Realizado até agora"]) / meses_restantes_fc
-                        media_atual_fc = media_ebitda_fc
-                        aumento_necessario = (
-                            (esforco_mensal / media_atual_fc - 1) * 100 if media_atual_fc else 0
-                        )
-                        st.markdown(
-                            aviso_html(
-                                "Esforço necessário",
-                                "Para bater a meta, seria preciso entregar "
-                                + destaque_html(f"{formata_brl(esforco_mensal)} de EBITDA por mês")
-                                + f" nos {meses_restantes_fc} meses restantes — "
-                                f"{aumento_necessario:+.0f}% em relação à média atual de "
-                                f"{formata_brl(media_atual_fc)}.",
-                                COLORS["warning"],
-                            ),
-                            unsafe_allow_html=True,
-                        )
+                elif orcado_ano_fc > fc_ebitda["forecast"]:
+                    esforco_mensal = (orcado_ano_fc - fc_ebitda["fechados_ajustado"]) / meses_projetados_fc
+                    aumento_necessario = (
+                        (esforco_mensal / media_ebitda_fc - 1) * 100 if media_ebitda_fc else 0
+                    )
+                    st.markdown(
+                        aviso_html(
+                            "Esforço necessário",
+                            "Para bater a meta, seria preciso entregar "
+                            + destaque_html(f"{formata_brl(esforco_mensal)} de EBITDA por mês")
+                            + f" nos {meses_projetados_fc} meses que faltam (contando o em aberto) — "
+                            f"{aumento_necessario:+.0f}% em relação à média da base de "
+                            f"{formata_brl(media_ebitda_fc)}.",
+                            COLORS["warning"],
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
-            desvio_fc = fc_ebitda["Desvio vs. orçado"]
+            desvio_fc = fc_ebitda["desvio"]
+            _meses_que_faltam_txt = (f"{meses_projetados_fc} meses que faltam (contando o em aberto)"
+                                     if fc["aberto"] else f"{meses_projetados_fc} meses restantes")
             if desvio_fc < 0:
                 st.markdown(
                     aviso_html(
                         "Fechamento projetado",
                         "Mantido o ritmo atual, o ano deve fechar "
                         + destaque_html(f"{formata_brl(abs(desvio_fc))} abaixo")
-                        + f" do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta). Para chegar ao "
-                        f"orçado, seria preciso gerar "
-                        f"{formata_brl(abs(desvio_fc) / max(meses_restantes_fc, 1))} a mais por mês nos "
-                        f"{meses_restantes_fc} meses restantes.",
+                        + f" do EBITDA orçado ({fc_ebitda['pct']:.0f}% da meta), com margem de "
+                        f"{_pct_txt_fc(fc_margem['forecast'])} contra {_pct_txt_fc(fc_margem['orcado'])} orçada. "
+                        f"Para chegar ao orçado, seria preciso gerar "
+                        f"{formata_brl(abs(desvio_fc) / max(meses_projetados_fc, 1))} a mais por mês nos "
+                        f"{_meses_que_faltam_txt}.",
                         COLORS["warning"],
                     ),
                     unsafe_allow_html=True,
@@ -23464,15 +23656,17 @@ que ainda não entrou.
                         "Fechamento projetado",
                         "Mantido o ritmo atual, o ano deve fechar "
                         + destaque_html(f"{formata_brl(desvio_fc)} acima")
-                        + f" do EBITDA orçado ({fc_ebitda['% do orçado']:.0f}% da meta).",
+                        + f" do EBITDA orçado ({fc_ebitda['pct']:.0f}% da meta), com margem de "
+                        f"{_pct_txt_fc(fc_margem['forecast'])} contra {_pct_txt_fc(fc_margem['orcado'])} orçada.",
                         COLORS["positive"],
                     ),
                     unsafe_allow_html=True,
                 )
             st.caption(
-                "A projeção repete a média dos meses escolhidos para os meses que faltam. É uma leitura de "
-                "tendência, não uma previsão com sazonalidade — se o negócio tem meses tipicamente mais "
-                "fortes ou fracos à frente, considere isso na análise."
+                "Meses fechados entram com o realizado menos o que ainda falta lançar; o mês em aberto é "
+                "projetado (receita no ritmo dos dias lançados, EBITDA na margem da base) e os que não "
+                "começaram repetem a média da base. É uma leitura de tendência, não uma previsão com "
+                "sazonalidade — se o negócio tem meses tipicamente mais fortes ou fracos à frente, considere isso."
             )
 
 

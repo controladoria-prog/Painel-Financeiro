@@ -303,6 +303,8 @@ CONSTANTES_DE_DEPENDENCIA = {
     "resolver_planos_forcados": ["MODELOS_RELATORIO"],
     # Lançamentos que compõem a linha da DRE (10/11/2026).
     "lancamentos_da_linha_dre": ["COLUNAS_LANCAMENTOS_DRE"],
+    # Forecast rolling com mês em aberto e pendências (12/11/2026).
+    "deltas_de_fechamento_por_mes": ["IMPACTO_FECHAMENTO_EBITDA"],
     "bloco_lancamentos_da_linha_dre": ["TETO_LANCAMENTOS_DRE_NA_TELA", "COLORS"],
 }
 
@@ -10966,6 +10968,107 @@ class TesteLancamentosDaLinhaDre(unittest.TestCase):
         self.assertIn("a escolhe no bloco de lançamentos do DIÁRIO, abaixo da tabela", dre)
         # o modo mensal e o acumulado passam o MESMO recorte de meses da tabela
         self.assertIn("_cols_lanc_dre = set(cols_kpi if (abrir_dre_por_mes and _meses_abertura_dre) else cols_graficos)", dre)
+
+
+class TesteForecastRollingDoAno(unittest.TestCase):
+    """12/11/2026: o Forecast Rolling do Ano passou a projetar o mês em aberto
+    (receita no ritmo dos dias lançados, EBITDA na margem da base), a descontar
+    dos meses fechados o que ainda falta lançar (planilha de Fechamento) e a
+    mostrar a margem EBITDA do ano. Antes, novembro pela metade entrava como
+    mês inteiro e o ano saía subestimado."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ns = carregar(["forecast_rolling_do_ano", "deltas_de_fechamento_por_mes"])
+        cls.cols = [f"{m:02d}/2026" for m in range(1, 13)]
+        # 10 meses fechados com receita 10 M e EBITDA 2,5 M (margem 25%); outubro
+        # com EBITDA 3,0 M (sem a folha de 0,5 M lançada); novembro com 10 dias
+        # lançados: receita 4 M e EBITDA 1,6 M (margem inflada, 40%).
+        cls.rec = {c: 10_000_000.0 for c in cls.cols[:10]}
+        cls.eb = {c: 2_500_000.0 for c in cls.cols[:10]}
+        cls.eb["10/2026"] = 3_000_000.0
+        cls.rec["11/2026"], cls.eb["11/2026"] = 4_000_000.0, 1_600_000.0
+        cls.orc_rec = {c: 12_000_000.0 for c in cls.cols}
+        cls.orc_eb = {c: 2_400_000.0 for c in cls.cols}
+
+    def _real(self, linha, col):
+        return (self.rec if linha.startswith("3") else self.eb).get(col, 0.0)
+
+    def _orc(self, linha, col):
+        return (self.orc_rec if linha.startswith("3") else self.orc_eb)[col]
+
+    def test_deltas_por_mes_separam_receita_e_ebitda(self):
+        d = self.ns["deltas_de_fechamento_por_mes"]([
+            {"processo": "FOPAG", "mes": "10/2026", "valor": 500_000.0},
+            {"processo": "ICMS", "mes": "10/2026", "valor": 200_000.0},
+            {"processo": "ICMS", "mes": "09/2026", "valor": 100_000.0},
+        ])
+        self.assertEqual(d, {"10/2026": (200_000.0, 700_000.0), "09/2026": (100_000.0, 100_000.0)},
+                         "ICMS derruba receita liquida e EBITDA; folha so o EBITDA")
+        self.assertEqual(self.ns["deltas_de_fechamento_por_mes"]([]), {})
+
+    def test_mes_em_aberto_e_projetado_e_pendencias_descontadas(self):
+        hoje = datetime(2026, 11, 10).date()   # 12/11 - D+2
+        deltas = {"10/2026": (0.0, 500_000.0)}
+        r = self.ns["forecast_rolling_do_ano"](self._real, self._orc, self.cols, hoje, meses_base=3, deltas_por_mes=deltas)
+        self.assertEqual(r["fechados"], self.cols[:10]); self.assertEqual(r["aberto"], "11/2026")
+        self.assertEqual(r["restantes"], ["12/2026"]); self.assertEqual((r["dias_decorridos"], r["dias_mes"]), (10, 30))
+        self.assertEqual(r["meses_projetados"], 2, "novembro em aberto + dezembro")
+        rec, eb, m = r["receita"], r["ebitda"], r["margem"]
+        # receita: 10 fechados x 10 M + novembro no ritmo (4 M / 10 dias x 30 = 12 M) + dezembro na media (10 M)
+        self.assertAlmostEqual(rec["lancado"], 104_000_000.0); self.assertAlmostEqual(rec["aberto_restante"], 8_000_000.0)
+        self.assertAlmostEqual(rec["restantes"], 10_000_000.0); self.assertAlmostEqual(rec["forecast"], 122_000_000.0)
+        # EBITDA: outubro ajustado 2,5 M (3,0 - 0,5 da folha) -> base dos 3 ultimos = 2,5 M, margem da base 25%
+        self.assertAlmostEqual(eb["pendente"], -500_000.0)
+        self.assertAlmostEqual(eb["fechados_ajustado"], 25_000_000.0)
+        self.assertAlmostEqual(eb["aberto_projetado"], 3_000_000.0, msg="novembro = receita projetada 12 M x 25%")
+        self.assertAlmostEqual(eb["aberto_restante"], 1_400_000.0, msg="3,0 M projetados - 1,6 M lancados")
+        self.assertAlmostEqual(eb["restantes"], 2_500_000.0)
+        self.assertAlmostEqual(eb["forecast"], 30_500_000.0)
+        self.assertAlmostEqual(eb["lancado"] + eb["pendente"] + eb["aberto_restante"] + eb["restantes"], eb["forecast"])
+        self.assertAlmostEqual(eb["orcado"], 28_800_000.0); self.assertAlmostEqual(eb["pct"], 30.5 / 28.8 * 100)
+        self.assertAlmostEqual(m["forecast"], 25.0); self.assertAlmostEqual(m["orcado"], 20.0)
+        self.assertAlmostEqual(m["fechados"], 25.0)
+        self.assertAlmostEqual(m["lancado"], 27_100_000.0 / 104_000_000.0 * 100, msg="o lancado ainda carrega a margem inflada de novembro")
+        self.assertEqual(r["pendentes"], {"10/2026": (0.0, 500_000.0)})
+        tipos = [s["tipo"] for s in r["series"]]
+        self.assertEqual(tipos, ["fechado"] * 10 + ["aberto", "restante"])
+        self.assertAlmostEqual(r["series"][9]["ajustado"], 2_500_000.0); self.assertAlmostEqual(r["series"][10]["projetado"], 3_000_000.0)
+        # sem pendencias, outubro entra como esta e a base sobe
+        r2 = self.ns["forecast_rolling_do_ano"](self._real, self._orc, self.cols, hoje, meses_base=3)
+        self.assertAlmostEqual(r2["ebitda"]["pendente"], 0.0); self.assertEqual(r2["pendentes"], {})
+        self.assertGreater(r2["ebitda"]["forecast"], r["ebitda"]["forecast"])
+        # base = todos os fechados
+        r3 = self.ns["forecast_rolling_do_ano"](self._real, self._orc, self.cols, hoje, meses_base=99, deltas_por_mes=deltas)
+        self.assertEqual(r3["base"], self.cols[:10])
+
+    def test_sem_mes_aberto_e_sem_dados(self):
+        # olhando 2026 em janeiro de 2027: nada em aberto, dezembro ainda sem dado e projetado
+        r = self.ns["forecast_rolling_do_ano"](self._real, self._orc, self.cols, datetime(2027, 1, 5).date(), meses_base=3)
+        self.assertIsNone(r["aberto"]); self.assertEqual(len(r["fechados"]), 11); self.assertEqual(r["restantes"], ["12/2026"])
+        self.assertEqual(r["meses_projetados"], 1)
+        self.assertAlmostEqual(r["receita"]["aberto_restante"], 0.0)
+        # novembro parcial vira "fechado" (e sem pendencia declarada entra como esta); media dos 3 ultimos
+        self.assertAlmostEqual(r["ebitda"]["restantes"], (2_500_000.0 + 3_000_000.0 + 1_600_000.0) / 3)
+        vazio = self.ns["forecast_rolling_do_ano"](lambda l, c: 0.0, self._orc, self.cols, datetime(2026, 11, 10).date())
+        self.assertEqual(vazio["fechados"], []); self.assertEqual(vazio["aberto"], "11/2026")
+        self.assertAlmostEqual(vazio["ebitda"]["forecast"], 0.0); self.assertIsNone(vazio["margem"]["forecast"])
+
+    def test_a_tela_usa_o_motor_e_mostra_a_margem(self):
+        i = FONTE.index("# 4. FORECAST ROLLING"); j = FONTE.index("# ABA 4: PREVISÕES & TRENDS")
+        secao = FONTE[i:j]
+        self.assertIn("forecast_rolling_do_ano(", secao)
+        self.assertIn("deltas_de_fechamento_por_mes(_detalhes_fc)", secao)
+        self.assertIn("_deltas_pendentes_do_fechamento(", secao, "as pendencias vem da mesma conta do cartao da Visao Geral")
+        self.assertIn("timedelta(days=DIAS_DEFASAGEM_DADOS)", secao, "o mes em aberto e o mes dos DADOS (D+2)")
+        self.assertIn('"EBITDA % previsto · fechamento do ano"', secao); self.assertIn("Margem EBITDA (%) — prevista", secao)
+        # a Visão Geral mostra a mesma previsão no cartão de margem
+        vg = FONTE[FONTE.index('_margem_sub = "Realizada no Período"'):FONTE.index('label="MARGEM EBITDA %"')]
+        self.assertIn("forecast_rolling_do_ano(", vg); self.assertIn("Ano previsto:", vg)
+        self.assertIn("deltas_de_fechamento_por_mes(_det_ano_vg)", vg)
+        self.assertIn("Restante do mês aberto", secao); self.assertIn("Falta lançar", secao)
+        self.assertNotIn("_projetar_linha_fc", FONTE); self.assertNotIn("Meses já realizados", FONTE)
+        self.assertIn('name="Lançado"', secao)
 
 
 if __name__ == "__main__":
