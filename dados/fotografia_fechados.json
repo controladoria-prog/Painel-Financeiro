@@ -1,5 +1,5 @@
 {
- "data": "2026-11-18",
+ "data": "2026-11-19",
  "meses": {
   "01/2026": {
    "3 - Receita Operacional Liquida": 7498373.2,
@@ -317,7 +317,7 @@
    "3 - Receita Operacional Liquida": 10863607.74,
    "2 - Deduções da Receita Operacional Bruta": -563208.08,
    "4 - Custo das Vendas": -4907528.800000001,
-   "11 - EBITDA": 2470111.74,
+   "11 - EBITDA": 2468711.74,
    "6.1 - Comissões sobre Vendas": -125437.77000000002,
    "6.2 - Taxa com Cartão de Crédito / Débito": -68393.38,
    "6.3 - POS Cartões": -75182.06999999999,
@@ -348,7 +348,7 @@
    "8.3 - Pessoal": -1052082.3,
    "8.4 - Taxa de Ocupação": -106570.10999999999,
    "8.5 - Despesas com Veículos": -7709.36,
-   "8.6 - Despesas Administrativas": -83269.20000000001,
+   "8.6 - Despesas Administrativas": -84669.20000000001,
    "8.7 - Despesas Gerais": -77006.89,
    "8.8 - Serviços de Terceiros": -463716.92
   },
@@ -356,12 +356,12 @@
    "3 - Receita Operacional Liquida": 11309542.94,
    "2 - Deduções da Receita Operacional Bruta": 0.0,
    "4 - Custo das Vendas": -4870616.28,
-   "11 - EBITDA": 3699922.81,
-   "6.1 - Comissões sobre Vendas": 0.0,
-   "6.2 - Taxa com Cartão de Crédito / Débito": -75215.38,
-   "6.3 - POS Cartões": -77079.96,
+   "11 - EBITDA": 2818060.57,
+   "6.1 - Comissões sobre Vendas": -154094.09,
+   "6.2 - Taxa com Cartão de Crédito / Débito": -75220.59,
+   "6.3 - POS Cartões": -76918.48000000001,
    "6.4 - Taxa Omnichannel": 0.0,
-   "6.5 - Taxa de Emissão de Boleto / Boleto Garantido": -214763.28,
+   "6.5 - Taxa de Emissão de Boleto / Boleto Garantido": -215566.86000000002,
    "6.6 - Material de Embalagem": -255331.14,
    "6.7 - Material Auxiliar de Embalagem (MAE)": 0.0,
    "6.8 - Serviço de Entrega": -6158.96,
@@ -384,12 +384,12 @@
    "6.25 - PDD": 0.0,
    "8.1 - Despesas Estruturais": -128731.76000000001,
    "8.2 - Despesas com Comunicação": -18961.78,
-   "8.3 - Pessoal": -450412.9,
+   "8.3 - Pessoal": -1176396.62,
    "8.4 - Taxa de Ocupação": -279765.81000000006,
    "8.5 - Despesas com Veículos": -8510.590000000002,
    "8.6 - Despesas Administrativas": -114099.81999999998,
    "8.7 - Despesas Gerais": -56233.8,
-   "8.8 - Serviços de Terceiros": -384501.45999999996
+   "8.8 - Serviços de Terceiros": -385638.57999999996
   }
  }
 }
