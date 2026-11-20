@@ -933,5 +933,22 @@
    "Despesas Estruturais",
    "Serviços de Terceiros"
   ]
+ },
+ {
+  "data": "2026-11-20",
+  "mes_col": "11/2026",
+  "mes": "NOVEMBRO",
+  "dia": 18,
+  "rec_mes": 7013374.83,
+  "ritmo_pct": 82.5720766448551,
+  "chance": 0.01,
+  "rec_ytd": 109502688.19,
+  "ebitda_ytd": 27431031.11,
+  "margem_proj": 24.659678353241837,
+  "estouros": [
+   "Taxa de Emissão de Boleto / Boleto Garantido",
+   "Despesas Estruturais",
+   "Serviços de Terceiros"
+  ]
  }
 ]
