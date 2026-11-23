@@ -9738,6 +9738,11 @@ class TesteUsuarioSoDoFinanceiro(unittest.TestCase):
     def test_lista_e_coerente_com_a_de_permitidos(self):
         ns = carregar([], ["EMAILS_SO_FINANCEIRO", "EMAILS_FINANCEIRO_PERMITIDOS"])
         self.assertIn("analista.60376@grupobeea.com.br", ns["EMAILS_SO_FINANCEIRO"])
+        # 23/11/2026: Cobranca VD entra so no Financeiro
+        self.assertIn("cobrancavd@grupobeea.com.br", ns["EMAILS_SO_FINANCEIRO"])
+        self.assertIn("cobrancavd@grupobeea.com.br", ns["EMAILS_FINANCEIRO_PERMITIDOS"])
+        self.assertTrue(all(e.endswith("@grupobeea.com.br") for e in ns["EMAILS_FINANCEIRO_PERMITIDOS"]),
+                        "dominio digitado errado deixaria a trava sem efeito")
         self.assertTrue(ns["EMAILS_SO_FINANCEIRO"] <= ns["EMAILS_FINANCEIRO_PERMITIDOS"],
                         "quem e so do Financeiro precisa poder entrar no Financeiro")
         self.assertNotIn("controladoria@grupobeea.com.br", ns["EMAILS_SO_FINANCEIRO"])

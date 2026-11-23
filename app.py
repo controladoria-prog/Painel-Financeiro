@@ -7333,6 +7333,8 @@ EMAILS_FINANCEIRO_PERMITIDOS = {
     "analista.gestaofinanceira@grupobeea.com.br",
     "analista.60371@grupobeea.com.br",
     "analista.60376@grupobeea.com.br",
+    # Cobrança VD (23/11/2026): só o Financeiro (está também em EMAILS_SO_FINANCEIRO).
+    "cobrancavd@grupobeea.com.br",
 }
 
 # Quem entra SÓ no Financeiro (29/10/2026): o acesso criado para o
@@ -7341,6 +7343,7 @@ EMAILS_FINANCEIRO_PERMITIDOS = {
 # Quem está aqui precisa estar também em EMAILS_FINANCEIRO_PERMITIDOS.
 EMAILS_SO_FINANCEIRO = {
     "analista.60376@grupobeea.com.br",
+    "cobrancavd@grupobeea.com.br",
 }
 
 # ============================================================================
