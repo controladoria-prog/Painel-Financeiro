@@ -498,5 +498,81 @@
    "42% do desembolso do mês em 3 dias",
    "LOJA sem recurso próprio em 11/11"
   ]
+ },
+ {
+  "data": "2026-11-12",
+  "saldo": 6225887.32,
+  "titulos": [
+   "R$ 2.576.928,82 vencidos e ainda não pagos",
+   "Reserva do mês em 24% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 12/11"
+  ]
+ },
+ {
+  "data": "2026-11-13",
+  "saldo": 6876213.349999999,
+  "titulos": [
+   "R$ 93.360,04 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 27% (meta: 30%)",
+   "44% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 14/11"
+  ]
+ },
+ {
+  "data": "2026-11-16",
+  "saldo": 6921082.539999999,
+  "titulos": [
+   "R$ 1.328.950,20 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 22% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 16/11",
+   "VENDA DIRETA sem recurso próprio em 20/11"
+  ]
+ },
+ {
+  "data": "2026-11-17",
+  "saldo": 6305870.040000001,
+  "titulos": [
+   "R$ 2.456.305,82 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 22% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 17/11",
+   "VENDA DIRETA sem recurso próprio em 20/11"
+  ]
+ },
+ {
+  "data": "2026-11-18",
+  "saldo": 5598888.32,
+  "titulos": [
+   "R$ 3.306.245,17 vencidos e ainda não pagos",
+   "Pagamentos da semana consomem quase todo o caixa",
+   "Reserva do mês em 22% (meta: 30%)",
+   "42% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 19/11",
+   "VENDA DIRETA sem recurso próprio em 19/11"
+  ]
+ },
+ {
+  "data": "2026-11-19",
+  "saldo": 5478241.22,
+  "titulos": [
+   "R$ 441.933,25 vencidos e ainda não pagos",
+   "52% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 19/11",
+   "VENDA DIRETA sem recurso próprio em 19/11"
+  ]
+ },
+ {
+  "data": "2026-11-20",
+  "saldo": 5478241.22,
+  "titulos": [
+   "R$ 1.736.403,60 vencidos e ainda não pagos",
+   "52% do desembolso do mês em 3 dias",
+   "LOJA sem recurso próprio em 20/11"
+  ]
  }
 ]
